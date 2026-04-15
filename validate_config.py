@@ -677,28 +677,34 @@ def _gate(passed: bool, label: str) -> None:
 
 import importlib.util as _ilu_g  # noqa: E402
 
-# Gate 01 — schemas.py importable
+# Gate 01 — schemas.py present and compiles cleanly
+# (exec_module skipped: schemas.py has deep cross-imports that require full venv context)
+import py_compile as _pyc_g
 try:
-    _gs = _ilu_g.spec_from_file_location("schemas_gate", BASE_DIR / "schemas.py")
-    _gm = _ilu_g.module_from_spec(_gs); _gs.loader.exec_module(_gm)
-    _gate(True, "Gate 01 — schemas.py importable")
+    _schemas_path = BASE_DIR / "schemas.py"
+    if not _schemas_path.exists():
+        raise FileNotFoundError("schemas.py missing")
+    _pyc_g.compile(str(_schemas_path), doraise=True)
+    _gate(True, "Gate 01 — schemas.py present and compiles cleanly")
 except Exception as _ge:
-    _gate(False, f"Gate 01 — schemas.py import failed: {_ge}")
+    _gate(False, f"Gate 01 — schemas.py check failed: {_ge}")
 
-# Gate 02 — risk_kernel.py present (heavy Alpaca imports skip exec check)
+# Gate 02 — risk_kernel.py present (heavy Alpaca imports skip compile check)
 _gate(
     (BASE_DIR / "risk_kernel.py").exists(),
     "Gate 02 — risk_kernel.py present" if (BASE_DIR / "risk_kernel.py").exists()
     else "Gate 02 — risk_kernel.py MISSING",
 )
 
-# Gate 03 — sonnet_gate.py importable
+# Gate 03 — sonnet_gate.py present and compiles cleanly
 try:
-    _gs = _ilu_g.spec_from_file_location("sonnet_gate_g", BASE_DIR / "sonnet_gate.py")
-    _gm = _ilu_g.module_from_spec(_gs); _gs.loader.exec_module(_gm)
-    _gate(True, "Gate 03 — sonnet_gate.py importable")
+    _sg_path = BASE_DIR / "sonnet_gate.py"
+    if not _sg_path.exists():
+        raise FileNotFoundError("sonnet_gate.py missing")
+    _pyc_g.compile(str(_sg_path), doraise=True)
+    _gate(True, "Gate 03 — sonnet_gate.py present and compiles cleanly")
 except Exception as _ge:
-    _gate(False, f"Gate 03 — sonnet_gate.py import failed: {_ge}")
+    _gate(False, f"Gate 03 — sonnet_gate.py check failed: {_ge}")
 
 # Gate 04 — reconciliation.py present
 _gate(

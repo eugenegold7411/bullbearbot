@@ -1,0 +1,951 @@
+"""
+bot_options.py — Account 2 options trading bot.
+
+Runs independently from Account 1 (bot.py) on a separate Alpaca account.
+Uses IV-first strategy selection with a four-way debate (Bull/Bear/IV Analyst/Synthesis).
+
+Run directly for a single cycle:  python bot_options.py
+Run via scheduler (90s offset after Account 1): scheduler.py handles this.
+
+Account 2 credentials: ALPACA_API_KEY_OPTIONS / ALPACA_SECRET_KEY_OPTIONS
+"""
+
+import json
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import anthropic
+from dotenv import load_dotenv
+from alpaca.trading.client import TradingClient
+
+import options_builder
+import options_data
+import options_executor
+import options_intelligence
+import options_state
+import order_executor_options as oe_opts
+from dataclasses import asdict
+from log_setup import get_logger
+from reconciliation import (
+    reconcile_options_structures,
+    plan_structure_repair,
+    execute_reconciliation_plan,
+)
+from schemas import (
+    BrokerSnapshot,
+    NormalizedOrder,
+    NormalizedPosition,
+    normalize_symbol,
+    is_crypto as schema_is_crypto,
+    StructureProposal,
+)
+
+load_dotenv()
+
+log = get_logger("bot_options")
+
+ET = ZoneInfo("America/New_York")
+PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+# Model selection — same as Account 1
+MODEL      = "claude-sonnet-4-6"
+MODEL_FAST = "claude-haiku-4-5-20251001"
+
+# Account 2 data paths (separate from Account 1)
+_A2_DIR         = Path(__file__).parent / "data" / "account2"
+_DECISION_LOG   = _A2_DIR / "trade_memory" / "decisions_account2.json"
+_COST_LOG       = _A2_DIR / "costs" / "cost_log.jsonl"
+_A2_DIR.mkdir(parents=True, exist_ok=True)
+(_A2_DIR / "trade_memory").mkdir(exist_ok=True)
+(_A2_DIR / "costs").mkdir(exist_ok=True)
+(_A2_DIR / "positions").mkdir(exist_ok=True)
+
+# Observation mode: first 20 trading days while IV history builds
+_OBS_MODE_DAYS   = 20
+_OBS_MODE_FILE   = _A2_DIR / "obs_mode_state.json"
+
+# Equity floor
+_EQUITY_FLOOR = 25_000.0
+
+# Max cycles per day to log (cost control)
+_MAX_DAILY_CYCLES = 48
+
+
+# ── Client initialization ─────────────────────────────────────────────────────
+
+def _build_alpaca_client() -> TradingClient:
+    api_key = os.getenv("ALPACA_API_KEY_OPTIONS")
+    secret  = os.getenv("ALPACA_SECRET_KEY_OPTIONS")
+    base    = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    if not api_key or not secret:
+        raise EnvironmentError(
+            "ALPACA_API_KEY_OPTIONS / ALPACA_SECRET_KEY_OPTIONS not set in .env"
+        )
+    return TradingClient(api_key=api_key, secret_key=secret, paper=("paper" in base))
+
+
+def _build_claude_client() -> anthropic.Anthropic:
+    key = os.getenv("ANTHROPIC_API_KEY")
+    if not key:
+        raise EnvironmentError("ANTHROPIC_API_KEY not set in .env")
+    return anthropic.Anthropic(api_key=key)
+
+
+# Lazy-init clients (so import doesn't fail if creds missing)
+_alpaca: TradingClient | None = None
+_claude: anthropic.Anthropic | None = None
+
+
+def _get_alpaca() -> TradingClient:
+    global _alpaca
+    if _alpaca is None:
+        _alpaca = _build_alpaca_client()
+    return _alpaca
+
+
+def _get_claude() -> anthropic.Anthropic:
+    global _claude
+    if _claude is None:
+        _claude = _build_claude_client()
+    return _claude
+
+
+# ── Observation mode tracking ─────────────────────────────────────────────────
+
+def _get_obs_mode_state() -> dict:
+    """Load or initialize observation mode tracking state."""
+    if _OBS_MODE_FILE.exists():
+        try:
+            return json.loads(_OBS_MODE_FILE.read_text())
+        except Exception:
+            pass
+    return {"trading_days_observed": 0, "first_seen_date": None, "observation_complete": False}
+
+
+def _is_trading_day(iso_date: str) -> bool:
+    """
+    Return True if iso_date (YYYY-MM-DD) is a NYSE trading day.
+    Excludes weekends. Excludes a fixed set of US market holidays.
+    """
+    from datetime import date
+    d = date.fromisoformat(iso_date)
+    # Weekends
+    if d.weekday() >= 5:
+        return False
+    # Fixed NYSE holidays (year-agnostic month/day check)
+    _fixed = {(1, 1), (7, 4), (12, 25)}
+    if (d.month, d.day) in _fixed:
+        return False
+    # Floating holidays: MLK (3rd Mon Jan), Presidents (3rd Mon Feb),
+    # Memorial (last Mon May), Labor (1st Mon Sep), Thanksgiving (4th Thu Nov)
+    import calendar as _cal
+    def _nth_weekday(year, month, weekday, n):
+        """n-th occurrence (1-based) of weekday in month."""
+        first = date(year, month, 1)
+        delta = (weekday - first.weekday()) % 7
+        return date(year, month, 1 + delta + (n - 1) * 7)
+    def _last_monday(year, month):
+        last = date(year, month, _cal.monthrange(year, month)[1])
+        return last - __import__("datetime").timedelta(days=(last.weekday()) % 7)
+    floating = {
+        _nth_weekday(d.year, 1, 0, 3),   # MLK Day
+        _nth_weekday(d.year, 2, 0, 3),   # Presidents Day
+        _last_monday(d.year, 5),          # Memorial Day
+        _nth_weekday(d.year, 9, 0, 1),   # Labor Day
+        _nth_weekday(d.year, 11, 3, 4),  # Thanksgiving
+    }
+    return d not in floating
+
+
+def _update_obs_mode_state(state: dict) -> bool:
+    """
+    Update observation mode counter. Increment trading_days_observed only on
+    NYSE trading days (no weekends, no US market holidays).
+    Returns True if still in observation mode.
+    """
+    from datetime import date
+    today = date.today().isoformat()
+
+    if state.get("observation_complete"):
+        return False
+
+    if state.get("first_seen_date") is None:
+        state["first_seen_date"] = today
+
+    # Only count each trading day once — skip weekends and market holidays
+    if state.get("last_counted_date") != today and _is_trading_day(today):
+        state["trading_days_observed"] = state.get("trading_days_observed", 0) + 1
+        state["last_counted_date"] = today
+    elif not _is_trading_day(today):
+        log.debug("[OPTS] Observation mode: %s is not a trading day — not counting", today)
+
+    days = state["trading_days_observed"]
+    log.info("[OPTS] Observation mode: %d/%d trading days", days, _OBS_MODE_DAYS)
+
+    if days >= _OBS_MODE_DAYS:
+        state["observation_complete"] = True
+        log.info("[OPTS] Observation mode COMPLETE — Account 2 now live trading")
+
+    try:
+        _OBS_MODE_FILE.write_text(json.dumps(state, indent=2))
+    except Exception:
+        pass
+
+    return not state.get("observation_complete", False)
+
+
+def is_observation_mode() -> bool:
+    """Quick check: is Account 2 still in observation mode?"""
+    state = _get_obs_mode_state()
+    return not state.get("observation_complete", False)
+
+
+# ── Account 1 awareness ───────────────────────────────────────────────────────
+
+def _load_account1_last_decision() -> dict:
+    """
+    Read Account 1's last decision from memory/decisions.json.
+    Returns {} if not available. Non-fatal.
+    """
+    try:
+        path = Path(__file__).parent / "data" / "trade_memory" / "decisions.json"
+        if not path.exists():
+            # Try alternate path
+            path = Path(__file__).parent / "memory" / "decisions.json"
+        if path.exists():
+            data = json.loads(path.read_text())
+            # Could be a list (JSONL-style) or a dict
+            if isinstance(data, list) and data:
+                return data[-1]  # most recent
+            if isinstance(data, dict):
+                return data
+    except Exception as exc:
+        log.debug("[OPTS] Could not load Account 1 decisions: %s", exc)
+    return {}
+
+
+def _summarize_account1_for_prompt(decision: dict) -> str:
+    """Format Account 1's last decision as a compact prompt section."""
+    if not decision:
+        return "  Account 1: no recent decisions available."
+
+    regime = decision.get("regime", "unknown")
+    actions = decision.get("actions", [])
+    reasoning = decision.get("reasoning", "")
+    ts = decision.get("timestamp", "")[:16] if decision.get("timestamp") else ""
+
+    lines = [f"  Account 1 last cycle [{ts}]:"]
+    lines.append(f"    Regime: {regime}")
+    if reasoning:
+        lines.append(f"    Read: {reasoning[:150]}")
+
+    open_syms = [a.get("symbol") for a in actions if a.get("action") not in ("hold",) and a.get("symbol")]
+    if open_syms:
+        lines.append(f"    Active trades: {', '.join(open_syms[:8])}")
+
+    return "\n".join(lines)
+
+
+# ── IV data for watchlist ─────────────────────────────────────────────────────
+
+def _get_iv_summaries_for_symbols(symbols: list[str]) -> dict:
+    """
+    Return IV summaries for a list of symbols.
+    Uses cached chains (refreshed in 4 AM block) + on-demand fetch if cache miss.
+    Non-fatal per symbol.
+    """
+    summaries = {}
+    for sym in symbols:
+        try:
+            chain = options_data.fetch_options_chain(sym)  # uses cache
+            summary = options_data.get_iv_summary(sym, chain=chain)
+            summaries[sym] = summary
+        except Exception as exc:
+            log.debug("[OPTS] IV summary failed for %s: %s", sym, exc)
+            summaries[sym] = {
+                "symbol": sym, "iv_environment": "unknown",
+                "observation_mode": True, "history_days": 0,
+            }
+    return summaries
+
+
+# ── Strategy selection ────────────────────────────────────────────────────────
+
+def _build_options_candidates(
+    watchlist_symbols: list[str],
+    iv_summaries: dict,
+    signal_scores: dict,
+    vix: float,
+    equity: float,
+) -> list[StructureProposal]:
+    """
+    For each watchlist symbol with a signal score, run options_intelligence
+    to get a candidate trade. Returns list of StructureProposals.
+    None returns (hold/skip) are filtered out.
+    """
+    from options_data import get_options_regime
+
+    options_regime = get_options_regime(vix)
+    candidates = []
+
+    # Filter to symbols that have a meaningful signal.
+    # score_signals() uses "conviction" field ("high"/"medium"/"low").
+    scored_symbols = sorted(
+        [(sym, sig) for sym, sig in signal_scores.items()
+         if isinstance(sig, dict) and sig.get("conviction") in ("medium", "high")],
+        key=lambda x: {"high": 2, "medium": 1, "low": 0}.get(x[1].get("conviction", "low"), 0),
+        reverse=True
+    )[:8]  # top 8 candidates only
+
+    for sym, sig_data in scored_symbols:
+        iv_summary = iv_summaries.get(sym, {
+            "symbol": sym, "iv_environment": "unknown", "observation_mode": True
+        })
+
+        # Determine tier: use dynamic if sig_data says dynamic, otherwise core
+        tier = sig_data.get("tier", "core")
+        catalyst = sig_data.get("primary_catalyst", "no specific catalyst")
+        current_price = sig_data.get("price", 0)
+
+        if current_price <= 0:
+            log.debug("[OPTS] %s: no price data — skipping", sym)
+            continue
+
+        proposal = options_intelligence.select_options_strategy(
+            symbol=sym,
+            iv_summary=iv_summary,
+            signal_data=sig_data,
+            vix=vix,
+            tier=tier,
+            catalyst=catalyst,
+            current_price=current_price,
+            equity=equity,
+            options_regime=options_regime,
+        )
+        if proposal is not None:
+            candidates.append(proposal)
+
+    return candidates
+
+
+# ── Claude four-way debate ─────────────────────────────────────────────────────
+
+_OPTS_SYSTEM = None  # cached system prompt
+
+
+def _load_opts_system() -> str:
+    global _OPTS_SYSTEM
+    if _OPTS_SYSTEM is None:
+        path = PROMPTS_DIR / "system_options_v1.txt"
+        _OPTS_SYSTEM = path.read_text().strip()
+    return _OPTS_SYSTEM
+
+
+def run_options_debate(
+    candidates: list[StructureProposal],
+    iv_summaries: dict,
+    vix: float,
+    regime: str,
+    account1_summary: str,
+    obs_mode: bool,
+    equity: float,
+) -> dict:
+    """
+    Submit candidates to Claude for the four-way options debate.
+    Claude conducts Bull/Bear/IV Analyst/Synthesis internally and returns
+    the final approved actions.
+
+    Returns parsed JSON response dict.
+    """
+    system_prompt = _load_opts_system()
+    claude = _get_claude()
+
+    # Format candidates for prompt
+    cands_text = json.dumps([asdict(c) for c in candidates], indent=2, default=str) if candidates else "[]"
+
+    # Format IV environment summary
+    iv_lines = []
+    for sym, iv in iv_summaries.items():
+        env = iv.get("iv_environment", "unknown")
+        rank = iv.get("iv_rank")
+        days = iv.get("history_days", 0)
+        obs = " [OBS]" if iv.get("observation_mode") else ""
+        rank_str = f"{rank:.0f}" if rank is not None else "N/A"
+        iv_lines.append(f"  {sym}: env={env} rank={rank_str} history={days}d{obs}")
+    iv_section = "\n".join(iv_lines) if iv_lines else "  (no IV data)"
+
+    obs_notice = (
+        "\n⚠ OBSERVATION MODE ACTIVE: Conduct full analysis but trades will NOT be submitted. "
+        "Output your best trade decisions as if live — they are used for IV calibration.\n"
+        if obs_mode else ""
+    )
+
+    user_content = f"""{obs_notice}
+=== MARKET CONTEXT ===
+VIX: {vix:.2f}
+Regime: {regime}
+Account 2 Equity: ${equity:,.0f}
+
+=== ACCOUNT 1 AWARENESS ===
+{account1_summary}
+
+=== IV ENVIRONMENT SUMMARY ===
+{iv_section}
+
+=== CANDIDATE TRADES (from signal scoring) ===
+{cands_text}
+
+=== YOUR TASK ===
+For each candidate, conduct the four-way debate:
+1. BULL AGENT: strongest bull case with specific catalyst
+2. BEAR AGENT: strongest bear case and key risks
+3. IV ANALYST: IV rank assessment and recommended strategy
+4. SYNTHESIS: PROCEED | VETO | RESIZE | RESTRUCTURE
+
+Output your top 1-3 approved trades (or all HOLDs if no setup qualifies).
+Minimum confidence 0.85 for any PROCEED. Apply all hard rules from system prompt.
+Respond ONLY with valid JSON. No markdown. No explanation outside JSON fields.
+"""
+
+    try:
+        resp = claude.messages.create(
+            model=MODEL,
+            max_tokens=2000,
+            system=[{
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": user_content}],
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+        )
+
+        raw = resp.content[0].text.strip() if resp.content else ""
+        _log_claude_cost(resp, "debate")
+
+        if not raw:
+            log.warning("[OPTS] Claude returned empty response")
+            return {"regime": regime, "actions": [], "reasoning": "empty response"}
+
+        # JSON parse with repair
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            last_brace = raw.rfind("}")
+            if last_brace >= 0:
+                try:
+                    return json.loads(raw[:last_brace + 1])
+                except json.JSONDecodeError:
+                    pass
+            log.warning("[OPTS] JSON parse failed, raw=%s", raw[:200])
+            return {"regime": regime, "actions": [], "reasoning": "json_parse_failed"}
+
+    except Exception as exc:
+        log.error("[OPTS] Claude debate failed: %s", exc)
+        return {"regime": regime, "actions": [], "reasoning": f"error: {exc}"}
+
+
+# ── Cost tracking ─────────────────────────────────────────────────────────────
+
+def _log_claude_cost(resp, call_type: str = "unknown"):
+    """Log Claude API usage to Account 2 cost log."""
+    try:
+        usage = resp.usage
+        entry = {
+            "timestamp": __import__("datetime").datetime.now(ET).isoformat(),
+            "call_type": call_type,
+            "model": MODEL,
+            "input_tokens": getattr(usage, "input_tokens", 0),
+            "output_tokens": getattr(usage, "output_tokens", 0),
+            "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0),
+            "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0),
+        }
+        with open(_COST_LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
+# ── Decision logging ──────────────────────────────────────────────────────────
+
+def _save_decision(cycle_result: dict):
+    """Append cycle decision to Account 2 decision log."""
+    try:
+        from datetime import datetime
+        cycle_result["timestamp"] = datetime.now(ET).isoformat()
+        history = []
+        if _DECISION_LOG.exists():
+            try:
+                history = json.loads(_DECISION_LOG.read_text())
+                if not isinstance(history, list):
+                    history = [history]
+            except Exception:
+                history = []
+
+        history.append(cycle_result)
+        # Keep last 500 decisions
+        if len(history) > 500:
+            history = history[-500:]
+        _DECISION_LOG.write_text(json.dumps(history, indent=2))
+    except Exception as exc:
+        log.debug("[OPTS] Decision log write failed: %s", exc)
+
+
+# ── Position management ───────────────────────────────────────────────────────
+
+def _get_open_options_positions(alpaca_client: TradingClient) -> list:
+    """Get open options positions from Account 2."""
+    try:
+        positions = alpaca_client.get_all_positions()
+        # Options positions have symbols like AAPL230120C00150000
+        opts = [p for p in positions if len(getattr(p, "symbol", "")) > 10
+                and any(c in getattr(p, "symbol", "") for c in ("C", "P"))]
+        return opts
+    except Exception as exc:
+        log.warning("[OPTS] Could not fetch Account 2 positions: %s", exc)
+        return []
+
+
+def _check_expiring_positions(positions: list, alpaca_client: TradingClient) -> list[str]:
+    """
+    Check for options positions expiring within 5 days.
+    Returns list of symbols that should be reviewed for close.
+    """
+    from datetime import date
+    warn_symbols = []
+    today = date.today()
+
+    for pos in positions:
+        sym = getattr(pos, "symbol", "")
+        if len(sym) < 15:
+            continue
+        try:
+            # OCC format: AAPL230120C00150000 — extract YYMMDD (positions 4-10 from root)
+            # Find the first digit after the underlying letters
+            i = 0
+            while i < len(sym) and not sym[i].isdigit():
+                i += 1
+            if i >= len(sym):
+                continue
+            date_str = sym[i:i+6]  # YYMMDD
+            exp_date = date(2000 + int(date_str[:2]), int(date_str[2:4]), int(date_str[4:6]))
+            dte = (exp_date - today).days
+            if dte <= 5:
+                log.warning("[OPTS] %s: expires in %d days — consider closing", sym, dte)
+                warn_symbols.append(sym)
+        except Exception:
+            continue
+    return warn_symbols
+
+
+# ── Signal score loading ──────────────────────────────────────────────────────
+
+def _load_signal_scores_from_account1() -> dict:
+    """
+    Load Account 1's signal scores from the most recent score file.
+    Falls back to empty dict if not available.
+    """
+    try:
+        # Account 1 may have written signal scores to data/market/signal_scores.json
+        path = Path(__file__).parent / "data" / "market" / "signal_scores.json"
+        if path.exists() and (time.time() - path.stat().st_mtime) < 600:  # fresh < 10 min
+            data = json.loads(path.read_text())
+            # score_signals() returns {"scored_symbols": {...}, "top_3": [...], ...}
+            # Extract the flat symbol→score dict from the nested structure.
+            return data.get("scored_symbols", data) if isinstance(data, dict) else {}
+    except Exception as exc:
+        log.debug("[OPTS] Could not load Account 1 signal scores: %s", exc)
+    return {}
+
+
+def _get_core_equity_symbols() -> list[str]:
+    """
+    Get equity (non-crypto) symbols from core watchlist.
+    Options only trade on equities.
+    """
+    try:
+        import watchlist_manager as wm
+        wl = wm.get_active_watchlist()
+        return wl.get("stocks", []) + wl.get("etfs", [])
+    except Exception as exc:
+        log.debug("[OPTS] Could not load watchlist: %s", exc)
+        # Fallback core list
+        return [
+            "SPY", "QQQ", "NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL",
+            "TSM", "AMD", "XLE", "GLD", "TLT", "IWM", "XLF", "XBI",
+        ]
+
+
+# ── A2 broker snapshot ────────────────────────────────────────────────────────
+
+def _build_a2_broker_snapshot(alpaca_client: TradingClient) -> BrokerSnapshot:
+    """
+    Build a BrokerSnapshot from Account 2's current live state.
+
+    Fetches positions and open orders from the A2 Alpaca account.
+    Returns a BrokerSnapshot with normalised positions and orders.
+    Non-fatal — returns an empty snapshot on any error so reconciliation
+    can degrade gracefully rather than blocking the cycle.
+    """
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+
+    norm_positions: list[NormalizedPosition] = []
+    norm_orders: list[NormalizedOrder] = []
+    equity = buying_power = cash = 0.0
+
+    try:
+        account = alpaca_client.get_account()
+        equity       = float(account.equity)
+        cash         = float(account.cash)
+        buying_power = float(account.buying_power)
+    except Exception as exc:
+        log.warning("[OPTS_RECON] snapshot: failed to fetch account: %s", exc)
+
+    try:
+        positions = alpaca_client.get_all_positions()
+        norm_positions = [NormalizedPosition.from_alpaca_position(p) for p in positions]
+    except Exception as exc:
+        log.warning("[OPTS_RECON] snapshot: failed to fetch positions: %s", exc)
+
+    try:
+        orders = alpaca_client.get_orders(
+            GetOrdersRequest(status=QueryOrderStatus.OPEN)
+        )
+        norm_orders = [NormalizedOrder.from_alpaca_order(o) for o in orders]
+    except Exception as exc:
+        log.warning("[OPTS_RECON] snapshot: failed to fetch orders: %s", exc)
+
+    return BrokerSnapshot(
+        positions=norm_positions,
+        open_orders=norm_orders,
+        equity=equity,
+        cash=cash,
+        buying_power=buying_power,
+    )
+
+
+# ── Main cycle ────────────────────────────────────────────────────────────────
+
+def run_options_cycle(
+    session_tier: str = "market",
+    next_cycle_time: str = "?",
+) -> None:
+    """
+    Run one Account 2 options cycle.
+
+    1. Check Account 2 equity and equity floor
+    2. Load Account 1 context
+    3. Build IV summaries for equity watchlist
+    4. Build candidate trades (pre-screened by IV + signal)
+    5. Run Claude four-way debate
+    6. Execute approved trades via order_executor_options
+    7. Log decisions and costs
+    """
+    t_start = time.monotonic()
+    log.info("── [OPTS] Cycle start  session=%s ─────────────────────────", session_tier)
+
+    # Skip non-market sessions for options (no overnight options)
+    if session_tier not in ("market", "pre_market"):
+        log.info("[OPTS] Session=%s — options cycle skipped (market hours only)", session_tier)
+        return
+
+    # 1. Account 2 status
+    try:
+        alpaca_client = _get_alpaca()
+        account = alpaca_client.get_account()
+        equity = float(account.equity)
+        cash   = float(account.cash)
+        log.info("[OPTS] Account 2: equity=$%s  cash=$%s", f"{equity:,.0f}", f"{cash:,.0f}")
+    except Exception as exc:
+        log.error("[OPTS] Cannot fetch Account 2 status: %s — skipping cycle", exc)
+        return
+
+    if equity < _EQUITY_FLOOR:
+        log.warning("[OPTS] Account 2 equity $%.0f below floor $%.0f — halting", equity, _EQUITY_FLOOR)
+        return
+
+    # 2. Observation mode check
+    obs_state = _get_obs_mode_state()
+    obs_mode = _update_obs_mode_state(obs_state)
+
+    # 3. Open positions — check for expiring contracts
+    open_positions = _get_open_options_positions(alpaca_client)
+    expiring = _check_expiring_positions(open_positions, alpaca_client)
+    if expiring:
+        log.warning("[OPTS] %d positions expiring within 5 days: %s", len(expiring), expiring)
+
+    # Stage 0 — Options structure reconciliation
+    # Runs before new proposals so any broken/expiring structures are repaired first.
+    _open_structs_for_recon = options_state.get_open_structures()
+    if _open_structs_for_recon:
+        try:
+            _recon_snapshot = _build_a2_broker_snapshot(alpaca_client)
+            _struct_diff = reconcile_options_structures(
+                structures=_open_structs_for_recon,
+                snapshot=_recon_snapshot,
+                current_time=datetime.now(timezone.utc).isoformat(),
+                config={},
+            )
+            if any([
+                _struct_diff.broken,
+                _struct_diff.expiring_soon,
+                _struct_diff.needs_close,
+                _struct_diff.orphaned_legs,
+            ]):
+                _repair_plan = plan_structure_repair(
+                    diff=_struct_diff,
+                    structures=_open_structs_for_recon,
+                    snapshot=_recon_snapshot,
+                    config={},
+                )
+                log.info(
+                    "[OPTS_RECON] %d broken, %d expiring, "
+                    "%d needs_close, %d orphaned — %d repair action(s)",
+                    len(_struct_diff.broken),
+                    len(_struct_diff.expiring_soon),
+                    len(_struct_diff.needs_close),
+                    len(_struct_diff.orphaned_legs),
+                    len(_repair_plan),
+                )
+                execute_reconciliation_plan(
+                    plan=_repair_plan,
+                    trading_client=alpaca_client,
+                    account_id="account2",
+                    dry_run=False,
+                )
+            else:
+                log.debug("[OPTS_RECON] %d open structures — all intact",
+                          len(_open_structs_for_recon))
+        except Exception as _recon_err:
+            log.warning("[OPTS_RECON] Failed (non-fatal): %s", _recon_err)
+    else:
+        log.debug("[OPTS_RECON] No open structures — skipping reconciliation")
+
+    # 4. VIX and regime from Account 1 signal context
+    vix = 20.0  # default
+    regime = "normal"
+    try:
+        import market_data
+        # Quick VIX fetch (reuses Account 1's cache)
+        vix_cache = Path(__file__).parent / "data" / "market" / "vix_cache.json"
+        if vix_cache.exists() and (time.time() - vix_cache.stat().st_mtime) < 600:
+            vix_data = json.loads(vix_cache.read_text())
+            vix = float(vix_data.get("vix", vix))
+    except Exception:
+        pass
+
+    # Check Account 1's last regime classification
+    a1_decision = _load_account1_last_decision()
+    if isinstance(a1_decision, dict):
+        regime = a1_decision.get("regime", regime)
+
+    account1_summary = _summarize_account1_for_prompt(a1_decision)
+
+    # 5. Get equity symbols for options trading
+    equity_symbols = _get_core_equity_symbols()
+
+    # 6. Load signal scores from Account 1 (fresh within 10 min)
+    signal_scores = _load_signal_scores_from_account1()
+
+    # If no Account 1 signal scores, we can't proceed meaningfully
+    if not signal_scores:
+        log.info("[OPTS] No signal scores from Account 1 — skipping debate (no catalyst context)")
+        _save_decision({
+            "reasoning": "no_account1_signals",
+            "regime": regime,
+            "actions": [],
+            "observation_mode": obs_mode,
+        })
+        return
+
+    # 7. IV summaries for scored symbols
+    scored_syms = list(signal_scores.keys())[:20]  # cap at 20
+    iv_summaries = _get_iv_summaries_for_symbols(scored_syms)
+
+    obs_count = sum(1 for iv in iv_summaries.values() if iv.get("observation_mode", True))
+    log.info("[OPTS] IV summaries: %d symbols, %d in obs mode", len(iv_summaries), obs_count)
+
+    # 8. Build candidate trades
+    options_regime = options_data.get_options_regime(vix)
+    candidates = _build_options_candidates(
+        watchlist_symbols=equity_symbols,
+        iv_summaries=iv_summaries,
+        signal_scores=signal_scores,
+        vix=vix,
+        equity=equity,
+    )
+
+    log.info("[OPTS] Candidates: %d  VIX=%.1f  regime=%s  options_regime=%s",
+             len(candidates), vix, regime, options_regime.get("regime", "?"))
+
+    if not candidates and not obs_mode:
+        log.info("[OPTS] No candidates after filtering — holding")
+        _save_decision({
+            "reasoning": "no_candidates_after_filter",
+            "regime": regime,
+            "actions": [],
+            "observation_mode": obs_mode,
+        })
+        return
+
+    # 9. Claude four-way debate
+    debate_result = run_options_debate(
+        candidates=candidates,
+        iv_summaries=iv_summaries,
+        vix=vix,
+        regime=regime,
+        account1_summary=account1_summary,
+        obs_mode=obs_mode,
+        equity=equity,
+    )
+
+    log.info("[OPTS] Debate complete: regime=%s  actions=%d",
+             debate_result.get("regime", "?"),
+             len(debate_result.get("actions", [])))
+
+    # 10. Execute approved trades
+    execution_results = []
+    for action in debate_result.get("actions", []):
+        if action.get("action") == "hold":
+            log.info("[OPTS] HOLD %s — %s",
+                     action.get("symbol", "?"), action.get("reason", ""))
+            # B6: record hold decisions so obs-mode cycles are traceable
+            execution_results.append({
+                "action": "hold",
+                "symbol": action.get("symbol", ""),
+                "status": "hold",
+                "reason": action.get("reason", ""),
+                "observation_mode": obs_mode,
+            })
+            continue
+
+        sym = action.get("symbol", "")
+        if not sym:
+            continue
+
+        # Look up original proposal so build_structure gets real chain-resolution params
+        proposal = next((c for c in candidates if c.symbol == sym), None)
+        if proposal is None:
+            log.warning("[OPTS] %s: no matching proposal found in candidates", sym)
+            continue
+
+        # Build fully-specified OptionsStructure from live chain data
+        try:
+            chain = options_data.fetch_options_chain(sym)
+            structure, build_err = options_builder.build_structure(
+                symbol=proposal.symbol,
+                strategy=proposal.strategy,
+                direction=proposal.direction,
+                conviction=proposal.conviction,
+                iv_rank=proposal.iv_rank,
+                max_cost_usd=action.get("max_cost_usd", proposal.max_cost_usd),
+                chain=chain,
+                equity=equity,
+                config={},
+            )
+        except Exception as exc:
+            log.error("[OPTS] %s: chain/build failed: %s", sym, exc)
+            execution_results.append({
+                "action": "error", "symbol": sym,
+                "status": "error", "reason": str(exc),
+            })
+            continue
+
+        if structure is None:
+            log.warning("[OPTS] %s: build_structure rejected — %s", sym, build_err)
+            execution_results.append({
+                "action": "rejected", "symbol": sym,
+                "status": "rejected", "reason": build_err or "build_failed",
+            })
+            continue
+
+        # Persist proposed structure before submission (lifecycle=PROPOSED)
+        options_state.save_structure(structure)
+
+        # Submit — options_executor updates lifecycle and re-persists
+        result = oe_opts.submit_options_order(structure, equity, obs_mode)
+        execution_results.append(result.to_dict())
+        log.info("[OPTS] %s %s  status=%s%s",
+                 sym, structure.strategy.value, result.status,
+                 f"  structure_id={result.structure_id}" if result.structure_id else "")
+
+    # 11. Save decision
+    _decision_id_a2 = ""
+    try:
+        from attribution import generate_decision_id  # noqa: PLC0415
+        _decision_id_a2 = generate_decision_id(
+            "A2", datetime.now(ET).strftime("%Y%m%d_%H%M%S")
+        )
+    except Exception as _did_exc:
+        log.debug("[OPTS] generate_decision_id failed (non-fatal): %s", _did_exc)
+
+    cycle_record = {
+        "decision_id": _decision_id_a2,
+        "reasoning": debate_result.get("reasoning", ""),
+        "regime": debate_result.get("regime", regime),
+        "observation_mode": obs_mode,
+        "account1_awareness": debate_result.get("account1_awareness", ""),
+        "actions": debate_result.get("actions", []),
+        "execution_results": execution_results,
+        "notes": debate_result.get("notes", ""),
+        "vix": vix,
+        "equity": equity,
+        "candidates_evaluated": len(candidates),
+    }
+    _save_decision(cycle_record)
+
+    # Attribution — log order_submitted events for successfully submitted structures
+    try:
+        from attribution import log_attribution_event  # noqa: PLC0415
+        _a2_tags = {"debate_layer": True, "risk_kernel": True, "sonnet_full": True}
+        _a2_flags: dict = {}
+        for _er in execution_results:
+            if _er.get("status") in ("submitted", "observation") and _er.get("structure_id"):
+                log_attribution_event(
+                    event_type="order_submitted",
+                    decision_id=_decision_id_a2,
+                    account="A2",
+                    symbol=_er.get("underlying", ""),
+                    module_tags=_a2_tags,
+                    trigger_flags=_a2_flags,
+                    structure_id=_er.get("structure_id"),
+                )
+    except Exception as _a2_attr_exc:
+        log.debug("[OPTS] Attribution failed (non-fatal): %s", _a2_attr_exc)
+
+    # 12. Close-check: evaluate open structures for expiry/stop/profit conditions
+    try:
+        from datetime import datetime as _dt
+        open_structs = options_state.get_open_structures()
+        if open_structs:
+            trading_client = _get_alpaca()
+            for struct in open_structs:
+                should_close, close_reason = options_executor.should_close_structure(
+                    struct, current_prices={}, config={},
+                    current_time=_dt.now(ET),
+                )
+                if should_close:
+                    log.info("[OPTS] Closing %s (%s): %s",
+                             struct.underlying, struct.structure_id, close_reason)
+                    options_executor.close_structure(
+                        struct, trading_client, reason=close_reason, method="limit"
+                    )
+    except Exception as exc:
+        log.warning("[OPTS] Close-check loop error: %s", exc)
+
+    elapsed = time.monotonic() - t_start
+    log.info("── [OPTS] Cycle done  %.1fs  obs=%s  executed=%d ─────────────",
+             elapsed, obs_mode, len(execution_results))
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import sys
+    session = sys.argv[1] if len(sys.argv) > 1 else "market"
+    run_options_cycle(session_tier=session)

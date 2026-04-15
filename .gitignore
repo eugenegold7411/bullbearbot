@@ -1,0 +1,72 @@
+# Secrets
+.env
+*.env
+.env.save
+
+# Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+*.egg-info/
+
+# Backups and temp
+*.backup.*
+*.bak.*
+*.bak
+=*
+
+# Logs and runtime
+logs/
+*.log
+nohup.out
+
+# Market data and caches
+data/archive/
+data/bars/
+data/costs/
+data/earnings/
+data/insider/
+data/macro_wire/
+data/macro_intelligence/*.json
+data/market/
+data/memory/
+data/options/chains/
+data/options/iv_history/
+data/options/pnl/
+data/reports/
+data/roadmap/
+data/scanner/
+data/social/
+data/trade_memory/
+data/account2/costs/
+data/account2/obs_mode_state.json
+data/account2/trade_memory/
+data/account2/positions/
+data/analytics/
+
+# Keep these
+!data/macro_intelligence/citrini_positions.json
+!data/account2/structures.json
+!data/analytics/.gitkeep
+
+# ChromaDB runtime
+*.sqlite3
+chroma/
+
+# OS
+.DS_Store
+.DS_Store?
+Thumbs.db
+
+# Per-symbol data caches
+data/news/
+data/fundamentals/
+data/crypto/
+
+# Runtime rolling memory (changes every cycle)
+memory/*.json

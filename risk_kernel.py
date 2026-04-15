@@ -1,0 +1,1080 @@
+"""
+risk_kernel.py — Sole authority on whether/how much/how to trade.
+
+Input:  TradeIdea + BrokerSnapshot + Optional[SignalScore] + config dict
+Output: BrokerAction (approved) | str (rejection reason)
+
+All qty / stop / target / margin / exposure math lives here.
+No broker API calls — pure computation. No file I/O.
+
+Translation chain (Account 1):
+  ClaudeDecision.ideas[] -> process_idea() -> BrokerAction -> execute_all()
+
+Translation chain (Account 2):
+  ClaudeDecision.ideas[] -> process_options_idea() -> OptionsAction
+  -> options_execution.submit_structure()
+
+Public API:
+  process_idea(idea, snapshot, signal, config, current_price,
+               session_tier, vix) -> BrokerAction | str
+
+  process_options_idea(idea, snapshot, signal, config, iv_summary,
+                       options_regime, current_price) -> OptionsAction | str
+
+Internal helpers (exported for testing):
+  eligibility_check(idea, snapshot, config, session_tier, vix) -> str | None
+  size_position(idea, snapshot, config, current_price, vix)
+      -> tuple[float, float]          (qty, position_value)
+  place_stops(idea, current_price, config)
+      -> tuple[float, float]          (stop_loss, take_profit)
+  select_structure(direction, iv_summary, options_regime, tier)
+      -> OptionStrategy | None
+  select_expiry(strategy, available_expirations) -> str
+  compute_real_economics(strategy, current_price, iv, equity, tier,
+                         a2_config, size_mult) -> tuple[int, float]
+  liquidity_gate(symbol, iv_summary) -> str | None
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date, datetime, timedelta, timezone
+from typing import Optional, Union
+
+from schemas import (
+    AccountAction, BrokerAction, BrokerSnapshot, Conviction, Direction,
+    OptionsAction, OptionStrategy, SignalScore, StructureLifecycle, Tier,
+    TradeIdea, alpaca_symbol, is_crypto, normalize_symbol,
+)
+
+log = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hard-coded safety constants (never overridden by config)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PDT_FLOOR         = 26_000.0   # never trade below this equity
+VIX_HALT          = 35.0       # halt all new positions
+VIX_CAUTION       = 25.0       # cut all sizes 50%
+MIN_RR_RATIO      = 2.0        # minimum reward/risk
+MAX_OPTIONS_USD   = 5_000.0    # max cost per options trade
+
+# Per-tier max position as fraction of equity (hard ceilings)
+_TIER_MAX_PCT: dict[str, float] = {
+    "core":     0.15,
+    "dynamic":  0.08,
+    "intraday": 0.05,
+}
+# High-conviction core bump: matches executor's special case
+_CORE_HIGH_CONVICTION_PCT = 0.20
+
+# Stop loss ceilings by tier and asset class
+# These cap the stop — Claude may request tighter but never wider
+_MAX_STOP_PCT: dict[str, dict[str, float]] = {
+    "stocks": {
+        "core":     0.04,   # 4%  (floor of config stop_loss_pct_core)
+        "dynamic":  0.05,   # 5%
+        "intraday": 0.02,   # 2%  (MAX_STOP_PCT_INTRADAY from executor)
+    },
+    "crypto": {
+        "core":     0.08,   # 8%  (crypto volatility floor)
+        "dynamic":  0.10,   # 10%
+        "intraday": 0.08,   # crypto intraday same as core floor
+    },
+}
+
+# DTE ranges by options strategy
+_DTE_BY_STRATEGY: dict[OptionStrategy, tuple[int, int]] = {
+    OptionStrategy.CALL_DEBIT_SPREAD:  (14, 21),
+    OptionStrategy.PUT_DEBIT_SPREAD:   (14, 21),
+    OptionStrategy.CALL_CREDIT_SPREAD: (21, 45),
+    OptionStrategy.PUT_CREDIT_SPREAD:  (21, 45),
+    OptionStrategy.SINGLE_CALL:        (7,  14),
+    OptionStrategy.SINGLE_PUT:         (7,  14),
+    OptionStrategy.STRADDLE:           (14, 28),
+    OptionStrategy.CLOSE_OPTION:       (0,  0),
+}
+
+# Debit cost estimates per strategy type (per contract, in dollars)
+# Used when live IV chain is unavailable
+_DEBIT_EST: dict[str, float] = {
+    "spread":  300.0,   # $3.00 × 100
+    "single":  500.0,   # $5.00 × 100
+    "straddle": 800.0,  # $8.00 × 100
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Config accessors (safe, never raise)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _params(config: dict) -> dict:
+    return config.get("parameters", {})
+
+
+def _sizing(config: dict) -> dict:
+    return config.get("position_sizing", {})
+
+
+def _a2_config(config: dict) -> dict:
+    return config.get("account2", {})
+
+
+def _default_stop_pct(config: dict, tier: str, asset_class: str) -> float:
+    """Default stop pct from config, floored by hard ceiling."""
+    params = _params(config)
+    if tier == "intraday":
+        base = float(params.get("stop_loss_pct_intraday", 0.018))
+    else:
+        base = float(params.get("stop_loss_pct_core", 0.035))
+    # Crypto gets a wider floor regardless
+    if asset_class == "crypto":
+        base = max(base, _MAX_STOP_PCT["crypto"].get(tier, 0.08))
+    return base
+
+
+def _max_stop_pct(tier: str, asset_class: str) -> float:
+    """Hard ceiling on stop width."""
+    return _MAX_STOP_PCT.get(asset_class, _MAX_STOP_PCT["stocks"]).get(tier, 0.05)
+
+
+def _float_to_conviction(v: float) -> Conviction:
+    """Convert conviction float (0.0-1.0) to Conviction enum for BrokerAction/OptionsAction."""
+    if v >= 0.75:
+        return Conviction.HIGH
+    if v >= 0.50:
+        return Conviction.MEDIUM
+    return Conviction.LOW
+
+
+def _effective_exposure_cap(snapshot: BrokerSnapshot, conviction: float) -> float:
+    """
+    Max total portfolio exposure allowed for this conviction level.
+
+    Mirrors order_executor.py margin cap logic exactly:
+      >= 0.75 (HIGH)   → 2.0× equity (full margin)
+      >= 0.50 (MEDIUM) → 1.5× equity (partial margin)
+      < 0.50  (LOW)    → 1.0× equity (no margin)
+    Hard ceiling: never exceed 2× equity regardless of buying_power.
+    """
+    equity = snapshot.equity
+    bp     = max(snapshot.buying_power, equity)  # safety floor
+    if conviction >= 0.75:
+        cap = equity * 2.0
+    elif conviction >= 0.50:
+        cap = equity * 1.5
+    else:
+        cap = equity * 1.0
+    return min(cap, equity * 2.0, bp)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Eligibility check
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _check_time_bound_actions(
+    symbol: str,
+    intent: str,
+    config: dict,
+    current_time_utc: str,
+) -> tuple[bool, str]:
+    """
+    Block new long entries on symbols with pending exit mandates.
+    Returns (eligible, reason).
+    """
+    if intent not in ("enter_long", "enter_short"):
+        return True, ""
+
+    time_bound = config.get("time_bound_actions", [])
+
+    try:
+        now = datetime.fromisoformat(
+            current_time_utc.replace("Z", "+00:00")
+        )
+    except (ValueError, AttributeError):
+        now = datetime.now(timezone.utc)
+
+    for tba in time_bound:
+        tba_symbol = tba.get("symbol", "")
+        tba_action = tba.get("action", "")
+        deadline_str = (
+            tba.get("exit_by")
+            or tba.get("deadline_utc")
+            or tba.get("deadline_et")
+        )
+
+        if tba_symbol != symbol:
+            continue
+        if tba_action != "exit":
+            continue
+        if not deadline_str:
+            continue
+
+        try:
+            # Parse deadline — handle both UTC and ET formats
+            if "T" in deadline_str and (
+                "Z" in deadline_str or "+" in deadline_str
+            ):
+                deadline = datetime.fromisoformat(
+                    deadline_str.replace("Z", "+00:00")
+                )
+            else:
+                # ET datetime string — treat as same-day constraint
+                from zoneinfo import ZoneInfo
+                deadline = datetime.strptime(
+                    deadline_str, "%Y-%m-%d %H:%M"
+                ).replace(tzinfo=ZoneInfo("America/New_York"))
+
+            # Block if deadline is today or in the past
+            deadline_date = deadline.date()
+            now_date = now.date()
+
+            if deadline_date <= now_date:
+                return False, (
+                    f"time_bound_action: {symbol} has mandatory "
+                    f"exit by {deadline_str} — blocking new "
+                    f"{intent} entry"
+                )
+        except Exception as _e:
+            # If we can't parse the deadline, block to be safe
+            return False, (
+                f"time_bound_action: {symbol} deadline parse "
+                f"failed ({_e}) — blocking entry as precaution"
+            )
+
+    return True, ""
+
+
+def eligibility_check(
+    idea: TradeIdea,
+    snapshot: BrokerSnapshot,
+    config: dict,
+    session_tier: str = "market",
+    vix: float = 20.0,
+    current_time_utc: str = "",
+) -> Optional[str]:
+    """
+    Hard gates — returns rejection reason string, or None if eligible.
+
+    Checks (in order):
+      0. Time-bound action block (same-day mandatory exits)
+      1. VIX halt (> 35)
+      2. PDT equity floor (< $26K)
+      3. Session gate — stocks/ETFs require market session
+      4. Intraday tier requires market session
+      5. Max open positions
+      6. Catalyst required for buys
+    """
+    act    = idea.action
+    symbol = normalize_symbol(idea.symbol)
+    crypto = is_crypto(symbol)
+
+    # ── 0. Time-bound action block ────────────────────────────────────────────
+    _tba_time = current_time_utc or datetime.now(timezone.utc).isoformat()
+    _tba_ok, _tba_reason = _check_time_bound_actions(
+        symbol=symbol,
+        intent=idea.intent,
+        config=config,
+        current_time_utc=_tba_time,
+    )
+    if not _tba_ok:
+        return _tba_reason
+
+    # ── 1. VIX halt ───────────────────────────────────────────────────────────
+    if act == AccountAction.BUY and vix >= VIX_HALT:
+        return f"VIX {vix:.1f} >= {VIX_HALT} — halt mode, no new positions"
+
+    # ── 2. Equity floor ───────────────────────────────────────────────────────
+    if snapshot.equity < PDT_FLOOR:
+        return (
+            f"equity ${snapshot.equity:,.0f} below PDT floor "
+            f"${PDT_FLOOR:,.0f}"
+        )
+
+    # ── 3. Session gate (stocks/ETFs only) ────────────────────────────────────
+    if act == AccountAction.BUY and not crypto and session_tier != "market":
+        return (
+            f"session={session_tier} — stock/ETF buys require market session"
+        )
+
+    # ── 4. Intraday tier gate ─────────────────────────────────────────────────
+    if act == AccountAction.BUY and idea.tier == Tier.INTRADAY and session_tier != "market":
+        return "intraday tier requires market session"
+
+    # ── 5. Max positions ──────────────────────────────────────────────────────
+    if act == AccountAction.BUY:
+        max_pos = int(_params(config).get("max_positions", 15))
+        n_open  = len([p for p in snapshot.positions if p.qty > 0])
+        if n_open >= max_pos:
+            return f"max_positions={max_pos} reached (currently {n_open} open)"
+
+    # ── 6. Catalyst required for buys ─────────────────────────────────────────
+    if act == AccountAction.BUY:
+        cat = (idea.catalyst or "").strip().lower()
+        blocked = _params(config).get(
+            "catalyst_tag_disallowed_values", ["", "none", "null", "no"]
+        )
+        if cat in blocked:
+            return "buy requires a named catalyst (catalyst_tag_required_for_entry)"
+
+    return None  # all checks passed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Position sizing
+# ─────────────────────────────────────────────────────────────────────────────
+
+def size_position(
+    idea: TradeIdea,
+    snapshot: BrokerSnapshot,
+    config: dict,
+    current_price: float,
+    vix: float = 20.0,
+) -> Union[tuple[float, float], str]:
+    """
+    Compute (qty, position_value) for a BUY idea.
+
+    Returns rejection reason str if sizing is impossible
+    (no headroom, price zero, etc.).
+
+    Sizing logic:
+      1. tier_pct from config (core=15%, dynamic=8%, intraday=5%)
+      2. +bump to 20% for HIGH conviction CORE (matches executor)
+      3. VIX scaling: 50% reduction when VIX >= VIX_CAUTION (25)
+      4. Cap to available exposure headroom
+      5. Integer qty for stocks; up-to-6-decimal for crypto
+    """
+    if current_price is None or current_price <= 0:
+        return "current_price unavailable or zero"
+
+    tier_str  = idea.tier.value
+    equity    = snapshot.equity
+    crypto    = is_crypto(idea.symbol)
+
+    # ── Tier pct ─────────────────────────────────────────────────────────────
+    tier_pct = float(
+        _sizing(config).get(f"{tier_str}_tier_pct", _TIER_MAX_PCT.get(tier_str, 0.08))
+    )
+    if idea.conviction >= 0.75 and idea.tier == Tier.CORE:
+        tier_pct = _CORE_HIGH_CONVICTION_PCT  # 20%
+
+    # ── VIX scaling ───────────────────────────────────────────────────────────
+    size_mult = 0.5 if vix >= VIX_CAUTION else 1.0
+
+    # ── Dollar budget ─────────────────────────────────────────────────────────
+    max_dollars = equity * tier_pct * size_mult
+
+    # ── Exposure headroom ─────────────────────────────────────────────────────
+    eff_cap  = _effective_exposure_cap(snapshot, idea.conviction)
+    headroom = eff_cap - snapshot.exposure_dollars
+    if headroom <= 0:
+        return (
+            f"no exposure headroom: current ${snapshot.exposure_dollars:,.0f} "
+            f"vs cap ${eff_cap:,.0f} ({idea.conviction:.2f} conviction)"
+        )
+    max_dollars = min(max_dollars, headroom)
+
+    if max_dollars < current_price:
+        return (
+            f"budget ${max_dollars:,.0f} < price ${current_price:,.2f} "
+            f"(not enough for 1 share/unit)"
+        )
+
+    # ── Qty ──────────────────────────────────────────────────────────────────
+    raw_qty = max_dollars / current_price
+    if crypto:
+        qty = round(raw_qty, 6)
+    else:
+        qty = max(1, int(raw_qty))
+
+    position_value = round(qty * current_price, 2)
+
+    log.debug(
+        "[RISK] size_position %s: tier=%s pct=%.0f%% vix_mult=%.1f "
+        "budget=$%.0f qty=%s val=$%.0f",
+        idea.symbol, tier_str, tier_pct * 100, size_mult,
+        max_dollars, qty, position_value,
+    )
+
+    return (qty, position_value)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Stop / target placement
+# ─────────────────────────────────────────────────────────────────────────────
+
+def place_stops(
+    idea: TradeIdea,
+    current_price: float,
+    config: dict,
+) -> Union[tuple[float, float], str]:
+    """
+    Compute (stop_loss, take_profit) prices for a BUY entry.
+
+    Stop logic:
+      1. Use idea.advisory_stop_pct if provided; else config default
+      2. Cap at hard ceiling (_MAX_STOP_PCT by tier + asset_class)
+      3. Intraday hard ceiling: 2%
+
+    Target logic:
+      1. Use idea.advisory_target_r if provided; else config take_profit_multiple
+      2. Enforce MIN_RR_RATIO (2.0× minimum)
+
+    Returns rejection str if R/R is not achievable.
+    """
+    if current_price is None or current_price <= 0:
+        return "current_price unavailable — cannot place stops"
+
+    tier_str   = idea.tier.value
+    asset_cls  = "crypto" if is_crypto(idea.symbol) else "stocks"
+    max_stop   = _max_stop_pct(tier_str, asset_cls)
+    params     = _params(config)
+
+    # ── Stop pct ─────────────────────────────────────────────────────────────
+    if idea.advisory_stop_pct is not None and idea.advisory_stop_pct > 0:
+        stop_pct = min(float(idea.advisory_stop_pct), max_stop)
+        if stop_pct < float(idea.advisory_stop_pct):
+            log.debug(
+                "[RISK] %s: advisory_stop_pct %.1f%% capped to %.1f%% "
+                "(tier=%s asset=%s)",
+                idea.symbol,
+                idea.advisory_stop_pct * 100, stop_pct * 100,
+                tier_str, asset_cls,
+            )
+    else:
+        default = _default_stop_pct(config, tier_str, asset_cls)
+        stop_pct = min(default, max_stop)
+
+    # ── Target R/R ────────────────────────────────────────────────────────────
+    if idea.advisory_target_r is not None and idea.advisory_target_r >= 1.0:
+        target_r = float(idea.advisory_target_r)
+    else:
+        target_r = float(params.get("take_profit_multiple", 2.5))
+
+    # Enforce minimum R/R
+    target_r = max(target_r, MIN_RR_RATIO)
+
+    # ── Price levels ─────────────────────────────────────────────────────────
+    stop_dist   = current_price * stop_pct
+    stop_loss   = round(current_price - stop_dist, 2)
+    take_profit = round(current_price + stop_dist * target_r, 2)
+
+    # Sanity: stop must be below entry, target above
+    if stop_loss >= current_price:
+        return f"stop_loss ${stop_loss:.2f} >= current_price ${current_price:.2f}"
+    if take_profit <= current_price:
+        return f"take_profit ${take_profit:.2f} <= current_price ${current_price:.2f}"
+
+    actual_rr = (take_profit - current_price) / (current_price - stop_loss)
+    if actual_rr < MIN_RR_RATIO:
+        return (
+            f"R/R {actual_rr:.2f}x below minimum {MIN_RR_RATIO}x "
+            f"(stop=${stop_loss:.2f} target=${take_profit:.2f})"
+        )
+
+    log.debug(
+        "[RISK] place_stops %s: stop_pct=%.1f%% stop=$%.2f target=$%.2f R/R=%.2fx",
+        idea.symbol, stop_pct * 100, stop_loss, take_profit, actual_rr,
+    )
+
+    return (stop_loss, take_profit)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Main entry point — Account 1
+# ─────────────────────────────────────────────────────────────────────────────
+
+def process_idea(
+    idea: TradeIdea,
+    snapshot: BrokerSnapshot,
+    signal: Optional[SignalScore],
+    config: dict,
+    current_price: Optional[float] = None,
+    session_tier: str = "market",
+    vix: float = 20.0,
+    current_time_utc: Optional[str] = None,
+) -> Union[BrokerAction, str]:
+    """
+    Core Account 1 trade construction.
+
+    Returns BrokerAction on success, rejection reason str on failure.
+
+    Dispatch:
+      HOLD       → passthrough (qty=0, no stops — exit_manager handles stops)
+      CLOSE/SELL → look up position qty in snapshot
+      BUY        → eligibility + sizing + stops
+      REALLOCATE → size entry side; include exit info for executor
+    """
+    act    = idea.action
+    symbol = normalize_symbol(idea.symbol)
+
+    # ── HOLD ─────────────────────────────────────────────────────────────────
+    if act == AccountAction.HOLD:
+        return BrokerAction(
+            symbol=symbol,
+            action=AccountAction.HOLD,
+            qty=0,
+            order_type="market",
+            tier=idea.tier,
+            conviction=_float_to_conviction(idea.conviction),
+            catalyst=idea.catalyst or "hold",
+            sector_signal=idea.sector_signal,
+            source_idea=idea,
+        )
+
+    # ── CLOSE / SELL ──────────────────────────────────────────────────────────
+    if act in (AccountAction.CLOSE, AccountAction.SELL):
+        pos_sym = alpaca_symbol(symbol)   # Alpaca position key
+        # Search by both canonical and Alpaca format
+        pos = (
+            snapshot.position_by_symbol.get(symbol)
+            or snapshot.position_by_symbol.get(pos_sym)
+        )
+        if pos is None:
+            return f"no open position for {symbol} to {act.value}"
+        if pos.qty <= 0:
+            return f"position qty={pos.qty} for {symbol} — nothing to {act.value}"
+        qty = pos.qty if is_crypto(symbol) else float(int(pos.qty))
+        return BrokerAction(
+            symbol=symbol,
+            action=act,
+            qty=qty,
+            order_type="market",
+            tier=idea.tier,
+            conviction=_float_to_conviction(idea.conviction),
+            catalyst=idea.catalyst or f"{act.value} {symbol}",
+            sector_signal=idea.sector_signal,
+            source_idea=idea,
+        )
+
+    # ── BUY ───────────────────────────────────────────────────────────────────
+    if act == AccountAction.BUY:
+        # Eligibility
+        _utc = current_time_utc or datetime.now(timezone.utc).isoformat()
+        rejection = eligibility_check(
+            idea, snapshot, config, session_tier, vix, _utc
+        )
+        if rejection:
+            log.debug("[RISK] REJECTED %s %s — %s", act.value, symbol, rejection)
+            return rejection
+
+        # Size
+        if current_price is None or current_price <= 0:
+            return f"current_price unavailable for {symbol}"
+        size_result = size_position(idea, snapshot, config, current_price, vix)
+        if isinstance(size_result, str):
+            log.debug("[RISK] REJECTED %s %s — size: %s", act.value, symbol, size_result)
+            return size_result
+        qty, position_value = size_result
+
+        # Stops
+        stops_result = place_stops(idea, current_price, config)
+        if isinstance(stops_result, str):
+            log.debug("[RISK] REJECTED %s %s — stops: %s", act.value, symbol, stops_result)
+            return stops_result
+        stop_loss, take_profit = stops_result
+
+        order_type  = idea.order_type or "market"
+        limit_price = idea.limit_price if order_type == "limit" else None
+
+        log.info(
+            "[RISK] APPROVED BUY %s qty=%s @ $%.2f  stop=$%.2f  target=$%.2f  "
+            "tier=%s  conviction=%.2f  vix=%.1f",
+            symbol, qty, current_price, stop_loss, take_profit,
+            idea.tier.value, idea.conviction, vix,
+        )
+
+        return BrokerAction(
+            symbol=symbol,
+            action=AccountAction.BUY,
+            qty=qty,
+            order_type=order_type,
+            tier=idea.tier,
+            conviction=_float_to_conviction(idea.conviction),
+            catalyst=idea.catalyst,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            limit_price=limit_price,
+            sector_signal=idea.sector_signal,
+            source_idea=idea,
+        )
+
+    # ── REALLOCATE ────────────────────────────────────────────────────────────
+    if act == AccountAction.REALLOCATE:
+        if not idea.exit_symbol or not idea.entry_symbol:
+            return "reallocate requires both exit_symbol and entry_symbol"
+
+        exit_sym  = normalize_symbol(idea.exit_symbol)
+        entry_sym = normalize_symbol(idea.entry_symbol)
+
+        # Verify exit position exists
+        exit_pos = (
+            snapshot.position_by_symbol.get(exit_sym)
+            or snapshot.position_by_symbol.get(alpaca_symbol(exit_sym))
+        )
+        if exit_pos is None:
+            return f"reallocate: no open position for exit_symbol {exit_sym}"
+
+        # Eligibility for the entry side
+        rejection = eligibility_check(
+            idea._replace_symbol(entry_sym) if hasattr(idea, "_replace_symbol") else idea,
+            snapshot, config, session_tier, vix,
+        )
+        if rejection:
+            # Try with a synthetic idea substituting the entry symbol
+            entry_idea = TradeIdea(
+                symbol=entry_sym,
+                action=AccountAction.BUY,
+                tier=idea.tier,
+                conviction=idea.conviction,
+                direction=idea.direction,
+                catalyst=idea.catalyst,
+            )
+            rejection = eligibility_check(entry_idea, snapshot, config, session_tier, vix)
+            if rejection:
+                return f"reallocate entry {entry_sym} rejected: {rejection}"
+
+        if current_price is None or current_price <= 0:
+            return f"current_price unavailable for entry {entry_sym}"
+
+        # Synthesise entry idea for sizing
+        entry_idea = TradeIdea(
+            symbol=entry_sym,
+            action=AccountAction.BUY,
+            tier=idea.tier,
+            conviction=idea.conviction,
+            direction=idea.direction,
+            catalyst=idea.catalyst,
+            advisory_stop_pct=idea.advisory_stop_pct,
+            advisory_target_r=idea.advisory_target_r,
+            order_type=idea.order_type,
+            limit_price=idea.limit_price,
+        )
+        size_result = size_position(entry_idea, snapshot, config, current_price, vix)
+        if isinstance(size_result, str):
+            return f"reallocate entry sizing failed: {size_result}"
+        qty, _ = size_result
+
+        stops_result = place_stops(entry_idea, current_price, config)
+        if isinstance(stops_result, str):
+            return f"reallocate entry stops failed: {stops_result}"
+        stop_loss, take_profit = stops_result
+
+        log.info(
+            "[RISK] APPROVED REALLOCATE exit=%s entry=%s qty=%s "
+            "stop=$%.2f target=$%.2f",
+            exit_sym, entry_sym, qty, stop_loss, take_profit,
+        )
+
+        return BrokerAction(
+            symbol=symbol,         # primary symbol for logging
+            action=AccountAction.REALLOCATE,
+            qty=qty,               # entry qty
+            order_type=idea.order_type or "market",
+            tier=idea.tier,
+            conviction=_float_to_conviction(idea.conviction),
+            catalyst=idea.catalyst,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            sector_signal=idea.sector_signal,
+            exit_symbol=exit_sym,
+            entry_symbol=entry_sym,
+            source_idea=idea,
+        )
+
+    # Unknown action
+    return f"unknown action '{act.value}'"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Options functions — Account 2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def liquidity_gate(
+    symbol: str,
+    iv_summary: dict,
+) -> Optional[str]:
+    """
+    Basic liquidity / IV validity gate before placing options.
+
+    Returns None if trade is eligible, rejection reason str if not.
+
+    Checks:
+      - Observation mode (IV history < minimum days)
+      - iv_environment unknown
+      - Very expensive IV (avoid new long premium)
+    """
+    if not iv_summary:
+        return f"{symbol}: no IV summary available"
+
+    if iv_summary.get("observation_mode", True):
+        days = iv_summary.get("history_days", 0)
+        min_days = iv_summary.get("min_history_days", 20)
+        return (
+            f"observation_mode: {days}/{min_days} IV history days for {symbol}"
+        )
+
+    env = iv_summary.get("iv_environment", "unknown")
+    if env == "unknown":
+        return f"{symbol}: IV environment unknown — insufficient history"
+
+    if env == "very_expensive":
+        rank = iv_summary.get("iv_rank", "?")
+        return f"{symbol}: IV rank {rank} — very_expensive environment, avoid new positions"
+
+    return None
+
+
+def select_structure(
+    direction: Direction,
+    iv_summary: dict,
+    options_regime: dict,
+    tier: Tier,
+) -> Optional[OptionStrategy]:
+    """
+    Map IV environment + directional signal + tier → OptionStrategy.
+
+    Returns None if no eligible strategy exists for this combination.
+
+    IV hierarchy:
+      very_cheap / cheap  (rank < 35) → buy premium: debit spread or single leg
+      neutral             (35-65)     → debit spread preferred
+      expensive           (65-80)     → sell premium: credit spread
+      (very_expensive blocked by liquidity_gate before reaching here)
+
+    Credit spread direction mapping:
+      Bullish signal → sell PUT credit spread (below market, profit if stays up)
+      Bearish signal → sell CALL credit spread (above market, profit if stays down)
+    """
+    env     = iv_summary.get("iv_environment", "unknown")
+    allowed = options_regime.get("allowed_strategies", [])
+
+    # Dynamic tier: single leg only
+    if tier == Tier.DYNAMIC:
+        return (
+            OptionStrategy.SINGLE_CALL
+            if direction != Direction.BEARISH
+            else OptionStrategy.SINGLE_PUT
+        )
+
+    if env in ("very_cheap", "cheap"):
+        if "debit_spread" in allowed:
+            return (
+                OptionStrategy.CALL_DEBIT_SPREAD
+                if direction != Direction.BEARISH
+                else OptionStrategy.PUT_DEBIT_SPREAD
+            )
+        if "single_leg" in allowed:
+            return (
+                OptionStrategy.SINGLE_CALL
+                if direction != Direction.BEARISH
+                else OptionStrategy.SINGLE_PUT
+            )
+
+    elif env == "neutral":
+        if "debit_spread" in allowed:
+            return (
+                OptionStrategy.CALL_DEBIT_SPREAD
+                if direction != Direction.BEARISH
+                else OptionStrategy.PUT_DEBIT_SPREAD
+            )
+
+    elif env == "expensive":
+        if "credit_spread" in allowed:
+            # Bullish → sell puts below market; bearish → sell calls above market
+            return (
+                OptionStrategy.PUT_CREDIT_SPREAD
+                if direction == Direction.BULLISH
+                else OptionStrategy.CALL_CREDIT_SPREAD
+            )
+
+    return None  # no eligible strategy for this combination
+
+
+def select_expiry(
+    strategy: OptionStrategy,
+    available_expirations: Optional[list[str]] = None,
+) -> str:
+    """
+    Select best expiration date for the given strategy.
+
+    If available_expirations is provided (real options chain dates),
+    picks the date closest to the midpoint of the target DTE range.
+
+    Otherwise, generates a synthetic target Friday from today.
+    """
+    dte_range = _DTE_BY_STRATEGY.get(strategy, (14, 21))
+    target_dte = (dte_range[0] + dte_range[1]) // 2
+    today = date.today()
+
+    if available_expirations:
+        best, best_dte = None, None
+        for exp_str in sorted(available_expirations):
+            try:
+                exp_date = date.fromisoformat(exp_str)
+                dte_val  = (exp_date - today).days
+                if dte_range[0] <= dte_val <= dte_range[1]:
+                    mid_dist = abs(dte_val - target_dte)
+                    if best_dte is None or mid_dist < abs(best_dte - target_dte):
+                        best, best_dte = exp_str, dte_val
+            except Exception:
+                continue
+        if best:
+            return best
+        # Fallback: pick the first available expiry beyond the minimum DTE
+        for exp_str in sorted(available_expirations):
+            try:
+                exp_date = date.fromisoformat(exp_str)
+                if (exp_date - today).days >= max(dte_range[0], 5):
+                    return exp_str
+            except Exception:
+                continue
+
+    # Synthetic: nearest Friday at target DTE
+    target_date = today + timedelta(days=target_dte)
+    days_to_fri = (4 - target_date.weekday()) % 7
+    if days_to_fri == 0 and target_dte < 5:
+        days_to_fri = 7  # avoid same-day
+    return (target_date + timedelta(days=days_to_fri)).isoformat()
+
+
+def compute_real_economics(
+    strategy: OptionStrategy,
+    current_price: float,
+    iv: float,
+    equity: float,
+    tier: Tier,
+    a2_config: dict,
+    size_mult: float = 1.0,
+) -> tuple[int, float]:
+    """
+    Compute (contracts, max_cost_usd) for an options position.
+
+    Uses conservative fixed-debit estimates when live IV chain is not provided:
+      Debit spreads: $3.00 per contract
+      Single legs:   $5.00 per contract
+      Straddles:     $8.00 per contract
+
+    Applies Account 2 size limits from config, then hard-caps at MAX_OPTIONS_USD.
+    """
+    strat_val   = strategy.value
+    a2_sizing   = a2_config.get("position_sizing", {})
+
+    # Tier / strategy size limit
+    is_single   = "single" in strat_val
+    is_straddle = "straddle" in strat_val
+    is_credit   = "credit" in strat_val
+
+    if tier == Tier.DYNAMIC:
+        max_pct = float(a2_sizing.get("dynamic_max_pct", 0.03))
+    elif is_single or is_straddle:
+        max_pct = float(a2_sizing.get("core_single_leg_max_pct", 0.03))
+    else:
+        max_pct = float(a2_sizing.get("core_spread_max_pct", 0.05))
+
+    max_budget = equity * max_pct * size_mult
+
+    # Per-contract cost estimate
+    if is_single:
+        cost_per = _DEBIT_EST["single"]
+    elif is_straddle:
+        cost_per = _DEBIT_EST["straddle"]
+    elif is_credit:
+        # Credit spread: cost = max risk = spread_width - credit_received
+        spread_width_dollars = current_price * 0.03 * 100   # ~3% width, 1 contract
+        cost_per = spread_width_dollars * 0.67               # max risk = 67% of width
+    else:
+        cost_per = _DEBIT_EST["spread"]
+
+    contracts   = max(1, int(max_budget / cost_per))
+    actual_cost = round(contracts * cost_per, 2)
+
+    # Hard cap: MAX_OPTIONS_USD
+    if actual_cost > MAX_OPTIONS_USD:
+        contracts   = max(1, int(MAX_OPTIONS_USD / cost_per))
+        actual_cost = round(contracts * cost_per, 2)
+
+    # Never exceed budget
+    if actual_cost > max_budget:
+        contracts   = max(1, int(max_budget / cost_per))
+        actual_cost = round(contracts * cost_per, 2)
+
+    return contracts, actual_cost
+
+
+def process_options_idea(
+    idea: TradeIdea,
+    snapshot: BrokerSnapshot,
+    signal: Optional[SignalScore],
+    config: dict,
+    iv_summary: dict,
+    options_regime: dict,
+    current_price: float,
+) -> Union[OptionsAction, str]:
+    """
+    Account 2 options trade construction.
+
+    Returns OptionsAction on success, rejection reason str on failure.
+
+    Pipeline:
+      1. Equity floor + crisis regime check
+      2. Liquidity gate (observation mode, IV environment)
+      3. Confidence gate
+      4. select_structure() → OptionStrategy
+      5. select_expiry() → expiration date
+      6. compute_real_economics() → (contracts, max_cost_usd)
+      7. Build OptionsAction
+
+    HOLD ideas pass through immediately with action="hold".
+    """
+    symbol   = normalize_symbol(idea.symbol)
+    a2_cfg   = _a2_config(config)
+    equity   = snapshot.equity
+
+    # ── HOLD passthrough ─────────────────────────────────────────────────────
+    if idea.action in (AccountAction.HOLD, AccountAction.CLOSE):
+        return OptionsAction(
+            symbol=symbol,
+            action="hold",
+            option_strategy=OptionStrategy.CLOSE_OPTION,
+            expiration="",
+            long_strike=None,
+            short_strike=None,
+            contracts=0,
+            max_cost_usd=0.0,
+            tier=idea.tier,
+            conviction=_float_to_conviction(idea.conviction),
+            catalyst=idea.catalyst or "hold",
+            direction=idea.direction,
+            reason=f"action={idea.action.value}",
+            source_idea=idea,
+        )
+
+    # ── A2 equity floor ───────────────────────────────────────────────────────
+    a2_floor = float(a2_cfg.get("equity_floor", 25_000.0))
+    if equity < a2_floor:
+        return f"A2 equity ${equity:,.0f} below floor ${a2_floor:,.0f}"
+
+    # ── Crisis regime ─────────────────────────────────────────────────────────
+    if options_regime.get("regime") == "crisis":
+        return "options_regime=crisis — no new options positions"
+
+    # ── Liquidity gate ────────────────────────────────────────────────────────
+    gate = liquidity_gate(symbol, iv_summary)
+    if gate:
+        return gate
+
+    # ── Minimum confidence (options require medium+) ──────────────────────────
+    if idea.conviction <= 0.35:
+        return f"conviction={idea.conviction:.2f} — options require medium or high conviction (> 0.35)"
+
+    # ── Strategy selection ────────────────────────────────────────────────────
+    strategy = select_structure(idea.direction, iv_summary, options_regime, idea.tier)
+    if strategy is None:
+        env     = iv_summary.get("iv_environment", "unknown")
+        allowed = options_regime.get("allowed_strategies", [])
+        return (
+            f"no eligible options strategy for direction={idea.direction.value} "
+            f"iv_env={env} allowed={allowed}"
+        )
+
+    # Override with hint if provided and compatible
+    if (idea.option_strategy_hint is not None
+            and idea.option_strategy_hint != strategy):
+        log.debug(
+            "[RISK] %s: using option_strategy_hint %s (kernel selected %s)",
+            symbol, idea.option_strategy_hint.value, strategy.value,
+        )
+        strategy = idea.option_strategy_hint
+
+    # ── Expiry ────────────────────────────────────────────────────────────────
+    expirations = iv_summary.get("available_expirations")   # real chain dates if available
+    expiration  = select_expiry(strategy, expirations)
+
+    # ── VIX / IV scaling ──────────────────────────────────────────────────────
+    vix_gates = a2_cfg.get("vix_gates", {})
+    iv_rank   = iv_summary.get("iv_rank", 50)
+    # Scale down 50% when: VIX > 25, IV rank > 60 (covered by options_regime size_mult)
+    size_mult = float(options_regime.get("size_multiplier", 1.0))
+
+    # ── Economics ─────────────────────────────────────────────────────────────
+    current_iv   = float(iv_summary.get("current_iv", 0.30) or 0.30)
+    contracts, max_cost = compute_real_economics(
+        strategy=strategy,
+        current_price=current_price,
+        iv=current_iv,
+        equity=equity,
+        tier=idea.tier,
+        a2_config=a2_cfg,
+        size_mult=size_mult,
+    )
+
+    # ── Build strikes (placeholder — options_execution will use live chain) ───
+    # The risk kernel computes a ballpark strike; options_execution.build_structure()
+    # will resolve to real OCC strikes via the live chain lookup.
+    long_strike  = _round_strike(current_price)
+    short_strike = None
+    if "spread" in strategy.value:
+        spread_pct = 0.03  # ~3% width
+        if "call" in strategy.value:
+            short_strike = _round_strike(current_price * (1 + spread_pct))
+        else:
+            short_strike = _round_strike(current_price * (1 - spread_pct))
+
+    greeks_cfg = a2_cfg.get("greeks", {})
+    delta = float(greeks_cfg.get("min_delta", 0.30)) + 0.15  # ATM ~0.45
+
+    action_str = (
+        "sell_option_spread" if "credit" in strategy.value
+        else "buy_option" if "single" in strategy.value or "straddle" in strategy.value
+        else "buy_option"
+    )
+
+    log.info(
+        "[RISK A2] APPROVED %s %s strategy=%s exp=%s contracts=%d max_cost=$%.0f "
+        "iv_rank=%.0f",
+        action_str, symbol, strategy.value, expiration,
+        contracts, max_cost, iv_rank,
+    )
+
+    return OptionsAction(
+        symbol=symbol,
+        action=action_str,
+        option_strategy=strategy,
+        expiration=expiration,
+        long_strike=long_strike,
+        short_strike=short_strike,
+        contracts=contracts,
+        max_cost_usd=max_cost,
+        tier=idea.tier,
+        conviction=_float_to_conviction(idea.conviction),
+        catalyst=idea.catalyst,
+        direction=idea.direction,
+        iv_rank=float(iv_rank) if iv_rank is not None else None,
+        delta=round(delta, 2),
+        rationale=(
+            f"IV rank {iv_rank:.0f if isinstance(iv_rank, float) else iv_rank} "
+            f"({iv_summary.get('iv_environment','?')}) — {strategy.value}. "
+            f"{idea.catalyst}"
+        ),
+        confidence=0.0,   # filled by four-way debate synthesis in bot_options.py
+        source_idea=idea,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _round_strike(price: float) -> float:
+    """Round to nearest standard options strike increment."""
+    if price < 10:
+        return round(price * 2) / 2        # $0.50
+    elif price < 25:
+        return round(price)                 # $1.00
+    elif price < 100:
+        return round(price / 2.5) * 2.5    # $2.50
+    elif price < 200:
+        return round(price / 5) * 5        # $5.00
+    else:
+        return round(price / 10) * 10      # $10.00

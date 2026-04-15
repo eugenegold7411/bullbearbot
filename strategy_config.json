@@ -1,0 +1,183 @@
+{
+  "version": 1,
+  "generated_at": "2026-04-15T19:56:11.651406",
+  "generated_by": "weekly_review",
+  "active_strategy": "hybrid",
+  "backtest_results": {},
+  "position_sizing": {
+    "core_tier_pct": 0.15,
+    "standard_tier_pct": 0.08,
+    "speculative_tier_pct": 0.05,
+    "max_total_exposure_pct": 0.67,
+    "cash_reserve_pct": 0.2
+  },
+  "parameters": {
+    "momentum_weight": 0.35,
+    "mean_reversion_weight": 0.2,
+    "news_sentiment_weight": 0.3,
+    "cross_sector_weight": 0.15,
+    "min_confidence_threshold": "medium",
+    "max_positions": 15,
+    "preferred_sessions": [
+      "market",
+      "extended"
+    ],
+    "sector_rotation_bias": "commodities_overweight",
+    "vix_threshold_caution": 22,
+    "stop_loss_pct_core": 0.035,
+    "stop_loss_pct_intraday": 0.018,
+    "take_profit_multiple": 2.5,
+    "preferred_tiers": [
+      "core",
+      "dynamic"
+    ],
+    "stop_loss_pct_overnight": 0.02,
+    "max_position_pct_equity": 0.07,
+    "max_daily_drawdown_pct": 0.025,
+    "max_weekly_drawdown_pct": 0.035,
+    "max_day_trades_rolling_5day": 2,
+    "max_sector_exposure_pct": 0.15,
+    "max_single_name_pct": 0.04,
+    "data_outage_escalation_cycles": 2,
+    "session_gate_enforce": true,
+    "overnight_order_evaluation": false,
+    "data_outage_hard_disable_cycles": 4,
+    "max_daily_drawdown_position_gate": 0.015,
+    "sector_rotation_bias_detail": "Overweight energy and gold vs. rate-sensitive financials; review mandatory at next weekly cycle",
+    "max_overnight_position_pct_equity": 0.1,
+    "max_crypto_exposure_pct": 0.1,
+    "session_unknown_hard_block": true,
+    "session_tag_capture_point": "signal_generation",
+    "session_tag_assert_non_unknown_before_route": true,
+    "max_single_position_pct_DEPRECATED": "REMOVED \u2014 unified under max_single_name_pct=0.04 and max_position_pct_equity=0.07",
+    "max_total_exposure_pct": 0.67,
+    "cash_reserve_pct": 0.2,
+    "margin_authorized": false,
+    "core_tier_pct": 0.15,
+    "standard_tier_pct": 0.08,
+    "speculative_tier_pct": 0.05,
+    "catalyst_tag_required_for_entry": true,
+    "catalyst_tag_disallowed_values": [
+      "no",
+      "none",
+      "null",
+      ""
+    ],
+    "min_dollar_risk_per_trade": 5.0,
+    "sector_rotation_bias_expiry": "2026-04-22",
+    "vector_memory_status": "disabled \u2014 restore before confidence calibration is meaningful",
+    "backtest_minimum_sample_before_recalibration": 30,
+    "research_pipeline_candidates": [
+      {
+        "name": "TradingAgents Multi-Agent LLM Framework",
+        "source": "TauricResearch",
+        "evaluation_target": "Q3-2026",
+        "action": "Monitor; do not integrate this cycle"
+      },
+      {
+        "name": "Trading-R1 RL-Augmented Financial Reasoning",
+        "source": "arXiv 2509.11420",
+        "evaluation_target": "Q3-2026",
+        "action": "Monitor; do not integrate this cycle"
+      }
+    ]
+  },
+  "director_notes": "FINAL CONFIG 2026-04-15: System is in diagnostic/pre-operational state. The session classifier bug (all orders tagged 'unknown' and rejected) is the single highest-priority fix \u2014 no strategy change will improve fill rate until this is resolved. Session gate remains enforced; the fix is to capture session at signal generation time and assert non-unknown before routing, not to disable the gate. Three conflicting position-size parameters have been unified: max_single_name_pct=0.04 is the operative single-name ceiling; max_position_pct_equity=0.07 governs tier slot sizing; the redundant max_single_position_pct fields in both config blocks are deprecated. Margin authorization is removed from director notes \u2014 no margin is approved until compliance is formally confirmed. Catalyst tag is now a hard entry gate: any entry without a named, non-null catalyst is blocked. Sector rotation bias is temporarily set to commodities_overweight (energy, gold) reflecting geopolitical context; this expires 2026-04-22 and must be reviewed. No signal weight changes are authorized this cycle \u2014 n=2 closed trades provides zero statistical basis for recalibration. Recalibration gate set at n=30 confirmed fills. Vector memory must be restored before any confidence-based signal calibration is meaningful.",
+  "launch_date": "2026-04-13",
+  "time_bound_actions": [
+    {
+      "symbol": "AMZN",
+      "exit_by": "2026-04-22T19:45:00+00:00",
+      "deadline_et": "2026-04-22 15:45",
+      "reason": "backstop_exit: max_hold_7d"
+    },
+    {
+      "symbol": "XBI",
+      "exit_by": "2026-04-22T19:45:00+00:00",
+      "deadline_et": "2026-04-22 15:45",
+      "reason": "backstop_exit: max_hold_7d"
+    }
+  ],
+  "exit_management": {
+    "trail_stop_enabled": true,
+    "trail_trigger_r": 1.0,
+    "trail_to_breakeven_plus_pct": 0.005,
+    "refresh_if_stop_stale_pct": 0.15,
+    "backstop_days": 7
+  },
+  "account2": {
+    "enabled": true,
+    "observation_mode_days": 20,
+    "equity_floor": 25000,
+    "scheduler_offset_seconds": 90,
+    "sessions": [
+      "market",
+      "pre_open"
+    ],
+    "position_sizing": {
+      "core_spread_max_pct": 0.05,
+      "core_single_leg_max_pct": 0.03,
+      "dynamic_max_pct": 0.03,
+      "intraday_options": false
+    },
+    "iv_rules": {
+      "min_history_days": 20,
+      "buy_premium_rank_max": 35,
+      "sell_premium_rank_min": 65,
+      "spreads_rank_range": [
+        35,
+        65
+      ]
+    },
+    "greeks": {
+      "min_delta": 0.3,
+      "min_dte": 5
+    },
+    "vix_gates": {
+      "normal_max": 22,
+      "caution_max": 30,
+      "high_max": 40,
+      "crisis_halt": 40
+    },
+    "debate_confidence_floor": 0.85,
+    "max_open_positions": 6,
+    "cycle_offset_note": "Account 2 runs 90s after Account 1 each market cycle to consume fresh signal scores"
+  },
+  "scratchpad": {
+    "enabled": true,
+    "model": "claude-haiku-4-5-20251001",
+    "max_watching": 7,
+    "min_watching": 3,
+    "hot_memory_size": 20,
+    "hot_memory_inject_count": 5,
+    "cold_memory_inject_count": 2,
+    "timeout_seconds": 8,
+    "session_gates": [
+      "market"
+    ]
+  },
+  "signal_weights": {
+    "momentum_weight": 0.35,
+    "mean_reversion_weight": 0.2,
+    "news_sentiment_weight": 0.3,
+    "cross_sector_weight": 0.15,
+    "recalibration_trigger": "n >= 30 closed trades with confirmed fills and non-unknown session tags"
+  },
+  "sonnet_gate": {
+    "cooldown_minutes": 15,
+    "max_consecutive_skips": 8,
+    "signal_score_threshold": 15,
+    "exposure_change_threshold": 0.05,
+    "deadline_warning_minutes": 30,
+    "scheduled_windows": [
+      {
+        "hour": 9,
+        "minute": 30
+      },
+      {
+        "hour": 15,
+        "minute": 30
+      }
+    ]
+  }
+}

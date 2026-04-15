@@ -1,0 +1,54 @@
+{
+  "symbols": [
+    {"symbol": "NVDA",  "sector": "technology",  "type": "stock", "tier": "core"},
+    {"symbol": "TSM",   "sector": "technology",  "type": "stock", "tier": "core"},
+    {"symbol": "MSFT",  "sector": "technology",  "type": "stock", "tier": "core"},
+    {"symbol": "CRWV",  "sector": "technology",  "type": "stock", "tier": "core"},
+    {"symbol": "PLTR",  "sector": "technology",  "type": "stock", "tier": "core"},
+
+    {"symbol": "XLE",   "sector": "energy",      "type": "etf",   "tier": "core"},
+    {"symbol": "XOM",   "sector": "energy",      "type": "stock", "tier": "core"},
+    {"symbol": "CVX",   "sector": "energy",      "type": "stock", "tier": "core"},
+    {"symbol": "USO",   "sector": "energy",      "type": "etf",   "tier": "core"},
+    {"symbol": "GLD",   "sector": "commodities", "type": "etf",   "tier": "core"},
+    {"symbol": "SLV",   "sector": "commodities", "type": "etf",   "tier": "core"},
+
+    {"symbol": "JPM",   "sector": "financials",  "type": "stock", "tier": "core"},
+    {"symbol": "GS",    "sector": "financials",  "type": "stock", "tier": "core"},
+    {"symbol": "XLF",   "sector": "financials",  "type": "etf",   "tier": "core"},
+
+    {"symbol": "AMZN",  "sector": "consumer",    "type": "stock", "tier": "core"},
+    {"symbol": "WMT",   "sector": "consumer",    "type": "stock", "tier": "core"},
+    {"symbol": "XRT",   "sector": "consumer",    "type": "etf",   "tier": "core"},
+
+    {"symbol": "LMT",   "sector": "defense",     "type": "stock", "tier": "core"},
+    {"symbol": "RTX",   "sector": "defense",     "type": "stock", "tier": "core"},
+    {"symbol": "ITA",   "sector": "defense",     "type": "etf",   "tier": "core"},
+
+    {"symbol": "XBI",   "sector": "biotech",     "type": "etf",   "tier": "core"},
+    {"symbol": "JNJ",   "sector": "health",      "type": "stock", "tier": "core"},
+    {"symbol": "LLY",   "sector": "health",      "type": "stock", "tier": "core"},
+
+    {"symbol": "EWJ",   "sector": "international","type": "etf",  "tier": "core"},
+    {"symbol": "FXI",   "sector": "international","type": "etf",  "tier": "core"},
+    {"symbol": "EEM",   "sector": "international","type": "etf",  "tier": "core"},
+    {"symbol": "ASML",  "sector": "technology",  "type": "stock", "tier": "core"},
+
+    {"symbol": "SPY",   "sector": "macro",       "type": "etf",   "tier": "core"},
+    {"symbol": "QQQ",   "sector": "macro",       "type": "etf",   "tier": "core"},
+    {"symbol": "IWM",   "sector": "macro",       "type": "etf",   "tier": "core"},
+    {"symbol": "TLT",   "sector": "macro",       "type": "etf",   "tier": "core"},
+    {"symbol": "VXX",   "sector": "macro",       "type": "etf",   "tier": "core"},
+
+    {"symbol": "BTC/USD", "sector": "crypto",    "type": "crypto","tier": "core"},
+    {"symbol": "ETH/USD", "sector": "crypto",    "type": "crypto","tier": "core"},
+
+    {"symbol": "FRO",   "sector": "shipping",      "type": "stock", "tier": "core"},
+    {"symbol": "STNG",  "sector": "shipping",      "type": "stock", "tier": "core"},
+    {"symbol": "RKT",   "sector": "housing",       "type": "stock", "tier": "core"},
+    {"symbol": "EWM",   "sector": "international", "type": "etf",   "tier": "core"},
+    {"symbol": "ECH",   "sector": "international", "type": "etf",   "tier": "core"},
+    {"symbol": "BE",    "sector": "utilities",     "type": "stock", "tier": "core"},
+    {"symbol": "COPX",  "sector": "commodities",   "type": "etf",   "tier": "core"}
+  ]
+}

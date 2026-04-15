@@ -293,9 +293,9 @@ Exits observation mode automatically after 20 trading days.
 
 ---
 
-## Architecture — 10-Agent Weekly Review
+## Architecture — 11-Agent Weekly Review
 
-Runs Sundays (or manually: `python3 weekly_review.py`). Two phases:
+Runs Sundays (or manually: `python3 weekly_review.py`). Three phases:
 
 **Phase 1 — Batch API (50% discount, runs in parallel):**
 | Agent | Role | Model |
@@ -305,15 +305,19 @@ Runs Sundays (or manually: `python3 weekly_review.py`). Two phases:
 | 3 — Execution Engineer | Fill quality, rejections, API reliability | Sonnet |
 | 4 — Backtest Analyst | Live vs. expected, vector memory divergences | Sonnet |
 
-**Phase 2 — Sequential (web search + synthesis):**
+**Phase 2 — Sequential (CTO + Strategy Director + parallel agents):**
 | Agent | Role | Model |
 |-------|------|-------|
-| 5 — Strategy Director | Synthesizes 1-4 → strategic memo + JSON params → updates strategy_config.json | Sonnet |
-| 6 — Market Intelligence Researcher | External landscape, academic research, competitor signals (has web search) | Sonnet |
-| 7 — CFO | Cost tracking, monthly burn projection, ROI per intelligence layer | Haiku |
-| 8 — Product Manager | Roadmap updates, prioritization, technical debt | Haiku |
-| 9 — Compliance/Risk Auditor | Rule violations, near-misses, behavioral consistency | Haiku |
-| 10 — Narrative Director | Weekly Twitter thread script for @BullBearBotAI | Haiku |
+| 5 — CTO | Technical audit: module ROI, pipeline cost, architecture risks | Sonnet |
+| 6 — Strategy Director | Synthesizes 1-5 → strategic memo + JSON params → updates strategy_config.json | Sonnet |
+| 7 — Market Intelligence Researcher | External landscape, academic research, competitor signals (has web search) | Sonnet |
+| 8 — CFO | Cost tracking, monthly burn projection, ROI per intelligence layer | Haiku |
+| 9 — Product Manager | Roadmap updates, prioritization, technical debt | Haiku |
+| 10 — Compliance/Risk Auditor | Rule violations, near-misses, behavioral consistency | Haiku |
+| 11 — Narrative Director | Weekly Twitter thread script for @BullBearBotAI | Haiku |
+
+**Phase 3 — Final synthesis:**
+Agent 6 (Strategy Director) re-runs with ALL 11 agent reports for final `strategy_config.json` update.
 
 **Side effects:** Updates `strategy_config.json`, sends SMS summary, writes
 `data/reports/weekly_review_YYYY-MM-DD.md`, updates `data/roadmap/features.json`.
@@ -382,7 +386,7 @@ significant drawdown, or any time a full system assessment is needed.
 |------|---------|
 | `trade_publisher.py` | Post generator for @BullBearBotAI. Currently in approval mode (SMS+email). |
 | `report.py` | HTML performance report. Sent via email. |
-| `weekly_review.py` | 10-agent weekly review. Batch API for agents 1–4. |
+| `weekly_review.py` | 11-agent weekly review. Batch API for agents 1–4; CTO (5) + Strategy Director draft (6) sequential; agents 7–10 parallel; Narrative (11); Strategy Director final re-run. |
 | `cost_tracker.py` | Real-time Claude API cost monitoring. Per-caller breakdown. |
 | `account_status.py` | Account health summary tool. |
 
@@ -904,6 +908,19 @@ Item 18 — `divergence.py` (new file, 11 sections):
   Wired into `weekly_review.py` Agent 1 (divergence summary + standing instructions).
   `validate_config.py` updated: data/runtime/ check, divergence.py importable check, account2.liquidity_gates check.
 10 new tests in Suite 18 — 181 total, all passing.
+
+**~~Phase 3 Items 1-5~~ — Reddit public fallback, CTO agent, roll logic, time-stop, IV crush ✅ COMPLETED 2026-04-15**
+
+Item 1 — `reddit_sentiment_public.py` (new file): public JSON Reddit provider (no PRAW/OAuth). Fetches hot+new posts from 4 subreddits via urllib. Per-subreddit cache in `data/social/reddit_cache/`. TTL 1hr. Wired as fallback in `reddit_sentiment.py` when PRAW unavailable.
+
+Item 2 — Agent 11 CTO: `weekly_review.py` expanded from 10 to 11 agents. New Agent 5 (CTO) inserted after agents 1-4; prior agents 5-10 renumbered 6-11. Strategy Director draft→6, final re-run→Agent 6. CTO reviews architecture/cost/pipeline. `_build_agent5_cto_input()` helper added.
+
+Item 3 — Roll logic: `schemas.py OptionsStructure` gains `roll_group_id`, `roll_from_structure_id`, `roll_reason`, `thesis_status`. `options_executor.py` gains `should_roll_structure()` (eligible triggers: expiry_approaching, time_stop; blocked: P&L events, thesis=invalidated) and `execute_roll()` (closes + stamps metadata). `bot_options.py` close-check loop evaluates roll before straight close.
+
+Item 4 — Time-stop for long premium: `should_close_structure()` Rule 4a fires at 40% elapsed DTE for single legs, 50% for debit spreads. Credit spreads excluded.
+
+Item 5 — IV crush monitoring: `options_data.py` gains `snapshot_pre_event_iv()` and `detect_iv_crush()`. Crush check in `should_close_structure()` (only fires when `auto_close_on_crush=true`). `strategy_config.json account2.iv_monitoring` section added with `auto_close_on_crush: false` default.
+10 new tests in Suite 19 — 191 total, all passing.
 
 ---
 

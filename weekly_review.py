@@ -407,10 +407,6 @@ _SYSTEM_AGENT3 = """You are an expert execution engineer reviewing the order exe
 
 _SYSTEM_AGENT4 = """You are an expert backtest analyst reviewing how an autonomous AI trading bot's live trading results compare to expectations. Your role is to analyze the vector memory collection to understand how many decisions have been made and how many have resolved outcomes, compute the win rate and average P&L of resolved decisions, identify any divergence between the bot's confidence signals and actual outcomes, and assess whether the decision quality is improving over time or stagnating. Highlight any patterns that suggest the bot's model of the market is miscalibrated."""
 
-_SYSTEM_AGENT5 = """You are the Strategy Director of an AI trading operation. You receive weekly reports from four specialist analysts — Quant Analyst, Risk Manager, Execution Engineer, and Backtest Analyst — and must synthesize their findings into a definitive strategic direction for the coming week. Be specific and concrete: recommend exact parameter values, not vague directions. Your memo should explain the strategic rationale clearly, then provide a JSON block with the precise parameter adjustments to be applied. Prioritize changes with the strongest evidence base and flag any conflicting recommendations across analysts."""
-
-
-
 import threading as _threading
 
 # ── Phase 2 paths ─────────────────────────────────────────────────────────────
@@ -423,29 +419,35 @@ _SYSTEM_PROMPT_FILE = _BASE_DIR / "prompts" / "system_v1.txt"
 
 _MODEL_HAIKU = "claude-haiku-4-5-20251001"
 
-# ── Agent system prompts 6-10 ─────────────────────────────────────────────────
+# ── Agent system prompts 5-11 ─────────────────────────────────────────────────
 
-_SYSTEM_AGENT6 = """You are the Market Intelligence Researcher for an AI trading bot. Your job is to survey the external landscape weekly — what strategies are working, what signals people are finding, what academic research is relevant, what competitors are doing. You have access to web search.
+_SYSTEM_AGENT5 = """You are the Chief Technology Officer of an AI trading bot. You review the performance of the bot's own architecture and code quality each week. Your job is to identify whether the bot's intelligence pipeline is well-calibrated, whether any module is over-engineered or under-performing, and whether the cost/complexity profile of each component is justified by its contribution to trading outcomes. You receive reports from 4 specialists.
+
+Produce a focused technical audit in markdown. Cover: (1) module performance ROI — which components are earning their complexity cost; (2) pipeline bottlenecks — where latency or cost is concentrated; (3) architecture risks — tight couplings, missing fallbacks, fragile dependencies; (4) one concrete recommendation to increase intelligence per dollar spent. Do not recommend the same change two weeks in a row. Be specific: name modules, cite costs, propose exact changes. Keep under 800 words."""
+
+_SYSTEM_AGENT6 = """You are the Strategy Director of an AI trading operation. You receive weekly reports from four specialist analysts — Quant Analyst, Risk Manager, Execution Engineer, and Backtest Analyst — and must synthesize their findings into a definitive strategic direction for the coming week. Be specific and concrete: recommend exact parameter values, not vague directions. Your memo should explain the strategic rationale clearly, then provide a JSON block with the precise parameter adjustments to be applied. Prioritize changes with the strongest evidence base and flag any conflicting recommendations across analysts."""
+
+_SYSTEM_AGENT7 = """You are the Market Intelligence Researcher for an AI trading bot. Your job is to survey the external landscape weekly — what strategies are working, what signals people are finding, what academic research is relevant, what competitors are doing. You have access to web search.
 
 You are NOT analyzing the bot's own performance. You are looking OUTWARD at the world.
 
 Produce a structured JSON report only. No markdown. Output valid JSON with these keys: research_date, new_strategies_found (list), signal_research (list), competitor_observations (list), academic_papers (list), market_regime_observations (string), recommended_additions (list), recommended_removals (list)."""
 
-_SYSTEM_AGENT7 = """You are the CFO of an AI trading bot. Your job is to track all costs, project forward spend, identify waste, and ensure the bot's intelligence layer is generating more value than it costs to run.
+_SYSTEM_AGENT8 = """You are the CFO of an AI trading bot. Your job is to track all costs, project forward spend, identify waste, and ensure the bot's intelligence layer is generating more value than it costs to run.
 
 Infrastructure costs: DigitalOcean $12/month fixed, Twilio $0.0079/SMS, SendGrid free tier, Finnhub free, CoinGecko free, Reddit API free, Alternative.me free.
 
 Produce JSON only. Output valid JSON with these keys: report_date, weekly_costs (object with claude_api_by_caller and infrastructure sub-objects), cost_per_trade, cost_per_profitable_trade, cache_efficiency (object), approaching_limits (list), waste_identified (list), roi_analysis (object), recommendations (list), next_week_budget_forecast."""
 
-_SYSTEM_AGENT8 = """You are the Product Manager of an AI trading bot. Your job is to maintain the feature roadmap, evaluate what was shipped vs planned, prioritize what comes next based on performance data, and identify technical debt. You make pragmatic, data-driven prioritization decisions.
+_SYSTEM_AGENT9 = """You are the Product Manager of an AI trading bot. Your job is to maintain the feature roadmap, evaluate what was shipped vs planned, prioritize what comes next based on performance data, and identify technical debt. You make pragmatic, data-driven prioritization decisions.
 
 Produce JSON only. Output valid JSON with these keys: report_date, sprint_summary (object), roadmap_updates (list of objects with feature_id, action, new_priority, new_status, rationale), new_features_recommended (list), next_sprint_recommendation (list), technical_debt_updates (list), blockers_to_resolve (list), metrics (object)."""
 
-_SYSTEM_AGENT9 = """You are the Compliance and Risk Auditor for an AI trading bot. Your job is to verify the bot operated within its own stated rules this week. You are not a regulator — you are an internal consistency checker. You look for rule violations, near-misses, data integrity issues, and systematic behavioral patterns that deviate from stated strategy.
+_SYSTEM_AGENT10 = """You are the Compliance and Risk Auditor for an AI trading bot. Your job is to verify the bot operated within its own stated rules this week. You are not a regulator — you are an internal consistency checker. You look for rule violations, near-misses, data integrity issues, and systematic behavioral patterns that deviate from stated strategy.
 
 Produce JSON only. Output valid JSON with these keys: audit_date, audit_period, rule_violations (list), near_misses (list), pdt_compliance (object), position_sizing_compliance (object), stop_loss_compliance (object), catalyst_discipline (object), data_integrity (object), orb_window_compliance (object), overall_compliance_score (0-100), critical_findings (list), recommendations (list)."""
 
-_SYSTEM_AGENT10 = """You are the Narrative and Communications Director for @BullBearBotAI, an AI trading bot with a specific voice.
+_SYSTEM_AGENT11 = """You are the Narrative and Communications Director for @BullBearBotAI, an AI trading bot with a specific voice.
 
 Bot voice rules (non-negotiable):
 - Self-aware AI that knows it's a bot
@@ -554,9 +556,9 @@ def _build_review_context() -> dict:
     }
 
 
-# ── Agent 6 input builder ─────────────────────────────────────────────────────
+# ── Agent 7 input builder ─────────────────────────────────────────────────────
 
-def _build_agent6_input(ctx: dict) -> str:
+def _build_agent7_input(ctx: dict) -> str:
     cfg = ctx.get("strategy_cfg", {})
     params = cfg.get("parameters", {})
     signal_weights = cfg.get("signal_weights", {})
@@ -599,9 +601,9 @@ Search for and report on: (1) latest LLM/AI trading research 2026, (2) congressi
 Produce your JSON report. Search broadly and synthesize findings."""
 
 
-# ── Agent 7 input builder ─────────────────────────────────────────────────────
+# ── Agent 8 input builder ─────────────────────────────────────────────────────
 
-def _build_agent7_input(ctx: dict) -> str:
+def _build_agent8_input(ctx: dict) -> str:
     costs = ctx.get("costs_data", {})
     journal = ctx.get("journal_records", [])
     cache_stats = ctx.get("cache_stats_str", "(none)")
@@ -652,9 +654,9 @@ Data APIs (Finnhub, CoinGecko, Alternative.me): free
 Calculate weekly total cost, project monthly spend, identify any waste, assess whether the intelligence layer ROI is positive. Produce your JSON report."""
 
 
-# ── Agent 8 input builder ─────────────────────────────────────────────────────
+# ── Agent 9 input builder ─────────────────────────────────────────────────────
 
-def _build_agent8_input(ctx: dict) -> str:
+def _build_agent9_input(ctx: dict) -> str:
     roadmap = ctx.get("roadmap_data", {})
     features = roadmap.get("features", [])
     tech_debt = roadmap.get("technical_debt", [])
@@ -690,9 +692,9 @@ Crypto intelligence (F007), Portfolio intelligence (F008), Sequential synthesis 
 Review the roadmap, identify what shipped vs planned, re-prioritize pending features based on current performance data, recommend next sprint. What should be built next? Produce your JSON report."""
 
 
-# ── Agent 9 input builder ─────────────────────────────────────────────────────
+# ── Agent 10 input builder ────────────────────────────────────────────────────
 
-def _build_agent9_input(ctx: dict) -> str:
+def _build_agent10_input(ctx: dict) -> str:
     journal = ctx.get("journal_records", [])
     cfg = ctx.get("strategy_cfg", {})
     rules = ctx.get("system_prompt_rules", "")
@@ -745,9 +747,9 @@ PDT-related blocks: {len(pdt_blocks)}
 Audit for rule violations, near-misses, PDT compliance, position sizing, stop loss widths, catalyst discipline. Was the bot operating within its stated rules? Produce your JSON compliance report with a score 0-100."""
 
 
-# ── Agent 10 input builder ─────────────────────────────────────────────────────
+# ── Agent 11 input builder ────────────────────────────────────────────────────
 
-def _build_agent10_input(ctx: dict, agent_outputs: dict) -> str:
+def _build_agent11_input(ctx: dict, agent_outputs: dict) -> str:
     perf = ctx.get("perf_summary", {})
     report_data = ctx.get("report_data", {})
     post_history = ctx.get("post_history", [])
@@ -775,9 +777,10 @@ Win rates by type: {json.dumps(perf.get('by_type', {}))[:300]}
 ### Agent Reports Summary
 Quant Analyst (Agent 1): {_safe_first_200('agent1_quant')}
 Risk Manager (Agent 2): {_safe_first_200('agent2_risk')}
-Strategy changes (Agent 5 draft): {_safe_first_200('agent5_draft')[:300]}
-Researcher findings (Agent 6): {_safe_first_200('agent6')[:300]}
-Compliance score (Agent 9): {_safe_first_200('agent9')[:200]}
+CTO (Agent 5): {_safe_first_200('agent5_cto')[:300]}
+Strategy changes (Agent 6 draft): {_safe_first_200('agent6_draft')[:300]}
+Researcher findings (Agent 7): {_safe_first_200('agent7')[:300]}
+Compliance score (Agent 10): {_safe_first_200('agent10')[:200]}
 
 ### Recent Post History (last 10 posts — avoid repeating)
 ```json
@@ -795,17 +798,17 @@ Compliance score (Agent 9): {_safe_first_200('agent9')[:200]}
 Craft this week's Twitter/X content package. Be honest about the zero-trade week (if applicable). Make it interesting. Produce your JSON output."""
 
 
-# ── Agent 6 runner (web search, synchronous) ──────────────────────────────────
+# ── Agent 7 runner (web search, synchronous) ──────────────────────────────────
 
-def _run_agent6_researcher(ctx: dict) -> str:
-    """Run Agent 6 with web search. Uses Sonnet (reasoning needed for search)."""
+def _run_agent7_researcher(ctx: dict) -> str:
+    """Run Agent 7 with web search. Uses Sonnet (reasoning needed for search)."""
     try:
         response = _claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=3000,
             system=[{
                 "type": "text",
-                "text": _SYSTEM_AGENT6,
+                "text": _SYSTEM_AGENT7,
                 "cache_control": {"type": "ephemeral"},
             }],
             tools=[{
@@ -814,7 +817,7 @@ def _run_agent6_researcher(ctx: dict) -> str:
             }],
             messages=[{
                 "role": "user",
-                "content": _build_agent6_input(ctx),
+                "content": _build_agent7_input(ctx),
             }],
             extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
@@ -824,53 +827,42 @@ def _run_agent6_researcher(ctx: dict) -> str:
             if hasattr(block, "text") and block.type == "text":
                 text_parts.append(block.text)
         result = "\n".join(text_parts)
-        log.info("Agent 6 (Researcher) completed  chars=%d", len(result))
-        return result if result else "(Agent 6: no text output)"
+        log.info("Agent 7 (Researcher) completed  chars=%d", len(result))
+        return result if result else "(Agent 7: no text output)"
     except Exception as exc:
-        log.warning("Agent 6 (Researcher) failed: %s", exc)
-        return f"(Agent 6 failed: {exc})"
+        log.warning("Agent 7 (Researcher) failed: %s", exc)
+        return f"(Agent 7 failed: {exc})"
 
 
-# ── Phase 2 batch runner (agents 7-9) ─────────────────────────────────────────
+# ── Phase 2 batch runner (agents 7-10) ────────────────────────────────────────
 
 def _run_phase2_agents(ctx: dict, phase1_outputs: dict) -> dict:
     """
-    Runs agents 6-9 in parallel.
-    Agent 6 uses web search via threading.
-    Agents 7-9 use Batch API (50% discount).
+    Runs agents 7-10 in parallel.
+    Agent 7 uses web search via threading.
+    Agents 8-10 use Batch API (50% discount).
     """
-    # Agent 6 in a thread (web search requires sync execution)
-    agent6_result: dict = {"output": "", "error": None}
+    # Agent 7 in a thread (web search requires sync execution)
+    agent7_result: dict = {"output": "", "error": None}
 
-    def _run_a6() -> None:
+    def _run_a7() -> None:
         try:
-            agent6_result["output"] = _run_agent6_researcher(ctx)
+            agent7_result["output"] = _run_agent7_researcher(ctx)
         except Exception as exc:
-            agent6_result["error"] = str(exc)
-            agent6_result["output"] = f"(Agent 6 failed: {exc})"
-            log.warning("Agent 6 thread failed: %s", exc)
+            agent7_result["error"] = str(exc)
+            agent7_result["output"] = f"(Agent 7 failed: {exc})"
+            log.warning("Agent 7 thread failed: %s", exc)
 
-    t6 = _threading.Thread(target=_run_a6, daemon=True)
-    t6.start()
-    log.info("Agent 6 thread started")
+    t7 = _threading.Thread(target=_run_a7, daemon=True)
+    t7.start()
+    log.info("Agent 7 thread started")
 
-    # Agents 7-9 via Batch API
+    # Agents 8-10 via Batch API
     batch_outputs: dict = {}
     try:
         batch_requests = [
             {
-                "custom_id": "agent7_cfo",
-                "params": {
-                    "model": _MODEL_HAIKU,
-                    "max_tokens": 2000,
-                    "system": [{"type": "text", "text": _SYSTEM_AGENT7,
-                                "cache_control": {"type": "ephemeral"}}],
-                    "messages": [{"role": "user",
-                                  "content": _build_agent7_input(ctx)}],
-                },
-            },
-            {
-                "custom_id": "agent8_pm",
+                "custom_id": "agent8_cfo",
                 "params": {
                     "model": _MODEL_HAIKU,
                     "max_tokens": 2000,
@@ -881,7 +873,7 @@ def _run_phase2_agents(ctx: dict, phase1_outputs: dict) -> dict:
                 },
             },
             {
-                "custom_id": "agent9_compliance",
+                "custom_id": "agent9_pm",
                 "params": {
                     "model": _MODEL_HAIKU,
                     "max_tokens": 2000,
@@ -891,9 +883,20 @@ def _run_phase2_agents(ctx: dict, phase1_outputs: dict) -> dict:
                                   "content": _build_agent9_input(ctx)}],
                 },
             },
+            {
+                "custom_id": "agent10_compliance",
+                "params": {
+                    "model": _MODEL_HAIKU,
+                    "max_tokens": 2000,
+                    "system": [{"type": "text", "text": _SYSTEM_AGENT10,
+                                "cache_control": {"type": "ephemeral"}}],
+                    "messages": [{"role": "user",
+                                  "content": _build_agent10_input(ctx)}],
+                },
+            },
         ]
 
-        print("[Phase 2] Submitting agents 7-9 via Batch API...")
+        print("[Phase 2] Submitting agents 8-10 via Batch API...")
         batch = _claude.beta.messages.batches.create(requests=batch_requests)
         log.info("Phase 2 batch submitted: %s", batch.id)
 
@@ -930,61 +933,61 @@ def _run_phase2_agents(ctx: dict, phase1_outputs: dict) -> dict:
                 log.warning("Phase 2 %s failed: %s", cid, err)
 
     except Exception as exc:
-        log.warning("Phase 2 batch failed: %s — agents 7-9 unavailable", exc)
+        log.warning("Phase 2 batch failed: %s — agents 8-10 unavailable", exc)
 
-    # Wait for Agent 6 thread (max 5 min)
-    t6.join(timeout=300)
-    if t6.is_alive():
-        log.warning("Agent 6 thread timed out after 5 min")
+    # Wait for Agent 7 thread (max 5 min)
+    t7.join(timeout=300)
+    if t7.is_alive():
+        log.warning("Agent 7 thread timed out after 5 min")
 
     return {
-        "agent6":  agent6_result["output"] or "(unavailable)",
-        "agent7":  batch_outputs.get("agent7_cfo",        "(unavailable)"),
-        "agent8":  batch_outputs.get("agent8_pm",         "(unavailable)"),
-        "agent9":  batch_outputs.get("agent9_compliance", "(unavailable)"),
+        "agent7":  agent7_result["output"] or "(unavailable)",
+        "agent8":  batch_outputs.get("agent8_cfo",         "(unavailable)"),
+        "agent9":  batch_outputs.get("agent9_pm",          "(unavailable)"),
+        "agent10": batch_outputs.get("agent10_compliance",  "(unavailable)"),
     }
 
 
-# ── Agent 10 runner ───────────────────────────────────────────────────────────
+# ── Agent 11 runner ───────────────────────────────────────────────────────────
 
-def _run_agent10_narrative(ctx: dict, all_outputs: dict) -> str:
-    """Run Agent 10 synchronously after all others complete. Sonnet for quality."""
+def _run_agent11_narrative(ctx: dict, all_outputs: dict) -> str:
+    """Run Agent 11 synchronously after all others complete. Sonnet for quality."""
     try:
         response = _claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=3000,
             system=[{
                 "type": "text",
-                "text": _SYSTEM_AGENT10,
+                "text": _SYSTEM_AGENT11,
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{
                 "role": "user",
-                "content": _build_agent10_input(ctx, all_outputs),
+                "content": _build_agent11_input(ctx, all_outputs),
             }],
             extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
         result = response.content[0].text
-        log.info("Agent 10 (Narrative) completed  chars=%d", len(result))
+        log.info("Agent 11 (Narrative) completed  chars=%d", len(result))
         return result
     except Exception as exc:
-        log.warning("Agent 10 (Narrative) failed: %s", exc)
-        return f"(Agent 10 failed: {exc})"
+        log.warning("Agent 11 (Narrative) failed: %s", exc)
+        return f"(Agent 11 failed: {exc})"
 
 
-# ── Agent 5 final input builder ───────────────────────────────────────────────
+# ── Agent 6 final input builder ───────────────────────────────────────────────
 
-def _build_agent5_final_input(ctx: dict, all_outputs: dict) -> str:
-    """Build Agent 5's second-pass input with all 9 agent reports."""
+def _build_agent6_final_input(ctx: dict, all_outputs: dict) -> str:
+    """Build Agent 6 Strategy Director's second-pass input with all 11 agent reports."""
     cfg = ctx.get("strategy_cfg", {})
 
     def _snip(key: str, n: int = 1500) -> str:
         val = all_outputs.get(key, "(unavailable)")
         return str(val)[:n]
 
-    return f"""## STRATEGY DIRECTOR FINAL SYNTHESIS — 10-AGENT REVIEW
+    return f"""## STRATEGY DIRECTOR FINAL SYNTHESIS — 11-AGENT REVIEW
 
-You have received reports from 9 specialist agents (10 total including this second-pass synthesis). Your job is to produce the FINAL strategy configuration for next week, synthesizing ALL findings.
+You have received reports from 10 specialist agents (11 total including this second-pass synthesis). Your job is to produce the FINAL strategy configuration for next week, synthesizing ALL findings.
 
 ---
 
@@ -1008,23 +1011,28 @@ You have received reports from 9 specialist agents (10 total including this seco
 
 ---
 
-### REPORT 6: MARKET INTELLIGENCE RESEARCHER
-{_snip('agent6', 2000)}
+### REPORT 5: CTO (TECHNICAL AUDIT)
+{_snip('agent5_cto', 1000)}
 
 ---
 
-### REPORT 7: CFO (COST & INFRASTRUCTURE)
-{_snip('agent7', 1000)}
+### REPORT 7: MARKET INTELLIGENCE RESEARCHER
+{_snip('agent7', 2000)}
 
 ---
 
-### REPORT 8: PRODUCT MANAGER
+### REPORT 8: CFO (COST & INFRASTRUCTURE)
 {_snip('agent8', 1000)}
 
 ---
 
-### REPORT 9: COMPLIANCE AUDITOR
+### REPORT 9: PRODUCT MANAGER
 {_snip('agent9', 1000)}
+
+---
+
+### REPORT 10: COMPLIANCE AUDITOR
+{_snip('agent10', 1000)}
 
 ---
 
@@ -1036,12 +1044,13 @@ You have received reports from 9 specialist agents (10 total including this seco
 ---
 
 ## SYNTHESIS GUIDANCE
-- Agent 6 (Researcher): Are there signals or strategies worth adding?
-- Agent 7 (CFO): Is the intelligence spend justified? Any waste to eliminate?
-- Agent 9 (Compliance): Any systematic rule violations to fix in parameters?
-- Agent 8 (PM): What roadmap priority should inform parameter changes?
+- Agent 5 (CTO): Are there architecture or cost changes that affect strategy parameters?
+- Agent 7 (Researcher): Are there signals or strategies worth adding?
+- Agent 8 (CFO): Is the intelligence spend justified? Any waste to eliminate?
+- Agent 10 (Compliance): Any systematic rule violations to fix in parameters?
+- Agent 9 (PM): What roadmap priority should inform parameter changes?
 
-## OUTPUT FORMAT (same as Agent 5 first pass)
+## OUTPUT FORMAT (same as Agent 6 first pass)
 Provide: (1) strategy memo starting with `## STRATEGY DIRECTOR FINAL MEMO` and (2) a JSON block with the final parameter configuration.
 
 ```json
@@ -1059,11 +1068,11 @@ Be specific. Every value must be concrete."""
 
 # ── Roadmap updater ───────────────────────────────────────────────────────────
 
-def _apply_roadmap_updates(agent8_output: str) -> None:
-    """Parse Agent 8 JSON and update features.json. Idempotent."""
+def _apply_roadmap_updates(agent9_output: str) -> None:
+    """Parse Agent 9 (PM) JSON and update features.json. Idempotent."""
     from datetime import date as _date  # noqa: PLC0415
     try:
-        data = _extract_json_block(agent8_output)
+        data = _extract_json_block(agent9_output)
         if not data:
             log.info("_apply_roadmap_updates: no JSON found in Agent 8 output")
             return
@@ -1141,11 +1150,75 @@ def _save_weekly_report(outputs: dict, final: str) -> None:
         log.warning("_save_weekly_report failed: %s", exc)
 
 
+# ── Agent 5 (CTO) input builder ───────────────────────────────────────────────
+
+def _build_agent5_cto_input(ctx: dict, phase1_outputs: dict) -> str:
+    """Build CTO (Agent 5) technical audit input using Phase 1 analyst reports."""
+    costs = ctx.get("costs_data", {})
+    by_caller = costs.get("by_caller", {})
+    cost_lines = "\n".join(
+        f"  {caller}: ${data.get('cost', 0):.4f}  calls={data.get('calls', 0)}"
+        for caller, data in by_caller.items()
+    )
+
+    def _snip(key: str, n: int = 800) -> str:
+        val = phase1_outputs.get(key, "(unavailable)")
+        return str(val)[:n]
+
+    return f"""## CTO TECHNICAL AUDIT — WEEKLY INPUT
+
+### Phase 1 Analyst Reports (your input for technical assessment)
+
+#### Quant Analyst Findings
+{_snip('agent1_quant')}
+
+#### Risk Manager Findings
+{_snip('agent2_risk')}
+
+#### Execution Engineer Findings
+{_snip('agent3_execution')}
+
+#### Backtest Analyst Findings
+{_snip('agent4_backtest')}
+
+---
+
+### Claude API Cost Profile (today — proxy for weekly)
+Total daily cost: ${costs.get('daily_cost', 0):.4f}
+Daily calls: {costs.get('daily_calls', 0)}
+All-time cost: ${costs.get('all_time_cost', 0):.4f}
+
+By caller:
+{cost_lines or '  (no data)'}
+
+---
+
+### Module Inventory (key pipeline components)
+Intelligence stack: market_data, macro_wire, macro_intelligence, morning_brief, scanner,
+  earnings_intel, insider_intelligence, reddit_sentiment, portfolio_intelligence, sonnet_gate,
+  attribution, divergence, trade_memory (ChromaDB), scratchpad
+Options stack (A2): options_data, options_intelligence, options_builder, options_executor,
+  options_state, order_executor_options
+Weekly review: 11-agent pipeline (4 batch + CTO + Strategy Director + 4 parallel + Narrative + Final)
+Scheduler: 24/7 loop, 5-min market / 15-min extended / 30-min overnight cycles
+
+---
+
+### Architecture Notes
+- Account 1: 4-stage pipeline (Regime→Signal→Scratchpad→Decision→Execution)
+- Account 2: Options pipeline with IV-first strategy + 4-way debate, 90s offset after A1
+- All external calls non-fatal; exceptions caught at WARNING level
+- Prompt caching on all system prompts (5-min TTL, aligns with market cycle)
+- VPS: DigitalOcean 2GB RAM, $12/month
+
+Produce your technical audit in markdown. Be specific: name modules, cite costs, propose exact changes."""
+
+
 # ── Main review orchestrator ──────────────────────────────────────────────────
 
 def run_review(emergency: bool = False, reason: str = "") -> str:
     """
-    Run all 10 agents sequentially, write the markdown report, update
+    Run all 11 agents sequentially, write the markdown report, update
     strategy_config.json, send SMS, and return the report file path.
 
     emergency=True: bypass day-of-week gate (called from board_meeting.sh or
@@ -1192,6 +1265,14 @@ def run_review(emergency: bool = False, reason: str = "") -> str:
         from memory import _load_pattern_watchlist  # noqa: PLC0415
         pattern_watchlist_data = _load_pattern_watchlist()
         pattern_watchlist_str  = json.dumps(pattern_watchlist_data, indent=2)
+    except Exception:
+        pass
+
+    # Cost data (needed for CTO agent and Phase 2 context)
+    costs_data: dict = {}
+    try:
+        if _COSTS_FILE.exists():
+            costs_data = json.loads(_COSTS_FILE.read_text())
     except Exception:
         pass
 
@@ -1490,7 +1571,7 @@ Please analyze decision quality, compare live results to expectations, and ident
         (_SYSTEM_AGENT4, agent4_input, "4-BacktestAnalyst"),
     ]
 
-    print("[1-4/5] Running agents 1-4 via Batch API (50% discount)...")
+    print("[1-4] Running agents 1-4 via Batch API (50% discount)...")
     batch_results = _run_agents_via_batch(agent_inputs_1_to_4)
 
     if len(batch_results) == 4:
@@ -1498,19 +1579,33 @@ Please analyze decision quality, compare live results to expectations, and ident
         log.info("Agents 1-4 completed via batch API")
     else:
         log.info("Batch failed — running agents 1-4 sequentially")
-        print("[1/5] Running Quant Analyst (sequential)...")
+        print("[1/11] Running Quant Analyst (sequential)...")
         agent1_output = _call_claude(_SYSTEM_AGENT1, agent1_input, "1-QuantAnalyst")
-        print("[2/5] Running Risk Manager (sequential)...")
+        print("[2/11] Running Risk Manager (sequential)...")
         agent2_output = _call_claude(_SYSTEM_AGENT2, agent2_input, "2-RiskManager")
-        print("[3/5] Running Execution Engineer (sequential)...")
+        print("[3/11] Running Execution Engineer (sequential)...")
         agent3_output = _call_claude(_SYSTEM_AGENT3, agent3_input, "3-ExecutionEngineer")
-        print("[4/5] Running Backtest Analyst (sequential)...")
+        print("[4/11] Running Backtest Analyst (sequential)...")
         agent4_output = _call_claude(_SYSTEM_AGENT4, agent4_input, "4-BacktestAnalyst")
 
-    # ── Agent 5: Strategy Director (always sequential — needs all 4 reports) ──
-    print("[5/5] Running Strategy Director...")
+    # ── Agent 5: CTO (technical audit — needs all 4 reports) ─────────────────
+    print("[5/11] Running CTO (technical audit)...")
+    _cto_phase1 = {
+        "agent1_quant":     agent1_output,
+        "agent2_risk":      agent2_output,
+        "agent3_execution": agent3_output,
+        "agent4_backtest":  agent4_output,
+    }
+    agent5_cto_output = _call_claude(
+        _SYSTEM_AGENT5,
+        _build_agent5_cto_input({"costs_data": costs_data}, _cto_phase1),
+        "5-CTO",
+    )
 
-    agent5_input = f"""## WEEKLY STRATEGY DIRECTOR SYNTHESIS INPUT
+    # ── Agent 6: Strategy Director (always sequential — needs all 4 reports) ──
+    print("[6/11] Running Strategy Director (draft)...")
+
+    agent6_input = f"""## WEEKLY STRATEGY DIRECTOR SYNTHESIS INPUT
 
 You have received reports from four specialist analysts. Synthesize their findings and produce a strategic memo and parameter update JSON for the coming week.
 
@@ -1589,14 +1684,14 @@ For watchlist_updates: only include symbols that are currently in the pattern le
 If no updates needed, set watchlist_updates to {{}}.
 For signal_weights_recommended: based on this week's accuracy data, suggest weight levels."""
 
-    agent5_output = _call_claude(_SYSTEM_AGENT5, agent5_input, "5-StrategyDirector")
+    agent6_output = _call_claude(_SYSTEM_AGENT6, agent6_input, "6-StrategyDirector")
 
-    # ── Parse Agent 5 JSON ────────────────────────────────────────────────────
-    params_update = _extract_json_block(agent5_output)
+    # ── Parse Agent 6 JSON ────────────────────────────────────────────────────
+    params_update = _extract_json_block(agent6_output)
     if params_update:
-        log.info("Agent 5 JSON parsed successfully")
+        log.info("Agent 6 JSON parsed successfully")
     else:
-        log.warning("Agent 5 JSON parse failed — strategy_config.json will not be updated")
+        log.warning("Agent 6 JSON parse failed — strategy_config.json will not be updated")
 
     # ── Update strategy_config.json ───────────────────────────────────────────
     active_strategy  = None
@@ -1647,10 +1742,11 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
         config["generated_at"] = datetime.now().isoformat()
         config["generated_by"] = "weekly_review"
         _save_strategy_config(config)
+    # agent6_output is the Strategy Director draft (referenced below in all_outputs)
 
 
-    # ── Phase 2: Run agents 6-9 in parallel ──────────────────────────────────
-    print("[Phase 2] Building context and running agents 6-9 in parallel...")
+    # ── Phase 2: Run agents 7-10 in parallel ─────────────────────────────────
+    print("[Phase 2] Building context and running agents 7-10 in parallel...")
     try:
         review_context = _build_review_context()
     except Exception as _ctx_exc:
@@ -1661,37 +1757,40 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
         "agent2_risk":      agent2_output,
         "agent3_execution": agent3_output,
         "agent4_backtest":  agent4_output,
+        "agent5_cto":       agent5_cto_output,
+        "agent6_draft":     agent6_output,
     }
     try:
         phase2_outputs = _run_phase2_agents(review_context, phase1_outputs)
     except Exception as _p2_exc:
         log.warning("Phase 2 failed: %s — using Phase 1 only", _p2_exc)
         phase2_outputs = {
-            "agent6": "(unavailable)",
-            "agent7": "(unavailable)",
-            "agent8": "(unavailable)",
-            "agent9": "(unavailable)",
+            "agent7":  "(unavailable)",
+            "agent8":  "(unavailable)",
+            "agent9":  "(unavailable)",
+            "agent10": "(unavailable)",
+            "agent11": "(unavailable)",
         }
 
-    all_outputs = {**phase1_outputs, **phase2_outputs, "agent5_draft": agent5_output}
+    all_outputs = {**phase1_outputs, **phase2_outputs}
 
-    print("[Phase 3a] Running Agent 10 Narrative Director...")
+    print("[Phase 3a] Running Agent 11 Narrative Director...")
     try:
-        agent10_output = _run_agent10_narrative(review_context, all_outputs)
-    except Exception as _a10_exc:
-        log.warning("Agent 10 failed: %s", _a10_exc)
-        agent10_output = "(unavailable)"
-    all_outputs["agent10"] = agent10_output
+        agent11_output = _run_agent11_narrative(review_context, all_outputs)
+    except Exception as _a11_exc:
+        log.warning("Agent 11 failed: %s", _a11_exc)
+        agent11_output = "(unavailable)"
+    all_outputs["agent11"] = agent11_output
 
-    # Phase 3b: Agent 5 final — re-runs with ALL 9 agent reports
-    print("[Phase 3b] Running Agent 5 Strategy Director (final synthesis)...")
+    # Phase 3b: Agent 6 final — re-runs with ALL 11 agent reports
+    print("[Phase 3b] Running Agent 6 Strategy Director (final synthesis)...")
     try:
-        agent5_final = _call_claude(
-            _SYSTEM_AGENT5,
-            _build_agent5_final_input(review_context, all_outputs),
-            "5-StrategyDirector-Final",
+        agent6_final = _call_claude(
+            _SYSTEM_AGENT6,
+            _build_agent6_final_input(review_context, all_outputs),
+            "6-StrategyDirector-Final",
         )
-        final_params = _extract_json_block(agent5_final)
+        final_params = _extract_json_block(agent6_final)
         if final_params:
             config = _load_strategy_config()
             if "parameters" not in config or not isinstance(config.get("parameters"), dict):
@@ -1710,16 +1809,16 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
             if _sw_final:
                 config["signal_weights"] = _sw_final
             _save_strategy_config(config)
-            log.info("Strategy config updated from Agent 5 final synthesis")
+            log.info("Strategy config updated from Agent 6 final synthesis")
         else:
-            log.warning("Agent 5 final JSON parse failed — using draft config")
-    except Exception as _a5f_exc:
-        log.warning("Phase 3 Agent 5 Final failed: %s", _a5f_exc)
-        agent5_final = "(unavailable)"
-    all_outputs["agent5_final"] = agent5_final
+            log.warning("Agent 6 final JSON parse failed — using draft config")
+    except Exception as _a6f_exc:
+        log.warning("Phase 3 Agent 6 Final failed: %s", _a6f_exc)
+        agent6_final = "(unavailable)"
+    all_outputs["agent6_final"] = agent6_final
 
-    _apply_roadmap_updates(phase2_outputs.get("agent8", ""))
-    _save_weekly_report(all_outputs, agent5_final)
+    _apply_roadmap_updates(phase2_outputs.get("agent9", ""))
+    _save_weekly_report(all_outputs, agent6_final)
 
     # ── Build and save markdown report ───────────────────────────────────────
     _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1762,33 +1861,37 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
         "",
         agent4_output,
         "",
-        "## Agent 5: Strategy Director (Draft)",
+        "## Agent 5: CTO (Technical Audit)",
         "",
-        agent5_output,
+        agent5_cto_output,
         "",
-        "## Agent 6: Market Intelligence Researcher",
+        "## Agent 6: Strategy Director (Draft)",
         "",
-        phase2_outputs.get("agent6", "(not run)"),
+        agent6_output,
         "",
-        "## Agent 7: CFO / Cost Analyst",
+        "## Agent 7: Market Intelligence Researcher",
         "",
         phase2_outputs.get("agent7", "(not run)"),
         "",
-        "## Agent 8: Product Manager",
+        "## Agent 8: CFO / Cost Analyst",
         "",
         phase2_outputs.get("agent8", "(not run)"),
         "",
-        "## Agent 9: Compliance Auditor",
+        "## Agent 9: Product Manager",
         "",
         phase2_outputs.get("agent9", "(not run)"),
         "",
-        "## Agent 10: Narrative Director",
+        "## Agent 10: Compliance Auditor",
         "",
-        agent10_output,
+        phase2_outputs.get("agent10", "(not run)"),
         "",
-        "## Agent 5: Strategy Director (Final Synthesis)",
+        "## Agent 11: Narrative Director",
         "",
-        agent5_final,
+        agent11_output,
+        "",
+        "## Agent 6: Strategy Director (Final Synthesis)",
+        "",
+        agent6_final,
     ]
     report_md = "\n".join(md_sections)
 

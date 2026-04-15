@@ -3636,5 +3636,211 @@ class TestSuite18Divergence(unittest.TestCase):
         self.assertIn("OI", reason)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Suite 19 — Phase 3: Reddit public provider, roll logic, time-stop,
+#             IV crush, and weekly-review agent count
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSuite19Phase3(unittest.TestCase):
+    """10 tests for Phase 3 features: public Reddit, roll, time-stop, IV crush, agent count."""
+
+    # ── Test 1: RedditPublicProvider cache directory created ──────────────────
+    def test_01_reddit_public_provider_importable(self):
+        """reddit_sentiment_public.py must import and expose RedditPublicProvider."""
+        import importlib
+        mod = importlib.import_module("reddit_sentiment_public")
+        self.assertTrue(hasattr(mod, "RedditPublicProvider"))
+
+    # ── Test 2: Module-level _SUBREDDITS not empty ────────────────────────────
+    def test_02_reddit_public_subreddits_defined(self):
+        """reddit_sentiment_public must define at least 2 subreddits."""
+        import reddit_sentiment_public as rsp
+        self.assertTrue(
+            hasattr(rsp, "_SUBREDDITS"),
+            "reddit_sentiment_public is missing _SUBREDDITS",
+        )
+        self.assertGreaterEqual(len(rsp._SUBREDDITS), 2)
+
+    # ── Test 3: should_roll_structure — expiry_approaching triggers roll ──────
+    def test_03_should_roll_expiry_approaching(self):
+        """should_roll_structure returns True for expiry_approaching trigger."""
+        import options_executor
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+        struct = OptionsStructure(
+            structure_id="roll-test-1",
+            underlying="SPY",
+            strategy=OptionStrategy.SINGLE_CALL,
+            lifecycle=StructureLifecycle.FULLY_FILLED,
+            legs=[],
+            contracts=1,
+            max_cost_usd=100.0,
+            opened_at="2026-04-14T14:00:00+00:00",
+            catalyst="test",
+            tier=Tier.CORE,
+            thesis_status="intact",
+        )
+        ok, reason = options_executor.should_roll_structure(
+            struct, "expiry_approaching", {}
+        )
+        self.assertTrue(ok)
+        self.assertIn("roll", reason.lower())
+
+    # ── Test 4: should_roll_structure — thesis invalidated blocks roll ────────
+    def test_04_should_roll_thesis_invalidated(self):
+        """should_roll_structure returns False when thesis_status == 'invalidated'."""
+        import options_executor
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+        struct = OptionsStructure(
+            structure_id="roll-test-2",
+            underlying="SPY",
+            strategy=OptionStrategy.SINGLE_CALL,
+            lifecycle=StructureLifecycle.FULLY_FILLED,
+            legs=[],
+            contracts=1,
+            max_cost_usd=100.0,
+            opened_at="2026-04-14T14:00:00+00:00",
+            catalyst="test",
+            tier=Tier.CORE,
+            thesis_status="invalidated",
+        )
+        ok, _ = options_executor.should_roll_structure(
+            struct, "expiry_approaching", {}
+        )
+        self.assertFalse(ok)
+
+    # ── Test 5: should_roll_structure — P&L trigger does NOT trigger roll ─────
+    def test_05_should_roll_pnl_stop_blocked(self):
+        """should_roll_structure returns False for stop_loss P&L triggers."""
+        import options_executor
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+        struct = OptionsStructure(
+            structure_id="roll-test-3",
+            underlying="SPY",
+            strategy=OptionStrategy.SINGLE_CALL,
+            lifecycle=StructureLifecycle.FULLY_FILLED,
+            legs=[],
+            contracts=1,
+            max_cost_usd=100.0,
+            opened_at="2026-04-14T14:00:00+00:00",
+            catalyst="test",
+            tier=Tier.CORE,
+            thesis_status="intact",
+        )
+        ok, _ = options_executor.should_roll_structure(
+            struct, "stop_loss: down 50%", {}
+        )
+        self.assertFalse(ok)
+
+    # ── Test 6: time-stop fires at 40% elapsed for single leg ─────────────────
+    def test_06_time_stop_single_leg_40pct(self):
+        """should_close_structure returns True for single leg at 40% elapsed DTE."""
+        import options_executor
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+        from datetime import date, timedelta
+        today = date.today()
+        opened = today - timedelta(days=4)   # opened 4 days ago
+        expiry = today + timedelta(days=6)   # expires 6 days → total=10, elapsed=4 → 40%
+        struct = OptionsStructure(
+            structure_id="ts-test-1",
+            underlying="SPY",
+            strategy=OptionStrategy.SINGLE_CALL,
+            lifecycle=StructureLifecycle.FULLY_FILLED,
+            legs=[],
+            contracts=1,
+            max_cost_usd=100.0,
+            catalyst="test",
+            tier=Tier.CORE,
+            expiration=expiry.isoformat(),
+            opened_at=datetime(opened.year, opened.month, opened.day, 10, 0, 0).isoformat(),
+        )
+        close, reason = options_executor.should_close_structure(struct, {}, {}, None)
+        self.assertTrue(close)
+        self.assertIn("time_stop", reason)
+
+    # ── Test 7: time-stop fires at 50% elapsed for debit spread ───────────────
+    def test_07_time_stop_debit_spread_50pct(self):
+        """should_close_structure returns True for debit spread at 50% elapsed DTE."""
+        import options_executor
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+        from datetime import date, timedelta
+        today = date.today()
+        opened = today - timedelta(days=5)   # opened 5 days ago
+        expiry = today + timedelta(days=5)   # total=10, elapsed=5 → 50%
+        struct = OptionsStructure(
+            structure_id="ts-test-2",
+            underlying="SPY",
+            strategy=OptionStrategy.CALL_DEBIT_SPREAD,
+            lifecycle=StructureLifecycle.FULLY_FILLED,
+            legs=[],
+            contracts=1,
+            max_cost_usd=200.0,
+            catalyst="test",
+            tier=Tier.CORE,
+            expiration=expiry.isoformat(),
+            opened_at=datetime(opened.year, opened.month, opened.day, 10, 0, 0).isoformat(),
+        )
+        close, reason = options_executor.should_close_structure(struct, {}, {}, None)
+        self.assertTrue(close)
+        self.assertIn("time_stop", reason)
+
+    # ── Test 8: time-stop does NOT fire for credit spread ─────────────────────
+    def test_08_time_stop_credit_spread_excluded(self):
+        """Credit spreads must NOT trigger the time-stop rule."""
+        import options_executor
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+        from datetime import date, timedelta
+        today = date.today()
+        opened = today - timedelta(days=7)
+        expiry = today + timedelta(days=3)  # 70% elapsed — above any threshold
+        struct = OptionsStructure(
+            structure_id="ts-test-3",
+            underlying="SPY",
+            strategy=OptionStrategy.CALL_CREDIT_SPREAD,
+            lifecycle=StructureLifecycle.FULLY_FILLED,
+            legs=[],
+            contracts=1,
+            max_cost_usd=150.0,
+            catalyst="test",
+            tier=Tier.CORE,
+            expiration=expiry.isoformat(),
+            opened_at=datetime(opened.year, opened.month, opened.day, 10, 0, 0).isoformat(),
+        )
+        # Only the time-stop rule would fire; no P&L data → no other close reason
+        close, reason = options_executor.should_close_structure(struct, {}, {}, None)
+        # May or may not close for other reasons, but if it closes it must not be time_stop
+        if close:
+            self.assertNotIn("time_stop", reason)
+
+    # ── Test 9: detect_iv_crush disabled when auto_close_on_crush=False ───────
+    def test_09_iv_crush_disabled_by_config(self):
+        """detect_iv_crush returns (False, '') when auto_close_on_crush is False."""
+        from options_data import detect_iv_crush
+        config = {
+            "account2": {
+                "iv_monitoring": {
+                    "auto_close_on_crush": False,
+                    "crush_threshold": 0.30,
+                }
+            }
+        }
+        crushed, reason = detect_iv_crush("SPY", config)
+        self.assertFalse(crushed)
+        self.assertEqual(reason, "")
+
+    # ── Test 10: weekly_review has _SYSTEM_AGENT5 through _SYSTEM_AGENT11 ─────
+    def test_10_weekly_review_has_eleven_agent_prompts(self):
+        """weekly_review.py must export _SYSTEM_AGENT1 through _SYSTEM_AGENT11."""
+        import weekly_review
+        for i in range(1, 12):
+            attr = f"_SYSTEM_AGENT{i}"
+            self.assertTrue(
+                hasattr(weekly_review, attr),
+                f"weekly_review is missing {attr}",
+            )
+            prompt = getattr(weekly_review, attr)
+            self.assertIsInstance(prompt, str)
+            self.assertGreater(len(prompt), 50, f"{attr} prompt is too short")
+
+
 if __name__ == "__main__":
     unittest.main()

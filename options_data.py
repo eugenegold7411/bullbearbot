@@ -19,8 +19,10 @@ log = logging.getLogger(__name__)
 _DATA_DIR = Path(__file__).parent / "data" / "options"
 _IV_DIR = _DATA_DIR / "iv_history"
 _CHAIN_DIR = _DATA_DIR / "chains"
+_IV_SNAP_DIR = _DATA_DIR / "iv_snapshots"
 _IV_DIR.mkdir(parents=True, exist_ok=True)
 _CHAIN_DIR.mkdir(parents=True, exist_ok=True)
+_IV_SNAP_DIR.mkdir(parents=True, exist_ok=True)
 
 # Minimum history entries before IV rank is considered valid
 _MIN_IV_HISTORY = 20
@@ -417,3 +419,146 @@ def get_options_regime(vix: float) -> dict:
             "max_contracts_multiplier": 0.0,
             "notes": "Crisis vol — no new options positions, close existing if possible",
         }
+
+
+# ---------------------------------------------------------------------------
+# IV crush monitoring
+# ---------------------------------------------------------------------------
+
+def snapshot_pre_event_iv(
+    symbol: str,
+    event_date: str,
+    event_type: str = "earnings",
+) -> bool:
+    """
+    Record the current ATM IV as a pre-event baseline for symbol.
+
+    Fetches a fresh options chain to get current ATM IV, then writes an
+    entry to data/options/iv_snapshots/{symbol}_snapshots.json.
+
+    Parameters
+    ----------
+    symbol     : Underlying symbol (e.g. "AAPL")
+    event_date : ISO date of the upcoming event (e.g. "2026-04-25")
+    event_type : "earnings" | "macro" | "fed" | other label
+
+    Returns True if snapshot was recorded, False on any failure.
+    """
+    snap_path = _IV_SNAP_DIR / f"{symbol}_snapshots.json"
+    today_str = date.today().isoformat()
+
+    # Load existing snapshots
+    snapshots: list[dict] = []
+    if snap_path.exists():
+        try:
+            snapshots = json.loads(snap_path.read_text())
+        except Exception:
+            snapshots = []
+
+    # Deduplicate: skip if we already have a snapshot for this event_date
+    if any(s.get("event_date") == event_date for s in snapshots):
+        log.debug(
+            "[OPTIONS_DATA] %s: pre-event IV snapshot for %s already exists",
+            symbol, event_date,
+        )
+        return False
+
+    # Get current ATM IV from fresh chain
+    try:
+        chain = fetch_options_chain(symbol, force_refresh=True)
+        if not chain or not chain.get("current_price"):
+            log.debug("[OPTIONS_DATA] %s: snapshot_pre_event_iv — no chain data", symbol)
+            return False
+        atm_iv = _extract_atm_iv(chain, chain["current_price"])
+        if not atm_iv:
+            log.debug("[OPTIONS_DATA] %s: snapshot_pre_event_iv — could not extract ATM IV", symbol)
+            return False
+    except Exception as exc:
+        log.warning("[OPTIONS_DATA] %s: snapshot_pre_event_iv failed: %s", symbol, exc)
+        return False
+
+    snapshots.append({
+        "event_date":    event_date,
+        "snapshot_date": today_str,
+        "iv":            round(atm_iv, 4),
+        "event_type":    event_type,
+    })
+
+    # Keep most recent 30 snapshots
+    if len(snapshots) > 30:
+        snapshots = snapshots[-30:]
+
+    try:
+        snap_path.write_text(json.dumps(snapshots))
+    except Exception as exc:
+        log.warning("[OPTIONS_DATA] %s: snapshot write failed: %s", symbol, exc)
+        return False
+
+    log.info(
+        "[OPTIONS_DATA] %s: pre-event IV snapshot recorded iv=%.1f%% event=%s type=%s",
+        symbol, atm_iv * 100, event_date, event_type,
+    )
+    return True
+
+
+def detect_iv_crush(symbol: str, config: dict) -> tuple[bool, str]:
+    """
+    Detect whether IV has crushed post-event for symbol.
+
+    Compares current ATM IV to the most recent pre-event snapshot. If
+    current IV < snapshot_iv × (1 − crush_threshold), returns (True, reason).
+
+    Only fires when config["account2"]["iv_monitoring"]["auto_close_on_crush"]
+    is True (default False — observe before auto-closing).
+
+    Parameters
+    ----------
+    symbol : Underlying symbol
+    config : Full strategy_config dict (reads account2.iv_monitoring)
+
+    Returns (crush_detected: bool, reason: str)
+    """
+    iv_mon = config.get("account2", {}).get("iv_monitoring", {})
+    if not iv_mon.get("auto_close_on_crush", False):
+        return False, ""
+
+    crush_threshold = float(iv_mon.get("crush_threshold", 0.30))
+
+    snap_path = _IV_SNAP_DIR / f"{symbol}_snapshots.json"
+    if not snap_path.exists():
+        return False, ""
+
+    try:
+        snapshots = json.loads(snap_path.read_text())
+    except Exception:
+        return False, ""
+
+    if not snapshots:
+        return False, ""
+
+    # Use the most recent snapshot
+    snap = snapshots[-1]
+    pre_iv = snap.get("iv")
+    if not pre_iv or pre_iv <= 0:
+        return False, ""
+
+    # Get current ATM IV from history (avoid fetching live chain during close-check)
+    history = _load_iv_history(symbol)
+    if not history:
+        return False, ""
+    current_iv = history[-1].get("iv")
+    if not current_iv or current_iv <= 0:
+        return False, ""
+
+    crush_level = pre_iv * (1.0 - crush_threshold)
+    if current_iv < crush_level:
+        reason = (
+            f"iv_crush: current={current_iv:.3f} "
+            f"pre_event={pre_iv:.3f} "
+            f"threshold={crush_threshold:.0%} "
+            f"event={snap.get('event_date','?')}"
+        )
+        log.info("[OPTIONS_DATA] %s: IV crush detected — %s", symbol, reason)
+        return True, reason
+
+    return False, ""

@@ -541,6 +541,45 @@ if cfg:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# reddit_sentiment_public.py importable (Phase 3 — public JSON fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+rsp_path = BASE_DIR / "reddit_sentiment_public.py"
+if not rsp_path.exists():
+    check(FAIL, "reddit_sentiment_public.py: file missing — public Reddit fallback unavailable")
+else:
+    try:
+        import importlib.util as _ilu2
+        _spec2 = _ilu2.spec_from_file_location("reddit_sentiment_public_vc", rsp_path)
+        _mod2  = _ilu2.module_from_spec(_spec2)
+        _spec2.loader.exec_module(_mod2)
+        if hasattr(_mod2, "RedditPublicProvider"):
+            check(PASS, "reddit_sentiment_public.py: importable, RedditPublicProvider present")
+        else:
+            check(FAIL, "reddit_sentiment_public.py: RedditPublicProvider class missing")
+    except Exception as _rsp_err:
+        check(FAIL, f"reddit_sentiment_public.py: import failed — {_rsp_err}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# account2.iv_monitoring section (Phase 3 — IV crush detection)
+# ─────────────────────────────────────────────────────────────────────────────
+if cfg:
+    _iv_mon = cfg.get("account2", {}).get("iv_monitoring")
+    if _iv_mon is None:
+        check(FAIL, "strategy_config.json: account2.iv_monitoring section missing")
+    else:
+        _required_iv = ["enabled", "auto_close_on_crush", "crush_threshold"]
+        _missing_iv  = [k for k in _required_iv if k not in _iv_mon]
+        if _missing_iv:
+            check(FAIL, f"strategy_config.json: account2.iv_monitoring missing keys: {_missing_iv}")
+        else:
+            _crush = _iv_mon.get("crush_threshold", 0)
+            if 0.10 <= float(_crush) <= 0.60:
+                check(PASS, f"strategy_config.json: account2.iv_monitoring present, crush_threshold={_crush} (valid 0.10–0.60)")
+            else:
+                check(WARN, f"strategy_config.json: account2.iv_monitoring.crush_threshold={_crush} unusual (expected 0.10–0.60)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 passes   = sum(1 for s, _ in results if s == PASS)

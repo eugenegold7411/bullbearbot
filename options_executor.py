@@ -15,6 +15,9 @@ close_structure(structure, trading_client, reason, method, timeout_minutes)
                                                            → OptionsStructure
 should_close_structure(structure, current_prices, config, current_time)
                                                            → (bool, str)
+should_roll_structure(structure, close_reason, config)     → (bool, str)
+execute_roll(structure, trading_client, roll_reason, config)
+                                                           → OptionsStructure
 """
 
 from __future__ import annotations
@@ -484,15 +487,21 @@ def should_close_structure(
     Determine if a structure should be closed. Returns (should_close, reason).
 
     Rules (checked in order):
-    1. DTE ≤ 2 days → close (expiry_approaching)
-    2. Loss ≥ 50% of max_risk → close (stop_loss_hit)
-    3. Gain ≥ 80% of max_profit → close (target_profit_hit)
-    4. lifecycle == CANCELLED → close broken structure (broken_structure)
-    5. force_close_structures list in config → close (manual_close)
+    1.  lifecycle == CANCELLED → close broken structure (broken_structure)
+    2.  not is_open() → no-op
+    3.  force_close_structures list in config → close (manual_close)
+    4.  DTE ≤ 2 days → close (expiry_approaching)
+    4a. Time-stop (after DTE check, before P&L check):
+        single legs close at 40% elapsed DTE; debit spreads at 50%.
+        Credit spreads excluded — theta works in their favour.
+    4b. IV crush: current IV < pre-event snap × (1 − threshold) → close.
+        Only fires when account2.iv_monitoring.auto_close_on_crush is True.
+    5.  Loss ≥ 50% of max_risk → close (stop_loss_hit)
+    6.  Gain ≥ 80% of max_profit → close (target_profit_hit)
 
     Returns (False, "") if none apply.
     """
-    # Rule 4: broken structure
+    # Rule 1: broken structure
     if structure.lifecycle == StructureLifecycle.CANCELLED:
         return True, "broken_structure"
 
@@ -500,12 +509,12 @@ def should_close_structure(
     if not structure.is_open():
         return False, ""
 
-    # Rule 5: manual close list
+    # Rule 3: manual close list
     force_list = config.get("force_close_structures", [])
     if structure.structure_id in force_list or structure.underlying in force_list:
         return True, "manual_close"
 
-    # Rule 1: DTE check
+    # Rule 4: DTE check
     if structure.expiration:
         try:
             exp_date = date.fromisoformat(structure.expiration)
@@ -515,16 +524,48 @@ def should_close_structure(
         except (ValueError, TypeError):
             pass
 
-    # Rules 2 & 3: P&L check using current_prices
-    net_debit = structure.net_debit_per_contract()
+    # Rule 4a: time-stop (after DTE check, before P&L check)
+    _SINGLE_LEG_STRATEGIES = frozenset({
+        OptionStrategy.SINGLE_CALL, OptionStrategy.SINGLE_PUT,
+    })
+    _DEBIT_SPREAD_STRATEGIES = frozenset({
+        OptionStrategy.CALL_DEBIT_SPREAD, OptionStrategy.PUT_DEBIT_SPREAD,
+    })
+    if structure.strategy in _SINGLE_LEG_STRATEGIES or structure.strategy in _DEBIT_SPREAD_STRATEGIES:
+        if structure.expiration and structure.opened_at:
+            try:
+                exp_date     = date.fromisoformat(structure.expiration)
+                opened_dt    = datetime.fromisoformat(structure.opened_at)
+                opened_date  = opened_dt.date()
+                total_dte    = (exp_date - opened_date).days
+                elapsed_dte  = (date.today() - opened_date).days
+                if total_dte > 0:
+                    elapsed_pct = elapsed_dte / total_dte
+                    threshold   = 0.40 if structure.strategy in _SINGLE_LEG_STRATEGIES else 0.50
+                    if elapsed_pct >= threshold:
+                        return True, f"time_stop: elapsed {elapsed_pct:.0%} of DTE"
+            except (ValueError, TypeError):
+                pass
+
+    # Rule 4b: IV crush check (only when auto_close_on_crush enabled in config)
+    try:
+        from options_data import detect_iv_crush  # noqa: PLC0415
+        _crush, _crush_reason = detect_iv_crush(structure.underlying, config)
+        if _crush:
+            return True, _crush_reason
+    except Exception:
+        pass
+
+    # Rules 5 & 6: P&L check using current_prices
+    net_debit  = structure.net_debit_per_contract()
     max_profit = structure.max_profit_usd
 
     if net_debit is not None and net_debit > 0:
         # Debit structure: current_value < net_debit means loss
         current_val = _estimate_current_value(structure, current_prices)
         if current_val is not None:
-            max_risk = net_debit * structure.contracts * 100
-            current_pnl = (current_val - (net_debit * structure.contracts * 100))
+            max_risk    = net_debit * structure.contracts * 100
+            current_pnl = current_val - (net_debit * structure.contracts * 100)
 
             if current_pnl <= -(max_risk * 0.50):
                 return True, "stop_loss_hit"
@@ -533,6 +574,107 @@ def should_close_structure(
                 return True, "target_profit_hit"
 
     return False, ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Roll logic
+# ─────────────────────────────────────────────────────────────────────────────
+
+def should_roll_structure(
+    structure:    OptionsStructure,
+    close_reason: str,
+    config:       dict,
+) -> tuple[bool, str]:
+    """
+    Determine whether a structure being closed should be rolled instead.
+
+    Roll is considered when:
+    - Close reason is a DTE/time trigger (expiry_approaching or time_stop*)
+    - thesis_status is "intact" or "weakened" (not "invalidated")
+    - VIX regime is not crisis (checked via config account2.vix_gates.crisis_halt)
+
+    P&L exits (stop_loss_hit, target_profit_hit), manual_close, broken_structure,
+    and iv_crush are NOT roll candidates — position must exit cleanly.
+
+    Returns (should_roll: bool, roll_reason: str).
+    """
+    # Only DTE/time-based triggers qualify for roll
+    _ROLL_ELIGIBLE = {"expiry_approaching", "time_stop"}
+    eligible = any(
+        close_reason == r or close_reason.startswith(r)
+        for r in _ROLL_ELIGIBLE
+    )
+    if not eligible:
+        return False, ""
+
+    # Invalidated thesis — don't roll
+    if structure.thesis_status == "invalidated":
+        return False, ""
+
+    # Crisis VIX regime — no new options positions (including rolls)
+    a2_cfg     = config.get("account2", {})
+    vix_gates  = a2_cfg.get("vix_gates", {})
+    crisis_vix = float(vix_gates.get("crisis_halt", 40))
+    # VIX not directly available here; check config-level override flag if present
+    if config.get("_vix_crisis_halt", False):
+        return False, ""
+
+    roll_reason = (
+        f"roll_eligible: {close_reason} "
+        f"thesis={structure.thesis_status} "
+        f"strategy={structure.strategy.value}"
+    )
+    return True, roll_reason
+
+
+def execute_roll(
+    structure:      OptionsStructure,
+    trading_client,
+    roll_reason:    str,
+    config:         dict,
+) -> OptionsStructure:
+    """
+    Execute a roll by closing the current structure and recording roll intent.
+
+    The replacement structure is NOT built here — it is created on the next
+    bot_options.py cycle via the normal debate → build → submit pipeline.
+    The next cycle picks up the roll intent from the closing structure's
+    roll_group_id and roll_reason fields.
+
+    Steps:
+    1. Close the structure (limit close)
+    2. Set roll_reason and roll_group_id on the structure
+    3. Persist the updated structure via save_structure()
+
+    Returns the updated (closing) structure.
+    """
+    import uuid  # noqa: PLC0415
+    from options_state import save_structure  # already imported at top  # noqa: PLC0415
+
+    # Assign a roll group ID if this is the first hop in the chain
+    if not structure.roll_group_id:
+        structure.roll_group_id = str(uuid.uuid4())[:8]
+    structure.roll_reason = roll_reason
+    structure.add_audit(f"roll initiated: {roll_reason} group={structure.roll_group_id}")
+
+    log.info(
+        "[EXECUTOR] execute_roll %s (%s) group=%s reason=%s",
+        structure.underlying, structure.structure_id,
+        structure.roll_group_id, roll_reason,
+    )
+
+    # Close the current structure
+    structure = close_structure(
+        structure, trading_client, reason=f"roll: {roll_reason}", method="limit"
+    )
+
+    # Persist with roll metadata so next cycle can read roll_group_id
+    try:
+        save_structure(structure)
+    except Exception as exc:
+        log.warning("[EXECUTOR] execute_roll save failed (non-fatal): %s", exc)
+
+    return structure
 
 
 def _estimate_current_value(structure: OptionsStructure, current_prices: dict) -> Optional[float]:

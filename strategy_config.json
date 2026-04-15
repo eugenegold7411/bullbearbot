@@ -149,7 +149,13 @@
       "pre_debate_oi_floor": 100,
       "pre_debate_volume_floor": 10
     },
-    "cycle_offset_note": "Account 2 runs 90s after Account 1 each market cycle to consume fresh signal scores"
+    "cycle_offset_note": "Account 2 runs 90s after Account 1 each market cycle to consume fresh signal scores",
+    "iv_monitoring": {
+      "enabled": true,
+      "auto_close_on_crush": false,
+      "crush_threshold": 0.30,
+      "min_pre_event_history_days": 3
+    }
   },
   "scratchpad": {
     "enabled": true,

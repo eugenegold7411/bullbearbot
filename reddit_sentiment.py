@@ -211,32 +211,41 @@ def fetch_reddit_sentiment(symbols: list[str]) -> dict[str, dict]:
 
     reddit = _setup_reddit()
     if reddit is None:
-        return cache.get("symbols", {})  # return stale cache or {}
-
-    log.info("[REDDIT] Fetching Reddit sentiment for %d symbols", len(stock_syms))
-    all_posts: list[dict] = []
-
-    for sub_name in _SUBREDDITS:
+        # Fall back to public JSON provider (no PRAW/OAuth needed)
         try:
-            sub = reddit.subreddit(sub_name)
-            for post in sub.hot(limit=_MAX_POSTS):
-                all_posts.append({
-                    "title":    post.title,
-                    "selftext": (post.selftext or "")[:300],
-                    "score":    post.score,
-                    "created":  post.created_utc,
-                    "sub":      sub_name,
-                })
-            for post in sub.new(limit=_MAX_POSTS // 2):
-                all_posts.append({
-                    "title":    post.title,
-                    "selftext": (post.selftext or "")[:300],
-                    "score":    post.score,
-                    "created":  post.created_utc,
-                    "sub":      sub_name,
-                })
-        except Exception as exc:
-            log.warning("[REDDIT] Subreddit %s failed: %s", sub_name, exc)
+            from reddit_sentiment_public import RedditPublicProvider as _Pub  # noqa: PLC0415
+            _pub_posts = _Pub().fetch_all_posts()
+        except Exception as _pub_exc:
+            log.debug("[REDDIT] Public provider failed: %s", _pub_exc)
+            _pub_posts = []
+        if not _pub_posts:
+            return cache.get("symbols", {})
+        log.info("[REDDIT] PRAW unavailable — public JSON provider: %d posts", len(_pub_posts))
+        all_posts: list[dict] = _pub_posts
+    else:
+        log.info("[REDDIT] Fetching Reddit sentiment for %d symbols", len(stock_syms))
+        all_posts = []
+        for sub_name in _SUBREDDITS:
+            try:
+                sub = reddit.subreddit(sub_name)
+                for post in sub.hot(limit=_MAX_POSTS):
+                    all_posts.append({
+                        "title":    post.title,
+                        "selftext": (post.selftext or "")[:300],
+                        "score":    post.score,
+                        "created":  post.created_utc,
+                        "sub":      sub_name,
+                    })
+                for post in sub.new(limit=_MAX_POSTS // 2):
+                    all_posts.append({
+                        "title":    post.title,
+                        "selftext": (post.selftext or "")[:300],
+                        "score":    post.score,
+                        "created":  post.created_utc,
+                        "sub":      sub_name,
+                    })
+            except Exception as exc:
+                log.warning("[REDDIT] Subreddit %s failed: %s", sub_name, exc)
 
     if not all_posts:
         log.warning("[REDDIT] No posts fetched — returning cached data")

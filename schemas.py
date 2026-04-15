@@ -663,6 +663,11 @@ class OptionsStructure:
     debit_paid:     Optional[float]  = None  # actual fill economics (per contract × 100)
     max_profit_usd: Optional[float]  = None
     audit_log:      list             = field(default_factory=list)
+    # Roll tracking (set when this structure replaces a prior one)
+    roll_group_id:           Optional[str]  = None   # links all structures in a roll chain
+    roll_from_structure_id:  Optional[str]  = None   # immediate predecessor structure_id
+    roll_reason:             str            = ""     # e.g. "dte_approaching", "underlying_moved"
+    thesis_status:           str            = "intact"  # "intact" | "weakened" | "invalidated"
 
     def is_terminal(self) -> bool:
         """True if structure has reached a final, non-reversible state."""
@@ -775,6 +780,10 @@ class OptionsStructure:
             debit_paid=_maybe_float(d.get("debit_paid")),
             max_profit_usd=_maybe_float(d.get("max_profit_usd")),
             audit_log=list(d.get("audit_log", [])),
+            roll_group_id=d.get("roll_group_id"),
+            roll_from_structure_id=d.get("roll_from_structure_id"),
+            roll_reason=d.get("roll_reason", ""),
+            thesis_status=d.get("thesis_status", "intact"),
         )
 
 

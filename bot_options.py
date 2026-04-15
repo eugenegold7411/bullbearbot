@@ -71,6 +71,18 @@ _OBS_MODE_FILE   = _A2_DIR / "obs_mode_state.json"
 # Equity floor
 _EQUITY_FLOOR = 25_000.0
 
+# Strategy config path (read for close-check config, roll decisions)
+_STRATEGY_FILE = Path(__file__).parent / "strategy_config.json"
+
+
+def _load_strategy_config() -> dict:
+    """Load strategy_config.json. Returns {} on failure — non-fatal."""
+    try:
+        return json.loads(_STRATEGY_FILE.read_text(encoding="utf-8"))
+    except Exception as _exc:
+        log.debug("[OPTS] _load_strategy_config failed (non-fatal): %s", _exc)
+        return {}
+
 # Max cycles per day to log (cost control)
 _MAX_DAILY_CYCLES = 48
 
@@ -1037,23 +1049,34 @@ def run_options_cycle(
     except Exception as _a2_attr_exc:
         log.debug("[OPTS] Attribution failed (non-fatal): %s", _a2_attr_exc)
 
-    # 12. Close-check: evaluate open structures for expiry/stop/profit conditions
+    # 12. Close-check and roll evaluation for open structures
     try:
-        from datetime import datetime as _dt
-        open_structs = options_state.get_open_structures()
+        _strategy_cfg = _load_strategy_config()
+        open_structs  = options_state.get_open_structures()
         if open_structs:
             trading_client = _get_alpaca()
             for struct in open_structs:
                 should_close, close_reason = options_executor.should_close_structure(
-                    struct, current_prices={}, config={},
-                    current_time=_dt.now(ET),
+                    struct, current_prices={}, config=_strategy_cfg,
+                    current_time=None,
                 )
                 if should_close:
-                    log.info("[OPTS] Closing %s (%s): %s",
-                             struct.underlying, struct.structure_id, close_reason)
-                    options_executor.close_structure(
-                        struct, trading_client, reason=close_reason, method="limit"
+                    # Check for roll opportunity before plain close
+                    should_roll, roll_reason = options_executor.should_roll_structure(
+                        struct, close_reason, _strategy_cfg
                     )
+                    if should_roll:
+                        log.info("[OPTS] Rolling %s (%s): %s",
+                                 struct.underlying, struct.structure_id, roll_reason)
+                        options_executor.execute_roll(
+                            struct, trading_client, roll_reason, _strategy_cfg
+                        )
+                    else:
+                        log.info("[OPTS] Closing %s (%s): %s",
+                                 struct.underlying, struct.structure_id, close_reason)
+                        options_executor.close_structure(
+                            struct, trading_client, reason=close_reason, method="limit"
+                        )
     except Exception as exc:
         log.warning("[OPTS] Close-check loop error: %s", exc)
 

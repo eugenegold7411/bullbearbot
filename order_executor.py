@@ -584,6 +584,19 @@ def execute_all(
 ) -> list[ExecutionResult]:
     results = []
 
+    # Normalise: BrokerAction objects → dict; warn on unknown types; pass dicts through.
+    from schemas import BrokerAction  # noqa: PLC0415
+    _normalised: list = []
+    for _raw in actions:
+        if isinstance(_raw, BrokerAction):
+            _normalised.append(_raw.to_dict())
+        elif isinstance(_raw, dict):
+            log.warning("[EXECUTOR] received raw dict (expected BrokerAction) — processing for backward-compat")
+            _normalised.append(_raw)
+        else:
+            log.warning("[EXECUTOR] unknown action type %s — skipping", type(_raw).__name__)
+    actions = _normalised
+
     for action in actions:
         symbol     = action.get("symbol", "UNKNOWN")
         act        = action.get("action", "").lower()

@@ -400,6 +400,12 @@ significant drawdown, or any time a full system assessment is needed.
 | `shadow_lane.py` | Counterfactual decision log. `log_shadow_event()` + `get_shadow_stats()`. Appends to `data/analytics/near_miss_log.jsonl`. 7 event types. Completely non-fatal. Zero execution side effects. |
 | `iv_history_seeder.py` | **Manual one-shot/occasional calibration tool.** Seeds synthetic IV history for Account 2 symbols using yfinance. Phases: Phase 1 (16 core A2 names), Phase 2 (27 extended names). `run_phase1_seed()`, `run_phase2_seed()`, `validate_seed_quality()`. Bad entries (iv < 0.05) replaced. CLI: `python3 iv_history_seeder.py [--phase2] [--dry-run]`. Designed for future Account 3 fresh observation mode start. |
 
+### Documentation
+
+| File | Purpose |
+|------|---------|
+| `docs/policy_ownership_map.md` | Policy ownership map: which module owns each risk rule (`risk_kernel.py` = primary, `order_executor.py` = backstop), constant values duplicated at both layers, executor input contract (BrokerAction → dict normalisation), and guidance on where to add new policies. |
+
 ### Prompts
 
 | File | Purpose |
@@ -838,6 +844,12 @@ SPY bad entry (BUG-005 artifact, iv=0.02) replaced. 16/16 Phase 1 symbols grade 
 grade A. Gate 14 added to validate_config.py. Post-seed validation path documented for future Account 3 use.
 7 new tests in Suite 21 — 210 total, all passing.
 
+**~~Phase A — Attribution timing + executor contract~~ ✅ COMPLETED 2026-04-15**
+A1: `_decision_id`/`_module_tags`/`_trigger_flags` generation moved before kernel loop in `run_cycle()`. Shadow lane `rejected_by_risk_kernel` events now carry a populated `decision_id`. The "known limitation" comment removed.
+A2: `execute_all()` normalisation block added: `BrokerAction` → `.to_dict()`, raw `dict` → WARNING + process (backward-compat), unknown type → WARNING + skip.
+A3: `docs/policy_ownership_map.md` created: dual-layer ownership rationale, constants table, executor input contract.
+5 new tests in Suite 22 — 215 total, all passing.
+
 **F013 — Reddit credentials activation [5 min]**
 Once Reddit developer app is approved, add `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`
 to `.env`. Code already fully built (`reddit_sentiment.py`). Just needs credentials.
@@ -943,8 +955,6 @@ Agent 4 backtest wiring — `weekly_review.py` Agent 4 input now includes signal
 validate_config.py additions — Sev-1 clean days counter (tightened keywords: `  CRITICAL  ` positional match, `[HALT]`, `regime=halt`, `mode=halted`, `DRAWDOWN GUARD` — avoids false positives from risk_kernel "halt mode" VIX rejection DEBUG lines). Director memo history check (WARN on first week). 13-gate Phase 4 go-live checklist (informational only, never blocks bot — all gates use ✅/⬜, no FAIL). `strategy_config.json` gains `shadow_lane` section. Gate 14 (A2 IV history seeded: 16/16 Phase 1 symbols ≥20 valid entries) added in F012 session.
 
 12 new tests in Suite 20 — 203 total, all passing.
-
-**Known limitation (Phase 4):** Shadow lane kernel rejections are logged with `decision_id=""` because the attribution block that generates decision IDs runs after the kernel loop in `run_cycle()`. The comment in bot.py at the rejection site documents the fix path: move `generate_decision_id()` call earlier in `run_cycle()`, before the kernel loop.
 
 ---
 

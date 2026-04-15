@@ -41,7 +41,7 @@ if cost.exists():
 "'
 
 echo ""
-echo "⚠️  TSM exits TODAY at 15:45 ET — gate fires at 15:15 ET"
+
 echo "========================================"
 echo "  Done. Good night."
 echo "========================================"

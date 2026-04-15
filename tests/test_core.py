@@ -13,6 +13,7 @@ Suites:
   5. signal_scorer  — cap at 25, held-position priority (BUG-001)
   6-8. schemas      — symbol normalization, BrokerAction, validation, SignalScore, OptionsStructure
   9. risk_kernel     — eligibility, sizing, stops, VIX scaling, options structure selection
+ 22. Phase A        — decision_id timing fix, shadow lane id, executor isinstance routing
 """
 
 import sys
@@ -4170,6 +4171,144 @@ class TestSuite21IVHistorySeeder(unittest.TestCase):
 
         self.assertIsNone(iv,
             f"Should return None when all expirations have DTE < {MIN_DTE}, got iv={iv}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SUITE 22 — Phase A: decision_id timing, shadow lane id, executor isinstance
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestSuite22PhaseA(unittest.TestCase):
+    """Suite 22 — Phase A refactor: attribution timing fix + executor contract."""
+
+    # ── T01: generate_decision_id produces populated id ──────────────────────
+
+    def test_decision_id_generated_before_kernel_loop(self):
+        """generate_decision_id returns a non-empty string in dec_{acct}_{date}_{time} format.
+
+        Verifies the attribution block produces a real id when called before the
+        kernel loop (the fix for the blank decision_id bug in shadow lane).
+        """
+        from attribution import generate_decision_id
+
+        ts     = "20260415_123456"
+        dec_id = generate_decision_id("A1", ts)
+
+        self.assertIsInstance(dec_id, str)
+        self.assertGreater(len(dec_id), 0, "decision_id must not be empty")
+        self.assertTrue(dec_id.startswith("dec_A1_"),
+                        f"Expected prefix 'dec_A1_', got: {dec_id!r}")
+        self.assertIn("20260415", dec_id,
+                      f"Expected date in decision_id, got: {dec_id!r}")
+
+    # ── T02: shadow event records the decision_id ─────────────────────────────
+
+    def test_shadow_event_has_decision_id(self):
+        """log_shadow_event writes decision_id to JSONL and it is non-empty."""
+        import tempfile
+        import shadow_lane
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_log = Path(tmpdir) / "near_miss_log.jsonl"
+            with patch.object(shadow_lane, "NEAR_MISS_LOG", tmp_log):
+                shadow_lane.log_shadow_event(
+                    "rejected_by_risk_kernel",
+                    "AAPL",
+                    {"rejection_reason": "vix too high"},
+                    decision_id="dec_A1_20260415_120000",
+                    session="market",
+                )
+            record = json.loads(tmp_log.read_text().strip())
+
+        self.assertEqual(record["decision_id"], "dec_A1_20260415_120000")
+        self.assertNotEqual(record["decision_id"], "",
+                            "decision_id in shadow event must not be blank")
+        self.assertEqual(record["event_type"], "rejected_by_risk_kernel")
+        self.assertEqual(record["symbol"], "AAPL")
+
+    # ── T03: executor skips unknown type ──────────────────────────────────────
+
+    def test_executor_rejects_unknown_type(self):
+        """execute_all skips items that are neither BrokerAction nor dict."""
+        import order_executor as oe
+
+        class _Junk:
+            pass
+
+        account = SimpleNamespace(equity="100000", buying_power="200000")
+        results = oe.execute_all(
+            [_Junk()],
+            account,
+            [],
+            "open",
+            30,
+        )
+        self.assertEqual(results, [],
+                         "Unknown type should be silently skipped (no result appended)")
+
+    # ── T04: executor warns on raw dict ──────────────────────────────────────
+
+    def test_executor_warns_on_raw_dict(self):
+        """execute_all emits a WARNING when it receives a raw dict instead of BrokerAction."""
+        import order_executor as oe
+
+        raw = {
+            "symbol": "AAPL", "action": "buy", "qty": 1,
+            "stop_loss": 190.0, "take_profit": 210.0,
+            "tier": "core", "confidence": "medium",
+        }
+        account = SimpleNamespace(equity="100000", buying_power="200000")
+
+        with self.assertLogs("order_executor", level="WARNING") as cm:
+            # Patch validate_action to raise so execution stops before Alpaca calls
+            with mock.patch.object(oe, "validate_action",
+                                   side_effect=ValueError("test-reject")):
+                oe.execute_all([raw], account, [], "open", 30)
+
+        warning_lines = "\n".join(cm.output)
+        self.assertIn("raw dict", warning_lines,
+                      "Expected 'raw dict' in WARNING log output")
+
+    # ── T05: executor accepts BrokerAction and converts via to_dict() ─────────
+
+    def test_executor_accepts_broker_action(self):
+        """execute_all converts BrokerAction → dict via to_dict() before validation."""
+        from schemas import BrokerAction, AccountAction, Tier, Conviction
+        import order_executor as oe
+
+        ba = BrokerAction(
+            symbol="GLD",
+            action=AccountAction.BUY,
+            qty=5,
+            order_type="market",
+            tier=Tier.CORE,
+            conviction=Conviction.MEDIUM,
+            catalyst="safe-haven demand",
+            stop_loss=425.0,
+            take_profit=455.0,
+        )
+        account = SimpleNamespace(equity="100000", buying_power="200000")
+
+        captured: list = []
+
+        def _capture(action, *args, **kwargs):
+            captured.append(action)
+            raise ValueError("test-reject")  # stop before Alpaca submission
+
+        with mock.patch.object(oe, "validate_action", side_effect=_capture):
+            oe.execute_all([ba], account, [], "open", 30)
+
+        self.assertEqual(len(captured), 1,
+                         "validate_action should be called exactly once")
+        self.assertIsInstance(captured[0], dict,
+                              "BrokerAction must be converted to dict before validate_action")
+        self.assertEqual(captured[0]["symbol"], "GLD")
+        # BrokerAction.to_dict() maps conviction → "confidence"
+        self.assertIn("confidence", captured[0],
+                      "to_dict() must map conviction → 'confidence' key")
+        self.assertNotIn("source_idea", captured[0],
+                         "source_idea must be excluded by to_dict()")
 
 
 if __name__ == "__main__":

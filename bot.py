@@ -1550,6 +1550,48 @@ def run_cycle(
     reasoning = claude_decision.reasoning   if claude_decision else decision.get("reasoning", "")
     notes     = claude_decision.notes       if claude_decision else decision.get("notes", "")
 
+    # Attribution — build tags, generate decision ID, log event
+    _decision_id = ""
+    _module_tags: dict = {}
+    _trigger_flags: dict = {}
+    try:
+        from attribution import (  # noqa: PLC0415
+            build_module_tags, build_trigger_flags,
+            generate_decision_id, log_attribution_event,
+        )
+        _decision_id = generate_decision_id(
+            "A1", _dt.now(_ZI("America/New_York")).strftime("%Y%m%d_%H%M%S")
+        )
+        _module_tags = build_module_tags(
+            session_tier=session_tier,
+            gate_reasons=_gate_reasons if "_gate_reasons" in dir() else [],
+            used_compact=_use_compact if "_use_compact" in dir() else False,
+            gate_skipped=not _run_sonnet if "_run_sonnet" in dir() else True,
+            scratchpad_result=scratchpad_result if "scratchpad_result" in dir() else {},
+            retrieved_memories=similar_scenarios if "similar_scenarios" in dir() else [],
+            macro_backdrop_str=macro_backdrop_str if "macro_backdrop_str" in dir() else "",
+            macro_wire_str=md.get("macro_wire_section", ""),
+            morning_brief=md.get("morning_brief_section", ""),
+            insider_section=md.get("insider_section", ""),
+            reddit_section=md.get("reddit_section", ""),
+            earnings_intel=md.get("earnings_intel_section", ""),
+            recon_diff=recon_diff if "recon_diff" in dir() else None,
+            positions=positions,
+        )
+        _trigger_flags = build_trigger_flags(
+            _gate_reasons if "_gate_reasons" in dir() else []
+        )
+        log_attribution_event(
+            event_type="decision_made",
+            decision_id=_decision_id,
+            account="A1",
+            symbol="portfolio",
+            module_tags=_module_tags,
+            trigger_flags=_trigger_flags,
+        )
+    except Exception as _attr_exc:
+        log.debug("Attribution block failed (non-fatal): %s", _attr_exc)
+
     # Process ideas through risk kernel → broker-ready action dicts
     broker_actions: list = []
     if claude_decision and claude_decision.ideas and regime != "halt":
@@ -1592,8 +1634,6 @@ def run_cycle(
                 )
             else:
                 log.info("[KERNEL] REJECTED %s %s — %s", _idea.intent, _idea.symbol, _result)
-                # Shadow lane — decision_id set later in attribution block; known limitation;
-                # fix in future by moving ID generation earlier in run_cycle()
                 try:
                     from shadow_lane import log_shadow_event as _log_shadow  # noqa: PLC0415
                     _log_shadow(
@@ -1609,9 +1649,9 @@ def run_cycle(
                             "thesis_summary":   getattr(_idea, "catalyst", ""),
                             "regime":           regime,
                             "vix":              float(md.get("vix", 0) or 0),
-                            "module_tags":      {},
+                            "module_tags":      _module_tags,
                         },
-                        decision_id="",
+                        decision_id=_decision_id,
                         session=session_tier,
                     )
                 except Exception:
@@ -1655,46 +1695,6 @@ def run_cycle(
         log.warning("Claude returned regime=halt — skipping execution this cycle")
         broker_actions = []
         _send_sms(f"TRADING BOT: Claude called HALT. Reasoning: {reasoning[:160]}")
-
-    # Attribution — build tags, generate decision ID, log event
-    _decision_id = ""
-    _module_tags: dict = {}
-    _trigger_flags: dict = {}
-    try:
-        from attribution import (  # noqa: PLC0415
-            build_module_tags, build_trigger_flags,
-            generate_decision_id, log_attribution_event,
-        )
-        _decision_id = generate_decision_id(
-            "A1", _dt.now(_ZI("America/New_York")).strftime("%Y%m%d_%H%M%S")
-        )
-        _module_tags = build_module_tags(
-            session_tier=session_tier,
-            gate_reasons=_gate_reasons,
-            used_compact=_use_compact,
-            gate_skipped=not _run_sonnet,
-            scratchpad_result=scratchpad_result if "scratchpad_result" in dir() else {},
-            retrieved_memories=similar_scenarios if "similar_scenarios" in dir() else [],
-            macro_backdrop_str=macro_backdrop_str if "macro_backdrop_str" in dir() else "",
-            macro_wire_str=md.get("macro_wire_section", ""),
-            morning_brief=md.get("morning_brief_section", ""),
-            insider_section=md.get("insider_section", ""),
-            reddit_section=md.get("reddit_section", ""),
-            earnings_intel=md.get("earnings_intel_section", ""),
-            recon_diff=recon_diff if "recon_diff" in dir() else None,
-            positions=positions,
-        )
-        _trigger_flags = build_trigger_flags(_gate_reasons)
-        log_attribution_event(
-            event_type="decision_made",
-            decision_id=_decision_id,
-            account="A1",
-            symbol="portfolio",
-            module_tags=_module_tags,
-            trigger_flags=_trigger_flags,
-        )
-    except Exception as _attr_exc:
-        log.debug("Attribution block failed (non-fatal): %s", _attr_exc)
 
     # Persist decision — JSON rolling memory + ChromaDB vector store
     vector_id = trade_memory.save_trade_memory(decision, md, session_tier)

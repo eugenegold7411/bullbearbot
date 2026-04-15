@@ -396,7 +396,10 @@ def _extract_json_block(text: str) -> dict | None:
 
 _SYSTEM_AGENT1 = """You are an expert quantitative analyst reviewing the performance of an autonomous AI trading bot. Your role is to analyze the bot's trade signal quality over the past week by examining which signals led to wins versus losses, identifying patterns in trade timing (session tier, time of day), spotting which sectors and strategies performed best, and evaluating signal convergence quality — whether multiple confirming signals were present before trades were taken. Focus on actionable patterns rather than generalities. Your analysis should be data-driven and specific to the statistics provided.
 
-Additionally, check all HOLD reasoning from the past week for systematic framing bias: specifically, are FX movements, trade policy, and geopolitical signals being consistently framed as tailwinds rather than risks? Flag any position where tariff exposure, semiconductor export controls, or supply chain dependencies were available in macro wire but not named as concerns in the reasoning field. Report the count and specific examples."""
+Additionally, check all HOLD reasoning from the past week for systematic framing bias: specifically, are FX movements, trade policy, and geopolitical signals being consistently framed as tailwinds rather than risks? Flag any position where tariff exposure, semiconductor export controls, or supply chain dependencies were available in macro wire but not named as concerns in the reasoning field. Report the count and specific examples.
+
+DIVERGENCE ANALYSIS — run every session:
+Review divergence events from the past week. Flag any event_type appearing more than 3 times. Flag any halt or de_risk events. Recommend parameter changes if stop_missing or protection_missing events are recurring. Report: total events, most common type, severity distribution, whether operating mode ever left NORMAL this week."""
 
 _SYSTEM_AGENT2 = """You are an expert risk manager auditing an autonomous AI trading bot's risk controls. Your role is to review position sizing relative to account equity, assess drawdown exposure and whether the high-water mark logic is functioning, evaluate stop-loss effectiveness by examining how many stopped positions hit their loss targets versus drifting further, review PDT (Pattern Day Trader) usage to ensure limits are respected, and identify any dangerous sector or single-name concentration. Flag any risk parameter that appears miscalibrated and recommend specific numeric adjustments."""
 
@@ -1287,6 +1290,9 @@ Please include pattern watchlist analysis in your report section.
 
 ### MODULE ATTRIBUTION (last 7 days)
 {_attr_text}
+
+### DIVERGENCE REPORT (last 7 days)
+{_div_text}
 """
 
     # Attribution summary for Agent 1
@@ -1324,6 +1330,22 @@ Please include pattern watchlist analysis in your report section.
 
     # Rebuild agent1_input with attribution text substituted
     agent1_input = agent1_input.replace("{_attr_text}", _attr_text)
+
+    # Divergence summary for Agent 1
+    _div_text = "(divergence data not yet available)"
+    try:
+        from divergence import get_divergence_summary  # noqa: PLC0415
+        _div_summary = get_divergence_summary(days_back=7)
+        _div_text = (
+            f"Total events: {_div_summary.get('total_events', 0)}\n"
+            f"Halt events: {_div_summary.get('halt_events', 0)}\n"
+            f"De-risk events: {_div_summary.get('de_risk_events', 0)}\n"
+            f"By type: {_div_summary.get('by_type', {})}\n"
+            f"By severity: {_div_summary.get('by_severity', {})}"
+        )
+    except Exception as _div_err:
+        _div_text = f"(divergence unavailable: {_div_err})"
+    agent1_input = agent1_input.replace("{_div_text}", _div_text)
 
     # Extract REJECTED and drawdown lines from log
     rejected_lines = [ln for ln in log_tail_200.splitlines()

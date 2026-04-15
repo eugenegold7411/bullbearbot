@@ -141,6 +141,14 @@
     },
     "debate_confidence_floor": 0.85,
     "max_open_positions": 6,
+    "liquidity_gates": {
+      "min_open_interest": 200,
+      "min_volume": 20,
+      "max_spread_pct": 0.08,
+      "min_mid_price": 0.05,
+      "pre_debate_oi_floor": 100,
+      "pre_debate_volume_floor": 10
+    },
     "cycle_offset_note": "Account 2 runs 90s after Account 1 each market cycle to consume fresh signal scores"
   },
   "scratchpad": {

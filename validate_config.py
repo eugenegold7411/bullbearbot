@@ -483,6 +483,62 @@ if analytics_dir.exists():
 else:
     check(WARN, "data/analytics/: directory missing — will be auto-created on first attribution event")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# data/runtime/ directory (divergence mode state files)
+# ─────────────────────────────────────────────────────────────────────────────
+runtime_dir = BASE_DIR / "data" / "runtime"
+if runtime_dir.exists():
+    check(PASS, "data/runtime/: directory present")
+else:
+    check(WARN, "data/runtime/: directory missing — will be auto-created by divergence.py on first mode write")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# divergence.py importable
+# ─────────────────────────────────────────────────────────────────────────────
+div_path = BASE_DIR / "divergence.py"
+if not div_path.exists():
+    check(FAIL, "divergence.py: file missing — divergence tracking unavailable")
+else:
+    try:
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location("divergence_vc", div_path)
+        _mod  = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _missing_div = [
+            fn for fn in (
+                "load_account_mode", "save_account_mode",
+                "transition_mode", "is_action_allowed",
+                "detect_protection_divergence", "detect_fill_divergence",
+                "respond_to_divergence", "check_clean_cycle",
+                "get_divergence_summary",
+            )
+            if not hasattr(_mod, fn)
+        ]
+        if _missing_div:
+            check(FAIL, f"divergence.py: missing symbols: {_missing_div}")
+        else:
+            check(PASS, "divergence.py: importable, all public symbols present")
+    except Exception as _div_err:
+        check(FAIL, f"divergence.py: import failed — {_div_err}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# account2.liquidity_gates section
+# ─────────────────────────────────────────────────────────────────────────────
+if cfg:
+    _liq_gates = cfg.get("account2", {}).get("liquidity_gates")
+    if _liq_gates is None:
+        check(FAIL, "strategy_config.json: account2.liquidity_gates section missing")
+    else:
+        _required_liq = [
+            "min_open_interest", "min_volume", "max_spread_pct",
+            "min_mid_price", "pre_debate_oi_floor", "pre_debate_volume_floor",
+        ]
+        _missing_liq = [k for k in _required_liq if k not in _liq_gates]
+        if _missing_liq:
+            check(FAIL, f"strategy_config.json: account2.liquidity_gates missing keys: {_missing_liq}")
+        else:
+            check(PASS, "strategy_config.json: account2.liquidity_gates present with all required keys")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Summary

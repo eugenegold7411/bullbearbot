@@ -57,10 +57,10 @@ _PHASE1_STRATEGIES: frozenset[OptionStrategy] = frozenset({
     OptionStrategy.SINGLE_PUT,
 })
 
-# Default liquidity requirements (can be overridden via config dict)
-_DEFAULT_MIN_OPEN_INTEREST = 50
-_DEFAULT_MIN_VOLUME        = 5
-_DEFAULT_MAX_BID_ASK_PCT   = 0.25   # max (ask-bid)/mid as fraction
+# Default liquidity requirements (tightened; overridden by config liquidity_gates)
+_DEFAULT_MIN_OPEN_INTEREST = 200
+_DEFAULT_MIN_VOLUME        = 20
+_DEFAULT_MAX_BID_ASK_PCT   = 0.08   # max (ask-bid)/mid as fraction
 _DEFAULT_MIN_MID_PRICE     = 0.05   # avoid sub-nickel legs
 
 
@@ -186,8 +186,19 @@ def build_structure(
 
     # ── 3. Validate liquidity ─────────────────────────────────────────────────
     liq_ok, liq_reason = validate_liquidity(strikes_data, config)
+    _low_liquidity = False
     if not liq_ok:
-        return None, f"liquidity check failed for {symbol}: {liq_reason}"
+        _is_single = strategy in (OptionStrategy.SINGLE_CALL, OptionStrategy.SINGLE_PUT)
+        if _is_single:
+            # Single legs: warn but proceed — add low_liquidity flag to audit_log
+            log.warning(
+                "[BUILDER] %s %s: low liquidity (%s) — proceeding with fill_quality: low",
+                symbol, strategy.value, liq_reason,
+            )
+            _low_liquidity = True
+        else:
+            # Spreads: both legs must pass — reject
+            return None, f"liquidity check failed for {symbol}: {liq_reason}"
 
     # ── 4. Compute economics ──────────────────────────────────────────────────
     economics = compute_economics(strategy, strikes_data)
@@ -242,6 +253,8 @@ def build_structure(
         f"long={long_strike} short={short_strike} "
         f"net_debit={net_debit:.2f} contracts={contracts}"
     )
+    if _low_liquidity:
+        structure.add_audit(f"fill_quality: low — {liq_reason}")
 
     log.info(
         "[BUILDER] %s %s exp=%s long=%.2f short=%s net_debit=%.2f×%d → max_cost=$%.0f",
@@ -492,19 +505,33 @@ def validate_liquidity(strikes_data: dict, config: dict) -> tuple[bool, str]:
     """
     Verify that selected legs meet minimum liquidity requirements.
 
-    Checks:
-    - Minimum open interest per leg
-    - Minimum daily volume per leg
-    - Maximum bid/ask spread as % of mid price
+    Reads thresholds from config["liquidity_gates"] (new key),
+    falling back to config["liquidity"] for backward compatibility,
+    then to module-level defaults.
+
+    Checks per leg:
+    - Minimum open interest
+    - Minimum daily volume
+    - Maximum bid/ask spread as % of mid price  (key: max_spread_pct)
     - Minimum mid price (avoids sub-nickel garbage)
 
     Returns (True, "ok") or (False, reason_string).
+
+    Caller is responsible for strategy-level strictness:
+      - Spreads: reject on (False, reason)
+      - Single legs: warn and proceed (add "low_liquidity" to audit_log)
     """
-    liq_cfg  = config.get("liquidity", {})
-    min_oi   = int(liq_cfg.get("min_open_interest", _DEFAULT_MIN_OPEN_INTEREST))
-    min_vol  = int(liq_cfg.get("min_volume",        _DEFAULT_MIN_VOLUME))
-    max_ba   = float(liq_cfg.get("max_bid_ask_pct",  _DEFAULT_MAX_BID_ASK_PCT))
-    min_mid  = float(liq_cfg.get("min_mid_price",    _DEFAULT_MIN_MID_PRICE))
+    # Prefer "liquidity_gates" key; fall back to legacy "liquidity" key
+    liq_cfg = config.get("liquidity_gates") or config.get("liquidity") or {}
+
+    min_oi  = int(liq_cfg.get("min_open_interest", _DEFAULT_MIN_OPEN_INTEREST))
+    min_vol = int(liq_cfg.get("min_volume",         _DEFAULT_MIN_VOLUME))
+    # Support both key names: max_spread_pct (new) and max_bid_ask_pct (legacy)
+    max_ba  = float(
+        liq_cfg.get("max_spread_pct",
+        liq_cfg.get("max_bid_ask_pct", _DEFAULT_MAX_BID_ASK_PCT))
+    )
+    min_mid = float(liq_cfg.get("min_mid_price", _DEFAULT_MIN_MID_PRICE))
 
     legs_to_check = []
     if strikes_data.get("long_leg_data"):

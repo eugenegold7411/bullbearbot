@@ -275,19 +275,97 @@ def _get_iv_summaries_for_symbols(symbols: list[str]) -> dict:
 
 # ── Strategy selection ────────────────────────────────────────────────────────
 
+def _quick_liquidity_check(
+    chain: dict,
+    proposal: "StructureProposal",
+    config: dict,
+) -> tuple[bool, str]:
+    """
+    Pre-debate liquidity pre-screen using loose thresholds (50% of full gate).
+
+    Checks ATM strike OI and volume for the expected option type.
+    Returns (True, "") if passes, (False, reason) if fails.
+
+    This is a pre-screen only — options_builder.validate_liquidity() is the
+    final gate with full thresholds applied to the actual selected strikes.
+    """
+    try:
+        liq_gates = config.get("account2", {}).get("liquidity_gates", {})
+        oi_floor  = int(liq_gates.get("pre_debate_oi_floor", 100))
+        vol_floor = int(liq_gates.get("pre_debate_volume_floor", 10))
+
+        expirations = chain.get("expirations", {})
+        if not expirations:
+            return True, ""   # no chain data — pass through, let builder decide
+
+        # Pick first usable expiration (DTE >= 2)
+        from datetime import date as _date
+        today = _date.today()
+        chosen_exp = None
+        for exp_str in sorted(expirations.keys()):
+            try:
+                dte = (_date.fromisoformat(exp_str) - today).days
+                if dte >= 2:
+                    chosen_exp = exp_str
+                    break
+            except Exception:
+                continue
+
+        if chosen_exp is None:
+            return True, ""
+
+        exp_data = expirations[chosen_exp]
+        spot = chain.get("current_price", 0) or 0
+
+        # Determine option type from proposal strategy
+        from schemas import OptionStrategy as _OS
+        strat = proposal.strategy
+        if strat in (_OS.SINGLE_CALL, _OS.CALL_DEBIT_SPREAD, _OS.CALL_CREDIT_SPREAD):
+            opts = exp_data.get("calls", [])
+        else:
+            opts = exp_data.get("puts", [])
+
+        if not opts:
+            return True, ""   # no chain — pass through
+
+        # Find ATM strike
+        atm = min(opts, key=lambda o: abs(float(o.get("strike", 0)) - spot))
+
+        oi  = int(atm.get("openInterest", 0) or 0)
+        vol = int(atm.get("volume", 0) or 0)
+
+        if oi < oi_floor:
+            return False, f"ATM OI={oi} < pre-debate floor {oi_floor}"
+        if vol < vol_floor:
+            return False, f"ATM vol={vol} < pre-debate floor {vol_floor}"
+
+        return True, ""
+
+    except Exception as _e:
+        log.debug("[OPTS] _quick_liquidity_check failed (non-fatal, passing): %s", _e)
+        return True, ""   # always pass on error — never block on pre-screen failure
+
+
 def _build_options_candidates(
     watchlist_symbols: list[str],
     iv_summaries: dict,
     signal_scores: dict,
     vix: float,
     equity: float,
+    config: dict | None = None,
 ) -> list[StructureProposal]:
     """
     For each watchlist symbol with a signal score, run options_intelligence
     to get a candidate trade. Returns list of StructureProposals.
     None returns (hold/skip) are filtered out.
+
+    Includes a pre-debate liquidity pre-screen (loose thresholds = 50% of full
+    gate) to avoid wasting debate tokens on illiquid candidates.
     """
     from options_data import get_options_regime
+
+    if config is None:
+        config = {}
 
     options_regime = get_options_regime(vix)
     candidates = []
@@ -326,8 +404,22 @@ def _build_options_candidates(
             equity=equity,
             options_regime=options_regime,
         )
-        if proposal is not None:
-            candidates.append(proposal)
+        if proposal is None:
+            continue
+
+        # Pre-debate liquidity pre-screen (loose thresholds — 50% of full gate)
+        # Fetches chain; use cache so no extra network call if already fresh.
+        try:
+            chain = options_data.fetch_options_chain(sym)
+            if chain:
+                liq_ok, liq_reason = _quick_liquidity_check(chain, proposal, config)
+                if not liq_ok:
+                    log.debug("[OPTS] %s: pre-debate liquidity fail — %s", sym, liq_reason)
+                    continue
+        except Exception as _liq_err:
+            log.debug("[OPTS] %s: pre-debate liquidity check error (passing): %s", sym, _liq_err)
+
+        candidates.append(proposal)
 
     return candidates
 
@@ -673,6 +765,19 @@ def run_options_cycle(
     obs_state = _get_obs_mode_state()
     obs_mode = _update_obs_mode_state(obs_state)
 
+    # Load A2 operating mode (non-fatal)
+    _a2_mode = None
+    try:
+        from divergence import load_account_mode, OperatingMode  # noqa: PLC0415
+        _a2_mode = load_account_mode("A2")
+        if _a2_mode.mode != OperatingMode.NORMAL:
+            log.warning("[DIV] A2 mode=%s scope=%s/%s",
+                        _a2_mode.mode.value,
+                        _a2_mode.scope.value,
+                        _a2_mode.scope_id)
+    except Exception as _div_a2_exc:
+        log.warning("[DIV] A2 mode load failed (non-fatal): %s", _div_a2_exc)
+
     # 3. Open positions — check for expiring contracts
     open_positions = _get_open_options_positions(alpaca_client)
     expiring = _check_expiring_positions(open_positions, alpaca_client)
@@ -833,6 +938,20 @@ def run_options_cycle(
         if proposal is None:
             log.warning("[OPTS] %s: no matching proposal found in candidates", sym)
             continue
+
+        # Mode gate — block new entries if A2 mode is not NORMAL
+        if _a2_mode is not None:
+            try:
+                from divergence import is_action_allowed  # noqa: PLC0415
+                _a2_allowed, _a2_reason = is_action_allowed(
+                    _a2_mode, "enter_long", action.get("symbol", "")
+                )
+                if not _a2_allowed:
+                    log.warning("[DIV] A2 BLOCKED %s — %s",
+                                action.get("symbol", ""), _a2_reason)
+                    continue
+            except Exception as _div_gate_exc:
+                log.debug("[DIV] A2 mode gate failed (non-fatal): %s", _div_gate_exc)
 
         # Build fully-specified OptionsStructure from live chain data
         try:

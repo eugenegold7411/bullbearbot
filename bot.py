@@ -1331,6 +1331,34 @@ def run_cycle(
     except Exception as _pi_exc:
         log.warning("Portfolio intelligence / reconciliation block failed: %s", _pi_exc)
 
+    # Divergence tracking — load mode, scan protection (non-fatal)
+    _a1_mode = None
+    _div_events: list = []
+    try:
+        from divergence import (  # noqa: PLC0415
+            load_account_mode, detect_protection_divergence,
+            respond_to_divergence, check_clean_cycle,
+            is_action_allowed, OperatingMode,
+        )
+        _a1_mode = load_account_mode("A1")
+        if "_snapshot" in dir() and _snapshot.positions:
+            _div_events = detect_protection_divergence(
+                account="A1",
+                positions=_snapshot.positions,
+                open_orders=_snapshot.open_orders,
+                vix=float(md.get("vix", 20) or 20),
+            )
+        if _div_events:
+            _a1_mode = respond_to_divergence(_div_events, "A1", _a1_mode)
+        _a1_mode = check_clean_cycle("A1", _a1_mode, _div_events)
+        if _a1_mode.mode != OperatingMode.NORMAL:
+            log.warning("[DIV] A1 mode=%s scope=%s/%s",
+                        _a1_mode.mode.value,
+                        _a1_mode.scope.value,
+                        _a1_mode.scope_id)
+    except Exception as _div_init_exc:
+        log.warning("[DIV] divergence init failed (non-fatal): %s", _div_init_exc)
+
     # 4e. Exit management — refresh stale stops, trail profitable positions
     exit_manager_results = []
     exit_status_str = "  (unavailable)"
@@ -1567,6 +1595,28 @@ def run_cycle(
 
     actions = [ba.to_dict() for ba in broker_actions]
 
+    # Mode gate — filter new entries if operating mode is not NORMAL
+    if _a1_mode is not None:
+        try:
+            from divergence import is_action_allowed, OperatingMode  # noqa: PLC0415
+            if _a1_mode.mode != OperatingMode.NORMAL:
+                _filtered_actions: list = []
+                for _ba_dict in actions:
+                    _allowed, _reason = is_action_allowed(
+                        _a1_mode,
+                        _ba_dict.get("action", "hold"),
+                        _ba_dict.get("symbol", ""),
+                    )
+                    if _allowed:
+                        _filtered_actions.append(_ba_dict)
+                    else:
+                        log.warning("[DIV] BLOCKED %s %s — %s",
+                                    _ba_dict.get("action"), _ba_dict.get("symbol"),
+                                    _reason)
+                actions = _filtered_actions
+        except Exception as _div_gate_exc:
+            log.warning("[DIV] mode gate failed (non-fatal): %s", _div_gate_exc)
+
     log.info(
         "[SCHEMA] regime_view=%s  ideas=%d  kernel_approved=%d  reasoning: %s",
         regime,
@@ -1579,6 +1629,7 @@ def run_cycle(
 
     if regime == "halt":
         log.warning("Claude returned regime=halt — skipping execution this cycle")
+        broker_actions = []
         _send_sms(f"TRADING BOT: Claude called HALT. Reasoning: {reasoning[:160]}")
 
     # Attribution — build tags, generate decision ID, log event
@@ -1830,6 +1881,22 @@ def run_cycle(
                             )
                     except Exception as _pub_exc:
                         log.debug("publisher trade_entry failed (non-fatal): %s", _pub_exc)
+                # Fill divergence detection
+                try:
+                    from divergence import detect_fill_divergence  # noqa: PLC0415
+                    detect_fill_divergence(
+                        symbol=r.symbol,
+                        account="A1",
+                        intended_price=float(r.limit_price) if hasattr(r, "limit_price") and r.limit_price else 0.0,
+                        actual_fill_price=float(r.fill_price) if hasattr(r, "fill_price") and r.fill_price else 0.0,
+                        intended_qty=float(r.qty) if hasattr(r, "qty") and r.qty else 0.0,
+                        actual_qty=float(r.filled_qty) if hasattr(r, "filled_qty") and r.filled_qty else 0.0,
+                        order_type=str(r.order_type) if hasattr(r, "order_type") else "",
+                        decision_id=_decision_id,
+                        trade_id=str(r.order_id) if r.order_id else None,
+                    )
+                except Exception as _fd_exc:
+                    log.debug("[DIV] fill divergence check failed (non-fatal): %s", _fd_exc)
         print("=" * 62)
 
         # Seed backstop for each new buy executed (via reconciliation module)

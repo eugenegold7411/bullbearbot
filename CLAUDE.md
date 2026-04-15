@@ -374,6 +374,7 @@ significant drawdown, or any time a full system assessment is needed.
 | `trade_memory.py` | ChromaDB vector store (3-tier: recent/medium/long). Retrieves 5 similar past scenarios per cycle. |
 | `watchlist_manager.py` | Manages 3-tier watchlist (core/dynamic/intraday). Prunes stale entries. |
 | `attribution.py` | PnL attribution and module ROI tracking. Logs `decision_made` + `order_submitted` events to `data/analytics/attribution_log.jsonl`. Non-fatal everywhere — exceptions are caught and logged at WARNING. Public API: `generate_decision_id()`, `build_module_tags()`, `build_trigger_flags()`, `log_attribution_event()`, `get_attribution_summary()`. |
+| `divergence.py` | Live vs paper divergence tracking, classification, and operating mode management. Completely non-fatal. 11 sections: enums + DivergenceEvent dataclass, JSONL event log, AccountMode state (load/save/transition), classifier (22 event types, severity ladder INFO→RECONCILE→DE_RISK→HALT), repeat escalation, mode enforcement (`is_action_allowed()`), fill divergence detector, protection divergence detector, mode response engine, clean cycle recovery, weekly summary. Mode state files: `data/runtime/a1_mode.json`, `data/runtime/a2_mode.json`. Transition log: `data/runtime/mode_transitions.jsonl`. Divergence log: `data/analytics/divergence_log.jsonl`. |
 
 ### Communication & Reporting
 
@@ -448,6 +449,11 @@ data/
 │   └── pnl/
 ├── reports/               # weekly_review_YYYY-MM-DD.md
 ├── roadmap/features.json  # F001–F010 feature tracker
+├── runtime/               # divergence operating mode state (auto-created on first run)
+│   ├── a1_mode.json       #   Account 1 current operating mode (NORMAL/RECONCILE_ONLY/RISK_CONTAINMENT/HALTED)
+│   ├── a2_mode.json       #   Account 2 current operating mode
+│   ├── mode_transitions.jsonl  # mode change audit log
+│   └── divergence_counts.json  # per-symbol/event repeat escalation counters
 ├── scanner/               # ORB candidates, pre-market scan results
 ├── social/post_history.json  # Twitter post history (for dedup)
 └── trade_memory/          # ChromaDB vector store (3 collections: recent/medium/long)
@@ -876,6 +882,28 @@ Phase 1 build status — all 10 items complete:
   Wraps `reconcile → plan_repair → execute_reconciliation_plan` in non-fatal try/except.
 5 new tests in Suite 16 — intact, broken, expiring, priority ordering, no-structures skip.
 Old 6 tests in Suite 10 updated to new API (OCC symbol / BrokerSnapshot based).
+
+**~~Phase 2 Items 9/10/18~~ — Divergence tracking, liquidity gates, options cleanup ✅ COMPLETED 2026-04-15**
+
+Item 9 — `options_intelligence.py` synthetic cleanup:
+  Removed dead constants `_DTE_STRADDLE`, `_DELTA_ATM`, `_DELTA_OTM_CREDIT`, `_DELTA_MIN`.
+  Removed unused `select_expiration()` function (28 lines, duplicated builder logic).
+  Fixed `_sell_premium_strategy()` sizing: `equity * 0.04` → `equity * 0.05` (matches `core_spread_max_pct`).
+
+Item 10 — Liquidity gates (3 parts):
+  Part A: `options_builder.py validate_liquidity()` — raised thresholds (OI≥200, vol≥20, spread≤8%), added `liquidity_gates` config key (fallback to `liquidity`), spread strategies hard-reject on fail, single legs warn+proceed with `fill_quality: low` audit entry.
+  Part B: `bot_options.py` — added `_quick_liquidity_check()` pre-debate helper (loose thresholds: OI≥100, vol≥10), wired into `_build_options_candidates()` before debate loop.
+  Part C: `strategy_config.json account2.liquidity_gates` section added.
+
+Item 18 — `divergence.py` (new file, 11 sections):
+  All non-fatal. Detects fill drift, missing stops, protection gaps.
+  Operating mode ladder: NORMAL → RECONCILE_ONLY → RISK_CONTAINMENT → HALTED.
+  Mode state persisted to `data/runtime/` (auto-created).
+  Wired into `bot.py run_cycle()` (post-recon protection scan, mode gate before execute_all, fill divergence in results loop).
+  Wired into `bot_options.py run_options_cycle()` (mode load at start, entry gate in debate actions loop).
+  Wired into `weekly_review.py` Agent 1 (divergence summary + standing instructions).
+  `validate_config.py` updated: data/runtime/ check, divergence.py importable check, account2.liquidity_gates check.
+10 new tests in Suite 18 — 181 total, all passing.
 
 ---
 

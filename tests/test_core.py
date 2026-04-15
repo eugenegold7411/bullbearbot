@@ -3399,5 +3399,242 @@ class TestSuite17AttributionAndDeadlineExit(unittest.TestCase):
         self.assertEqual(td["new_catalyst"], 0)
 
 
+# Suite 18 — divergence.py: classify, mode enforcement, detectors, liquidity gates
+# ---------------------------------------------------------------------------
+
+import sys as _sys
+import os as _os
+_sys.path.insert(0, str(Path(__file__).parent.parent))
+
+class TestSuite18Divergence(unittest.TestCase):
+    """
+    Tests for divergence.py: classification, operating mode, detectors,
+    and liquidity gate integration.
+    Covers 10 of the 10 new tests required (total: 181).
+    """
+
+    def test_divergence_classify_stop_missing(self):
+        """stop_missing classifies as DE_RISK, SYMBOL scope, guarded_auto."""
+        from divergence import classify_divergence, DivergenceSeverity, DivergenceScope
+        severity, scope, recov = classify_divergence(
+            "stop_missing", "AAPL", "A1")
+        self.assertEqual(severity, DivergenceSeverity.DE_RISK)
+        self.assertEqual(scope, DivergenceScope.SYMBOL)
+        self.assertEqual(recov, "guarded_auto")
+
+    def test_divergence_classify_escalates_large_position(self):
+        """Large position ($10k) escalates stop_missing from DE_RISK to HALT."""
+        from divergence import classify_divergence, DivergenceSeverity, DivergenceScope
+        severity, scope, recov = classify_divergence(
+            "stop_missing", "TSLA", "A1",
+            position_size_usd=10000,
+        )
+        self.assertEqual(severity, DivergenceSeverity.HALT)
+        # recoverability should stay guarded_auto or higher
+        self.assertIn(recov, ("guarded_auto", "manual"))
+
+    def test_operating_mode_normal_allows_all(self):
+        """NORMAL mode allows all action types."""
+        from divergence import (
+            is_action_allowed, AccountMode, OperatingMode, DivergenceScope,
+        )
+        mode = AccountMode(
+            account="A1", mode=OperatingMode.NORMAL,
+            scope=DivergenceScope.ACCOUNT, scope_id="",
+            reason_code="", reason_detail="", entered_at="",
+            entered_by="test", recovery_condition="one_clean_cycle",
+            last_checked_at="",
+        )
+        for intent in ("enter_long", "enter_short", "close", "recon", "reduce"):
+            allowed, reason = is_action_allowed(mode, intent, "AAPL")
+            self.assertTrue(allowed, f"{intent} should be allowed in NORMAL mode")
+
+    def test_operating_mode_risk_containment_blocks_entry(self):
+        """RISK_CONTAINMENT with account scope blocks enter_long."""
+        from divergence import (
+            is_action_allowed, AccountMode, OperatingMode, DivergenceScope,
+        )
+        mode = AccountMode(
+            account="A1", mode=OperatingMode.RISK_CONTAINMENT,
+            scope=DivergenceScope.ACCOUNT, scope_id="A1",
+            reason_code="stop_missing", reason_detail="test",
+            entered_at="", entered_by="test",
+            recovery_condition="one_clean_cycle", last_checked_at="",
+        )
+        allowed, reason = is_action_allowed(mode, "enter_long", "AAPL")
+        self.assertFalse(allowed)
+        self.assertIn("risk_containment", reason)
+
+    def test_operating_mode_risk_containment_allows_close(self):
+        """RISK_CONTAINMENT always allows close/reduce actions."""
+        from divergence import (
+            is_action_allowed, AccountMode, OperatingMode, DivergenceScope,
+        )
+        mode = AccountMode(
+            account="A1", mode=OperatingMode.RISK_CONTAINMENT,
+            scope=DivergenceScope.ACCOUNT, scope_id="A1",
+            reason_code="stop_missing", reason_detail="test",
+            entered_at="", entered_by="test",
+            recovery_condition="one_clean_cycle", last_checked_at="",
+        )
+        for intent in ("close", "reduce", "stop_update", "recon"):
+            allowed, _ = is_action_allowed(mode, intent, "AAPL")
+            self.assertTrue(allowed, f"{intent} should be allowed even in RISK_CONTAINMENT")
+
+    def test_operating_mode_halted_blocks_entries(self):
+        """HALTED mode blocks enter_long and enter_short."""
+        from divergence import (
+            is_action_allowed, AccountMode, OperatingMode, DivergenceScope,
+        )
+        mode = AccountMode(
+            account="A1", mode=OperatingMode.HALTED,
+            scope=DivergenceScope.ACCOUNT, scope_id="A1",
+            reason_code="protection_missing", reason_detail="test",
+            entered_at="", entered_by="test",
+            recovery_condition="manual_review", last_checked_at="",
+        )
+        for intent in ("enter_long", "enter_short", "add"):
+            allowed, reason = is_action_allowed(mode, intent, "SPY")
+            self.assertFalse(allowed)
+            self.assertIn("halted", reason)
+
+    def test_clean_cycle_recovers_to_normal(self):
+        """One clean cycle with recovery_condition=one_clean_cycle returns NORMAL."""
+        import tempfile, json
+        from divergence import (
+            check_clean_cycle, AccountMode, OperatingMode,
+            DivergenceScope, RUNTIME_DIR,
+        )
+        mode = AccountMode(
+            account="A1", mode=OperatingMode.RECONCILE_ONLY,
+            scope=DivergenceScope.ACCOUNT, scope_id="",
+            reason_code="duplicate_exit", reason_detail="test",
+            entered_at="2026-04-15T00:00:00+00:00",
+            entered_by="test",
+            recovery_condition="one_clean_cycle",
+            last_checked_at="2026-04-15T00:00:00+00:00",
+            clean_cycles_since_entry=0,
+        )
+        # Use a temp runtime dir so we don't pollute real state
+        import divergence as _div_mod
+        original_runtime = _div_mod.RUNTIME_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.RUNTIME_DIR = Path(tmp)
+            _div_mod.MODE_TRANSITION_LOG = Path(tmp) / "mode_transitions.jsonl"
+            try:
+                result = check_clean_cycle("A1", mode, [])
+                self.assertEqual(result.mode, OperatingMode.NORMAL)
+            finally:
+                _div_mod.RUNTIME_DIR = original_runtime
+                _div_mod.MODE_TRANSITION_LOG = original_runtime / "mode_transitions.jsonl"
+
+    def test_repeat_escalation_upgrades_severity(self):
+        """Two repeats of same event within window upgrades INFO to RECONCILE."""
+        import tempfile
+        from divergence import (
+            check_repeat_escalation, DivergenceSeverity, DIVERGENCE_COUNTS_PATH,
+        )
+        import divergence as _div_mod
+        original_path = _div_mod.DIVERGENCE_COUNTS_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.DIVERGENCE_COUNTS_PATH = Path(tmp) / "divergence_counts.json"
+            try:
+                # First call — no escalation yet
+                s1 = check_repeat_escalation(
+                    "A1", "fill_price_drift", "AAPL",
+                    DivergenceSeverity.INFO, window_cycles=10,
+                )
+                # Second call — should escalate
+                s2 = check_repeat_escalation(
+                    "A1", "fill_price_drift", "AAPL",
+                    DivergenceSeverity.INFO, window_cycles=10,
+                )
+                self.assertEqual(s2, DivergenceSeverity.RECONCILE)
+            finally:
+                _div_mod.DIVERGENCE_COUNTS_PATH = original_path
+
+    def test_options_liquidity_gate_blocks_illiquid_spread(self):
+        """validate_liquidity returns False when legs fail OI threshold."""
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        import importlib
+        ob = importlib.import_module("options_builder")
+
+        # validate_liquidity reads long_leg_data / short_leg_data with
+        # openInterest, volume, bid, ask, strike keys
+        strikes_data = {
+            "long_leg_data": {
+                "strike": 100.0,
+                "bid": 1.0, "ask": 1.5,
+                "openInterest": 10,   # below 200 threshold
+                "volume": 2,
+            },
+            "short_leg_data": {
+                "strike": 95.0,
+                "bid": 0.5, "ask": 0.9,
+                "openInterest": 8,    # below 200 threshold
+                "volume": 1,
+            },
+        }
+        config = {
+            "liquidity_gates": {
+                "min_open_interest": 200,
+                "min_volume": 20,
+                "max_spread_pct": 0.08,
+                "min_mid_price": 0.05,
+            }
+        }
+        ok, reason = ob.validate_liquidity(strikes_data, config)
+        self.assertFalse(ok)
+        self.assertTrue(len(reason) > 0)
+
+    def test_options_pre_debate_gate_skips_illiquid(self):
+        """_quick_liquidity_check returns False when ATM OI is below pre-debate floor."""
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        import importlib
+        bo = importlib.import_module("bot_options")
+
+        # _quick_liquidity_check expects chain["expirations"][date]["calls"]
+        # as a list of dicts with strike, openInterest, volume keys
+        chain = {
+            "current_price": 100.0,
+            "expirations": {
+                "2026-04-25": {
+                    "calls": [
+                        {"strike": 100.0, "openInterest": 5, "volume": 1,
+                         "bid": 1.0, "ask": 1.2},
+                    ],
+                }
+            }
+        }
+        from schemas import StructureProposal, OptionStrategy, Direction
+        from datetime import datetime, timezone
+        proposal = StructureProposal(
+            symbol="TEST",
+            strategy=OptionStrategy.SINGLE_CALL,
+            direction=Direction.BULLISH,
+            conviction=0.8,
+            iv_rank=30.0,
+            max_cost_usd=500.0,
+            target_dte_min=7,
+            target_dte_max=14,
+            rationale="test",
+            signal_score=10,
+            proposed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        config = {
+            "account2": {
+                "liquidity_gates": {
+                    "pre_debate_oi_floor": 100,
+                    "pre_debate_volume_floor": 10,
+                }
+            }
+        }
+        ok, reason = bo._quick_liquidity_check(chain, proposal, config)
+        self.assertFalse(ok)
+        self.assertIn("OI", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

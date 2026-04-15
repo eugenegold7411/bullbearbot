@@ -438,6 +438,53 @@ if cfg:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Git repo check
+# ─────────────────────────────────────────────────────────────────────────────
+git_dir = BASE_DIR / ".git"
+if git_dir.exists():
+    check(PASS, "git: .git directory present — repo initialised")
+else:
+    check(WARN, "git: no .git directory — run 'git init' to initialise repo")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# attribution.py importable
+# ─────────────────────────────────────────────────────────────────────────────
+attr_path = BASE_DIR / "attribution.py"
+if not attr_path.exists():
+    check(FAIL, "attribution.py: file missing — attribution system unavailable")
+else:
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("attribution", attr_path)
+        mod  = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # Verify the four public symbols are present
+        missing = [
+            fn for fn in (
+                "generate_decision_id", "build_module_tags",
+                "build_trigger_flags",  "log_attribution_event",
+                "get_attribution_summary",
+            )
+            if not hasattr(mod, fn)
+        ]
+        if missing:
+            check(FAIL, f"attribution.py: missing symbols: {missing}")
+        else:
+            check(PASS, "attribution.py: importable, all public symbols present")
+    except Exception as _attr_err:
+        check(FAIL, f"attribution.py: import failed — {_attr_err}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# data/analytics/ directory
+# ─────────────────────────────────────────────────────────────────────────────
+analytics_dir = BASE_DIR / "data" / "analytics"
+if analytics_dir.exists():
+    check(PASS, "data/analytics/: directory present")
+else:
+    check(WARN, "data/analytics/: directory missing — will be auto-created on first attribution event")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 passes   = sum(1 for s, _ in results if s == PASS)

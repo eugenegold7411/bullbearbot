@@ -373,6 +373,7 @@ significant drawdown, or any time a full system assessment is needed.
 | `memory.py` | Decision log (`memory/decisions.json`), performance tracking, pattern watchlist. |
 | `trade_memory.py` | ChromaDB vector store (3-tier: recent/medium/long). Retrieves 5 similar past scenarios per cycle. |
 | `watchlist_manager.py` | Manages 3-tier watchlist (core/dynamic/intraday). Prunes stale entries. |
+| `attribution.py` | PnL attribution and module ROI tracking. Logs `decision_made` + `order_submitted` events to `data/analytics/attribution_log.jsonl`. Non-fatal everywhere — exceptions are caught and logged at WARNING. Public API: `generate_decision_id()`, `build_module_tags()`, `build_trigger_flags()`, `log_attribution_event()`, `get_attribution_summary()`. |
 
 ### Communication & Reporting
 
@@ -731,6 +732,66 @@ core buys that referenced the deprecated `max_single_position_pct`. Removed. `TI
 Both deprecated `max_single_position_pct` fields removed from `strategy_config.json`.
 `validate_config.py` updated: the old consistency check replaced with a deprecation check
 (FAIL if either field is present).
+
+### ✅ RESOLVED (2026-04-15) — BUG-014 — Deadline exit used `close_all` instead of market order
+**Files:** `reconciliation.py:diff_state()`, `reconciliation.py:execute_reconciliation_plan()`
+**Description:** When `diff_state()` detected an expired deadline (CRITICAL priority), it emitted
+`action_type="close_all"`. The `execute_reconciliation_plan()` handler for `close_all` placed a
+limit order via the standard order path — not guaranteed to fill at deadline. Additionally, Alpaca's
+OCA (One-Cancels-All) share-lock can block a new order if an open stop-loss order on the same symbol
+is active.
+**Resolution:** `diff_state()` now emits `action_type="deadline_exit_market"` for CRITICAL deadline
+exits. `execute_reconciliation_plan()` has a new `_execute_deadline_exit()` helper that: (1) cancels
+all open orders for the symbol first (avoids OCA share-lock conflicts), then (2) submits a
+`MarketOrderRequest` (DAY for equity/ETF, GTC for crypto). This is the only path guaranteed to fill
+before deadline expiry.
+
+---
+
+## Git Workflow
+
+### Local mirror
+```
+/Users/eugene.gold/trading-bot/   ← git repo (tag: v1.0-phase1-complete)
+```
+
+### After creating GitHub repo
+```bash
+cd /Users/eugene.gold/trading-bot
+git remote add origin https://github.com/<YOUR_USERNAME>/trading-bot.git
+git branch -M main
+git push -u origin main
+git push origin v1.0-phase1-complete
+```
+
+### VPS git setup (after GitHub push confirmed)
+```bash
+ssh tradingbot
+cd /home/trading-bot
+git init
+git remote add origin https://github.com/<YOUR_USERNAME>/trading-bot.git
+git fetch origin
+git checkout -b main
+git reset --hard origin/main
+```
+
+### What is NOT committed (see .gitignore)
+- `.env` — secrets, never committed
+- `logs/`, `nohup.out` — runtime logs
+- `data/` subdirs (bars, market, scanner, trade_memory, archive, etc.) — runtime/cache data
+- `memory/*.json` — changes every cycle
+- `__pycache__/`, `.venv/` — build artifacts
+- `data/macro_intelligence/*.json` (except `citrini_positions.json`)
+- `data/account2/obs_mode_state.json`, `data/account2/costs/`, `data/account2/trade_memory/`
+
+### What IS committed
+- All source files (`*.py`), prompts, watchlists
+- `strategy_config.json`, `validate_config.py`
+- `data/macro_intelligence/citrini_positions.json`
+- `data/account2/structures.json`
+- `data/analytics/.gitkeep` (placeholder for attribution log dir)
+- `memory/.gitkeep` (placeholder for memory dir)
+- `CLAUDE.md`, `requirements.txt`
 
 ---
 

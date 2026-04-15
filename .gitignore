@@ -67,6 +67,7 @@ Thumbs.db
 data/news/
 data/fundamentals/
 data/crypto/
+data/weekly_reports/
 
 # Runtime rolling memory (changes every cycle)
 memory/*.json

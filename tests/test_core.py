@@ -3110,5 +3110,294 @@ class TestSuite16OptionsRecon(unittest.TestCase):
         self.assertEqual(result.orphaned_legs, [])
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Suite 17 — Attribution & deadline_exit_market
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSuite17AttributionAndDeadlineExit(unittest.TestCase):
+    """
+    Tests for attribution.py and the deadline_exit_market reconciliation action.
+
+    T1: diff_state() emits deadline_exit_market (not close_all) for expired deadline
+    T2: generate_decision_id format matches dec_A1_YYYYMMDD_HHMMSS
+    T3: build_module_tags returns all 15 expected keys
+    T4: log_attribution_event + get_attribution_summary round-trip
+    T5: get_attribution_summary with missing file returns safe defaults
+    T6: get_attribution_summary with real data returns correct structure
+    """
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _import_attribution(self):
+        import importlib
+        import attribution
+        importlib.reload(attribution)
+        return attribution
+
+    # ── T1: deadline_exit_market action type ────────────────────────────────
+
+    def test_deadline_exit_produces_market_action(self):
+        """diff_state() must emit action_type='deadline_exit_market' for expired deadline."""
+        import reconciliation
+        from reconciliation import DesiredState, DesiredPosition
+        from schemas import BrokerSnapshot, NormalizedPosition
+
+        NOW = datetime(2026, 4, 22, 20, 0, 0, tzinfo=timezone.utc)  # past deadline
+
+        # Build desired state: AMZN with expired deadline
+        desired = DesiredState(
+            positions={
+                "AMZN": DesiredPosition(
+                    symbol="AMZN",
+                    must_exit_by="2026-04-22T19:45:00+00:00",
+                    must_exit_reason="backstop_exit: max_hold_7d",
+                )
+            },
+            seeded_from=NOW.isoformat(),
+        )
+
+        # Build broker snapshot: AMZN is held
+        amzn_pos = NormalizedPosition(
+            symbol="AMZN",
+            alpaca_sym="AMZN",
+            qty=10,
+            avg_entry_price=180.0,
+            current_price=185.0,
+            market_value=1850.0,
+            unrealized_pl=50.0,
+            unrealized_plpc=0.028,
+            is_crypto_pos=False,
+        )
+        snapshot = BrokerSnapshot(
+            positions=[amzn_pos],
+            open_orders=[],
+            equity=100_000.0,
+            cash=80_000.0,
+            buying_power=80_000.0,
+        )
+
+        diff = reconciliation.diff_state(desired=desired, snapshot=snapshot, now_utc=NOW)
+
+        deadline_actions = [
+            a for a in diff.actions
+            if a.symbol == "AMZN" and a.action_type == "deadline_exit_market"
+        ]
+        close_all_actions = [
+            a for a in diff.actions
+            if a.symbol == "AMZN" and a.action_type == "close_all"
+        ]
+
+        self.assertTrue(
+            len(deadline_actions) >= 1,
+            f"Expected deadline_exit_market action for AMZN, got actions: "
+            f"{[a.action_type for a in diff.actions]}"
+        )
+        self.assertEqual(
+            len(close_all_actions), 0,
+            "close_all must not be emitted for expired deadline — use deadline_exit_market"
+        )
+
+    # ── T2: generate_decision_id format ─────────────────────────────────────
+
+    def test_generate_decision_id_format(self):
+        """generate_decision_id returns dec_A1_YYYYMMDD_HHMMSS."""
+        attr = self._import_attribution()
+        # strftime("%Y%m%d_%H%M%S") = "20260416_093500" — exactly 15 chars
+        ts = "20260416_093500"
+        dec_id = attr.generate_decision_id("A1", ts)
+        # clean = "20260416_093500", [:15] = "20260416_093500"
+        self.assertEqual(dec_id, "dec_A1_20260416_093500")
+        self.assertTrue(dec_id.startswith("dec_A1_"))
+        self.assertRegex(dec_id, r"^dec_A1_\d{8}_\d{6}$")
+
+    # ── T3: build_module_tags returns all 15 keys ────────────────────────────
+
+    def test_build_module_tags_returns_all_keys(self):
+        """build_module_tags must return all 15 expected boolean keys."""
+        attr = self._import_attribution()
+
+        EXPECTED_KEYS = {
+            "regime_classifier", "signal_scorer", "scratchpad",
+            "vector_memory", "macro_backdrop", "macro_wire",
+            "morning_brief", "insider_intelligence", "reddit_sentiment",
+            "earnings_intel", "portfolio_intelligence", "risk_kernel",
+            "sonnet_full", "sonnet_compact", "sonnet_skipped",
+        }
+
+        tags = attr.build_module_tags(
+            session_tier="market",
+            gate_reasons=[],
+            used_compact=False,
+            gate_skipped=False,
+            scratchpad_result={"watching": ["AMZN"]},
+            retrieved_memories=[{"id": "m1"}],
+            macro_backdrop_str="Global macro conditions remain supportive of risk assets with Fed on hold.",
+            macro_wire_str="Fed minutes released — neutral tone, no surprises for markets.",
+            morning_brief="Morning brief: Markets open flat. VIX at 18. No major catalysts.",
+            insider_section="Insider buying detected in XBI: cluster of Form 4 filings.",
+            reddit_section="Reddit sentiment: AMZN bullish, r/investing volume spike.",
+            earnings_intel={"AMZN": {"beat": True, "guidance": "raised"}},
+            recon_diff=None,
+            positions=[{"symbol": "AMZN", "qty": 10}],
+        )
+
+        self.assertEqual(set(tags.keys()), EXPECTED_KEYS)
+        # All values must be bool
+        for k, v in tags.items():
+            self.assertIsInstance(v, bool, f"Key '{k}' value {v!r} is not bool")
+
+    # ── T4: attribution log round-trip ───────────────────────────────────────
+
+    def test_attribution_log_roundtrip(self):
+        """log_attribution_event writes a record; get_attribution_summary reads it back."""
+        import tempfile, importlib
+        attr = self._import_attribution()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Patch the log path
+            log_path = Path(tmpdir) / "analytics" / "attribution_log.jsonl"
+            original_log = attr.ATTRIBUTION_LOG
+            attr.ATTRIBUTION_LOG = log_path
+            try:
+                module_tags = {k: False for k in [
+                    "regime_classifier", "signal_scorer", "scratchpad",
+                    "vector_memory", "macro_backdrop", "macro_wire",
+                    "morning_brief", "insider_intelligence", "reddit_sentiment",
+                    "earnings_intel", "portfolio_intelligence", "risk_kernel",
+                    "sonnet_full", "sonnet_compact", "sonnet_skipped",
+                ]}
+                module_tags["regime_classifier"] = True
+                module_tags["signal_scorer"] = True
+                module_tags["sonnet_full"] = True
+                module_tags["risk_kernel"] = True
+
+                trigger_flags = {
+                    "new_catalyst": False, "signal_threshold": True,
+                    "regime_change": False, "risk_anomaly": False,
+                    "position_change": False, "deadline_approaching": False,
+                    "scheduled_window": False, "recon_anomaly": False,
+                    "cooldown_expired": False, "max_skip_exceeded": False,
+                    "hard_override": False,
+                }
+
+                attr.log_attribution_event(
+                    event_type="decision_made",
+                    decision_id="dec_A1_20260416_093500",
+                    account="A1",
+                    symbol="portfolio",
+                    module_tags=module_tags,
+                    trigger_flags=trigger_flags,
+                )
+
+                self.assertTrue(log_path.exists(), "Attribution log file was not created")
+
+                with open(log_path) as fh:
+                    records = [json.loads(line) for line in fh if line.strip()]
+
+                self.assertEqual(len(records), 1)
+                rec = records[0]
+                self.assertEqual(rec["event_type"], "decision_made")
+                self.assertEqual(rec["decision_id"], "dec_A1_20260416_093500")
+                self.assertEqual(rec["account"], "A1")
+                self.assertIn("event_id", rec)
+                self.assertIn("timestamp", rec)
+                self.assertTrue(rec["module_tags"]["sonnet_full"])
+                self.assertTrue(rec["trigger_flags"]["signal_threshold"])
+
+            finally:
+                attr.ATTRIBUTION_LOG = original_log
+
+    # ── T5: get_attribution_summary with missing file ────────────────────────
+
+    def test_get_attribution_summary_empty(self):
+        """get_attribution_summary returns safe defaults when file is missing."""
+        import tempfile
+        attr = self._import_attribution()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_log = attr.ATTRIBUTION_LOG
+            attr.ATTRIBUTION_LOG = Path(tmpdir) / "nonexistent" / "attribution_log.jsonl"
+            try:
+                summary = attr.get_attribution_summary(days_back=7)
+            finally:
+                attr.ATTRIBUTION_LOG = original_log
+
+        self.assertEqual(summary["total_events"], 0)
+        self.assertEqual(summary["total_decisions"], 0)
+        self.assertEqual(summary["total_trades"], 0)
+        self.assertIn("module_usage_pct", summary)
+        self.assertIn("gate_efficiency", summary)
+        ge = summary["gate_efficiency"]
+        self.assertIn("skip_rate", ge)
+        self.assertIn("compact_rate", ge)
+        self.assertIn("full_rate", ge)
+
+    # ── T6: get_attribution_summary with real data ───────────────────────────
+
+    def test_get_attribution_summary_with_data(self):
+        """get_attribution_summary returns correct counts and rates from real data."""
+        import tempfile
+        from datetime import timedelta
+        attr = self._import_attribution()
+
+        module_tags_full = {
+            "regime_classifier": True, "signal_scorer": True,
+            "scratchpad": False, "vector_memory": False,
+            "macro_backdrop": True, "macro_wire": False,
+            "morning_brief": False, "insider_intelligence": False,
+            "reddit_sentiment": False, "earnings_intel": False,
+            "portfolio_intelligence": False, "risk_kernel": True,
+            "sonnet_full": True, "sonnet_compact": False, "sonnet_skipped": False,
+        }
+        module_tags_skip = {**module_tags_full, "sonnet_full": False, "sonnet_skipped": True}
+        trigger_flags = {t: False for t in [
+            "new_catalyst", "signal_threshold", "regime_change", "risk_anomaly",
+            "position_change", "deadline_approaching", "scheduled_window",
+            "recon_anomaly", "cooldown_expired", "max_skip_exceeded", "hard_override",
+        ]}
+        trigger_flags["signal_threshold"] = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "analytics" / "attribution_log.jsonl"
+            original_log = attr.ATTRIBUTION_LOG
+            attr.ATTRIBUTION_LOG = log_path
+            try:
+                # 2 decision_made events (1 full, 1 skip) + 1 order_submitted
+                attr.log_attribution_event(
+                    "decision_made", "dec_A1_20260416_090000", "A1",
+                    "portfolio", module_tags_full, trigger_flags,
+                )
+                attr.log_attribution_event(
+                    "decision_made", "dec_A1_20260416_100000", "A1",
+                    "portfolio", module_tags_skip, trigger_flags,
+                )
+                attr.log_attribution_event(
+                    "order_submitted", "dec_A1_20260416_090000", "A1",
+                    "AMZN", module_tags_full, trigger_flags,
+                    trade_id="trade_001",
+                )
+
+                summary = attr.get_attribution_summary(days_back=30)
+            finally:
+                attr.ATTRIBUTION_LOG = original_log
+
+        self.assertEqual(summary["total_events"], 3)
+        self.assertEqual(summary["total_decisions"], 2)
+        self.assertEqual(summary["total_trades"], 1)
+
+        ge = summary["gate_efficiency"]
+        self.assertAlmostEqual(ge["full_rate"], 0.5, places=2)
+        self.assertAlmostEqual(ge["skip_rate"], 0.5, places=2)
+        self.assertAlmostEqual(ge["compact_rate"], 0.0, places=2)
+
+        mu = summary["module_usage_pct"]
+        self.assertAlmostEqual(mu["risk_kernel"], 1.0, places=2)
+        self.assertAlmostEqual(mu["regime_classifier"], 1.0, places=2)
+
+        td = summary["trigger_distribution"]
+        self.assertEqual(td["signal_threshold"], 2)
+        self.assertEqual(td["new_catalyst"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

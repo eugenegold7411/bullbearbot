@@ -395,7 +395,9 @@ significant drawdown, or any time a full system assessment is needed.
 | File | Purpose |
 |------|---------|
 | `ingest_citrini_memo.py` | **Manual one-shot tool.** Parses Citrini Research PDF memos. Usage: `python3 ingest_citrini_memo.py path/to/memo.pdf` |
-| `backtest_runner.py` | Backtesting framework. Not currently wired into production. (TD002) |
+| `backtest_runner.py` | Strategy backtesting harness. `run_backtest()` = 5-strategy simulation. `run_weekly_backtest()` = compact hybrid-only summary for Agent 4 (non-fatal, read-only). |
+| `signal_backtest.py` | Signal-level forward-return backtest. Extracts signals from decisions.json + near_miss_log.jsonl, computes +1d/+3d/+5d returns from daily bars. `SignalBacktestResult`, `SignalBacktestSummary`, `has_alpha` flag. Saves to `data/reports/backtest_latest.json`. Never raises. |
+| `shadow_lane.py` | Counterfactual decision log. `log_shadow_event()` + `get_shadow_stats()`. Appends to `data/analytics/near_miss_log.jsonl`. 7 event types. Completely non-fatal. Zero execution side effects. |
 
 ### Prompts
 
@@ -598,7 +600,7 @@ vector memories, insider data, etc.). Prompt caching helps but the output cost i
 but `_MAX_SCORED = 9999`. Every cycle scores all 39 symbols, hitting max_tokens and increasing cost.
 **Impact:** High — $1.85/day just for signal scoring, all 39 symbols scored vs. intended 15.
 **Fix:** Change `_MAX_SCORED = 9999` to `_MAX_SCORED = 25` on line 431.
-**Resolution:** _MAX_SCORED changed to 25. Was causing JSON truncation and parse failures in addition to cost bleed.
+**Resolution:** _MAX_SCORED changed to 25 (Phase 1). Raised to 35 in Phase 4 to accommodate watchlist growth. Was causing JSON truncation and parse failures in addition to cost bleed.
 
 ### ✅ RESOLVED (2026-04-15) — BUG-002 — HOLD actions rejected "market is closed" (288+ occurrences)
 **File:** `order_executor.py` → `validate_action()`
@@ -921,6 +923,22 @@ Item 4 — Time-stop for long premium: `should_close_structure()` Rule 4a fires 
 
 Item 5 — IV crush monitoring: `options_data.py` gains `snapshot_pre_event_iv()` and `detect_iv_crush()`. Crush check in `should_close_structure()` (only fires when `auto_close_on_crush=true`). `strategy_config.json account2.iv_monitoring` section added with `auto_close_on_crush: false` default.
 10 new tests in Suite 19 — 191 total, all passing.
+
+**~~Phase 4 Items 11 + 19 + Director Memory~~ — Shadow lane, signal backtest, director memo, go-live gates ✅ COMPLETED 2026-04-15**
+
+Item 11 — `signal_backtest.py` (new file): signal-level forward-return backtesting. +1d/+3d/+5d windows using daily bars only (no intraday). `SignalBacktestResult` and `SignalBacktestSummary` dataclasses. `has_alpha` flag (win_rate_1d > 0.55, avg_return_1d > 0.003). `format_backtest_report()` for Agent 4 markdown injection. `save_backtest_results()` → `data/reports/backtest_latest.json`. `run_weekly_backtest()` added to `backtest_runner.py` as lightweight Agent 4 call (non-fatal, read-only, does NOT update strategy_config.json).
+
+Item 19 — `shadow_lane.py` (new file): counterfactual decision log. 7 event types. `log_shadow_event()` appends JSONL to `data/analytics/near_miss_log.jsonl`. `get_shadow_stats()` for weekly review. Wired into `bot.py` at kernel rejection (event=`rejected_by_risk_kernel`, decision_id="" — known limitation: decision_id not yet assigned at kernel time; fix by moving ID generation earlier in run_cycle()) and at order submission (event=`approved_trade`, decision_id populated). `_MAX_SCORED` raised 25→35.
+
+Director Memory — `weekly_review.py` Agent 6 (Strategy Director) now has 4-week rolling memo memory via `data/reports/director_memo_history.json`. Functions: `_load_director_memo_history()`, `_save_director_memo()`, `_format_director_history_for_prompt()`, `_extract_recommendations()`, `_extract_regime_view()`, `_extract_cto_score()`. Draft memo saved after Agent 6 runs. History injected into both draft and final Agent 6 inputs (`_build_agent6_final_input()`). `_DIRECTOR_MEMO_FILE` path constant added to paths section.
+
+Agent 4 backtest wiring — `weekly_review.py` Agent 4 input now includes signal backtest report and shadow lane stats (7-day). Local try/except import wraps both new modules — if either has an import error on Sunday, the review continues with a placeholder (never crashes the 11-agent review).
+
+validate_config.py additions — Sev-1 clean days counter (tightened keywords: `  CRITICAL  ` positional match, `[HALT]`, `regime=halt`, `mode=halted`, `DRAWDOWN GUARD` — avoids false positives from risk_kernel "halt mode" VIX rejection DEBUG lines). Director memo history check (WARN on first week). 13-gate Phase 4 go-live checklist (informational only, never blocks bot — all gates use ✅/⬜, no FAIL). `strategy_config.json` gains `shadow_lane` section.
+
+12 new tests in Suite 20 — 203 total, all passing.
+
+**Known limitation (Phase 4):** Shadow lane kernel rejections are logged with `decision_id=""` because the attribution block that generates decision IDs runs after the kernel loop in `run_cycle()`. The comment in bot.py at the rejection site documents the fix path: move `generate_decision_id()` call earlier in `run_cycle()`, before the kernel loop.
 
 ---
 

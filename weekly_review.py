@@ -41,8 +41,9 @@ _BOT_LOG        = _BASE_DIR / "logs" / "bot.log"
 _TRADE_LOG      = _BASE_DIR / "logs" / "trades.jsonl"
 _DECISIONS_FILE = _BASE_DIR / "memory" / "decisions.json"
 _STRATEGY_FILE  = _BASE_DIR / "strategy_config.json"
-_REPORTS_DIR    = _BASE_DIR / "data" / "reports"
-_ARCHIVE_DIR    = _BASE_DIR / "data" / "archive"
+_REPORTS_DIR         = _BASE_DIR / "data" / "reports"
+_ARCHIVE_DIR         = _BASE_DIR / "data" / "archive"
+_DIRECTOR_MEMO_FILE  = _BASE_DIR / "data" / "reports" / "director_memo_history.json"
 
 # ── Claude client ─────────────────────────────────────────────────────────────
 _claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -977,6 +978,140 @@ def _run_agent11_narrative(ctx: dict, all_outputs: dict) -> str:
 
 # ── Agent 6 final input builder ───────────────────────────────────────────────
 
+# ── Director memo memory ──────────────────────────────────────────────────────
+
+def _load_director_memo_history() -> list[dict]:
+    """Load last 4 director memos. Returns [] if file missing or corrupt."""
+    try:
+        if not _DIRECTOR_MEMO_FILE.exists():
+            return []
+        return json.loads(_DIRECTOR_MEMO_FILE.read_text())
+    except Exception as exc:
+        log.debug("_load_director_memo_history failed: %s", exc)
+        return []
+
+
+def _save_director_memo(memo: dict) -> None:
+    """Append new memo to history. Keep last 4. Atomic write. Non-fatal."""
+    try:
+        history = _load_director_memo_history()
+        history.append(memo)
+        history = history[-4:]
+        _DIRECTOR_MEMO_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DIRECTOR_MEMO_FILE.write_text(json.dumps(history, indent=2))
+        log.info("Director memo history saved (%d entries)", len(history))
+    except Exception as exc:
+        log.warning("_save_director_memo failed (non-fatal): %s", exc)
+
+
+def _format_director_history_for_prompt(history: list[dict]) -> str:
+    """Format last 4 director memos as markdown context for Agent 6."""
+    if not history:
+        return "No prior director memos available (first week)."
+    lines: list[str] = ["**Prior Strategy Director Recommendations (last 4 weeks):**\n"]
+    for entry in history[-4:]:
+        week = entry.get("week", "unknown")
+        lines.append(f"#### Week of {week}")
+        lines.append(f"**Summary:** {entry.get('memo_summary', '')[:200]}")
+        regime = entry.get("regime_view", "")
+        if regime:
+            lines.append(f"**Regime view:** {regime}")
+        score = entry.get("real_money_readiness_score")
+        if score is not None:
+            lines.append(f"**CTO readiness score:** {score}/10")
+        recs = entry.get("key_recommendations", [])
+        if recs:
+            lines.append("**Recommendations:**")
+            for r in recs[:3]:
+                rec_text = r.get("recommendation", "")
+                outcome  = r.get("outcome",         "")
+                follow   = r.get("follow_up",       "")
+                lines.append(f"  - {rec_text}")
+                if outcome:
+                    lines.append(f"    *Outcome: {outcome}*")
+                elif follow:
+                    lines.append(f"    *Follow-up needed: {follow}*")
+        cfg_changes = entry.get("config_changes", {})
+        if cfg_changes:
+            lines.append(f"**Config changes made:** {list(cfg_changes.keys())}")
+        lines.append("")
+    lines.append(
+        "**Instructions:** Check whether your prior recommendations were implemented. "
+        "If a recommendation was NOT implemented, either re-recommend with stronger "
+        "evidence or drop it. Do NOT repeat the same recommendation 3+ weeks in a row "
+        "without new evidence. If a recommendation WAS implemented, report the outcome."
+    )
+    return "\n".join(lines)
+
+
+def _extract_recommendations(text: str) -> list[dict]:
+    """
+    Extract top 3 recommendation bullets from Strategy Director output.
+    Looks for lines starting with - or * after a Recommendation header.
+    Returns [] if none found.
+    """
+    recs: list[dict] = []
+    in_rec_section = False
+    for line in text.splitlines():
+        l_lower = line.lower()
+        if any(kw in l_lower for kw in ("recommendation", "suggest", "priority action")):
+            in_rec_section = True
+            continue
+        if in_rec_section and line.strip().startswith(("#", "##")):
+            in_rec_section = False
+        stripped = line.strip()
+        is_bullet = stripped[:1] in ("-", "*") or (
+            len(stripped) > 2 and stripped[0].isdigit() and stripped[1] == "."
+        )
+        if in_rec_section and is_bullet:
+            bullet = stripped.lstrip("-*0123456789. ").strip()
+            if len(bullet) > 10:
+                recs.append({
+                    "recommendation": bullet[:200],
+                    "rationale":      "",
+                    "follow_up":      "",
+                    "outcome":        "",
+                })
+        if len(recs) >= 3:
+            break
+    return recs
+
+
+def _extract_regime_view(text: str) -> str:
+    """Extract regime/market view sentence from output. Returns '' if not found."""
+    import re as _re
+    for line in text.splitlines():
+        l_lower = line.lower()
+        if any(kw in l_lower for kw in ("regime", "market view", "market environment", "macro view")):
+            sentence = _re.split(r"[.!?]", line)[0].strip()
+            if len(sentence) > 15:
+                return sentence[:200]
+    return ""
+
+
+def _extract_cto_score(cto_output: str) -> float:
+    """
+    Extract real money readiness score from CTO output.
+    Looks for: '7/10', 'score: 7', 'readiness: 7'.
+    Returns 0.0 if not found.
+    """
+    import re as _re
+    for pattern in (
+        r"(\d+(?:\.\d+)?)\s*/\s*10",
+        r"score[:\s]+(\d+(?:\.\d+)?)",
+        r"readiness[:\s]+(\d+(?:\.\d+)?)",
+    ):
+        m = _re.search(pattern, cto_output, _re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1))
+                if 0.0 <= val <= 10.0:
+                    return val
+            except ValueError:
+                continue
+    return 0.0
+
+
 def _build_agent6_final_input(ctx: dict, all_outputs: dict) -> str:
     """Build Agent 6 Strategy Director's second-pass input with all 11 agent reports."""
     cfg = ctx.get("strategy_cfg", {})
@@ -1040,6 +1175,11 @@ You have received reports from 10 specialist agents (11 total including this sec
 ```json
 {json.dumps(cfg, indent=2)[:2000]}
 ```
+
+---
+
+### STRATEGY DIRECTOR MEMO HISTORY
+{_format_director_history_for_prompt(_load_director_memo_history())}
 
 ---
 
@@ -1535,6 +1675,19 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
         "all_time_pl":    report_data.get("all_time_pl", 0),
     } if report_data else {}
 
+    # ── Agent 4 data: signal backtest + shadow lane ───────────────────────────
+    try:
+        import signal_backtest as _signal_backtest
+        import shadow_lane as _shadow_lane
+        _bt_result    = _signal_backtest.run_signal_backtest(lookback_days=30)
+        _bt_report    = _signal_backtest.format_backtest_report(_bt_result)
+        _signal_backtest.save_backtest_results(_bt_result)
+        _shadow_stats = _shadow_lane.get_shadow_stats(lookback_days=7)
+    except Exception as _bt_err:
+        log.warning("[REVIEW] backtest/shadow failed: %s", _bt_err)
+        _bt_report    = "Backtest unavailable this week."
+        _shadow_stats = {"total": 0, "note": "unavailable"}
+
     agent4_input = f"""## WEEKLY BACKTEST ANALYST REVIEW INPUT
 
 ### Vector Memory (ChromaDB) Stats
@@ -1561,7 +1714,14 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
 {perf_str}
 ```
 
-Please analyze decision quality, compare live results to expectations, and identify any divergence patterns. Provide your findings as a markdown section with 3-5 insights."""
+{_bt_report}
+
+### Shadow Lane Stats (last 7 days)
+```json
+{json.dumps(_shadow_stats, indent=2)}
+```
+
+Please analyze decision quality, compare live results to expectations, identify divergence patterns, and assess signal alpha from the backtest. For any symbol with has_alpha=true, note whether the bot acted on it. Provide your findings as a markdown section with 3-5 insights."""
 
     # ── Agents 1-4: try batch first, fall back to sequential ─────────────────
     agent_inputs_1_to_4 = [
@@ -1605,6 +1765,10 @@ Please analyze decision quality, compare live results to expectations, and ident
     # ── Agent 6: Strategy Director (always sequential — needs all 4 reports) ──
     print("[6/11] Running Strategy Director (draft)...")
 
+    # Load director memo history for continuity across weeks
+    _director_history = _load_director_memo_history()
+    _history_text     = _format_director_history_for_prompt(_director_history)
+
     agent6_input = f"""## WEEKLY STRATEGY DIRECTOR SYNTHESIS INPUT
 
 You have received reports from four specialist analysts. Synthesize their findings and produce a strategic memo and parameter update JSON for the coming week.
@@ -1635,6 +1799,11 @@ You have received reports from four specialist analysts. Synthesize their findin
 ```json
 {json.dumps(strategy_cfg, indent=2)}
 ```
+
+---
+
+### YOUR PRIOR RECOMMENDATIONS (last 4 weeks)
+{_history_text}
 
 ---
 
@@ -1685,6 +1854,19 @@ If no updates needed, set watchlist_updates to {{}}.
 For signal_weights_recommended: based on this week's accuracy data, suggest weight levels."""
 
     agent6_output = _call_claude(_SYSTEM_AGENT6, agent6_input, "6-StrategyDirector")
+
+    # ── Save director memo to rolling history ─────────────────────────────────
+    try:
+        _save_director_memo({
+            "week":                       today_str,
+            "memo_summary":               agent6_output[:500],
+            "config_changes":             {},
+            "key_recommendations":        _extract_recommendations(agent6_output),
+            "regime_view":                _extract_regime_view(agent6_output),
+            "real_money_readiness_score": _extract_cto_score(agent5_cto_output),
+        })
+    except Exception as _memo_exc:
+        log.warning("Director memo save failed (non-fatal): %s", _memo_exc)
 
     # ── Parse Agent 6 JSON ────────────────────────────────────────────────────
     params_update = _extract_json_block(agent6_output)

@@ -580,6 +580,226 @@ if cfg:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Sev-1 clean days counter (consecutive days with zero CRITICAL/HALT in bot.log)
+# State: data/runtime/sev1_clean_days.json
+# Keywords are tightened to avoid false positives from inline log-message text:
+#   "  CRITICAL  " matches the log-level field (padded), NOT "0 CRITICAL, 0 HIGH"
+#   "[HALT]" matches an explicit halt marker, NOT "halt mode" VIX rejection text
+# ─────────────────────────────────────────────────────────────────────────────
+_BOT_LOG_PATH    = BASE_DIR / "logs" / "bot.log"
+_SEV1_STATE_FILE = BASE_DIR / "data" / "runtime" / "sev1_clean_days.json"
+# Tightened keywords — positional CRITICAL (log-level field) + explicit halt markers only
+_SEV1_KEYWORDS   = ("  CRITICAL  ", "[HALT]", "regime=halt", "mode=halted", "DRAWDOWN GUARD")
+
+def _count_sev1_today(log_path: Path) -> int:
+    """Count lines containing a Sev-1 keyword in bot.log for today (UTC date)."""
+    if not log_path.exists():
+        return 0
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    count = 0
+    try:
+        with log_path.open(errors="replace") as _f:
+            for _line in _f:
+                if today in _line and any(kw in _line for kw in _SEV1_KEYWORDS):
+                    count += 1
+    except Exception:
+        pass
+    return count
+
+_sev1_today      = _count_sev1_today(_BOT_LOG_PATH)
+_today_str_sev1  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+try:
+    _sev1_state = json.loads(_SEV1_STATE_FILE.read_text()) if _SEV1_STATE_FILE.exists() else {}
+except Exception:
+    _sev1_state = {}
+
+_last_check_date = _sev1_state.get("last_check_date", "")
+_clean_days      = int(_sev1_state.get("consecutive_clean_days", 0))
+_sev1_history    = _sev1_state.get("history", [])
+
+if _last_check_date != _today_str_sev1:
+    # New day — update state
+    if _sev1_today == 0:
+        _clean_days += 1
+    else:
+        _clean_days = 0
+    _sev1_history.append({"date": _today_str_sev1, "sev1_count": _sev1_today})
+    _new_sev1_state = {
+        "last_check_date":        _today_str_sev1,
+        "consecutive_clean_days": _clean_days,
+        "history":                _sev1_history[-30:],
+    }
+    try:
+        _SEV1_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SEV1_STATE_FILE.write_text(json.dumps(_new_sev1_state, indent=2))
+    except Exception:
+        pass
+
+if _sev1_today > 0:
+    check(WARN, f"Sev-1 clean days: {_clean_days} (TODAY has {_sev1_today} CRITICAL/HALT line(s) — counter reset)")
+elif _clean_days >= 7:
+    check(PASS, f"Sev-1 clean days: {_clean_days} consecutive (≥7 — go-live gate CLEAR)")
+else:
+    check(WARN, f"Sev-1 clean days: {_clean_days} consecutive (need 7 for go-live gate)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Director memo history (weekly_review.py rolling continuity — Phase 4)
+# ─────────────────────────────────────────────────────────────────────────────
+_memo_hist_file = BASE_DIR / "data" / "reports" / "director_memo_history.json"
+if not _memo_hist_file.exists():
+    check(WARN, "data/reports/director_memo_history.json: not yet created — OK for first week")
+else:
+    try:
+        _memo_history = json.loads(_memo_hist_file.read_text())
+        if isinstance(_memo_history, list) and len(_memo_history) >= 1:
+            check(PASS, f"director_memo_history.json: present, {len(_memo_history)} week(s) stored")
+        else:
+            check(WARN, "director_memo_history.json: exists but contains no entries")
+    except Exception as _mh_err:
+        check(FAIL, f"director_memo_history.json: parse error — {_mh_err}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 4 go-live gate checklist (13 gates — informational only, never blocks)
+# ─────────────────────────────────────────────────────────────────────────────
+print()
+print("─" * 65)
+print("  PHASE 4 GO-LIVE GATE CHECKLIST")
+print("─" * 65)
+
+_gate_results: list[tuple[bool, str]] = []
+
+def _gate(passed: bool, label: str) -> None:
+    _gate_results.append((passed, label))
+    _icon = "\u2705" if passed else "\u2b1c"
+    print(f"  {_icon}  {label}")
+
+import importlib.util as _ilu_g  # noqa: E402
+
+# Gate 01 — schemas.py importable
+try:
+    _gs = _ilu_g.spec_from_file_location("schemas_gate", BASE_DIR / "schemas.py")
+    _gm = _ilu_g.module_from_spec(_gs); _gs.loader.exec_module(_gm)
+    _gate(True, "Gate 01 — schemas.py importable")
+except Exception as _ge:
+    _gate(False, f"Gate 01 — schemas.py import failed: {_ge}")
+
+# Gate 02 — risk_kernel.py present (heavy Alpaca imports skip exec check)
+_gate(
+    (BASE_DIR / "risk_kernel.py").exists(),
+    "Gate 02 — risk_kernel.py present" if (BASE_DIR / "risk_kernel.py").exists()
+    else "Gate 02 — risk_kernel.py MISSING",
+)
+
+# Gate 03 — sonnet_gate.py importable
+try:
+    _gs = _ilu_g.spec_from_file_location("sonnet_gate_g", BASE_DIR / "sonnet_gate.py")
+    _gm = _ilu_g.module_from_spec(_gs); _gs.loader.exec_module(_gm)
+    _gate(True, "Gate 03 — sonnet_gate.py importable")
+except Exception as _ge:
+    _gate(False, f"Gate 03 — sonnet_gate.py import failed: {_ge}")
+
+# Gate 04 — reconciliation.py present
+_gate(
+    (BASE_DIR / "reconciliation.py").exists(),
+    "Gate 04 — reconciliation.py present" if (BASE_DIR / "reconciliation.py").exists()
+    else "Gate 04 — reconciliation.py MISSING",
+)
+
+# Gate 05 — divergence.py importable
+try:
+    _gs = _ilu_g.spec_from_file_location("divergence_g", BASE_DIR / "divergence.py")
+    _gm = _ilu_g.module_from_spec(_gs); _gs.loader.exec_module(_gm)
+    _gate(True, "Gate 05 — divergence.py importable")
+except Exception as _ge:
+    _gate(False, f"Gate 05 — divergence.py import failed: {_ge}")
+
+# Gate 06 — attribution.py importable
+try:
+    _gs = _ilu_g.spec_from_file_location("attribution_g", BASE_DIR / "attribution.py")
+    _gm = _ilu_g.module_from_spec(_gs); _gs.loader.exec_module(_gm)
+    _gate(True, "Gate 06 — attribution.py importable")
+except Exception as _ge:
+    _gate(False, f"Gate 06 — attribution.py import failed: {_ge}")
+
+# Gate 07a — signal_backtest.py importable
+try:
+    _gs = _ilu_g.spec_from_file_location("signal_backtest_g", BASE_DIR / "signal_backtest.py")
+    _gm = _ilu_g.module_from_spec(_gs); _gs.loader.exec_module(_gm)
+    _gate(True, "Gate 07a — signal_backtest.py importable")
+except Exception as _ge:
+    _gate(False, f"Gate 07a — signal_backtest.py import failed: {_ge}")
+
+# Gate 07b — backtest_latest.json exists (weekly_review has run at least once)
+_bt_latest = BASE_DIR / "data" / "reports" / "backtest_latest.json"
+_gate(
+    _bt_latest.exists(),
+    "Gate 07b — backtest_latest.json present (weekly review run)" if _bt_latest.exists()
+    else "Gate 07b — backtest_latest.json MISSING (run weekly_review.py once)",
+)
+
+# Gate 08 — git remote configured
+try:
+    import subprocess as _gsp
+    _git_out = _gsp.run(
+        ["git", "remote", "-v"], capture_output=True, text=True,
+        cwd=str(BASE_DIR), timeout=5,
+    )
+    _has_remote = bool(_git_out.stdout.strip())
+    _gate(
+        _has_remote,
+        "Gate 08 — git remote configured" if _has_remote else "Gate 08 — git remote NOT configured",
+    )
+except Exception:
+    _gate(False, "Gate 08 — git remote check failed")
+
+# Gate 09 — Sev-1 clean days >= 7 (reuses _clean_days from counter above)
+_gate(
+    _clean_days >= 7,
+    f"Gate 09 — Sev-1 clean days={_clean_days} "
+    f"({'≥7 CLEAR' if _clean_days >= 7 else f'need {7 - _clean_days} more day(s)'})",
+)
+
+# Gate 10 — attribution_log.jsonl exists
+_attr_log = BASE_DIR / "data" / "analytics" / "attribution_log.jsonl"
+_gate(
+    _attr_log.exists(),
+    "Gate 10 — attribution_log.jsonl present" if _attr_log.exists()
+    else "Gate 10 — attribution_log.jsonl MISSING (bot has not submitted an order yet)",
+)
+
+# Gate 11 — near_miss_log.jsonl exists
+_nm_log = BASE_DIR / "data" / "analytics" / "near_miss_log.jsonl"
+_gate(
+    _nm_log.exists(),
+    "Gate 11 — near_miss_log.jsonl present" if _nm_log.exists()
+    else "Gate 11 — near_miss_log.jsonl MISSING (shadow lane not yet populated)",
+)
+
+# Gate 12 — shadow_lane.py present
+_gate(
+    (BASE_DIR / "shadow_lane.py").exists(),
+    "Gate 12 — shadow_lane.py present" if (BASE_DIR / "shadow_lane.py").exists()
+    else "Gate 12 — shadow_lane.py MISSING",
+)
+
+# Gate 13 — strategy_config.json has shadow_lane section
+_cfg_has_shadow = isinstance(cfg, dict) and "shadow_lane" in cfg
+_gate(
+    _cfg_has_shadow,
+    "Gate 13 — strategy_config.json has shadow_lane section" if _cfg_has_shadow
+    else "Gate 13 — strategy_config.json missing shadow_lane section",
+)
+
+_gates_passed = sum(1 for ok, _ in _gate_results if ok)
+print("─" * 65)
+print(f"  Go-live gates: {_gates_passed}/13 passing")
+print("─" * 65)
+print()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 passes   = sum(1 for s, _ in results if s == PASS)

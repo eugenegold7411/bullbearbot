@@ -193,5 +193,20 @@
         "minute": 30
       }
     ]
+  },
+  "shadow_lane": {
+    "enabled": true,
+    "log_file": "data/analytics/near_miss_log.jsonl",
+    "event_types": [
+      "approved_trade",
+      "rejected_by_risk_kernel",
+      "rejected_by_policy",
+      "below_threshold_near_miss",
+      "interesting_but_not_actioned",
+      "timing_miss",
+      "structure_rejected"
+    ],
+    "weekly_review_lookback_days": 7,
+    "note": "Shadow lane logs decisions only — zero execution side effects"
   }
 }

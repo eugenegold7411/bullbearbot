@@ -3842,5 +3842,180 @@ class TestSuite19Phase3(unittest.TestCase):
             self.assertGreater(len(prompt), 50, f"{attr} prompt is too short")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Suite 20 — Phase 4: shadow_lane, signal_backtest, weekly_review helpers
+# ─────────────────────────────────────────────────────────────────────────────
+class TestSuite20Phase4(unittest.TestCase):
+    """12 tests covering Phase 4 additions (shadow lane, signal backtest, director memo)."""
+
+    # ── shadow_lane ───────────────────────────────────────────────────────────
+
+    def test_01_shadow_log_valid_event_written(self):
+        """log_shadow_event writes a parseable JSONL line for a valid event."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        import shadow_lane as sl
+
+        orig = sl.NEAR_MISS_LOG
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as tf:
+                tmp = Path(tf.name)
+            sl.NEAR_MISS_LOG = tmp
+            sl.log_shadow_event(
+                "rejected_by_risk_kernel", "AAPL",
+                {"rejection_reason": "vix", "conviction": 0.7},
+                decision_id="dec-001", session="market",
+            )
+            lines = tmp.read_text().strip().splitlines()
+            self.assertEqual(len(lines), 1)
+            rec = json.loads(lines[0])
+            self.assertEqual(rec["event_type"], "rejected_by_risk_kernel")
+            self.assertEqual(rec["symbol"], "AAPL")
+            self.assertEqual(rec["session"], "market")
+        finally:
+            sl.NEAR_MISS_LOG = orig
+            tmp.unlink(missing_ok=True)
+
+    def test_02_shadow_log_invalid_event_silently_skipped(self):
+        """log_shadow_event silently ignores unknown event_type (non-fatal)."""
+        import tempfile
+        from pathlib import Path
+
+        import shadow_lane as sl
+
+        orig = sl.NEAR_MISS_LOG
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as tf:
+                tmp = Path(tf.name)
+            sl.NEAR_MISS_LOG = tmp
+            sl.log_shadow_event("not_a_valid_event", "SPY", {})
+            written = [l for l in tmp.read_text().splitlines() if l.strip()]
+            self.assertEqual(len(written), 0)
+        finally:
+            sl.NEAR_MISS_LOG = orig
+            tmp.unlink(missing_ok=True)
+
+    def test_03_shadow_stats_returns_correct_counts(self):
+        """get_shadow_stats counts events correctly from a temp log file."""
+        import json
+        import tempfile
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        import shadow_lane as sl
+
+        orig = sl.NEAR_MISS_LOG
+        try:
+            with tempfile.NamedTemporaryFile(
+                suffix=".jsonl", mode="w", delete=False
+            ) as tf:
+                tmp = Path(tf.name)
+                now_ts = datetime.now(timezone.utc).isoformat()
+                for etype in ("approved_trade", "rejected_by_risk_kernel", "rejected_by_risk_kernel"):
+                    tf.write(json.dumps({
+                        "ts": now_ts, "event_type": etype,
+                        "symbol": "GLD", "decision_id": "", "session": "market", "details": {},
+                    }) + "\n")
+            sl.NEAR_MISS_LOG = tmp
+            stats = sl.get_shadow_stats(lookback_days=1)
+            self.assertEqual(stats["approved_trades"], 1)
+            self.assertEqual(stats["kernel_rejections"], 2)
+            self.assertEqual(stats["events"], 3)
+        finally:
+            sl.NEAR_MISS_LOG = orig
+            tmp.unlink(missing_ok=True)
+
+    def test_04_shadow_stats_no_log_returns_no_log_status(self):
+        """get_shadow_stats returns status='no_log' when log file absent."""
+        from pathlib import Path
+
+        import shadow_lane as sl
+
+        orig = sl.NEAR_MISS_LOG
+        try:
+            sl.NEAR_MISS_LOG = Path("/tmp/__nonexistent_shadow_log_xyz__.jsonl")
+            stats = sl.get_shadow_stats()
+            self.assertEqual(stats.get("status"), "no_log")
+        finally:
+            sl.NEAR_MISS_LOG = orig
+
+    # ── signal_backtest ───────────────────────────────────────────────────────
+
+    def test_05_forward_return_buy_correct(self):
+        """_compute_forward_return: BUY + positive return → correct=True."""
+        from signal_backtest import _compute_forward_return
+
+        ret, correct = _compute_forward_return(100.0, 105.0, "BUY")
+        self.assertAlmostEqual(ret, 0.05, places=5)
+        self.assertTrue(correct)
+
+    def test_06_forward_return_sell_correct(self):
+        """_compute_forward_return: SELL + negative return → correct=True."""
+        from signal_backtest import _compute_forward_return
+
+        ret, correct = _compute_forward_return(100.0, 92.0, "SELL")
+        self.assertAlmostEqual(ret, -0.08, places=5)
+        self.assertTrue(correct)
+
+    def test_07_forward_return_none_on_missing_price(self):
+        """_compute_forward_return: future_price=None → (None, None)."""
+        from signal_backtest import _compute_forward_return
+
+        ret, correct = _compute_forward_return(100.0, None, "BUY")
+        self.assertIsNone(ret)
+        self.assertIsNone(correct)
+
+    def test_08_get_price_at_offset_correct_bars(self):
+        """_get_price_at_offset returns Nth bar strictly after from_date."""
+        from signal_backtest import _get_price_at_offset
+
+        bars = [
+            {"date": "2026-01-01", "close": 100.0},
+            {"date": "2026-01-02", "close": 101.0},
+            {"date": "2026-01-03", "close": 102.0},
+            {"date": "2026-01-06", "close": 103.0},
+        ]
+        self.assertAlmostEqual(_get_price_at_offset(bars, "2026-01-01", 1), 101.0)
+        self.assertAlmostEqual(_get_price_at_offset(bars, "2026-01-01", 3), 103.0)
+        self.assertIsNone(_get_price_at_offset(bars, "2026-01-01", 5))
+
+    def test_09_run_signal_backtest_insufficient_data_never_raises(self):
+        """run_signal_backtest returns a dict and never raises, even with no data."""
+        from signal_backtest import run_signal_backtest
+
+        result = run_signal_backtest(lookback_days=1)
+        self.assertIsInstance(result, dict)
+        if result:
+            self.assertIn(result.get("status"), ("insufficient_data", "ok"))
+
+    # ── weekly_review helpers ─────────────────────────────────────────────────
+
+    def test_10_extract_cto_score_parses_x_over_10(self):
+        """_extract_cto_score extracts N/10 pattern from CTO output text."""
+        import weekly_review
+
+        text = "Overall readiness assessment: 7/10 — vector memory must be restored."
+        score = weekly_review._extract_cto_score(text)
+        self.assertAlmostEqual(score, 7.0)
+
+    def test_11_format_director_history_first_week_message(self):
+        """_format_director_history_for_prompt returns first-week message on empty history."""
+        import weekly_review
+
+        result = weekly_review._format_director_history_for_prompt([])
+        self.assertIn("first week", result.lower())
+
+    def test_12_extract_regime_view_finds_regime_sentence(self):
+        """_extract_regime_view returns the first sentence mentioning regime."""
+        import weekly_review
+
+        text = "## Strategy Memo\nThe current regime is risk-off with elevated volatility. More here."
+        result = weekly_review._extract_regime_view(text)
+        self.assertIn("regime", result.lower())
+        self.assertGreater(len(result), 10)
+
+
 if __name__ == "__main__":
     unittest.main()

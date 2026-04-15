@@ -1023,6 +1023,108 @@ def run_backtest(strategy: Optional[str] = None, days: int = 30) -> dict:
     return results
 
 
+# ── Weekly backtest summary (for Agent 4 / weekly_review.py) ─────────────────
+
+def run_weekly_backtest(lookback_days: int = 30) -> dict:
+    """
+    Lightweight read-only backtest for the weekly review Agent 4.
+
+    Runs the hybrid strategy over the last ``lookback_days`` of cached daily
+    bars.  Does NOT call the Strategy Director, does NOT write
+    strategy_config.json — this is purely analytical.
+
+    Returns a compact stats dict on success, {} on any failure.
+
+    Example return::
+
+        {
+            "strategy":      "hybrid",
+            "lookback_days": 30,
+            "trade_dates":   ["2026-03-18", "2026-04-14"],
+            "n_trade_dates": 10,
+            "return_pct":    2.4,
+            "win_rate":      58.3,
+            "sharpe":        0.71,
+            "max_drawdown":  3.2,
+            "profit_factor": 1.85,
+            "total_trades":  12,
+            "top_trades":    [...],   # up to 5 highest-|pnl| trades
+        }
+    """
+    try:
+        log.info("[WEEKLY_BT] Starting weekly backtest (lookback=%d days)", lookback_days)
+
+        all_bars = _load_all_bars()
+        if not all_bars:
+            log.warning("[WEEKLY_BT] No bar data found — skipping")
+            return {}
+
+        core_symbols = get_core()
+
+        # Collect all available trading dates
+        all_dates: set[str] = set()
+        for bars in all_bars.values():
+            for b in bars:
+                d = str(b.get("date", ""))
+                if d:
+                    all_dates.add(d)
+
+        sorted_dates = sorted(all_dates)
+        if len(sorted_dates) < EVERY_NTH_DAY + 1:
+            log.warning("[WEEKLY_BT] Insufficient dates (%d) — skipping", len(sorted_dates))
+            return {}
+
+        # Use last lookback_days dates, sample every Nth
+        window_dates = sorted_dates[-(lookback_days):]
+        trade_dates  = window_dates[::EVERY_NTH_DAY]
+
+        if not trade_dates:
+            return {}
+
+        log.info(
+            "[WEEKLY_BT] Window: %s → %s  (%d dates → %d trade days)",
+            window_dates[0], window_dates[-1],
+            len(window_dates), len(trade_dates),
+        )
+
+        # Run hybrid only — matches active_strategy default; fastest single-strategy run
+        stats = _run_strategy(
+            strategy_name   = "hybrid",
+            system_prompt   = STRATEGY_PROMPTS["hybrid"],
+            all_bars        = all_bars,
+            core_symbols    = core_symbols,
+            trade_dates     = trade_dates,
+        )
+
+        profit_factor_raw = stats.get("profit_factor", 0.0)
+        profit_factor_out = (
+            99.9 if isinstance(profit_factor_raw, float) and math.isinf(profit_factor_raw)
+            else profit_factor_raw
+        )
+
+        return {
+            "strategy":      "hybrid",
+            "lookback_days": lookback_days,
+            "trade_dates":   [trade_dates[0], trade_dates[-1]],
+            "n_trade_dates": len(trade_dates),
+            "return_pct":    stats.get("return_pct",    0.0),
+            "win_rate":      stats.get("win_rate",      0.0),
+            "sharpe":        stats.get("sharpe",        0.0),
+            "max_drawdown":  stats.get("max_drawdown",  0.0),
+            "profit_factor": profit_factor_out,
+            "total_trades":  stats.get("total_trades",  0),
+            "top_trades":    sorted(
+                stats.get("trades", []),
+                key=lambda t: abs(t.get("pnl", 0)),
+                reverse=True,
+            )[:5],
+        }
+
+    except Exception as exc:
+        log.warning("[WEEKLY_BT] run_weekly_backtest failed (non-fatal): %s", exc)
+        return {}
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

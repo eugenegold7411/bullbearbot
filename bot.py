@@ -468,7 +468,7 @@ def score_signals(
         return {}
     try:
         # ── Build prioritised 15-symbol list ─────────────────────────────────
-        _MAX_SCORED = 25
+        _MAX_SCORED = 35
         scored: list[str] = []
         seen: set[str] = set()
 
@@ -1592,6 +1592,30 @@ def run_cycle(
                 )
             else:
                 log.info("[KERNEL] REJECTED %s %s — %s", _idea.intent, _idea.symbol, _result)
+                # Shadow lane — decision_id set later in attribution block; known limitation;
+                # fix in future by moving ID generation earlier in run_cycle()
+                try:
+                    from shadow_lane import log_shadow_event as _log_shadow  # noqa: PLC0415
+                    _log_shadow(
+                        "rejected_by_risk_kernel",
+                        _sym,
+                        {
+                            "intent":           _idea.intent,
+                            "intended_action":  str(_idea.action.value) if hasattr(_idea.action, "value") else str(_idea.action),
+                            "rejection_reason": str(_result),
+                            "signal_score":     getattr(_idea, "signal_score", 0),
+                            "conviction":       getattr(_idea, "conviction",   0.0),
+                            "direction":        str(_idea.direction.value) if hasattr(_idea.direction, "value") else str(getattr(_idea, "direction", "")),
+                            "thesis_summary":   getattr(_idea, "catalyst", ""),
+                            "regime":           regime,
+                            "vix":              float(md.get("vix", 0) or 0),
+                            "module_tags":      {},
+                        },
+                        decision_id="",
+                        session=session_tier,
+                    )
+                except Exception:
+                    pass
 
     actions = [ba.to_dict() for ba in broker_actions]
 
@@ -1864,6 +1888,21 @@ def run_cycle(
                     )
                 except Exception as _oa_exc:
                     log.debug("Attribution order_submitted failed (non-fatal): %s", _oa_exc)
+                # Shadow lane — approved_trade (decision_id is set by attribution block above)
+                try:
+                    from shadow_lane import log_shadow_event as _log_shadow  # noqa: PLC0415
+                    _log_shadow(
+                        "approved_trade",
+                        r.symbol,
+                        {
+                            "action":   r.action,
+                            "order_id": str(r.order_id) if r.order_id else "",
+                        },
+                        decision_id=_decision_id,
+                        session=session_tier,
+                    )
+                except Exception:
+                    pass
                 # Publish trade entry to Twitter
                 if publisher and publisher.enabled:
                     try:

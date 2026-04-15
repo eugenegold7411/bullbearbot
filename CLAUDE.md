@@ -398,6 +398,7 @@ significant drawdown, or any time a full system assessment is needed.
 | `backtest_runner.py` | Strategy backtesting harness. `run_backtest()` = 5-strategy simulation. `run_weekly_backtest()` = compact hybrid-only summary for Agent 4 (non-fatal, read-only). |
 | `signal_backtest.py` | Signal-level forward-return backtest. Extracts signals from decisions.json + near_miss_log.jsonl, computes +1d/+3d/+5d returns from daily bars. `SignalBacktestResult`, `SignalBacktestSummary`, `has_alpha` flag. Saves to `data/reports/backtest_latest.json`. Never raises. |
 | `shadow_lane.py` | Counterfactual decision log. `log_shadow_event()` + `get_shadow_stats()`. Appends to `data/analytics/near_miss_log.jsonl`. 7 event types. Completely non-fatal. Zero execution side effects. |
+| `iv_history_seeder.py` | **Manual one-shot/occasional calibration tool.** Seeds synthetic IV history for Account 2 symbols using yfinance. Phases: Phase 1 (16 core A2 names), Phase 2 (27 extended names). `run_phase1_seed()`, `run_phase2_seed()`, `validate_seed_quality()`. Bad entries (iv < 0.05) replaced. CLI: `python3 iv_history_seeder.py [--phase2] [--dry-run]`. Designed for future Account 3 fresh observation mode start. |
 
 ### Prompts
 
@@ -828,9 +829,14 @@ git reset --hard origin/main
 _MAX_SCORED set to 25 (not 15 — watchlist grew). signal_scores.json write added to bot.py.
 Three additional A2 fixes: nested JSON extraction, conviction vs confidence field, obs mode exit.
 
-**~~F012~~ — IV history bootstrap seeding ✅ COMPLETED 2026-04-14**
-38/38 symbols seeded with 25 days of IV history from live yfinance chain data. BUG-005 fixed
-simultaneously. obs_mode_state.json updated to observation_complete=true. Account 2 is live.
+**~~F012~~ — IV history bootstrap seeding ✅ COMPLETED 2026-04-14 / updated 2026-04-15**
+Phase 1 (2026-04-14): 38/38 symbols seeded with 25 days of IV history from live yfinance chain data.
+BUG-005 fixed simultaneously. obs_mode_state.json updated to observation_complete=true. Account 2 is live.
+Phase 2 (2026-04-15): `iv_history_seeder.py` built as proper seeder tool with quality validation,
+provenance tags (`source`, `seed_date`, `confidence`, `quality_flags`), and bad-entry replacement (iv < 0.05).
+SPY bad entry (BUG-005 artifact, iv=0.02) replaced. 16/16 Phase 1 symbols grade A. 27/27 Phase 2 symbols
+grade A. Gate 14 added to validate_config.py. Post-seed validation path documented for future Account 3 use.
+7 new tests in Suite 21 — 210 total, all passing.
 
 **F013 — Reddit credentials activation [5 min]**
 Once Reddit developer app is approved, add `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`
@@ -934,7 +940,7 @@ Director Memory — `weekly_review.py` Agent 6 (Strategy Director) now has 4-wee
 
 Agent 4 backtest wiring — `weekly_review.py` Agent 4 input now includes signal backtest report and shadow lane stats (7-day). Local try/except import wraps both new modules — if either has an import error on Sunday, the review continues with a placeholder (never crashes the 11-agent review).
 
-validate_config.py additions — Sev-1 clean days counter (tightened keywords: `  CRITICAL  ` positional match, `[HALT]`, `regime=halt`, `mode=halted`, `DRAWDOWN GUARD` — avoids false positives from risk_kernel "halt mode" VIX rejection DEBUG lines). Director memo history check (WARN on first week). 13-gate Phase 4 go-live checklist (informational only, never blocks bot — all gates use ✅/⬜, no FAIL). `strategy_config.json` gains `shadow_lane` section.
+validate_config.py additions — Sev-1 clean days counter (tightened keywords: `  CRITICAL  ` positional match, `[HALT]`, `regime=halt`, `mode=halted`, `DRAWDOWN GUARD` — avoids false positives from risk_kernel "halt mode" VIX rejection DEBUG lines). Director memo history check (WARN on first week). 13-gate Phase 4 go-live checklist (informational only, never blocks bot — all gates use ✅/⬜, no FAIL). `strategy_config.json` gains `shadow_lane` section. Gate 14 (A2 IV history seeded: 16/16 Phase 1 symbols ≥20 valid entries) added in F012 session.
 
 12 new tests in Suite 20 — 203 total, all passing.
 
@@ -1103,7 +1109,7 @@ ssh tradingbot 'cd /home/trading-bot && source .venv/bin/activate && python3 bot
 
 6. **Account 2 is in observation mode.** It has been running for 1 trading day.
    It needs 19 more before it trades real orders. The IV history files are in
-   `data/options/iv_history/`. Currently only SPY has 1 day of history.
+   `data/options/iv_history/`. All 43 symbols now have 20–27 entries (seeded 2026-04-15 via iv_history_seeder.py). SPY bad entry (BUG-005 artifact iv=0.02) replaced.
 
 7. **TSM time-bound exit.** TSM must be closed by 2026-04-15 15:45 ET (TSM earnings April 16).
    This is in `strategy_config.json:time_bound_actions` and the bot checks it each cycle.

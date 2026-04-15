@@ -798,9 +798,35 @@ _gate(
     else "Gate 13 — strategy_config.json missing shadow_lane section",
 )
 
+# Gate 14 — A2 IV history seeded (>= 14 of 16 Phase 1 symbols have >= 20 valid entries)
+_PHASE1_SYMBOLS = [
+    "SPY", "QQQ", "NVDA", "AAPL", "MSFT", "AMZN",
+    "META", "GOOGL", "TSM", "AMD", "XLE", "GLD",
+    "TLT", "IWM", "XLF", "XBI",
+]
+_IV_HIST_DIR    = BASE_DIR / "data" / "options" / "iv_history"
+_iv_ready_count = 0
+for _sym in _PHASE1_SYMBOLS:
+    _hist_path = _IV_HIST_DIR / f"{_sym}_iv_history.json"
+    if _hist_path.exists():
+        try:
+            _hist  = json.loads(_hist_path.read_text())
+            _valid = [e for e in _hist if e.get("iv", 0) >= 0.05]
+            if len(_valid) >= 20:
+                _iv_ready_count += 1
+        except Exception:
+            pass
+_gate(
+    _iv_ready_count >= 14,
+    f"Gate 14 — A2 IV history seeded: {_iv_ready_count}/16 Phase 1 symbols have ≥20 valid entries"
+    if _iv_ready_count >= 14
+    else f"Gate 14 — A2 IV history seeded: only {_iv_ready_count}/16 ready "
+         f"(need 14 — run iv_history_seeder.py)",
+)
+
 _gates_passed = sum(1 for ok, _ in _gate_results if ok)
 print("─" * 65)
-print(f"  Go-live gates: {_gates_passed}/13 passing")
+print(f"  Go-live gates: {_gates_passed}/14 passing")
 print("─" * 65)
 print()
 

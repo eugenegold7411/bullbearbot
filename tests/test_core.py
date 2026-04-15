@@ -4017,5 +4017,160 @@ class TestSuite20Phase4(unittest.TestCase):
         self.assertGreater(len(result), 10)
 
 
+# =============================================================================
+# Suite 21 — F012: iv_history_seeder quality, merge, generate, fetch
+# 7 tests:
+#   T01  validate_seed_quality: grade A for 20+ entries with variance
+#   T02  validate_seed_quality: grade F for < 10 entries
+#   T03  _generate_seed_entries: returns exactly target_days entries
+#   T04  _generate_seed_entries: entries have variance (not a flat line)
+#   T05  _merge_with_existing: does not overwrite good live entries
+#   T06  _merge_with_existing: replaces bad iv entry (SPY BUG-005 fix)
+#   T07  _fetch_atm_iv_yfinance: returns None when all expirations DTE < MIN_DTE
+# =============================================================================
+
+class TestSuite21IVHistorySeeder(unittest.TestCase):
+    """Suite 21 — iv_history_seeder: seed quality, merge, generate, DTE filter."""
+
+    # ── T01: grade A ─────────────────────────────────────────────────────────
+
+    def test_01_seed_quality_grade_a(self):
+        """validate_seed_quality returns grade A for 20+ entries with variance."""
+        import tempfile
+        from pathlib import Path
+        from iv_history_seeder import validate_seed_quality
+
+        history = [
+            {"date": f"2026-01-{i+1:02d}", "iv": round(0.20 + i * 0.003, 4)}
+            for i in range(25)
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            iv_dir = Path(tmpdir)
+            (iv_dir / "SPY_iv_history.json").write_text(json.dumps(history))
+            q = validate_seed_quality("SPY", iv_history_dir=iv_dir)
+
+        self.assertEqual(q["quality_grade"], "A")
+        self.assertTrue(q["ready_for_iv_rank"])
+        self.assertTrue(q["has_variance"])
+        self.assertEqual(q["total_entries"], 25)
+
+    # ── T02: grade F ─────────────────────────────────────────────────────────
+
+    def test_02_seed_quality_grade_f_insufficient_entries(self):
+        """validate_seed_quality returns grade F when fewer than 10 valid entries."""
+        import tempfile
+        from pathlib import Path
+        from iv_history_seeder import validate_seed_quality
+
+        history = [{"date": f"2026-01-0{i+1}", "iv": 0.20} for i in range(5)]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            iv_dir = Path(tmpdir)
+            (iv_dir / "AAPL_iv_history.json").write_text(json.dumps(history))
+            q = validate_seed_quality("AAPL", iv_history_dir=iv_dir)
+
+        self.assertEqual(q["quality_grade"], "F")
+        self.assertFalse(q["ready_for_iv_rank"])
+
+    # ── T03: entry count ──────────────────────────────────────────────────────
+
+    def test_03_generate_seed_entries_count(self):
+        """_generate_seed_entries returns exactly target_days entries."""
+        from iv_history_seeder import _generate_seed_entries
+
+        entries = _generate_seed_entries("AAPL", 0.25, "2026-05-16", {}, target_days=20)
+        self.assertEqual(len(entries), 20)
+        # All entries must have the required fields
+        for e in entries:
+            self.assertIn("date", e)
+            self.assertIn("iv", e)
+            self.assertEqual(e.get("source"), "yfinance_seed")
+
+    # ── T04: variance ─────────────────────────────────────────────────────────
+
+    def test_04_generate_seed_entries_has_variance(self):
+        """_generate_seed_entries produces IV values with variance (not a flat line)."""
+        from iv_history_seeder import _generate_seed_entries
+
+        entries = _generate_seed_entries("MSFT", 0.30, "2026-05-16", {}, target_days=25)
+        ivs = [e["iv"] for e in entries]
+        self.assertGreater(
+            max(ivs) - min(ivs), 0.001,
+            f"Expected variance in seed entries; range was {max(ivs)-min(ivs):.6f}",
+        )
+
+    # ── T05: no overwrite of good entries ─────────────────────────────────────
+
+    def test_05_merge_with_existing_no_overwrite(self):
+        """_merge_with_existing does not replace entries where iv >= MIN_VALID_IV."""
+        import tempfile
+        from pathlib import Path
+        from iv_history_seeder import _merge_with_existing
+
+        existing = [{"date": "2026-01-02", "iv": 0.25}]
+        new_entries = [{"date": "2026-01-02", "iv": 0.35, "source": "yfinance_seed"}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            iv_dir = Path(tmpdir)
+            (iv_dir / "GLD_iv_history.json").write_text(json.dumps(existing))
+            merged, n_added = _merge_with_existing("GLD", new_entries, iv_history_dir=iv_dir)
+
+        self.assertEqual(n_added, 0, "Should not overwrite a good live entry")
+        live_entry = next((e for e in merged if e["date"] == "2026-01-02"), None)
+        self.assertIsNotNone(live_entry)
+        self.assertAlmostEqual(live_entry["iv"], 0.25,
+                               msg="Original live iv must be preserved")
+
+    # ── T06: replace bad iv entry (SPY BUG-005 fix) ───────────────────────────
+
+    def test_06_merge_replaces_bad_iv_entry(self):
+        """_merge_with_existing replaces entries with iv < MIN_VALID_IV."""
+        import tempfile
+        from pathlib import Path
+        from iv_history_seeder import _merge_with_existing, MIN_VALID_IV
+
+        # BUG-005 artifact: SPY same-day expiry returned iv=0.02
+        existing = [{"date": "2026-04-14", "iv": 0.02}]
+        new_entries = [{"date": "2026-04-14", "iv": 0.18, "source": "yfinance_seed"}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            iv_dir = Path(tmpdir)
+            (iv_dir / "SPY_iv_history.json").write_text(json.dumps(existing))
+            merged, n_added = _merge_with_existing("SPY", new_entries, iv_history_dir=iv_dir)
+
+        self.assertEqual(n_added, 1, "Bad entry should be replaced (counted as added)")
+        fixed = next((e for e in merged if e["date"] == "2026-04-14"), None)
+        self.assertIsNotNone(fixed)
+        self.assertAlmostEqual(fixed["iv"], 0.18,
+                               msg="Bad entry should be overwritten with seeded value")
+        self.assertGreaterEqual(fixed["iv"], MIN_VALID_IV,
+                                msg="Replaced entry must satisfy MIN_VALID_IV")
+
+    # ── T07: DTE filter ───────────────────────────────────────────────────────
+
+    def test_07_fetch_atm_iv_skips_short_dte(self):
+        """_fetch_atm_iv_yfinance returns (None, '', ...) when all expirations DTE < MIN_DTE."""
+        import sys
+        from datetime import date, timedelta
+        from unittest.mock import MagicMock, patch
+        from iv_history_seeder import _fetch_atm_iv_yfinance, MIN_DTE
+
+        today = date.today()
+        # Only provide expirations with DTE < MIN_DTE (same-day and next-day)
+        short_exps = [(today + timedelta(days=i)).isoformat() for i in range(MIN_DTE)]
+
+        mock_ticker = MagicMock()
+        mock_ticker.options = short_exps
+        mock_ticker.fast_info.last_price = 550.0
+
+        mock_yf_module = MagicMock()
+        mock_yf_module.Ticker.return_value = mock_ticker
+
+        with patch.dict(sys.modules, {"yfinance": mock_yf_module}):
+            iv, expiry, meta = _fetch_atm_iv_yfinance("SPY")
+
+        self.assertIsNone(iv,
+            f"Should return None when all expirations have DTE < {MIN_DTE}, got iv={iv}")
+
+
 if __name__ == "__main__":
     unittest.main()

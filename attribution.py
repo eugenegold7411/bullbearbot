@@ -267,3 +267,26 @@ def get_attribution_summary(days_back: int = 7) -> dict:
             "full_rate":    round(full     / total, 3),
         },
     }
+
+
+def _emit_spine_record(event: dict, extra: dict) -> None:
+    """Best-effort spine adapter. Non-fatal. Called from log_attribution_event()."""
+    try:
+        from cost_attribution import log_spine_record  # lazy import, avoids circular risk
+        module_tags = event.get("module_tags") or {}
+        log_spine_record(
+            module_name=module_tags.get("module") or event.get("caller") or "unknown",
+            layer_name=module_tags.get("layer") or "execution_control",
+            ring=module_tags.get("ring") or "prod",
+            model=extra.get("model") or "unknown",
+            purpose=event.get("event_type") or "unknown",
+            linked_subject_id=event.get("decision_id") or None,
+            linked_subject_type="decision" if event.get("decision_id") else None,
+            input_tokens=extra.get("input_tokens"),
+            output_tokens=extra.get("output_tokens"),
+            cached_tokens=extra.get("cached_tokens") or extra.get("cache_read_tokens"),
+            estimated_cost_usd=extra.get("estimated_cost_usd"),
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("[T0.7] spine adapter failed: %s", e)

@@ -379,7 +379,22 @@ significant drawdown, or any time a full system assessment is needed.
 | `watchlist_manager.py` | Manages 3-tier watchlist (core/dynamic/intraday). Prunes stale entries. |
 | `attribution.py` | PnL attribution and module ROI tracking. Logs `decision_made` + `order_submitted` events to `data/analytics/attribution_log.jsonl`. Non-fatal everywhere — exceptions are caught and logged at WARNING. Public API: `generate_decision_id()`, `build_module_tags()`, `build_trigger_flags()`, `log_attribution_event()`, `get_attribution_summary()`. |
 | `divergence.py` | Live vs paper divergence tracking, classification, and operating mode management. Completely non-fatal. 11 sections: enums + DivergenceEvent dataclass, JSONL event log, AccountMode state (load/save/transition), classifier (22 event types, severity ladder INFO→RECONCILE→DE_RISK→HALT), repeat escalation, mode enforcement (`is_action_allowed()`), fill divergence detector, protection divergence detector, mode response engine, clean cycle recovery, weekly summary. Mode state files: `data/runtime/a1_mode.json`, `data/runtime/a2_mode.json`. Transition log: `data/runtime/mode_transitions.jsonl`. Divergence log: `data/analytics/divergence_log.jsonl`. |
-| `decision_outcomes.py` | Per-decision outcome log. `DecisionOutcomeRecord` dataclass. Joins attribution + execution + forward returns. `log_outcome_event()`, `generate_outcomes_summary()`, `format_outcomes_report()`. JSONL at `data/analytics/decision_outcomes.jsonl`. Forward returns joined on `(symbol, decision_date)` from `data/reports/backtest_latest.json`. |
+| `decision_outcomes.py` | Per-decision outcome log. `DecisionOutcomeRecord` dataclass. Joins attribution + execution + forward returns. `log_outcome_event()`, `generate_outcomes_summary()`, `format_outcomes_report()`, `classify_alpha()`. JSONL at `data/analytics/decision_outcomes.jsonl`. Forward returns joined on `(symbol, decision_date)` from `data/reports/backtest_latest.json`. Alpha classification fields: `alpha_classification`, `alpha_classification_reason`, `alpha_classified_at`. |
+
+### Epic 1 Shared Substrate (T1.1–T1.8)
+
+| File | Purpose |
+|------|---------|
+| `semantic_labels.py` | Canonical enum definitions from taxonomy_v1.0.0.md (LOCKED). `CatalystType`, `RegimeType`, `MoveType`, `ThesisType`, `CloseReasonType`, `IncidentType`, `CatalystFreshness`, `HorizonType`, `ALPHA_CLASSIFICATIONS`. `validate_label(enum_class, value, allow_unknown=True)` helper. `SEMANTIC_LABELS_VERSION=1`. |
+| `abstention.py` | Universal abstention contract. `AbstentionRecord` dataclass (schema_version=1). `abstain(reason, module_name)` raises ValueError on empty reason. `did_abstain()`, `validate_abstention()`, `abstention_rate()`. Wired into Agent 10 weekly review. |
+| `hindsight.py` | HindsightRecord JSONL store at `data/analytics/hindsight_log.jsonl`. `build_hindsight_record()`, `log_hindsight_record()` (gated by `enable_recommendation_memory`), `get_hindsight_records()`, `format_hindsight_summary_for_review()`. Wired into Agent 4 weekly review. |
+| `recommendation_store.py` | Persistent JSON recommendation store at `data/reports/recommendation_store.json`. `RecommendationRecord` dataclass. `save_recommendation()`, `get_recommendation()`, `get_recommendations()`, `update_verdict()`. Gated by `enable_recommendation_memory`. Wired into `_save_director_memo()`. |
+| `context_compiler.py` | Shadow-only Claude Haiku prompt compressor. Header: `# SHADOW MODULE — do not import from prod pipeline`. `CompressedSection` dataclass. `compress_section()` gated by `enable_context_compressor_shadow` flag. Logs spine records with `layer_name="context_compiler"`, `ring="shadow"`. |
+| `incident_schema.py` | Shared incident record JSONL at `data/analytics/incident_log.jsonl`. `IncidentRecord` dataclass (schema_version=1). `build_incident()`, `log_incident()` (gated by `enable_schema_migrations`), `get_incidents()`. Wired into `divergence.log_divergence_event()` for severity ≥ reconcile. |
+| `model_tiering.py` | Model tier declarations and escalation predicates. `ModelTier` (CHEAP/DEFAULT/PREMIUM), `BudgetClass`, `MODULE_TIER_DECLARATIONS` (15 modules), `EscalationContext` dataclass. `should_escalate_to_premium()` (5 triggers), `get_model_for_module()`, `format_tier_summary_for_review()`. Wired into Agent 5 CTO weekly review. Gated by `enable_model_tiering`. |
+| `versioning.py` | Schema versioning framework. `detect_version()`, `load_with_compat()`, `migrate_artifact()`, `write_backup_snapshot()`, `register_migration()`. `MigrationResult` dataclass. `SchemaVersionTooOld` exception. Three wired migrations: `recommendation_record` v0→v1, `a2_readiness_state` v1→v2, `cost_attribution_record` v0→v1. |
+| `feature_flags.py` | Canonical feature flag reader. `is_enabled(flag_name, default=False)`, `load_flags()`, `get_all_flags()`. Merges `feature_flags` + `shadow_flags` + `lab_flags` from `strategy_config.json`. Process-lifetime cache. |
+| `cost_attribution.py` | Cost attribution spine JSONL at `data/analytics/cost_attribution_spine.jsonl`. `log_spine_record()`, `get_spine_summary()`, `format_spine_summary_for_review()`. `VALID_LAYER_NAMES` frozenset. Gated by `enable_cost_attribution_spine`. Adapter wired into `attribution.log_attribution_event()`. |
 
 ### Communication & Reporting
 
@@ -1000,6 +1015,27 @@ ITEM 2 — `fill_price` in `ExecutionResult`: Added `fill_price`, `filled_qty`, 
 ITEM 3 — Director recommendation scaffold: `_extract_recommendations()` accepts `week_str`, assigns stable `rec_id = f"rec_{week_str}_{n}"`, adds `verdict`/`created_at`/`resolved_at`/`target_metric`/`expected_direction` per rec. `_format_director_history_for_prompt()` shows verdict icons (⏳/✅/❌/➖) and appends Director JSON-verdict instruction block. `_apply_recommendation_updates(history, updates)` merges verdict updates non-destructively by `rec_id`. Wired in `run_review()` after Agent 6 output.
 
 7 new tests in Suite 26 — 264 total, all passing.
+
+**~~Foundation Gate Batch 1 — T0.5, T0.6, T0.7~~ ✅ COMPLETED 2026-04-16**
+
+T0.5 `versioning.py`: schema versioning framework with dry-run/live migration, backup snapshots, `SchemaVersionTooOld`, three wired artifact migrations.
+T0.7 `cost_attribution.py`: canonical cost attribution spine JSONL (`data/analytics/cost_attribution_spine.jsonl`). Adapter wired into `attribution.log_attribution_event()`.
+T0.6 `feature_flags.py`: canonical flat flag reader merging feature_flags/shadow_flags/lab_flags. `docs/rollback_playbook.md`. `scripts/simulate_bad_migration_and_rollback.py`.
+`strategy_config.json`: added `feature_flags_version`, `feature_flags`, `shadow_flags`, `lab_flags` sections.
+Suite 27 — 12 new tests → 276 total, all passing.
+
+**~~Epic 1 Shared Substrate — T1.1–T1.8~~ ✅ COMPLETED 2026-04-16**
+
+T1.1 `semantic_labels.py`: canonical taxonomy enums (LOCKED to taxonomy_v1.0.0.md v1.0.0).
+T1.2 `hindsight.py`: HindsightRecord JSONL store, wired into Agent 4 weekly review.
+T1.3 `recommendation_store.py`: persistent recommendation JSON store, wired into `_save_director_memo`.
+T1.4 `context_compiler.py`: shadow-only Haiku prompt compressor (ring="shadow").
+T1.5 `incident_schema.py`: incident JSONL store, wired into `divergence.log_divergence_event` for severity ≥ reconcile.
+T1.6 `decision_outcomes.py` wiring: `alpha_classification`, `alpha_classification_reason`, `alpha_classified_at` fields + `classify_alpha()` function.
+T1.7 `abstention.py`: universal abstention contract, wired into Agent 10 weekly review.
+T1.8 `model_tiering.py`: tier declarations + escalation predicates (5 triggers), wired into Agent 5 CTO weekly review.
+`strategy_config.json`: `enable_model_tiering: false` added.
+Suite 28 — 287 tests total (23 new), all passing. Tag: `epic1-substrate`.
 
 ---
 

@@ -1038,9 +1038,20 @@ def _format_director_history_for_prompt(history: list[dict]) -> str:
             lines.append("**Recommendations:**")
             for r in recs[:3]:
                 rec_text = r.get("recommendation", "")
-                outcome  = r.get("outcome",         "")
-                follow   = r.get("follow_up",       "")
-                lines.append(f"  - {rec_text}")
+                outcome  = r.get("outcome",  "")
+                follow   = r.get("follow_up","")
+                verdict  = r.get("verdict",  "pending")
+                rec_id   = r.get("rec_id",   "")
+                if verdict == "pending":
+                    icon = "⏳"
+                elif verdict == "helped":
+                    icon = "✅"
+                elif verdict == "hurt":
+                    icon = "❌"
+                else:
+                    icon = "➖"
+                id_tag = f" `[{rec_id}]`" if rec_id else ""
+                lines.append(f"  - {icon} {verdict.upper()}{id_tag}: {rec_text}")
                 if outcome:
                     lines.append(f"    *Outcome: {outcome}*")
                 elif follow:
@@ -1053,19 +1064,30 @@ def _format_director_history_for_prompt(history: list[dict]) -> str:
         "**Instructions:** Check whether your prior recommendations were implemented. "
         "If a recommendation was NOT implemented, either re-recommend with stronger "
         "evidence or drop it. Do NOT repeat the same recommendation 3+ weeks in a row "
-        "without new evidence. If a recommendation WAS implemented, report the outcome."
+        "without new evidence. If a recommendation WAS implemented, report the outcome.\n\n"
+        "For each PENDING recommendation above, verdict it based on this week's data. "
+        "At the end of your response, output a JSON block:\n"
+        "```json\n"
+        '{"recommendation_updates": ['
+        '{"rec_id": "rec_YYYYMMDD_N", "verdict": "helped|neutral|hurt|inconclusive", '
+        '"outcome": "brief description", "resolved_at": "ISO timestamp"}'
+        "]}\n"
+        "```\n"
+        "Only include recommendations you have enough evidence to verdict. "
+        "Leave others as pending — omit them from the JSON block."
     )
     return "\n".join(lines)
 
 
-def _extract_recommendations(text: str) -> list[dict]:
+def _extract_recommendations(text: str, week_str: str = "") -> list[dict]:
     """
     Extract top 3 recommendation bullets from Strategy Director output.
     Looks for lines starting with - or * after a Recommendation header.
-    Returns [] if none found.
+    Returns [] if none found. Assigns stable rec_id and tracking metadata.
     """
     recs: list[dict] = []
     in_rec_section = False
+    _n = 0
     for line in text.splitlines():
         l_lower = line.lower()
         if any(kw in l_lower for kw in ("recommendation", "suggest", "priority action")):
@@ -1080,11 +1102,18 @@ def _extract_recommendations(text: str) -> list[dict]:
         if in_rec_section and is_bullet:
             bullet = stripped.lstrip("-*0123456789. ").strip()
             if len(bullet) > 10:
+                _n += 1
                 recs.append({
-                    "recommendation": bullet[:200],
-                    "rationale":      "",
-                    "follow_up":      "",
-                    "outcome":        "",
+                    "rec_id":             f"rec_{week_str}_{_n}" if week_str else "",
+                    "recommendation":     bullet[:200],
+                    "rationale":          "",
+                    "target_metric":      "",
+                    "expected_direction": "monitor",
+                    "follow_up":          "",
+                    "outcome":            "",
+                    "verdict":            "pending",
+                    "created_at":         datetime.now(timezone.utc).isoformat(),
+                    "resolved_at":        "",
                 })
         if len(recs) >= 3:
             break
@@ -1124,6 +1153,28 @@ def _extract_cto_score(cto_output: str) -> float:
             except ValueError:
                 continue
     return 0.0
+
+
+def _apply_recommendation_updates(
+    history: list[dict],
+    updates: list[dict],
+) -> list[dict]:
+    """
+    Apply verdict updates from Strategy Director output to stored recommendation history.
+    Matches on rec_id. Updates verdict + outcome + resolved_at fields only.
+    Non-destructive: unknown rec_ids are silently ignored.
+    Old memos without rec_id on their recs are skipped gracefully.
+    """
+    update_map = {u["rec_id"]: u for u in updates if u.get("rec_id")}
+    for memo in history:
+        for rec in memo.get("key_recommendations", []):
+            rec_id = rec.get("rec_id", "")
+            if rec_id and rec_id in update_map:
+                upd = update_map[rec_id]
+                rec["verdict"]     = upd.get("verdict",     rec.get("verdict",     "pending"))
+                rec["outcome"]     = upd.get("outcome",     rec.get("outcome",     ""))
+                rec["resolved_at"] = upd.get("resolved_at", rec.get("resolved_at", ""))
+    return history
 
 
 def _build_agent6_final_input(ctx: dict, all_outputs: dict) -> str:
@@ -1913,12 +1964,35 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
             "week":                       today_str,
             "memo_summary":               agent6_output[:500],
             "config_changes":             {},
-            "key_recommendations":        _extract_recommendations(agent6_output),
+            "key_recommendations":        _extract_recommendations(
+                agent6_output, week_str=today_str,
+            ),
             "regime_view":                _extract_regime_view(agent6_output),
             "real_money_readiness_score": _extract_cto_score(agent5_cto_output),
         })
     except Exception as _memo_exc:
         log.warning("Director memo save failed (non-fatal): %s", _memo_exc)
+
+    # ── Apply recommendation verdict updates from Agent 6 output ──────────────
+    try:
+        import re as _re
+        _json_match = _re.search(
+            r'\{"recommendation_updates"\s*:.*?\}\s*\]?\s*\}',
+            agent6_output, _re.DOTALL,
+        )
+        if _json_match:
+            _updates_raw = json.loads(_json_match.group())
+            _rec_updates = _updates_raw.get("recommendation_updates", [])
+            if _rec_updates and _director_history:
+                _director_history = _apply_recommendation_updates(
+                    _director_history, _rec_updates
+                )
+                _DIRECTOR_MEMO_FILE.write_text(
+                    json.dumps(_director_history[-4:], indent=2)
+                )
+                log.info("[REVIEW] Applied %d recommendation update(s)", len(_rec_updates))
+    except Exception as _ru_err:
+        log.debug("[REVIEW] recommendation update parsing failed (non-fatal): %s", _ru_err)
 
     # ── Parse Agent 6 JSON ────────────────────────────────────────────────────
     params_update = _extract_json_block(agent6_output)

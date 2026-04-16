@@ -767,14 +767,6 @@ all open orders for the symbol first (avoids OCA share-lock conflicts), then (2)
 `MarketOrderRequest` (DAY for equity/ETF, GTC for crypto). This is the only path guaranteed to fill
 before deadline expiry.
 
-### ⚠️ KNOWN GAP — `ExecutionResult` missing `fill_price` → `entry_price` always None
-**File:** `order_executor.py` / `decision_outcomes.py`
-**Description:** `ExecutionResult` has no `fill_price` field. `DecisionOutcomeRecord.entry_price`
-uses `getattr(r, "fill_price", None)` guard — it is always `None` until the gap is closed.
-**Impact:** Low — outcome records log correctly; only fill-price analytics are unavailable.
-**Fix:** Add `fill_price: Optional[float] = None` to `ExecutionResult` and populate it from
-the Alpaca order fill response in `execute_all()`.
-
 ---
 
 ## Git Workflow
@@ -998,6 +990,16 @@ C9: `portfolio_intelligence.py` — 12 authority docstring tags (RECOMMENDATION 
 D13: `schemas.py OptionsStructure` gains 6 close/roll audit fields (all `Optional[str] = None`, backward-compat `from_dict()`): `close_reason_code`, `close_reason_detail`, `roll_reason_code`, `roll_reason_detail`, `rolled_to_structure_id`, `initiated_by`. `options_executor.py`: `_LOG_PATH = Path("data/account2/positions/options_log.jsonl")`, `_log_structure_event()` non-fatal JSONL append helper, `close_structure()` stamps `close_reason_code`/`close_reason_detail`/`initiated_by`, `execute_roll()` stamps `roll_reason_code`/`roll_reason_detail`/`initiated_by`.
 E15: `validate_config.py` writes `data/reports/readiness_status_latest.json` after every gate run (non-fatal). `weekly_review.py` `_build_agent5_cto_input()` reads it and injects System Readiness Status section into CTO prompt.
 6 new tests in Suite 25 — 257 total, all passing.
+
+**~~Session 1 — Executor policy consolidation, fill_price, director recommendation scaffold~~ ✅ COMPLETED 2026-04-15**
+
+ITEM 1 — Executor policy consolidation: `TIER_MAX_PCT` dict removed from `order_executor.py`. 6 redundant `_check()` calls in `validate_action()` demoted from hard rejection to `log.warning()` (position sizing, exposure cap, stop-loss width, R/R ratio, session eligibility, market-open minutes). `risk_kernel._TIER_MAX_PCT` is now sole authoritative definition. `[MARGIN] log.info` demoted to DEBUG. `validate_config.py` added gating check (PASS confirmed on VPS). `docs/policy_ownership_map.md` updated with resolved duplicates table.
+
+ITEM 2 — `fill_price` in `ExecutionResult`: Added `fill_price`, `filled_qty`, `fill_timestamp`, `qty`, `order_type` to `ExecutionResult` dataclass. `_extract_fill(order)` helper populates from Alpaca response in `_submit_buy()` / `_submit_sell()`. Wired into `bot.py`: `DecisionOutcomeRecord.entry_price` now populated from `r.fill_price`; `detect_fill_divergence()` uses real fill fields; attribution event includes `fill_price`/`filled_qty` in `extra`. `decision_outcomes.py` double gap fixed: `execution_event.get("fill_price")` (was `hasattr` on dict — always False).
+
+ITEM 3 — Director recommendation scaffold: `_extract_recommendations()` accepts `week_str`, assigns stable `rec_id = f"rec_{week_str}_{n}"`, adds `verdict`/`created_at`/`resolved_at`/`target_metric`/`expected_direction` per rec. `_format_director_history_for_prompt()` shows verdict icons (⏳/✅/❌/➖) and appends Director JSON-verdict instruction block. `_apply_recommendation_updates(history, updates)` merges verdict updates non-destructively by `rec_id`. Wired in `run_review()` after Agent 6 output.
+
+7 new tests in Suite 26 — 264 total, all passing.
 
 ---
 

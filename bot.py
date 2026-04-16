@@ -1908,6 +1908,10 @@ def run_cycle(
                         module_tags=_module_tags,
                         trigger_flags=_trigger_flags,
                         trade_id=str(r.order_id) if r.order_id else None,
+                        extra={
+                            "fill_price": r.fill_price,
+                            "filled_qty": r.filled_qty,
+                        },
                     )
                 except Exception as _oa_exc:
                     log.debug("Attribution order_submitted failed (non-fatal): %s", _oa_exc)
@@ -1929,7 +1933,7 @@ def run_cycle(
                         catalyst=_matching_action.get("catalyst"),
                         session=session_tier,
                         order_id=str(r.order_id) if r.order_id else None,
-                        entry_price=getattr(r, "fill_price", None),
+                        entry_price=r.fill_price,
                         stop_loss=_matching_action.get("stop_loss"),
                         take_profit=_matching_action.get("take_profit"),
                         status="submitted",
@@ -1977,11 +1981,11 @@ def run_cycle(
                     detect_fill_divergence(
                         symbol=r.symbol,
                         account="A1",
-                        intended_price=float(r.limit_price) if hasattr(r, "limit_price") and r.limit_price else 0.0,
-                        actual_fill_price=float(r.fill_price) if hasattr(r, "fill_price") and r.fill_price else 0.0,
-                        intended_qty=float(r.qty) if hasattr(r, "qty") and r.qty else 0.0,
-                        actual_qty=float(r.filled_qty) if hasattr(r, "filled_qty") and r.filled_qty else 0.0,
-                        order_type=str(r.order_type) if hasattr(r, "order_type") else "",
+                        intended_price=float(_matching_action.get("limit_price") or 0),
+                        actual_fill_price=float(r.fill_price or 0),
+                        intended_qty=float(r.qty or 0),
+                        actual_qty=float(r.filled_qty or 0),
+                        order_type=r.order_type,
                         decision_id=_decision_id,
                         trade_id=str(r.order_id) if r.order_id else None,
                     )

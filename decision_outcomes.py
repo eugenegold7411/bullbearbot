@@ -75,7 +75,7 @@ class DecisionOutcomeRecord:
     catalyst:      Optional[str]  = None
     session:       Optional[str]  = None
     order_id:      Optional[str]  = None
-    entry_price:   Optional[float] = None  # always None — fill_price gap
+    entry_price:   Optional[float] = None
     stop_loss:     Optional[float] = None
     take_profit:   Optional[float] = None
     status:        str             = "submitted"   # submitted | rejected_by_kernel | rejected_by_executor
@@ -164,12 +164,8 @@ def build_outcome_from_attribution(
                 status = ex_status
                 reject_reason = execution_event.get("reason")
 
-            # entry_price: guard via hasattr (ExecutionResult.fill_price not yet in schemas)
-            entry_price: Optional[float] = None
-            if hasattr(execution_event, "fill_price"):
-                entry_price = execution_event.fill_price  # type: ignore[union-attr]
-            # execution_event is a dict here; fill_price never exists yet
-            # (known gap — see CLAUDE.md)
+            # execution_event is a dict from trades.jsonl; read fill_price as a dict key
+            entry_price = _maybe_float(execution_event.get("fill_price"))
 
             action     = execution_event.get("action", "")
             tier       = execution_event.get("tier")

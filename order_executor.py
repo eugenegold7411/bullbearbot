@@ -103,28 +103,27 @@ _api_key    = os.getenv("ALPACA_API_KEY")
 _secret_key = os.getenv("ALPACA_SECRET_KEY")
 alpaca      = TradingClient(_api_key, _secret_key, paper=True)
 
-# ── Risk constants ────────────────────────────────────────────────────────────
-PDT_FLOOR                 = 26_000.0
-MARGIN_HIGH_CONVICTION    = 2.0   # 2x equity — full margin, high conviction
-MARGIN_MEDIUM_CONVICTION  = 1.5   # 1.5x equity — partial margin, medium conviction
-MARGIN_LOW_CONVICTION     = 1.0   # 1x equity — no margin, low conviction
+# ── Executor backstop constants ───────────────────────────────────────────────
+# risk_kernel.py is the PRIMARY authority for all policy.
+# These constants are BACKSTOP ONLY — the executor's last-resort safety net.
+# If the values diverge from risk_kernel.py, risk_kernel.py wins.
+PDT_FLOOR                 = 26_000.0    # regulatory backstop — kernel is primary owner
+MARGIN_HIGH_CONVICTION    = 2.0         # 2x equity — mirrors kernel _effective_exposure_cap()
+MARGIN_MEDIUM_CONVICTION  = 1.5         # 1.5x equity
+MARGIN_LOW_CONVICTION     = 1.0         # 1x equity
 MAX_OPTIONS_USD           = 5_000.0     # max cost per options trade (general)
 MAX_OPTIONS_LIVE_USD      = 2_000.0     # max cost for live options orders
-# Stop loss limits are now dynamic — loaded from strategy_config.json via _load_stop_limits()
+# Stop loss limits: dynamic from strategy_config.json via _load_stop_limits()
 # Defaults: stocks core=4%, standard=5%, speculative=7%
 #           crypto core=8%, standard=10%, speculative=12%
-# Weekly review Strategy Director can adjust stop_loss_pct_core in strategy_config.json
-MAX_STOP_PCT_INTRADAY = 0.02        # 2% for intraday tier
-MIN_RR_RATIO          = 2.0
+MAX_STOP_PCT_INTRADAY = 0.02        # intraday 2% ceiling — backstop only
+MIN_RR_RATIO          = 2.0         # R/R minimum — backstop only, kernel primary
 MIN_MINUTES_OPEN      = 15
 MIN_DTE               = 7           # minimum days-to-expiration
 MAX_DTE               = 45          # maximum days-to-expiration
-
-TIER_MAX_PCT = {
-    "core":     0.15,
-    "dynamic":  0.08,
-    "intraday": 0.05,
-}
+# NOTE: per-tier size ceiling removed from this module — risk_kernel is the
+# sole authoritative definition. Executor tier-size check is WARNING only
+# (see validate_action — uses local _tier_ceiling dict).
 
 # Symbols with liquid enough options markets for real order submission
 LIQUID_OPTIONS_SYMBOLS = frozenset({
@@ -158,6 +157,11 @@ class ExecutionResult:
     status:    str
     reason:    str = ""
     order_id:  Optional[str] = None
+    fill_price:     Optional[float] = None   # actual fill price from Alpaca response
+    filled_qty:     Optional[float] = None   # actual filled quantity
+    fill_timestamp: Optional[str]   = None   # filled_at ISO timestamp
+    qty:            Optional[float] = None   # requested qty (for divergence detection)
+    order_type:     str             = ""     # "market" | "limit" (for divergence detection)
 
     def __str__(self):
         if self.status == "submitted":
@@ -218,12 +222,18 @@ def validate_action(action: dict, account, positions: list, market_status: str,
                 "no new entries until 9:45 AM ET"
             )
 
-    # Universal checks (stocks/ETFs require open market; crypto always ok)
-    # HOLDs are exempt — stop/limit refreshes on existing positions don't require an open market
+    # HOLDs are exempt — stop/limit refreshes on existing positions don't require an open market.
+    # Session + timing checks are kernel-primary: log warnings only (kernel already enforced upstream).
+    # PDT floor is kept as a hard backstop (regulatory requirement).
     if not is_crypto and act not in ("hold", "monitor", "watch", "observe"):
-        _check(market_status == "open",       "market is closed")
-        _check(minutes_since_open >= MIN_MINUTES_OPEN,
-               f"too early — only {minutes_since_open} min since open (min {MIN_MINUTES_OPEN})")
+        if market_status != "open":
+            log.warning("[EXEC] %s: soft policy check (kernel primary): market is closed", symbol)
+        elif minutes_since_open < MIN_MINUTES_OPEN:
+            log.warning(
+                "[EXEC] %s: soft policy check (kernel primary): "
+                "only %d min since open (min %d)",
+                symbol, minutes_since_open, MIN_MINUTES_OPEN,
+            )
     _check(equity >= PDT_FLOOR,
            f"equity ${equity:,.0f} below PDT floor ${PDT_FLOOR:,.0f}")
 
@@ -288,31 +298,44 @@ def validate_action(action: dict, account, positions: list, market_status: str,
         f"(got take_profit=${take_profit:.2f} vs stop_loss=${stop_loss:.2f})",
     )
 
+    # ── Soft policy checks (WARNING only — kernel is primary enforcer) ────────
+    # The risk kernel already enforced stop width, R/R, tier sizing, and exposure
+    # caps before producing the BrokerAction. If these values reach the executor
+    # they were approved upstream. Log warnings for observability; do not reject.
     asset_class = "crypto" if is_crypto else "stocks"
     stop_limits = _load_stop_limits()
     asset_limits = stop_limits.get(asset_class, stop_limits["stocks"])
     max_stop = asset_limits.get(tier, asset_limits.get("standard", 0.05))
-    # Intraday tier: enforce the tighter intraday ceiling regardless of asset class
     if tier == "intraday":
         max_stop = min(max_stop, MAX_STOP_PCT_INTRADAY)
     stop_pct = stop_dist / entry
-    _check(
-        stop_pct <= max_stop,
-        f"stop too wide: {stop_pct:.1%} > {max_stop:.1%} "
-        f"max for {tier} tier ({asset_class})"
-    )
+    if stop_pct > max_stop:
+        log.warning(
+            "[EXEC] %s: soft policy check (kernel primary): "
+            "stop too wide: %s > %s max for %s tier (%s)",
+            symbol, f"{stop_pct:.1%}", f"{max_stop:.1%}", tier, asset_class,
+        )
 
     rr = target_dist / stop_dist if stop_dist > 0 else 0
-    _check(rr >= MIN_RR_RATIO, f"R/R {rr:.2f}x below minimum {MIN_RR_RATIO}x")
+    if rr < MIN_RR_RATIO:
+        log.warning(
+            "[EXEC] %s: soft policy check (kernel primary): R/R %.2fx below minimum %.1fx",
+            symbol, rr, MIN_RR_RATIO,
+        )
 
-    # Tier-based position sizing
+    # Tier-based position sizing (soft — kernel sized this; warn if value drifted)
     position_value = qty * entry
-    tier_pct = TIER_MAX_PCT.get(tier, 0.15)
+    _tier_ceiling = {"core": 0.15, "dynamic": 0.08, "intraday": 0.05}
+    tier_pct = _tier_ceiling.get(tier, 0.15)
     max_position = equity * tier_pct
-    _check(position_value <= max_position,
-           f"position ${position_value:,.0f} exceeds {tier} max (${max_position:,.0f})")
+    if position_value > max_position:
+        log.warning(
+            "[EXEC] %s: soft policy check (kernel primary): "
+            "position $%,.0f exceeds %s ceiling ($%,.0f)",
+            symbol, position_value, tier, max_position,
+        )
 
-    # Conviction-adjusted total exposure cap (margin-aware)
+    # Conviction-adjusted exposure cap (soft — kernel enforced via size_position)
     conviction = action.get("confidence", "medium").lower()
     _bp = float(getattr(account, "buying_power", equity))
     if conviction == "high":
@@ -321,22 +344,19 @@ def validate_action(action: dict, account, positions: list, market_status: str,
         effective_cap = equity * MARGIN_MEDIUM_CONVICTION
     else:
         effective_cap = equity * MARGIN_LOW_CONVICTION
-    # Hard ceiling: never exceed 2x equity regardless of buying_power headroom
     effective_cap = min(effective_cap, equity * MARGIN_HIGH_CONVICTION, _bp)
-    log.info(
-        "[MARGIN] conviction=%s  effective_cap=$%s  buying_power=$%s  equity=$%s",
-        conviction,
-        f"{effective_cap:,.0f}",
-        f"{_bp:,.0f}",
-        f"{equity:,.0f}",
+    log.debug(
+        "[EXEC] conviction=%s  effective_cap=$%s  buying_power=$%s  equity=$%s",
+        conviction, f"{effective_cap:,.0f}", f"{_bp:,.0f}", f"{equity:,.0f}",
     )
     current_long = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
     new_exposure = current_long + position_value
-    _check(
-        new_exposure <= effective_cap,
-        f"total exposure ${new_exposure:,.0f} would exceed cap "
-        f"${effective_cap:,.0f} ({conviction} conviction)",
-    )
+    if new_exposure > effective_cap:
+        log.warning(
+            "[EXEC] %s: soft policy check (kernel primary): "
+            "total exposure $%,.0f would exceed cap $%,.0f (%s conviction)",
+            symbol, new_exposure, effective_cap, conviction,
+        )
 
 
 def _validate_options_action(action: dict, account) -> None:
@@ -374,7 +394,35 @@ def _validate_options_action(action: dict, account) -> None:
 
 # ── Order submission ──────────────────────────────────────────────────────────
 
-def _submit_buy(action: dict) -> str:
+def _extract_fill(order) -> tuple:
+    """
+    Pull fill data from an Alpaca order object.
+    Returns (fill_price, filled_qty, fill_timestamp) — all Optional.
+    Non-fatal: returns (None, None, None) on any attribute error.
+    Paper trading fills synchronously for market orders, so filled_avg_price
+    is typically populated immediately. Limit orders return None until async fill.
+    """
+    fp, fq, ft = None, None, None
+    try:
+        if getattr(order, "filled_avg_price", None):
+            fp = float(order.filled_avg_price)
+    except (TypeError, ValueError):
+        pass
+    try:
+        if getattr(order, "filled_qty", None):
+            fq = float(order.filled_qty)
+    except (TypeError, ValueError):
+        pass
+    try:
+        if getattr(order, "filled_at", None):
+            ft = str(order.filled_at)
+    except Exception:
+        pass
+    return fp, fq, ft
+
+
+def _submit_buy(action: dict) -> tuple:
+    """Returns (order_id, fill_price, filled_qty, fill_timestamp)."""
     symbol      = action["symbol"]
     stop_loss   = float(action["stop_loss"])
     take_profit = float(action["take_profit"])
@@ -402,7 +450,8 @@ def _submit_buy(action: dict) -> str:
             "— stop/target managed by cycle monitoring  symbol=%s  notional=$%s",
             symbol, notional,
         )
-        return str(order.id)
+        fp, fq, ft = _extract_fill(order)
+        return str(order.id), fp, fq, ft
 
     # Stock / ETF path — bracket order with stop + take-profit
     qty = int(float(action["qty"]))
@@ -423,7 +472,8 @@ def _submit_buy(action: dict) -> str:
             take_profit=tp, stop_loss=sl,
         )
     order = alpaca.submit_order(req)
-    return str(order.id)
+    fp, fq, ft = _extract_fill(order)
+    return str(order.id), fp, fq, ft
 
 
 def _submit_close(symbol: str) -> str:
@@ -431,13 +481,15 @@ def _submit_close(symbol: str) -> str:
     return str(order.id)
 
 
-def _submit_sell(action: dict) -> str:
+def _submit_sell(action: dict) -> tuple:
+    """Returns (order_id, fill_price, filled_qty, fill_timestamp)."""
     req = MarketOrderRequest(
         symbol=action["symbol"], qty=int(float(action["qty"])),
         side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
     )
     order = alpaca.submit_order(req)
-    return str(order.id)
+    fp, fq, ft = _extract_fill(order)
+    return str(order.id), fp, fq, ft
 
 
 def _find_option_contract(
@@ -625,12 +677,13 @@ def execute_all(
             continue
 
         try:
+            _fp, _fq, _ft = None, None, None   # fill data — populated for buy/sell
             if act == "buy":
-                oid = _submit_buy(action)
+                oid, _fp, _fq, _ft = _submit_buy(action)
             elif act == "close":
                 oid = _submit_close(symbol)
             elif act == "sell":
-                oid = _submit_sell(action)
+                oid, _fp, _fq, _ft = _submit_sell(action)
             elif act in ("buy_option", "sell_option_spread",
                          "buy_straddle", "close_option"):
                 oid = _submit_options(action)
@@ -807,10 +860,19 @@ def execute_all(
                 log.warning("REJECTED  %s %s — %s", act.upper(), symbol, reason)
                 continue
 
-            log.info("SUBMITTED %s %s [%s]  qty=%s  order_id=%s",
-                     act.upper(), symbol, tier, action.get("qty"), oid)
-            results.append(ExecutionResult(symbol=symbol, action=act,
-                                           status="submitted", order_id=oid))
+            log.info("SUBMITTED %s %s [%s]  qty=%s  order_id=%s  fill_price=%s",
+                     act.upper(), symbol, tier, action.get("qty"), oid, _fp)
+            _req_qty   = float(action.get("qty") or 0) or None
+            _req_otype = action.get("order_type", "market") or "market"
+            results.append(ExecutionResult(
+                symbol=symbol, action=act, status="submitted",
+                order_id=oid,
+                fill_price=_fp,
+                filled_qty=_fq,
+                fill_timestamp=_ft,
+                qty=_req_qty,
+                order_type=_req_otype,
+            ))
             log_trade({
                 "symbol": symbol, "action": act, "tier": tier,
                 "status": "submitted", "order_id": oid,
@@ -823,6 +885,8 @@ def execute_all(
                 "max_cost_usd": action.get("max_cost_usd"),
                 "session": session_tier,
                 "decision_id": decision_id,
+                "fill_price": _fp,
+                "filled_qty": _fq,
             })
 
         except Exception as exc:

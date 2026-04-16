@@ -677,6 +677,23 @@ else:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Session 1 — executor policy consolidation verification
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    import inspect as _inspect
+    import order_executor as _oe
+    _oe_src = _inspect.getsource(_oe)
+    if "TIER_MAX_PCT" in _oe_src:
+        check(WARN, "order_executor.py still defines TIER_MAX_PCT — "
+              "policy consolidation incomplete (Session 1 change may not be deployed)")
+    else:
+        check(PASS, "order_executor.py: TIER_MAX_PCT removed — "
+              "kernel (_TIER_MAX_PCT) is sole authoritative definition")
+except Exception as _oe_chk_err:
+    check(WARN, f"executor policy consolidation check failed (non-fatal): {_oe_chk_err}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Phase 4 go-live gate checklist (13 gates — informational only, never blocks)
 # ─────────────────────────────────────────────────────────────────────────────
 print()

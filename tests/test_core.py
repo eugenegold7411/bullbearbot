@@ -73,12 +73,21 @@ class TestOrderExecutorValidation(unittest.TestCase):
         self.validate_action(action, account, [], "closed", 0)
 
     def test_buy_rejected_when_market_closed(self):
-        """BUG-002: BUY must still be rejected when market is closed."""
-        action  = {"action": "buy", "symbol": "GLD", "qty": 10, "confidence": "medium"}
+        """Session 1: market-closed is now WARNING only (demoted). A well-formed buy with
+        stop_loss/take_profit must NOT be rejected purely for market being closed.
+        (Structural rejections — missing stop_loss — are still enforced regardless.)"""
+        action  = {
+            "action":      "buy",
+            "symbol":      "GLD",
+            "qty":         10,
+            "stop_loss":   430.0,
+            "take_profit": 450.0,
+            "confidence":  "medium",
+            "tier":        "core",
+        }
         account = self._mock_account()
-        with self.assertRaises(ValueError) as ctx:
-            self.validate_action(action, account, [], "closed", 0)
-        self.assertIn("market is closed", str(ctx.exception))
+        # Should not raise — market-closed is demoted to log.warning() in Session 1
+        self.validate_action(action, account, [], "closed", 0)
 
     # ── Exposure cap tests ────────────────────────────────────────────────────
 
@@ -108,16 +117,17 @@ class TestOrderExecutorValidation(unittest.TestCase):
         )
 
     def test_exposure_cap_low_conviction_exceeded(self):
-        """Low conviction → cap=1×equity=100K. Existing 95K + new 12K = 107K > 100K → FAIL."""
+        """Session 1: exposure cap is now WARNING only (demoted from hard rejection).
+        Low conviction → cap=1×equity=100K. Existing 95K + new 12K = 107K > 100K.
+        Executor logs a warning but does NOT raise — risk_kernel is primary owner."""
         action    = self._valid_buy_action(confidence="low", tier="core")
         account   = self._mock_account(equity=100_000, buying_power=100_000)
         positions = self._mock_positions([95_000])
-        with self.assertRaises(ValueError) as ctx:
-            self.validate_action(
-                action, account, positions, "open", 20,
-                current_prices={"SPY": 300.0},
-            )
-        self.assertIn("exposure", str(ctx.exception).lower())
+        # Should not raise — exposure cap demoted to log.warning() in Session 1
+        self.validate_action(
+            action, account, positions, "open", 20,
+            current_prices={"SPY": 300.0},
+        )
 
     # ── BUG-008 regression ────────────────────────────────────────────────────
 
@@ -5526,6 +5536,158 @@ class TestSuite25MarketDataAndOptionsAudit(unittest.TestCase):
                          "event_type field must be 'close'")
         self.assertEqual(record["close_reason_code"], "test_close",
                          "close_reason_code must be propagated to the log record")
+
+
+class TestSuite26Session1(unittest.TestCase):
+    """Suite 26 — Session 1: executor policy consolidation, fill_price, recommendation scaffold."""
+
+    # ── S26 T01: TIER_MAX_PCT constant must not exist in order_executor ───────
+
+    def test_executor_no_tier_max_pct_constant(self):
+        """T01: order_executor.py must not define TIER_MAX_PCT (policy consolidated to risk_kernel)."""
+        import inspect
+        import order_executor as _oe
+        src = inspect.getsource(_oe)
+        self.assertNotIn("TIER_MAX_PCT", src,
+                         "TIER_MAX_PCT must not appear in order_executor.py — "
+                         "risk_kernel._TIER_MAX_PCT is the sole authoritative definition")
+
+    # ── S26 T02: PDT_FLOOR still present in executor (regulatory backstop) ────
+
+    def test_executor_no_pdt_floor_as_primary(self):
+        """T02: order_executor.py retains PDT_FLOOR as a hard backstop constant (regulatory dual enforcement)."""
+        import order_executor as _oe
+        self.assertTrue(
+            hasattr(_oe, "PDT_FLOOR"),
+            "PDT_FLOOR must remain in order_executor.py as regulatory hard backstop"
+        )
+        self.assertEqual(_oe.PDT_FLOOR, 26_000.0,
+                         "PDT_FLOOR backstop value must be 26000.0")
+
+    # ── S26 T03: ExecutionResult has fill_price field ─────────────────────────
+
+    def test_execution_result_has_fill_price(self):
+        """T03: ExecutionResult dataclass must expose fill_price, filled_qty, fill_timestamp, qty, order_type."""
+        from order_executor import ExecutionResult
+        import dataclasses
+        fields = {f.name for f in dataclasses.fields(ExecutionResult)}
+        for expected in ("fill_price", "filled_qty", "fill_timestamp", "qty", "order_type"):
+            self.assertIn(expected, fields,
+                          f"ExecutionResult must have field '{expected}'")
+
+    # ── S26 T04: ExecutionResult fill_price defaults to None ─────────────────
+
+    def test_execution_result_fill_price_defaults_none(self):
+        """T04: ExecutionResult.fill_price must default to None; order_type must default to empty string."""
+        from order_executor import ExecutionResult
+        result = ExecutionResult(
+            order_id="test-001",
+            action="buy",
+            symbol="SPY",
+            status="submitted",
+        )
+        self.assertIsNone(result.fill_price,
+                          "fill_price must default to None when not populated")
+        self.assertIsNone(result.filled_qty,
+                          "filled_qty must default to None when not populated")
+        self.assertIsNone(result.fill_timestamp,
+                          "fill_timestamp must default to None when not populated")
+        self.assertIsNone(result.qty,
+                          "qty must default to None when not populated")
+        self.assertEqual(result.order_type, "",
+                         "order_type must default to empty string")
+
+    # ── S26 T05: _extract_recommendations returns rec_id in expected format ──
+
+    def test_recommendation_id_format(self):
+        """T05: _extract_recommendations() must attach rec_id in 'rec_{week_str}_{n}' format."""
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from weekly_review import _extract_recommendations
+
+        sample_text = (
+            "RECOMMENDATIONS:\n"
+            "- Increase intraday position sizing to 6%\n"
+            "- Add stop-loss floor of 2% for crypto\n"
+        )
+        recs = _extract_recommendations(sample_text, week_str="2026-04-20")
+        self.assertGreater(len(recs), 0, "must parse at least one recommendation")
+        for i, rec in enumerate(recs):
+            expected_id = f"rec_2026-04-20_{i + 1}"
+            self.assertEqual(rec["rec_id"], expected_id,
+                             f"rec_id must be 'rec_{{week_str}}_{{n}}' — got {rec['rec_id']!r}")
+            self.assertEqual(rec["verdict"], "pending",
+                             "new recommendations must have verdict='pending'")
+            self.assertIn("created_at", rec,
+                          "recommendation must have created_at timestamp")
+
+    # ── S26 T06: _apply_recommendation_updates merges verdict updates ─────────
+
+    def test_apply_recommendation_updates_verdict(self):
+        """T06: _apply_recommendation_updates() must update verdict/resolved_at for matching rec_id."""
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from weekly_review import _apply_recommendation_updates
+
+        history = [
+            {
+                "week": "2026-04-13",
+                "key_recommendations": [
+                    {
+                        "rec_id": "rec_2026-04-13_0",
+                        "recommendation": "Raise stop floors",
+                        "verdict": "pending",
+                        "resolved_at": "",
+                    }
+                ],
+            }
+        ]
+        updates = [
+            {
+                "rec_id": "rec_2026-04-13_0",
+                "verdict": "helped",
+                "resolved_at": "2026-04-20T00:00:00+00:00",
+            }
+        ]
+        result = _apply_recommendation_updates(history, updates)
+        rec = result[0]["key_recommendations"][0]
+        self.assertEqual(rec["verdict"], "helped",
+                         "verdict must be updated to 'helped'")
+        self.assertEqual(rec["resolved_at"], "2026-04-20T00:00:00+00:00",
+                         "resolved_at must be stamped by the update")
+
+    # ── S26 T07: _apply_recommendation_updates ignores unknown rec_id ─────────
+
+    def test_apply_updates_unknown_rec_id_ignored(self):
+        """T07: _apply_recommendation_updates() must silently skip updates with unknown rec_id."""
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from weekly_review import _apply_recommendation_updates
+
+        history = [
+            {
+                "week": "2026-04-13",
+                "key_recommendations": [
+                    {
+                        "rec_id": "rec_2026-04-13_0",
+                        "recommendation": "Reduce leverage",
+                        "verdict": "pending",
+                        "resolved_at": "",
+                    }
+                ],
+            }
+        ]
+        updates = [
+            {
+                "rec_id": "rec_2026-04-13_NONEXISTENT",
+                "verdict": "hurt",
+                "resolved_at": "2026-04-20T00:00:00+00:00",
+            }
+        ]
+        result = _apply_recommendation_updates(history, updates)
+        rec = result[0]["key_recommendations"][0]
+        self.assertEqual(rec["verdict"], "pending",
+                         "verdict of unmatched rec must remain 'pending' — unknown rec_id must be ignored")
 
 
 if __name__ == "__main__":

@@ -366,7 +366,7 @@ significant drawdown, or any time a full system assessment is needed.
 | `options_data.py` | IV history (252-day rolling), chain fetching via yfinance, IV rank/percentile/environment. |
 | `options_intelligence.py` | IV-first strategy selector. Returns `StructureProposal` (direction, DTE range, budget). No strikes, expiry, or contracts — those are resolved by options_builder. |
 | `options_builder.py` | Real-chain structure builder. `build_structure()` accepts StructureProposal keyword args or old-style action dict (backward-compat). Phase 1 only; Phase 2/3 return `(None, "not yet supported")`. |
-| `options_executor.py` | Pure Alpaca broker adapter. Sequential leg submission (long first, poll, short). GTC limit orders. `build_occ_symbol()`, `submit_structure()`, `close_structure()`, `should_close_structure()`. |
+| `options_executor.py` | Pure Alpaca broker adapter. Sequential leg submission (long first, poll, short). GTC limit orders. `build_occ_symbol()`, `submit_structure()`, `close_structure()`, `should_close_structure()`. Appends to `data/account2/positions/options_log.jsonl` on every close/roll event via `_log_structure_event()` (D13). |
 | `options_state.py` | Persistence layer for OptionsStructure. Atomic writes to `data/account2/positions/structures.json`. API: `save_structure()`, `load_structures()`, `get_open_structures()`, `get_structures_by_symbol()`. |
 | `order_executor_options.py` | Thin wrapper. Equity floor check + observation mode gate, then delegates to `options_executor.submit_structure()`. `OptionsExecutionResult` references `structure_id` (no redundant strikes/expiry). |
 
@@ -462,6 +462,7 @@ data/
 │   ├── positions/
 │   └── pnl/
 ├── reports/               # weekly_review_YYYY-MM-DD.md
+│   └── readiness_status_latest.json  # gate snapshot written by validate_config.py (E15); read by CTO weekly review
 ├── roadmap/features.json  # F001–F010 feature tracker
 ├── runtime/               # divergence operating mode state (auto-created on first run)
 │   ├── a1_mode.json       #   Account 1 current operating mode (NORMAL/RECONCILE_ONLY/RISK_CONTAINMENT/HALTED)
@@ -874,6 +875,15 @@ obs_mode v2: `bot_options.py` gains `_OBS_SCHEMA_VERSION=2`, `_OBS_IV_SYMBOLS`, 
 
 12 new tests (Suite 23) — 227 total, all passing.
 
+**~~Phase C7/C8/C9/D13/E15~~ ✅ COMPLETED 2026-04-16**
+**Files:** `divergence.py` (tests), `market_data.py`, `portfolio_intelligence.py`, `schemas.py`, `options_executor.py`, `validate_config.py`, `weekly_review.py`
+C7: Suite 24 (24 tests) — divergence classify/respond/recover/e2e with tempdir redirect.
+C8: Section inventory header block; `get_market_clock()` fallback dict; `_build_sector_table()`, `_build_intermarket_signals()`, `_build_earnings_calendar()` return `""` on exception.
+C9: 12 authority docstring tags on PI public functions — no logic changes.
+D13: `OptionsStructure` gains `close_reason_code`, `close_reason_detail`, `roll_reason_code`, `roll_reason_detail`, `rolled_to_structure_id`, `initiated_by` (all `Optional[str]=None`). `options_executor.py` stamps them on every close/roll + appends to `options_log.jsonl`.
+E15: `validate_config.py` writes `data/reports/readiness_status_latest.json`; CTO Agent 5 reads it.
+Suite 25 (6 tests) — 257 total, all passing.
+
 **F013 — Reddit credentials activation [5 min]**
 Once Reddit developer app is approved, add `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`
 to `.env`. Code already fully built (`reddit_sentiment.py`). Just needs credentials.
@@ -979,6 +989,15 @@ Agent 4 backtest wiring — `weekly_review.py` Agent 4 input now includes signal
 validate_config.py additions — Sev-1 clean days counter (tightened keywords: `  CRITICAL  ` positional match, `[HALT]`, `regime=halt`, `mode=halted`, `DRAWDOWN GUARD` — avoids false positives from risk_kernel "halt mode" VIX rejection DEBUG lines). Director memo history check (WARN on first week). 13-gate Phase 4 go-live checklist (informational only, never blocks bot — all gates use ✅/⬜, no FAIL). `strategy_config.json` gains `shadow_lane` section. Gate 14 (A2 IV history seeded: 16/16 Phase 1 symbols ≥20 valid entries) added in F012 session.
 
 12 new tests in Suite 20 — 203 total, all passing.
+
+**~~Phase C/D/E — Divergence tests, market_data tags, PI authority, options audit, gate unification~~ ✅ COMPLETED 2026-04-16**
+
+C7: 24 divergence subsystem tests (Suite 24) — 251 total. Full classify/respond/recover/e2e coverage with tempdir redirect for all path constants.
+C8: `market_data.py` section inventory comment block (REQUIRED/OPTIONAL/ENRICHMENT taxonomy). `get_market_clock()`, `_build_sector_table()`, `_build_intermarket_signals()`, `_build_earnings_calendar()` wrapped in try/except with fallback (`{}` or `""`). Docstring section tags added to all public functions.
+C9: `portfolio_intelligence.py` — 12 authority docstring tags (RECOMMENDATION / PRESENTATION / ENFORCEMENT_ADJACENT / ORCHESTRATION). No logic changes. `get_forced_exits()` and `get_deadline_exits()` carry WARNING noting reconciliation.py currently consumes them authoritatively.
+D13: `schemas.py OptionsStructure` gains 6 close/roll audit fields (all `Optional[str] = None`, backward-compat `from_dict()`): `close_reason_code`, `close_reason_detail`, `roll_reason_code`, `roll_reason_detail`, `rolled_to_structure_id`, `initiated_by`. `options_executor.py`: `_LOG_PATH = Path("data/account2/positions/options_log.jsonl")`, `_log_structure_event()` non-fatal JSONL append helper, `close_structure()` stamps `close_reason_code`/`close_reason_detail`/`initiated_by`, `execute_roll()` stamps `roll_reason_code`/`roll_reason_detail`/`initiated_by`.
+E15: `validate_config.py` writes `data/reports/readiness_status_latest.json` after every gate run (non-fatal). `weekly_review.py` `_build_agent5_cto_input()` reads it and injects System Readiness Status section into CTO prompt.
+6 new tests in Suite 25 — 257 total, all passing.
 
 ---
 

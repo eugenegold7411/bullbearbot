@@ -1322,6 +1322,22 @@ def _build_agent5_cto_input(ctx: dict, phase1_outputs: dict) -> str:
         for caller, data in by_caller.items()
     )
 
+    # Load readiness status snapshot (E15)
+    _readiness_block = "(readiness_status_latest.json not found)"
+    try:
+        _rs_path = Path(__file__).parent / "data" / "reports" / "readiness_status_latest.json"
+        _rs = json.loads(_rs_path.read_text())
+        _readiness_block = (
+            f"overall_status: {_rs.get('overall_status', '?')}\n"
+            f"a1_live_ready: {_rs.get('a1_live_ready', '?')}\n"
+            f"gates_passed: {_rs.get('gates_passed', '?')}/{_rs.get('gates_total', '?')}\n"
+            f"sev1_clean_days: {_rs.get('sev1_clean_days', '?')}\n"
+            f"generated_at: {_rs.get('generated_at', '?')}\n"
+            f"failures:\n" + "\n".join(f"  - {f}" for f in _rs.get("failures", []))
+        )
+    except Exception:
+        pass
+
     def _snip(key: str, n: int = 800) -> str:
         val = phase1_outputs.get(key, "(unavailable)")
         return str(val)[:n]
@@ -1351,6 +1367,11 @@ All-time cost: ${costs.get('all_time_cost', 0):.4f}
 
 By caller:
 {cost_lines or '  (no data)'}
+
+---
+
+### System Readiness Status (validate_config.py — last run)
+{_readiness_block}
 
 ---
 

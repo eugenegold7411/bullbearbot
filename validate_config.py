@@ -857,6 +857,30 @@ print()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Readiness status snapshot (E15)
+# ─────────────────────────────────────────────────────────────────────────────
+def _write_readiness_status() -> None:
+    """Write readiness_status_latest.json for CTO weekly review injection. Non-fatal."""
+    try:
+        _status = {
+            "overall_status":  "ready" if _gates_passed >= 15 else "not_ready",
+            "a1_live_ready":   _gates_passed >= 15 and _clean_days >= 7,
+            "gates_passed":    _gates_passed,
+            "gates_total":     15,
+            "sev1_clean_days": _clean_days,
+            "failures":        [label for ok, label in _gate_results if not ok],
+            "generated_at":    datetime.now(timezone.utc).isoformat(),
+        }
+        _status_path = BASE_DIR / "data" / "reports" / "readiness_status_latest.json"
+        _status_path.parent.mkdir(parents=True, exist_ok=True)
+        _status_path.write_text(json.dumps(_status, indent=2))
+    except Exception as _rs_err:
+        print(f"[WARN] _write_readiness_status failed (non-fatal): {_rs_err}")
+
+_write_readiness_status()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 passes   = sum(1 for s, _ in results if s == PASS)

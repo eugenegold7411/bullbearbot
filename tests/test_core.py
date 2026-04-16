@@ -15,6 +15,8 @@ Suites:
   9. risk_kernel     — eligibility, sizing, stops, VIX scaling, options structure selection
  22. Phase A        — decision_id timing fix, shadow lane id, executor isinstance routing
  23. Phase B        — obs mode v2, options lifecycle, time-stop, DecisionOutcomeRecord
+ 24. Phase C7       — divergence subsystem: classify, mode enforcement, detect, respond, e2e
+ 25. Phase C8/D13   — market_data section fallbacks + options close/roll audit trail
 """
 
 import sys
@@ -4741,6 +4743,789 @@ class TestSuite23PhaseB(unittest.TestCase):
                           "win_rate_1d must be None with no outcome data")
         self.assertIn("note", summary,
                       "Summary must include a 'note' field when no data available")
+
+
+# =============================================================================
+# Suite 24 — Phase C7: Divergence subsystem
+# =============================================================================
+
+class TestSuite24DivergenceC7(unittest.TestCase):
+    """
+    24 tests covering divergence.py: classifier, mode enforcement,
+    fill/protection detection, respond_to_divergence, check_clean_cycle,
+    and full e2e detect→respond→recover flow.
+
+    File-writing tests redirect all four module-level path constants
+    (RUNTIME_DIR, MODE_TRANSITION_LOG, DIVERGENCE_COUNTS_PATH, DIVERGENCE_LOG)
+    to a TemporaryDirectory using the try/finally inline pattern.
+
+    Test account IDs use A1_TEST / A1_E2E_TEST to avoid collisions with
+    live runtime files.
+    """
+
+    # ── Unit T01: classify fill_price_drift → INFO ────────────────────────────
+
+    def test_classify_fill_price_drift_returns_info(self):
+        """classify_divergence('fill_price_drift') returns INFO severity."""
+        from divergence import classify_divergence, DivergenceSeverity, DivergenceScope
+        severity, scope, recoverability = classify_divergence(
+            "fill_price_drift", "SPY", "A1")
+        self.assertEqual(severity, DivergenceSeverity.INFO)
+        self.assertEqual(scope, DivergenceScope.ORDER)
+        self.assertEqual(recoverability, "auto")
+
+    # ── Unit T02: classify stop_missing → DE_RISK ─────────────────────────────
+
+    def test_classify_stop_missing_returns_de_risk(self):
+        """classify_divergence('stop_missing') returns DE_RISK / SYMBOL scope."""
+        from divergence import classify_divergence, DivergenceSeverity, DivergenceScope
+        severity, scope, recoverability = classify_divergence(
+            "stop_missing", "GLD", "A1")
+        self.assertEqual(severity, DivergenceSeverity.DE_RISK)
+        self.assertEqual(scope, DivergenceScope.SYMBOL)
+
+    # ── Unit T03: classify protection_missing → HALT ──────────────────────────
+
+    def test_classify_protection_missing_returns_halt(self):
+        """classify_divergence('protection_missing') returns HALT / manual recovery."""
+        from divergence import classify_divergence, DivergenceSeverity
+        severity, scope, recoverability = classify_divergence(
+            "protection_missing", "GLD", "A1")
+        self.assertEqual(severity, DivergenceSeverity.HALT)
+        self.assertEqual(recoverability, "manual")
+
+    # ── Unit T04: large position escalates INFO → RECONCILE ───────────────────
+
+    def test_classify_large_position_escalates_severity(self):
+        """position_size_usd > 5000 escalates severity one level and tightens recoverability."""
+        from divergence import classify_divergence, DivergenceSeverity
+        sev_base, _, rec_base = classify_divergence(
+            "fill_price_drift", "SPY", "A1", position_size_usd=100)
+        sev_large, _, rec_large = classify_divergence(
+            "fill_price_drift", "SPY", "A1", position_size_usd=6000)
+        self.assertEqual(sev_base, DivergenceSeverity.INFO)
+        self.assertNotEqual(sev_large, DivergenceSeverity.INFO)
+        self.assertEqual(rec_large, "guarded_auto")  # escalated from "auto"
+
+    # ── Unit T05: stressed VIX escalates severity ─────────────────────────────
+
+    def test_classify_stressed_vix_escalates_severity(self):
+        """vix > 25 escalates fill_price_drift from INFO to next level."""
+        from divergence import classify_divergence, DivergenceSeverity
+        sev_normal, _, _ = classify_divergence(
+            "fill_price_drift", "SPY", "A1", vix=20)
+        sev_stressed, _, _ = classify_divergence(
+            "fill_price_drift", "SPY", "A1", vix=30)
+        self.assertEqual(sev_normal, DivergenceSeverity.INFO)
+        self.assertNotEqual(sev_stressed, DivergenceSeverity.INFO)
+
+    # ── Unit T06: near expiry escalates severity ──────────────────────────────
+
+    def test_classify_near_expiry_escalates_severity(self):
+        """dte <= 2 escalates structure_partial_fill from RECONCILE to DE_RISK."""
+        from divergence import classify_divergence, DivergenceSeverity
+        sev_ok, _, _ = classify_divergence(
+            "structure_partial_fill", "GLD", "A2", dte=10)
+        sev_expiring, _, _ = classify_divergence(
+            "structure_partial_fill", "GLD", "A2", dte=1)
+        self.assertEqual(sev_ok, DivergenceSeverity.RECONCILE)
+        self.assertNotEqual(sev_expiring, DivergenceSeverity.RECONCILE)
+
+    # ── Unit T07: NORMAL mode allows all actions ──────────────────────────────
+
+    def test_is_action_allowed_normal_mode_all_allowed(self):
+        """NORMAL mode: every action intent is allowed."""
+        from divergence import is_action_allowed, AccountMode, OperatingMode, DivergenceScope
+        mode_state = AccountMode(
+            account="A1", mode=OperatingMode.NORMAL,
+            scope=DivergenceScope.ACCOUNT, scope_id="",
+            reason_code="", reason_detail="",
+            entered_at="", entered_by="test",
+            recovery_condition="one_clean_cycle",
+            last_checked_at="",
+        )
+        for action in ("enter_long", "enter_short", "add", "reallocate", "close",
+                       "reduce", "stop_update", "recon"):
+            allowed, _ = is_action_allowed(mode_state, action, "SPY")
+            self.assertTrue(allowed, f"'{action}' should be allowed in NORMAL mode")
+
+    # ── Unit T08: HALTED mode blocks new entries ──────────────────────────────
+
+    def test_is_action_allowed_halted_blocks_enter(self):
+        """HALTED mode: enter_long is blocked and reason contains 'halted'."""
+        from divergence import is_action_allowed, AccountMode, OperatingMode, DivergenceScope
+        mode_state = AccountMode(
+            account="A1", mode=OperatingMode.HALTED,
+            scope=DivergenceScope.ACCOUNT, scope_id="A1",
+            reason_code="protection_missing", reason_detail="test",
+            entered_at="", entered_by="test",
+            recovery_condition="manual_review",
+            last_checked_at="",
+        )
+        allowed, reason = is_action_allowed(mode_state, "enter_long", "SPY")
+        self.assertFalse(allowed)
+        self.assertIn("halted", reason)
+
+    # ── Unit T09: HALTED mode allows defensive actions ────────────────────────
+
+    def test_is_action_allowed_halted_allows_close(self):
+        """HALTED mode: all _ALLOWED_ALWAYS actions are still permitted."""
+        from divergence import is_action_allowed, AccountMode, OperatingMode, DivergenceScope
+        mode_state = AccountMode(
+            account="A1", mode=OperatingMode.HALTED,
+            scope=DivergenceScope.ACCOUNT, scope_id="A1",
+            reason_code="protection_missing", reason_detail="test",
+            entered_at="", entered_by="test",
+            recovery_condition="manual_review",
+            last_checked_at="",
+        )
+        for action in ("close", "reduce", "stop_update", "recon",
+                       "cancel", "deadline_exit"):
+            allowed, _ = is_action_allowed(mode_state, action, "SPY")
+            self.assertTrue(allowed,
+                            f"'{action}' must be allowed even in HALTED mode")
+
+    # ── Unit T10: RISK_CONTAINMENT blocks scoped symbol, allows others ────────
+
+    def test_is_action_allowed_risk_containment_scoped_symbol(self):
+        """RISK_CONTAINMENT scope=symbol: blocked for that symbol, allowed for others."""
+        from divergence import is_action_allowed, AccountMode, OperatingMode, DivergenceScope
+        mode_state = AccountMode(
+            account="A1", mode=OperatingMode.RISK_CONTAINMENT,
+            scope=DivergenceScope.SYMBOL, scope_id="GLD",
+            reason_code="stop_missing", reason_detail="test",
+            entered_at="", entered_by="test",
+            recovery_condition="one_clean_cycle",
+            last_checked_at="",
+        )
+        allowed_gld, reason = is_action_allowed(mode_state, "enter_long", "GLD")
+        self.assertFalse(allowed_gld, "GLD entry must be blocked under GLD containment")
+        allowed_spy, _ = is_action_allowed(mode_state, "enter_long", "SPY")
+        self.assertTrue(allowed_spy, "SPY entry must be allowed under GLD-scoped containment")
+
+    # ── Unit T11: RECONCILE_ONLY blocks new entries for any symbol ────────────
+
+    def test_is_action_allowed_reconcile_only_blocks_entry(self):
+        """RECONCILE_ONLY mode: enter_long is blocked regardless of symbol."""
+        from divergence import is_action_allowed, AccountMode, OperatingMode, DivergenceScope
+        mode_state = AccountMode(
+            account="A1", mode=OperatingMode.RECONCILE_ONLY,
+            scope=DivergenceScope.SYMBOL, scope_id="GLD",
+            reason_code="duplicate_exit", reason_detail="test",
+            entered_at="", entered_by="test",
+            recovery_condition="one_clean_cycle",
+            last_checked_at="",
+        )
+        allowed, reason = is_action_allowed(mode_state, "enter_long", "SPY")
+        self.assertFalse(allowed)
+        self.assertIn("reconcile_only", reason)
+
+    # ── Unit T12: fill drift below threshold returns None ─────────────────────
+
+    def test_detect_fill_divergence_below_threshold_returns_none(self):
+        """detect_fill_divergence: < 0.5% price drift returns None (no event)."""
+        import divergence as _div_mod
+        import tempfile
+        original_log = _div_mod.DIVERGENCE_LOG
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.DIVERGENCE_LOG = Path(tmp) / "divergence_log.jsonl"
+            try:
+                # 440.4 vs 440.0 = 0.09% drift — below 0.5% threshold
+                result = _div_mod.detect_fill_divergence(
+                    symbol="SPY", account="A1",
+                    intended_price=440.0,
+                    actual_fill_price=440.4,
+                    intended_qty=10, actual_qty=10,
+                    order_type="market",
+                )
+                self.assertIsNone(result,
+                    "Sub-threshold fill drift must not create a divergence event")
+            finally:
+                _div_mod.DIVERGENCE_LOG = original_log
+
+    # ── Scenario T13: unknown event type → INFO default ───────────────────────
+
+    def test_scenario_classify_unknown_event_type_returns_info(self):
+        """classify_divergence with an unrecognised event_type returns the INFO default."""
+        from divergence import classify_divergence, DivergenceSeverity, DivergenceScope
+        severity, scope, recoverability = classify_divergence(
+            "totally_made_up_event_xyz", "SPY", "A1")
+        self.assertEqual(severity, DivergenceSeverity.INFO)
+        self.assertEqual(scope, DivergenceScope.ORDER)
+        self.assertEqual(recoverability, "auto")
+
+    # ── Scenario T14: repeat escalation upgrades severity ────────────────────
+
+    def test_scenario_repeat_escalation_upgrades_severity(self):
+        """check_repeat_escalation: two occurrences in same window escalate RECONCILE → DE_RISK."""
+        import divergence as _div_mod
+        import tempfile
+        from divergence import DivergenceSeverity
+        original_counts = _div_mod.DIVERGENCE_COUNTS_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.DIVERGENCE_COUNTS_PATH = Path(tmp) / "divergence_counts.json"
+            try:
+                # First call: count becomes 1 → no escalation yet
+                sev1 = _div_mod.check_repeat_escalation(
+                    "A1_TEST", "stop_missing", "GLD",
+                    DivergenceSeverity.RECONCILE)
+                self.assertEqual(sev1, DivergenceSeverity.RECONCILE)
+                # Second call in same 5-min window: count becomes 2 → escalates
+                sev2 = _div_mod.check_repeat_escalation(
+                    "A1_TEST", "stop_missing", "GLD",
+                    DivergenceSeverity.RECONCILE)
+                self.assertEqual(sev2, DivergenceSeverity.DE_RISK)
+            finally:
+                _div_mod.DIVERGENCE_COUNTS_PATH = original_counts
+
+    # ── Scenario T15: respond RECONCILE event → RECONCILE_ONLY ───────────────
+
+    def test_scenario_respond_to_reconcile_event_transitions_mode(self):
+        """respond_to_divergence with RECONCILE event transitions NORMAL → RECONCILE_ONLY."""
+        import divergence as _div_mod
+        import tempfile
+        from divergence import (DivergenceEvent, DivergenceSeverity, DivergenceScope,
+                                OperatingMode, AccountMode)
+        original_runtime = _div_mod.RUNTIME_DIR
+        original_mtl = _div_mod.MODE_TRANSITION_LOG
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.RUNTIME_DIR = Path(tmp)
+            _div_mod.MODE_TRANSITION_LOG = Path(tmp) / "mode_transitions.jsonl"
+            try:
+                mode_state = AccountMode(
+                    account="A1_TEST", mode=OperatingMode.NORMAL,
+                    scope=DivergenceScope.ACCOUNT, scope_id="",
+                    reason_code="", reason_detail="",
+                    entered_at="", entered_by="test",
+                    recovery_condition="one_clean_cycle",
+                    last_checked_at="",
+                )
+                event = DivergenceEvent(
+                    event_id="test_evt_r01",
+                    timestamp="2026-01-01T00:00:00+00:00",
+                    account="A1_TEST", symbol="GLD",
+                    event_type="duplicate_exit",
+                    severity=DivergenceSeverity.RECONCILE,
+                    scope=DivergenceScope.SYMBOL, scope_id="GLD",
+                    paper_expected={}, live_observed={}, delta={},
+                    recoverability="auto", risk_impact="low",
+                )
+                result = _div_mod.respond_to_divergence(
+                    [event], "A1_TEST", mode_state)
+                self.assertEqual(result.mode, OperatingMode.RECONCILE_ONLY)
+            finally:
+                _div_mod.RUNTIME_DIR = original_runtime
+                _div_mod.MODE_TRANSITION_LOG = original_mtl
+
+    # ── Scenario T16: respond DE_RISK event → RISK_CONTAINMENT ───────────────
+
+    def test_scenario_respond_to_de_risk_event_transitions_mode(self):
+        """respond_to_divergence with DE_RISK event transitions NORMAL → RISK_CONTAINMENT."""
+        import divergence as _div_mod
+        import tempfile
+        from divergence import (DivergenceEvent, DivergenceSeverity, DivergenceScope,
+                                OperatingMode, AccountMode)
+        original_runtime = _div_mod.RUNTIME_DIR
+        original_mtl = _div_mod.MODE_TRANSITION_LOG
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.RUNTIME_DIR = Path(tmp)
+            _div_mod.MODE_TRANSITION_LOG = Path(tmp) / "mode_transitions.jsonl"
+            try:
+                mode_state = AccountMode(
+                    account="A1_TEST", mode=OperatingMode.NORMAL,
+                    scope=DivergenceScope.ACCOUNT, scope_id="",
+                    reason_code="", reason_detail="",
+                    entered_at="", entered_by="test",
+                    recovery_condition="one_clean_cycle",
+                    last_checked_at="",
+                )
+                event = DivergenceEvent(
+                    event_id="test_evt_dr01",
+                    timestamp="2026-01-01T00:00:00+00:00",
+                    account="A1_TEST", symbol="GLD",
+                    event_type="stop_missing",
+                    severity=DivergenceSeverity.DE_RISK,
+                    scope=DivergenceScope.SYMBOL, scope_id="GLD",
+                    paper_expected={}, live_observed={}, delta={},
+                    recoverability="guarded_auto", risk_impact="medium",
+                )
+                result = _div_mod.respond_to_divergence(
+                    [event], "A1_TEST", mode_state)
+                self.assertEqual(result.mode, OperatingMode.RISK_CONTAINMENT)
+            finally:
+                _div_mod.RUNTIME_DIR = original_runtime
+                _div_mod.MODE_TRANSITION_LOG = original_mtl
+
+    # ── Scenario T17: respond HALT event → HALTED ────────────────────────────
+
+    def test_scenario_respond_to_halt_event_transitions_mode(self):
+        """respond_to_divergence with HALT event transitions NORMAL → HALTED."""
+        import divergence as _div_mod
+        import tempfile
+        from divergence import (DivergenceEvent, DivergenceSeverity, DivergenceScope,
+                                OperatingMode, AccountMode)
+        original_runtime = _div_mod.RUNTIME_DIR
+        original_mtl = _div_mod.MODE_TRANSITION_LOG
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.RUNTIME_DIR = Path(tmp)
+            _div_mod.MODE_TRANSITION_LOG = Path(tmp) / "mode_transitions.jsonl"
+            try:
+                mode_state = AccountMode(
+                    account="A1_TEST", mode=OperatingMode.NORMAL,
+                    scope=DivergenceScope.ACCOUNT, scope_id="",
+                    reason_code="", reason_detail="",
+                    entered_at="", entered_by="test",
+                    recovery_condition="one_clean_cycle",
+                    last_checked_at="",
+                )
+                event = DivergenceEvent(
+                    event_id="test_evt_h01",
+                    timestamp="2026-01-01T00:00:00+00:00",
+                    account="A1_TEST", symbol="GLD",
+                    event_type="protection_missing",
+                    severity=DivergenceSeverity.HALT,
+                    scope=DivergenceScope.SYMBOL, scope_id="GLD",
+                    paper_expected={}, live_observed={}, delta={},
+                    recoverability="manual", risk_impact="high",
+                )
+                result = _div_mod.respond_to_divergence(
+                    [event], "A1_TEST", mode_state)
+                self.assertEqual(result.mode, OperatingMode.HALTED)
+            finally:
+                _div_mod.RUNTIME_DIR = original_runtime
+                _div_mod.MODE_TRANSITION_LOG = original_mtl
+
+    # ── Scenario T18: already HALTED → stays HALTED (idempotent) ─────────────
+
+    def test_scenario_respond_already_halted_stays_halted(self):
+        """respond_to_divergence when already HALTED: no transition, returns unchanged mode."""
+        from divergence import (DivergenceEvent, DivergenceSeverity, DivergenceScope,
+                                OperatingMode, AccountMode)
+        import divergence as _div_mod
+        halted_mode = AccountMode(
+            account="A1_TEST", mode=OperatingMode.HALTED,
+            scope=DivergenceScope.ACCOUNT, scope_id="A1_TEST",
+            reason_code="protection_missing", reason_detail="prior halt",
+            entered_at="2026-01-01T00:00:00+00:00", entered_by="divergence_engine",
+            recovery_condition="manual_review",
+            last_checked_at="2026-01-01T00:00:00+00:00",
+        )
+        event = DivergenceEvent(
+            event_id="test_evt_h02",
+            timestamp="2026-01-01T01:00:00+00:00",
+            account="A1_TEST", symbol="GLD",
+            event_type="protection_missing",
+            severity=DivergenceSeverity.HALT,
+            scope=DivergenceScope.SYMBOL, scope_id="GLD",
+            paper_expected={}, live_observed={}, delta={},
+            recoverability="manual", risk_impact="high",
+        )
+        result = _div_mod.respond_to_divergence([event], "A1_TEST", halted_mode)
+        # Already HALTED → no transition → returns current_mode unchanged
+        self.assertEqual(result.mode, OperatingMode.HALTED)
+        self.assertEqual(result.recovery_condition, "manual_review")
+
+    # ── Scenario T19: check_clean_cycle in NORMAL → immediate no-op ──────────
+
+    def test_scenario_check_clean_cycle_in_normal_mode_no_op(self):
+        """check_clean_cycle with NORMAL mode returns the same mode object immediately."""
+        from divergence import AccountMode, OperatingMode, DivergenceScope
+        import divergence as _div_mod
+        mode_state = AccountMode(
+            account="A1_TEST", mode=OperatingMode.NORMAL,
+            scope=DivergenceScope.ACCOUNT, scope_id="",
+            reason_code="", reason_detail="",
+            entered_at="", entered_by="test",
+            recovery_condition="one_clean_cycle",
+            last_checked_at="",
+        )
+        result = _div_mod.check_clean_cycle("A1_TEST", mode_state, [])
+        self.assertEqual(result.mode, OperatingMode.NORMAL)
+        self.assertIs(result, mode_state, "NORMAL mode: same object returned unchanged")
+
+    # ── Scenario T20: check_clean_cycle increments counter (two_clean_cycles) ─
+
+    def test_scenario_check_clean_cycle_increments_count(self):
+        """check_clean_cycle with no new events increments clean_cycles_since_entry."""
+        import divergence as _div_mod
+        import tempfile
+        from divergence import AccountMode, OperatingMode, DivergenceScope
+        original_runtime = _div_mod.RUNTIME_DIR
+        original_mtl = _div_mod.MODE_TRANSITION_LOG
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.RUNTIME_DIR = Path(tmp)
+            _div_mod.MODE_TRANSITION_LOG = Path(tmp) / "mode_transitions.jsonl"
+            try:
+                mode_state = AccountMode(
+                    account="A1_TEST", mode=OperatingMode.RISK_CONTAINMENT,
+                    scope=DivergenceScope.ACCOUNT, scope_id="A1_TEST",
+                    reason_code="exposure_mismatch", reason_detail="test",
+                    entered_at="", entered_by="test",
+                    recovery_condition="two_clean_cycles",  # needs 2 — won't recover yet
+                    last_checked_at="",
+                    clean_cycles_since_entry=0,
+                )
+                result = _div_mod.check_clean_cycle("A1_TEST", mode_state, [])
+                # Still RISK_CONTAINMENT (needs 2 clean cycles, only got 1)
+                self.assertEqual(result.mode, OperatingMode.RISK_CONTAINMENT)
+                self.assertEqual(result.clean_cycles_since_entry, 1)
+            finally:
+                _div_mod.RUNTIME_DIR = original_runtime
+                _div_mod.MODE_TRANSITION_LOG = original_mtl
+
+    # ── Scenario T21: fill drift above threshold creates event ────────────────
+
+    def test_scenario_detect_fill_divergence_above_threshold(self):
+        """detect_fill_divergence: > 0.5% drift returns a fill_price_drift event."""
+        import divergence as _div_mod
+        import tempfile
+        original_log = _div_mod.DIVERGENCE_LOG
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.DIVERGENCE_LOG = Path(tmp) / "divergence_log.jsonl"
+            try:
+                # 449.0 vs 440.0 = 2.05% drift — above 0.5% threshold
+                result = _div_mod.detect_fill_divergence(
+                    symbol="SPY", account="A1",
+                    intended_price=440.0,
+                    actual_fill_price=449.0,
+                    intended_qty=10, actual_qty=10,
+                    order_type="market",
+                )
+                self.assertIsNotNone(result,
+                    "Above-threshold fill drift must create a DivergenceEvent")
+                self.assertEqual(result.event_type, "fill_price_drift")
+            finally:
+                _div_mod.DIVERGENCE_LOG = original_log
+
+    # ── Scenario T22: detect_protection finds stop_missing ────────────────────
+
+    def test_scenario_detect_protection_stop_missing(self):
+        """detect_protection_divergence: position with no stop order → stop_missing event."""
+        import divergence as _div_mod
+        import tempfile
+        original_log = _div_mod.DIVERGENCE_LOG
+        original_counts = _div_mod.DIVERGENCE_COUNTS_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.DIVERGENCE_LOG = Path(tmp) / "divergence_log.jsonl"
+            _div_mod.DIVERGENCE_COUNTS_PATH = Path(tmp) / "divergence_counts.json"
+            try:
+                class MockPosition:
+                    def __init__(self, symbol, market_value):
+                        self.symbol = symbol
+                        self.market_value = market_value
+
+                events = _div_mod.detect_protection_divergence(
+                    account="A1_TEST",
+                    positions=[MockPosition("GLD", 800)],  # <2000 → stop_missing
+                    open_orders=[],
+                    vix=20,
+                )
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0].event_type, "stop_missing")
+                self.assertEqual(events[0].symbol, "GLD")
+            finally:
+                _div_mod.DIVERGENCE_LOG = original_log
+                _div_mod.DIVERGENCE_COUNTS_PATH = original_counts
+
+    # ── E2E T23: detect → respond → clean-cycle recovery ─────────────────────
+
+    def test_e2e_detect_respond_check_clean_cycle_recovery(self):
+        """
+        Full divergence flow:
+          detect_protection_divergence (market_value=800 → stop_missing → DE_RISK)
+          → respond_to_divergence → RISK_CONTAINMENT (one_clean_cycle recovery)
+          → check_clean_cycle (no new events) → back to NORMAL.
+        """
+        import divergence as _div_mod
+        import tempfile
+        from divergence import AccountMode, OperatingMode, DivergenceScope
+        original_runtime = _div_mod.RUNTIME_DIR
+        original_mtl = _div_mod.MODE_TRANSITION_LOG
+        original_log = _div_mod.DIVERGENCE_LOG
+        original_counts = _div_mod.DIVERGENCE_COUNTS_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.RUNTIME_DIR = Path(tmp)
+            _div_mod.MODE_TRANSITION_LOG = Path(tmp) / "mode_transitions.jsonl"
+            _div_mod.DIVERGENCE_LOG = Path(tmp) / "divergence_log.jsonl"
+            _div_mod.DIVERGENCE_COUNTS_PATH = Path(tmp) / "divergence_counts.json"
+            try:
+                class MockPosition:
+                    def __init__(self, symbol, market_value):
+                        self.symbol = symbol
+                        self.market_value = market_value
+
+                normal_mode = AccountMode(
+                    account="A1_E2E_TEST", mode=OperatingMode.NORMAL,
+                    scope=DivergenceScope.ACCOUNT, scope_id="",
+                    reason_code="", reason_detail="",
+                    entered_at="", entered_by="test",
+                    recovery_condition="one_clean_cycle",
+                    last_checked_at="",
+                )
+
+                # Step 1: detect — market_value=800 < 2000 → stop_missing (DE_RISK)
+                events = _div_mod.detect_protection_divergence(
+                    account="A1_E2E_TEST",
+                    positions=[MockPosition("GLD", 800)],
+                    open_orders=[],
+                    vix=20,
+                )
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0].event_type, "stop_missing")
+
+                # Step 2: respond — DE_RISK + SYMBOL scope → RISK_CONTAINMENT
+                mode_after = _div_mod.respond_to_divergence(
+                    events, "A1_E2E_TEST", normal_mode)
+                self.assertEqual(mode_after.mode, OperatingMode.RISK_CONTAINMENT)
+                self.assertEqual(mode_after.recovery_condition, "one_clean_cycle")
+
+                # Step 3: clean cycle — no new events → recovery_met → NORMAL
+                recovered = _div_mod.check_clean_cycle(
+                    "A1_E2E_TEST", mode_after, [])
+                self.assertEqual(recovered.mode, OperatingMode.NORMAL)
+            finally:
+                _div_mod.RUNTIME_DIR = original_runtime
+                _div_mod.MODE_TRANSITION_LOG = original_mtl
+                _div_mod.DIVERGENCE_LOG = original_log
+                _div_mod.DIVERGENCE_COUNTS_PATH = original_counts
+
+    # ── E2E T24: transition_mode writes to tempdir, load reads it back ────────
+
+    def test_e2e_transition_mode_writes_to_tempdir(self):
+        """transition_mode writes mode file to redirected RUNTIME_DIR; load_account_mode reads it back."""
+        import divergence as _div_mod
+        import tempfile
+        from divergence import OperatingMode, DivergenceScope
+        original_runtime = _div_mod.RUNTIME_DIR
+        original_mtl = _div_mod.MODE_TRANSITION_LOG
+        with tempfile.TemporaryDirectory() as tmp:
+            _div_mod.RUNTIME_DIR = Path(tmp)
+            _div_mod.MODE_TRANSITION_LOG = Path(tmp) / "mode_transitions.jsonl"
+            try:
+                result = _div_mod.transition_mode(
+                    account="A1_TEST",
+                    new_mode=OperatingMode.RISK_CONTAINMENT,
+                    scope=DivergenceScope.SYMBOL,
+                    scope_id="GLD",
+                    reason_code="stop_missing",
+                    reason_detail="unit test write check",
+                    entered_by="test",
+                    recovery_condition="one_clean_cycle",
+                )
+                self.assertEqual(result.mode, OperatingMode.RISK_CONTAINMENT)
+                self.assertEqual(result.account, "A1_TEST")
+
+                # Verify the file was written to tempdir (not live runtime)
+                mode_path = Path(tmp) / "a1_test_mode.json"
+                self.assertTrue(mode_path.exists(),
+                    "transition_mode must write mode file to redirected RUNTIME_DIR")
+
+                # Verify round-trip: load_account_mode reads the same state
+                reloaded = _div_mod.load_account_mode("A1_TEST")
+                self.assertEqual(reloaded.mode, OperatingMode.RISK_CONTAINMENT)
+                self.assertEqual(reloaded.scope_id, "GLD")
+            finally:
+                _div_mod.RUNTIME_DIR = original_runtime
+                _div_mod.MODE_TRANSITION_LOG = original_mtl
+
+
+# =============================================================================
+# Suite 25 — Phase C8 market_data section fallbacks + D13 options audit (6 tests)
+# =============================================================================
+#   C8 — market_data section tagging and fallback behaviour:
+#   T01 test_market_data_required_section_has_fallback
+#   T02 test_market_data_optional_section_returns_empty
+#   T03 test_market_data_compact_uses_no_enrichment
+#
+#   D13 — OptionsStructure close/roll audit trail:
+#   T04 test_close_reason_code_stamped_on_structure
+#   T05 test_roll_links_old_and_new_structure
+#   T06 test_log_structure_event_appends_jsonl
+# =============================================================================
+
+
+class TestSuite25MarketDataAndOptionsAudit(unittest.TestCase):
+    """Suite 25 — C8 market_data fallbacks and D13 options close/roll audit."""
+
+    # ── C8 T01: REQUIRED section fallback ────────────────────────────────────
+
+    def test_market_data_required_section_has_fallback(self):
+        """T01: get_market_clock() returns fallback dict when Alpaca raises."""
+        import market_data as _md_mod
+        with mock.patch.object(_md_mod._trading, "get_clock",
+                               side_effect=Exception("network error")):
+            result = _md_mod.get_market_clock()
+        self.assertIsInstance(result, dict,
+                              "get_market_clock must return a dict on error, not raise")
+        self.assertEqual(result["status"], "unknown",
+                         "fallback status must be 'unknown'")
+        self.assertFalse(result.get("is_open"),
+                         "fallback is_open must be False")
+
+    # ── C8 T02: OPTIONAL section returns "" on error ──────────────────────────
+
+    def test_market_data_optional_section_returns_empty(self):
+        """T02: _build_sector_table() returns '' when dw.load_sector_perf raises."""
+        import market_data as _md_mod
+        with mock.patch.object(_md_mod.dw, "load_sector_perf",
+                               side_effect=Exception("dw unavailable")):
+            result = _md_mod._build_sector_table()
+        self.assertEqual(result, "",
+                         "_build_sector_table must return '' on exception, not raise")
+
+    # ── C8 T03: compact template contains no ENRICHMENT section names ─────────
+
+    def test_market_data_compact_uses_no_enrichment(self):
+        """T03: ENRICHMENT section names must not appear in compact_template.txt."""
+        template_path = Path(__file__).parent.parent / "prompts" / "compact_template.txt"
+        if not template_path.exists():
+            self.skipTest("compact_template.txt not found")
+        text = template_path.read_text()
+        enrichment_names = ["compute_eth_btc_ratio", "test_crypto_prices"]
+        for name in enrichment_names:
+            self.assertNotIn(
+                name, text,
+                f"ENRICHMENT section '{name}' must not appear in compact_template.txt",
+            )
+
+    # ── D13 T04: close_reason_code stamped on structure ───────────────────────
+
+    def test_close_reason_code_stamped_on_structure(self):
+        """T04: close_structure stamps close_reason_code, initiated_by, and audit entry."""
+        import tempfile
+        from datetime import date, timedelta
+        from schemas import (
+            OptionStrategy, OptionsStructure, OptionsLeg,
+            StructureLifecycle, Tier,
+        )
+        import options_executor as _oe_mod
+
+        filled_leg = OptionsLeg(
+            occ_symbol   = "GLD261219C00435000",
+            underlying   = "GLD",
+            side         = "buy",
+            qty          = 1,
+            option_type  = "call",
+            strike       = 435.0,
+            expiration   = "2026-12-19",
+            filled_price = 1.50,
+        )
+        structure = OptionsStructure(
+            structure_id = "test-close-001",
+            underlying   = "GLD",
+            strategy     = OptionStrategy.SINGLE_CALL,
+            lifecycle    = StructureLifecycle.FULLY_FILLED,
+            legs         = [filled_leg],
+            contracts    = 1,
+            max_cost_usd = 500.0,
+            opened_at    = "2026-04-15T10:00:00+00:00",
+            catalyst     = "test",
+            tier         = Tier.CORE,
+            expiration   = (date.today() + timedelta(days=30)).isoformat(),
+        )
+
+        mock_order = mock.MagicMock()
+        mock_order.id = "mock-order-999"
+        mock_client = mock.MagicMock()
+        mock_client.submit_order.return_value = mock_order
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_log = Path(tmpdir) / "options_log.jsonl"
+            with mock.patch.object(_oe_mod, "_LOG_PATH", tmp_log):
+                result = _oe_mod.close_structure(
+                    structure, mock_client, reason="time_stop", method="limit"
+                )
+
+        self.assertEqual(result.close_reason_code, "time_stop",
+                         "close_reason_code must be set to the reason argument")
+        self.assertEqual(result.initiated_by, "auto_rule",
+                         "initiated_by must be 'auto_rule' for automated close")
+        self.assertTrue(
+            any("close" in str(e.get("msg", "")).lower() for e in result.audit_log),
+            "audit_log must contain at least one close-related entry",
+        )
+
+    # ── D13 T05: roll fields survive save/load round-trip ─────────────────────
+
+    def test_roll_links_old_and_new_structure(self):
+        """T05: roll_reason_code and rolled_to_structure_id survive save→load round-trip."""
+        import tempfile
+        from datetime import date, timedelta
+        from schemas import (
+            OptionStrategy, OptionsStructure, StructureLifecycle, Tier,
+        )
+        import options_state
+
+        structure = OptionsStructure(
+            structure_id           = "test-roll-001",
+            underlying             = "GLD",
+            strategy               = OptionStrategy.CALL_DEBIT_SPREAD,
+            lifecycle              = StructureLifecycle.CLOSED,
+            legs                   = [],
+            contracts              = 1,
+            max_cost_usd           = 500.0,
+            opened_at              = "2026-04-15T10:00:00+00:00",
+            catalyst               = "test",
+            tier                   = Tier.CORE,
+            expiration             = (date.today() + timedelta(days=30)).isoformat(),
+            roll_group_id          = "grp-abc123",
+            roll_reason_code       = "dte_approaching",
+            rolled_to_structure_id = "new_id_001",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir) / "structures.json"
+            with mock.patch.object(options_state, "_STRUCTURES_PATH", tmp_path):
+                options_state.save_structure(structure)
+                loaded_list = options_state.load_structures()
+
+        self.assertEqual(len(loaded_list), 1,
+                         "expected exactly 1 structure after round-trip")
+        loaded = loaded_list[0]
+        self.assertEqual(loaded.roll_reason_code, "dte_approaching",
+                         "roll_reason_code must survive save/load round-trip")
+        self.assertEqual(loaded.rolled_to_structure_id, "new_id_001",
+                         "rolled_to_structure_id must survive save/load round-trip")
+
+    # ── D13 T06: _log_structure_event appends JSONL ───────────────────────────
+
+    def test_log_structure_event_appends_jsonl(self):
+        """T06: _log_structure_event appends a valid JSONL record to the log file."""
+        import tempfile
+        from datetime import date, timedelta
+        from schemas import (
+            OptionStrategy, OptionsStructure, StructureLifecycle, Tier,
+        )
+        import options_executor as _oe_mod
+
+        structure = OptionsStructure(
+            structure_id      = "test-log-001",
+            underlying        = "GLD",
+            strategy          = OptionStrategy.SINGLE_CALL,
+            lifecycle         = StructureLifecycle.CLOSED,
+            legs              = [],
+            contracts         = 1,
+            max_cost_usd      = 500.0,
+            opened_at         = "2026-04-15T10:00:00+00:00",
+            catalyst          = "test",
+            tier              = Tier.CORE,
+            expiration        = (date.today() + timedelta(days=30)).isoformat(),
+            close_reason_code = "test_close",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_log = Path(tmpdir) / "options_log.jsonl"
+            with mock.patch.object(_oe_mod, "_LOG_PATH", tmp_log):
+                _oe_mod._log_structure_event(structure, "close", "test detail")
+            lines = tmp_log.read_text().strip().splitlines()
+
+        self.assertEqual(len(lines), 1,
+                         "exactly one JSONL line must be appended per event")
+        record = json.loads(lines[0])
+        self.assertEqual(record["event_type"], "close",
+                         "event_type field must be 'close'")
+        self.assertEqual(record["close_reason_code"], "test_close",
+                         "close_reason_code must be propagated to the log record")
 
 
 if __name__ == "__main__":

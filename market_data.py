@@ -10,6 +10,38 @@ Technical indicators (via pandas-ta):
   RSI(14), MACD(12/26/9), MA20, MA50, Volume ratio, VWAP (intraday)
 """
 
+# ============================================================
+# MARKET DATA SECTION INVENTORY
+# ============================================================
+# REQUIRED sections (compact + full prompt):
+#   - get_market_clock()       — {time_et}, {session_tier}
+#   - get_vix() / vix_regime() — {vix}, {vix_label}
+#   - get_stock_signals()      — feeds signal scorer → {top_signals_block}
+#   - get_crypto_signals()     — crypto prices always tracked
+#
+# OPTIONAL sections (full prompt only, compact skips):
+#   - build_crypto_context_section() — crypto F&G / ETH-BTC narrative
+#   - get_news()               — breaking_news, sector_news
+#   - _build_sector_table()    — sector performance table
+#   - _build_intermarket_signals() — oil/gold/dollar signals
+#   - _build_earnings_calendar()  — upcoming earnings
+#   - _build_global_session_handoff() — Asia/Europe/US futures
+#   - _build_core_by_sector()  — watchlist grouped by sector
+#   - _build_dynamic_section() — scanner adds
+#   - _build_intraday_section() — intraday live adds
+#   - build_economic_calendar_section() — Finnhub calendar
+#   - build_orb_section()      — ORB candidates
+#   - insider_section          — insider intelligence (inline in fetch_all)
+#   - morning_brief_section    — morning brief (inline in fetch_all)
+#   - reddit_section           — Reddit sentiment (inline in fetch_all)
+#   - earnings_intel_section   — earnings intel (inline in fetch_all)
+#   - macro_wire_section       — Reuters/AP macro wire (inline in fetch_all)
+#
+# ENRICHMENT sections (analytics, not prompt-injected directly):
+#   - compute_eth_btc_ratio()  — ETH/BTC ratio (consumed by get_crypto_signals)
+#   - test_crypto_prices()     — CLI test only
+# ============================================================
+
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -55,24 +87,47 @@ _news    = NewsClient(_api_key, _secret_key)
 # ── Market clock ─────────────────────────────────────────────────────────────
 
 def get_market_clock() -> dict:
-    clock  = _trading.get_clock()
-    now_et = datetime.now(ET)
-    if clock.is_open:
-        today_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-        minutes_since_open = max(0, int((now_et - today_open).total_seconds() / 60))
-    else:
-        minutes_since_open = -1
-    return {
-        "is_open":            clock.is_open,
-        "status":             "open" if clock.is_open else "closed",
-        "time_et":            now_et.strftime("%I:%M %p ET"),
-        "minutes_since_open": minutes_since_open,
-    }
+    """
+    Fetch market clock state from Alpaca.
+
+    Section type: REQUIRED
+    Compact prompt: YES ({time_et}, {session_tier})
+    Fallback: {"is_open": False, "status": "unknown", "time_et": "?",
+               "session_tier": "unknown", "minutes_since_open": -1}
+    """
+    try:
+        clock  = _trading.get_clock()
+        now_et = datetime.now(ET)
+        if clock.is_open:
+            today_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            minutes_since_open = max(0, int((now_et - today_open).total_seconds() / 60))
+        else:
+            minutes_since_open = -1
+        return {
+            "is_open":            clock.is_open,
+            "status":             "open" if clock.is_open else "closed",
+            "time_et":            now_et.strftime("%I:%M %p ET"),
+            "minutes_since_open": minutes_since_open,
+        }
+    except Exception as exc:
+        log.warning("get_market_clock failed: %s", exc)
+        return {
+            "is_open":            False,
+            "status":             "unknown",
+            "time_et":            "?",
+            "session_tier":       "unknown",
+            "minutes_since_open": -1,
+        }
 
 
 # ── VIX ──────────────────────────────────────────────────────────────────────
 
 def get_vix() -> float:
+    """
+    Section type: REQUIRED
+    Compact prompt: YES ({vix}, {vix_label})
+    Fallback: returns 0.0 on exception (already implemented)
+    """
     try:
         hist = yf.Ticker("^VIX").history(period="2d")
         if not hist.empty:
@@ -262,7 +317,12 @@ def _compute_crypto_vwap_24h(symbols: list) -> dict:
 # ── Stock signals ─────────────────────────────────────────────────────────────
 
 def get_stock_signals(symbols: list, use_cache: bool = True) -> tuple[str, dict]:
-    """Returns (formatted_string, current_prices_dict)."""
+    """Returns (formatted_string, current_prices_dict).
+
+    Section type: REQUIRED
+    Compact prompt: YES (feeds signal scorer → {top_signals_block})
+    Fallback: returns ("  (no stock data)", {}) on exception (already implemented)
+    """
     end   = datetime.now(timezone.utc)
     start = end - timedelta(days=90)
 
@@ -429,6 +489,10 @@ def compute_eth_btc_ratio(eth_price: float, btc_price: float,
     """
     Compute ETH/BTC relative strength from price history.
     Pure math - no API call. Uses bars already fetched in get_crypto_signals().
+
+    Section type: ENRICHMENT
+    Compact prompt: NO
+    Fallback: returns {} on any error (already implemented)
     """
     if not eth_price or not btc_price or btc_price == 0:
         return {}
@@ -472,6 +536,10 @@ def build_crypto_context_section(
     Full version for extended/overnight sessions.
     One-line condensed version for market hours (don't bloat stock prompt).
     Never raises - all fields optional.
+
+    Section type: OPTIONAL
+    Compact prompt: NO
+    Fallback: returns "(crypto context unavailable)" on exception (already implemented)
     """
     try:
         fg_value  = sentiment.get("current", {}).get("value")
@@ -562,6 +630,12 @@ def build_crypto_context_section(
 # ── Crypto signals ────────────────────────────────────────────────────────────
 
 def get_crypto_signals(symbols: list) -> tuple[str, dict, dict]:
+    """Returns (formatted_string, current_prices_dict, eth_btc_dict).
+
+    Section type: REQUIRED
+    Compact prompt: YES (crypto prices always tracked)
+    Fallback: returns error string + empty dicts on exception (already implemented)
+    """
     end   = datetime.now(timezone.utc)
     start = end - timedelta(days=90)
 
@@ -657,6 +731,11 @@ def get_crypto_signals(symbols: list) -> tuple[str, dict, dict]:
 
 def get_news(symbols: list, limit: int = 10,
              since_minutes: int | None = None) -> str:
+    """
+    Section type: OPTIONAL
+    Compact prompt: NO
+    Fallback: returns "(news unavailable: ...)" on exception (already implemented)
+    """
     try:
         kwargs = dict(symbols=",".join(symbols), limit=limit, sort="desc")
         result   = _news.get_news(NewsRequest(**kwargs))
@@ -689,64 +768,91 @@ def get_news(symbols: list, limit: int = 10,
 # ── Sector & inter-market signals ─────────────────────────────────────────────
 
 def _build_sector_table() -> str:
-    sector_perf = dw.load_sector_perf()
-    sectors     = sector_perf.get("sectors", {})
-    if not sectors:
-        return "  (sector data not yet available — run data_warehouse.py)"
-    lines = [f"  {'Sector':<16} {'ETF':<6} {'Day%':>7} {'Week%':>7} {'Momentum':<8}"]
-    lines.append("  " + "-" * 50)
-    for sec, d in sorted(sectors.items(), key=lambda x: x[1].get("day_chg", 0), reverse=True):
-        chg  = d.get("day_chg", 0)
-        wchg = d.get("week_chg", 0)
-        mom  = d.get("momentum", "?")
-        etf  = d.get("etf", "?")
-        arrow= "▲" if chg > 0 else ("▼" if chg < 0 else "─")
-        lines.append(f"  {sec:<16} {etf:<6} {arrow}{chg:>+6.1f}% {wchg:>+6.1f}%  {mom}")
-    return "\n".join(lines)
+    """
+    Section type: OPTIONAL
+    Compact prompt: NO
+    Fallback: returns "" on exception
+    """
+    try:
+        sector_perf = dw.load_sector_perf()
+        sectors     = sector_perf.get("sectors", {})
+        if not sectors:
+            return "  (sector data not yet available — run data_warehouse.py)"
+        lines = [f"  {'Sector':<16} {'ETF':<6} {'Day%':>7} {'Week%':>7} {'Momentum':<8}"]
+        lines.append("  " + "-" * 50)
+        for sec, d in sorted(sectors.items(), key=lambda x: x[1].get("day_chg", 0), reverse=True):
+            chg  = d.get("day_chg", 0)
+            wchg = d.get("week_chg", 0)
+            mom  = d.get("momentum", "?")
+            etf  = d.get("etf", "?")
+            arrow= "▲" if chg > 0 else ("▼" if chg < 0 else "─")
+            lines.append(f"  {sec:<16} {etf:<6} {arrow}{chg:>+6.1f}% {wchg:>+6.1f}%  {mom}")
+        return "\n".join(lines)
+    except Exception as exc:
+        log.warning("_build_sector_table failed: %s", exc)
+        return ""
 
 
 def _build_intermarket_signals() -> str:
-    macro = dw.load_macro_snapshot()
-    if not macro:
-        return "  (macro data not yet available)"
+    """
+    Section type: OPTIONAL
+    Compact prompt: NO
+    Fallback: returns "" on exception
+    """
+    try:
+        macro = dw.load_macro_snapshot()
+        if not macro:
+            return "  (macro data not yet available)"
 
-    signals = []
-    vix  = macro.get("vix",    {}).get("price", 0)
-    oil  = macro.get("oil",    {}).get("chg_pct", 0)
-    gold = macro.get("gold",   {}).get("chg_pct", 0)
-    dxy  = macro.get("dollar", {}).get("chg_pct", 0)
-    tlt  = macro.get("sp500",  {}).get("chg_pct", 0)  # using sp500 as proxy
+        signals = []
+        vix  = macro.get("vix",    {}).get("price", 0)
+        oil  = macro.get("oil",    {}).get("chg_pct", 0)
+        gold = macro.get("gold",   {}).get("chg_pct", 0)
+        dxy  = macro.get("dollar", {}).get("chg_pct", 0)
+        tlt  = macro.get("sp500",  {}).get("chg_pct", 0)  # using sp500 as proxy
 
-    if oil >= 2.0:
-        signals.append(f"  Oil +{oil:.1f}% → geopolitical risk-on: long defense (LMT/RTX/ITA), watch airlines")
-    elif oil <= -2.0:
-        signals.append(f"  Oil {oil:.1f}% → energy weakness: watch XLE/XOM for short setups")
+        if oil >= 2.0:
+            signals.append(f"  Oil +{oil:.1f}% → geopolitical risk-on: long defense (LMT/RTX/ITA), watch airlines")
+        elif oil <= -2.0:
+            signals.append(f"  Oil {oil:.1f}% → energy weakness: watch XLE/XOM for short setups")
 
-    if gold >= 1.5:
-        signals.append(f"  Gold +{gold:.1f}% → risk-off / dollar weakness signal")
-    elif gold <= -1.5:
-        signals.append(f"  Gold {gold:.1f}% → risk-on, dollar strength")
+        if gold >= 1.5:
+            signals.append(f"  Gold +{gold:.1f}% → risk-off / dollar weakness signal")
+        elif gold <= -1.5:
+            signals.append(f"  Gold {gold:.1f}% → risk-on, dollar strength")
 
-    if dxy >= 0.5:
-        signals.append(f"  Dollar +{dxy:.1f}% → headwind for EEM, GLD; tailwind for XLF")
-    elif dxy <= -0.5:
-        signals.append(f"  Dollar {dxy:.1f}% → tailwind for EEM, GLD, commodities")
+        if dxy >= 0.5:
+            signals.append(f"  Dollar +{dxy:.1f}% → headwind for EEM, GLD; tailwind for XLF")
+        elif dxy <= -0.5:
+            signals.append(f"  Dollar {dxy:.1f}% → tailwind for EEM, GLD, commodities")
 
-    if not signals:
-        signals.append("  No significant inter-market divergences detected this cycle.")
+        if not signals:
+            signals.append("  No significant inter-market divergences detected this cycle.")
 
-    return "\n".join(signals)
+        return "\n".join(signals)
+    except Exception as exc:
+        log.warning("_build_intermarket_signals failed: %s", exc)
+        return ""
 
 
 def _build_earnings_calendar() -> str:
-    cal  = dw.load_earnings_calendar()
-    data = cal.get("calendar", [])
-    if not data:
-        return "  (earnings data not yet available)"
-    lines = []
-    for e in data[:10]:
-        lines.append(f"  {e.get('symbol','?'):<8}  {e.get('earnings_date','?')}")
-    return "\n".join(lines) if lines else "  (none in next 7 days)"
+    """
+    Section type: OPTIONAL
+    Compact prompt: NO
+    Fallback: returns "" on exception
+    """
+    try:
+        cal  = dw.load_earnings_calendar()
+        data = cal.get("calendar", [])
+        if not data:
+            return "  (earnings data not yet available)"
+        lines = []
+        for e in data[:10]:
+            lines.append(f"  {e.get('symbol','?'):<8}  {e.get('earnings_date','?')}")
+        return "\n".join(lines) if lines else "  (none in next 7 days)"
+    except Exception as exc:
+        log.warning("_build_earnings_calendar failed: %s", exc)
+        return ""
 
 
 def _build_global_session_handoff() -> str:
@@ -754,6 +860,10 @@ def _build_global_session_handoff() -> str:
     Read global_indices.json and produce a formatted session handoff table.
     Groups by Asia / Europe / US Futures / FX with live session status.
     Returns a string for prompt injection (all session tiers).
+
+    Section type: OPTIONAL
+    Compact prompt: NO
+    Fallback: returns placeholder string when data unavailable (already implemented)
     """
     data = dw.load_global_indices()
     if not data or not data.get("indices"):

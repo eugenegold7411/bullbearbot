@@ -22,9 +22,11 @@ execute_roll(structure, trading_client, roll_reason, config)
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from schemas import (
@@ -50,6 +52,9 @@ _PHASE1_STRATEGIES: frozenset[OptionStrategy] = frozenset({
 # Poll config for spread leg fill confirmation
 _POLL_ATTEMPTS = 3
 _POLL_INTERVAL = 2.0   # seconds between poll attempts
+
+# Auditable execution log path (D13)
+_LOG_PATH = Path("data/account2/positions/options_log.jsonl")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -411,6 +416,12 @@ def close_structure(
     If method="limit":  stays CLOSING — reconciliation will confirm fills.
     """
     filled_legs = [leg for leg in structure.legs if leg.filled_price is not None]
+    # Stamp close audit fields (D13)
+    structure.close_reason_code = reason
+    structure.close_reason_detail = (
+        f"{reason} via {method} at {datetime.now(timezone.utc).isoformat()}"
+    )
+    structure.initiated_by = "auto_rule"
     if not filled_legs:
         # No confirmed fills — nothing to close
         structure = _set_lifecycle(structure, StructureLifecycle.CANCELLED, f"close: {reason}")
@@ -470,6 +481,7 @@ def close_structure(
                                    if all_submitted else StructureLifecycle.CANCELLED,
                                    f"limit close submitted: {reason}")
 
+    _log_structure_event(structure, "close", reason)
     return structure
 
 
@@ -656,6 +668,15 @@ def execute_roll(
         structure.roll_group_id = str(uuid.uuid4())[:8]
     structure.roll_reason = roll_reason
     structure.add_audit(f"roll initiated: {roll_reason} group={structure.roll_group_id}")
+    # Stamp roll audit fields (D13)
+    _trigger = next(
+        (p for p in roll_reason.replace("roll_eligible:", "").strip().split() if "=" not in p),
+        "roll",
+    )
+    structure.roll_reason_code = _trigger
+    structure.roll_reason_detail = roll_reason
+    structure.initiated_by = "execute_roll"
+    # Note: rolled_to_structure_id set by bot_options.py when replacement structure is created
 
     log.info(
         "[EXECUTOR] execute_roll %s (%s) group=%s reason=%s",
@@ -667,6 +688,7 @@ def execute_roll(
     structure = close_structure(
         structure, trading_client, reason=f"roll: {roll_reason}", method="limit"
     )
+    _log_structure_event(structure, "roll_initiated", roll_reason)
 
     # Persist with roll metadata so next cycle can read roll_group_id
     try:
@@ -698,6 +720,28 @@ def _estimate_current_value(structure: OptionsStructure, current_prices: dict) -
 # ─────────────────────────────────────────────────────────────────────────────
 # Private helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _log_structure_event(structure: OptionsStructure, event_type: str, detail: str = "") -> None:
+    """Append a structure event to options_log.jsonl. Non-fatal."""
+    try:
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event_type": event_type,
+            "structure_id": structure.structure_id,
+            "underlying": structure.underlying,
+            "strategy": structure.strategy.value,
+            "lifecycle": structure.lifecycle.value,
+            "close_reason_code": structure.close_reason_code,
+            "roll_reason_code": structure.roll_reason_code,
+            "initiated_by": structure.initiated_by,
+            "detail": detail,
+        }
+        _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _LOG_PATH.open("a") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except Exception as exc:
+        log.debug("[EXECUTOR] _log_structure_event failed (non-fatal): %s", exc)
+
 
 def _set_lifecycle(
     structure: OptionsStructure,

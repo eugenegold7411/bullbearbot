@@ -87,6 +87,9 @@ def compute_dynamic_sizes(
     Called every cycle with fresh equity from Alpaca.
 
     Returns dict of tier_name → max_dollars (and derived fields for the prompt).
+
+    Authority: RECOMMENDATION — produces analytics for prompt injection.
+      Never places orders. Caller decides whether to act.
     """
     sizing = config.get("position_sizing", {})
     core_pct        = float(sizing.get("core_tier_pct",         0.15))
@@ -131,7 +134,11 @@ def compute_dynamic_sizes(
 
 
 def format_dynamic_sizes_section(sizes: dict, equity: float) -> str:
-    """Format the === DYNAMIC POSITION SIZES === prompt block."""
+    """Format the === DYNAMIC POSITION SIZES === prompt block.
+
+    Authority: PRESENTATION — formats analytics as prompt text only.
+      No enforcement authority.
+    """
     lines = [
         "=== DYNAMIC POSITION SIZES ===",
         f"Current equity: ${equity:,.2f}",
@@ -176,6 +183,9 @@ def compute_position_health(position, equity: float) -> dict:
       MONITORING — unrealized P&L <= 0 but no warning threshold crossed
 
     Returns dict suitable for prompt injection and forced-exit logic.
+
+    Authority: RECOMMENDATION — produces analytics for prompt injection.
+      Never places orders. Caller decides whether to act.
     """
     entry_price   = float(position.avg_entry_price)
     current_price = float(position.current_price)
@@ -211,6 +221,13 @@ def get_forced_exits(positions: list, equity: float) -> list[dict]:
     Each entry has: symbol, health dict, half_qty (shares to sell), full_qty.
     Called from run_cycle() before Claude is invoked so forced exits can be
     processed as hard rules independent of Claude's decision.
+
+    Authority: RECOMMENDATION — returns candidate exit list based on position
+      health heuristics.
+      WARNING: reconciliation.py currently consumes this output authoritatively
+      to generate forced close actions. This is a known temporary overlap
+      documented in docs/policy_ownership_map.md. Target state: risk_kernel.py
+      owns forced exit authority; PI remains advisory input only.
     """
     forced = []
     for pos in positions:
@@ -236,6 +253,13 @@ def get_deadline_exits(strategy_config: dict, positions: list) -> list[dict]:
     deadline is returned. Called from run_cycle() before Claude is invoked.
 
     Each entry has: symbol, reason, deadline_et, deadline_utc, full_qty.
+
+    Authority: RECOMMENDATION — returns candidate deadline exit list based on
+      strategy_config time_bound_actions.
+      WARNING: reconciliation.py currently consumes this output authoritatively
+      to generate deadline_exit_market actions. This is a known temporary overlap
+      documented in docs/policy_ownership_map.md. Target state: risk_kernel.py
+      owns forced exit authority; PI remains advisory input only.
     """
     if not strategy_config or not positions:
         return []
@@ -274,6 +298,9 @@ def format_positions_with_health(positions: list, equity: float) -> str:
     """
     Format === OPEN POSITIONS === section with per-position health data.
     Replaces the plain positions_table in build_user_prompt().
+
+    Authority: PRESENTATION — formats analytics as prompt text only.
+      No enforcement authority.
     """
     if not positions:
         return "  (none)"
@@ -331,6 +358,9 @@ def compute_portfolio_correlation(
     }
 
     Fails gracefully: returns empty structure on any error or insufficient data.
+
+    Authority: RECOMMENDATION — produces analytics for prompt injection.
+      Never places orders. Caller decides whether to act.
     """
     # Crypto tickers: Alpaca uses "/" (BTC/USD) or no separator (ETHUSD, BTCUSD)
     # yfinance requires dash format (BTC-USD, ETH-USD)
@@ -467,7 +497,11 @@ def compute_portfolio_correlation(
 
 
 def format_correlation_section(corr: dict, open_symbols: list[str]) -> str:
-    """Format the === PORTFOLIO CORRELATION === prompt block."""
+    """Format the === PORTFOLIO CORRELATION === prompt block.
+
+    Authority: PRESENTATION — formats analytics as prompt text only.
+      No enforcement authority.
+    """
     if len(open_symbols) < 2:
         return "=== PORTFOLIO CORRELATION ===\nN/A — fewer than 2 positions"
 
@@ -554,6 +588,9 @@ def score_position_thesis(
       trending_toward, sector_aligned, weakest_factor,
       recommended_action: "hold" | "reduce" | "exit_consider"
     }
+
+    Authority: RECOMMENDATION — produces analytics for prompt injection.
+      Never places orders. Caller decides whether to act.
     """
     score         = 8
     weaknesses: list[str] = []
@@ -733,7 +770,11 @@ def format_thesis_ranking_section(
     thesis_scores: list[dict],
     weakest_symbol: Optional[str] = None,
 ) -> str:
-    """Format the === PORTFOLIO THESIS RANKING === prompt block."""
+    """Format the === PORTFOLIO THESIS RANKING === prompt block.
+
+    Authority: PRESENTATION — formats analytics as prompt text only.
+      No enforcement authority.
+    """
     if not thesis_scores:
         return "=== PORTFOLIO THESIS RANKING ===\nN/A — no open positions"
 
@@ -830,6 +871,11 @@ def execute_reallocate(
       "entry_order_id": str | None,
       "reason": str,
     }
+
+    Authority: ENFORCEMENT_ADJACENT — executes broker orders directly
+      (close_position + submit_order). Currently DEAD CODE — not wired into
+      bot.py. If activated, must route through risk_kernel.py first.
+      Never call directly from run_cycle().
     """
     from alpaca.trading.requests import MarketOrderRequest
     from alpaca.trading.enums   import OrderSide, TimeInForce
@@ -908,6 +954,10 @@ def build_portfolio_intelligence(
     """
     Compute all 4 intelligence modules in one call. Cache-friendly — call once
     per cycle, pass the result to format_*_section() for prompt injection.
+
+    Authority: ORCHESTRATION — aggregates all PI analytics into a single dict
+      for prompt injection and reconciliation input. No direct enforcement
+      authority; downstream consumers own enforcement.
 
     Args:
       equity               — current account equity (float)

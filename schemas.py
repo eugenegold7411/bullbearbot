@@ -668,6 +668,13 @@ class OptionsStructure:
     roll_from_structure_id:  Optional[str]  = None   # immediate predecessor structure_id
     roll_reason:             str            = ""     # e.g. "dte_approaching", "underlying_moved"
     thesis_status:           str            = "intact"  # "intact" | "weakened" | "invalidated"
+    # Close/roll audit trail (D13)
+    close_reason_code:       Optional[str]  = None   # e.g. "stop_loss_hit", "expiry_approaching"
+    close_reason_detail:     Optional[str]  = None   # free-text detail with timestamp
+    roll_reason_code:        Optional[str]  = None   # e.g. "dte_approaching", "time_stop"
+    roll_reason_detail:      Optional[str]  = None   # free-text roll detail
+    rolled_to_structure_id:  Optional[str]  = None   # set when new structure is linked
+    initiated_by:            Optional[str]  = None   # "auto_rule" | method name
 
     def is_terminal(self) -> bool:
         """True if structure has reached a final, non-reversible state."""
@@ -784,6 +791,12 @@ class OptionsStructure:
             roll_from_structure_id=d.get("roll_from_structure_id"),
             roll_reason=d.get("roll_reason", ""),
             thesis_status=d.get("thesis_status", "intact"),
+            close_reason_code=d.get("close_reason_code"),
+            close_reason_detail=d.get("close_reason_detail"),
+            roll_reason_code=d.get("roll_reason_code"),
+            roll_reason_detail=d.get("roll_reason_detail"),
+            rolled_to_structure_id=d.get("rolled_to_structure_id"),
+            initiated_by=d.get("initiated_by"),
         )
 
 

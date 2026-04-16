@@ -5690,5 +5690,469 @@ class TestSuite26Session1(unittest.TestCase):
                          "verdict of unmatched rec must remain 'pending' — unknown rec_id must be ignored")
 
 
+# Suite 28 — Epic 1 Shared Substrate: T1.1–T1.8
+
+
+class Suite28Epic1SharedSubstrate(unittest.TestCase):
+    """Suite 28 — Epic 1: semantic_labels, hindsight, rec_store, context_compiler,
+    incident_schema, decision_outcomes alpha, abstention, model_tiering (20 tests)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    # ── semantic_labels.py ────────────────────────────────────────────────────
+
+    def test_catalyst_type_values_match_taxonomy(self):
+        """CatalystType spot-check: 3 values present per taxonomy_v1.0.0.md."""
+        from semantic_labels import CatalystType
+        self.assertIn("earnings_beat", [c.value for c in CatalystType])
+        self.assertIn("citrini_thesis", [c.value for c in CatalystType])
+        self.assertIn("unknown", [c.value for c in CatalystType])
+
+    def test_regime_type_values_match_taxonomy(self):
+        """RegimeType spot-check: 3 values present per taxonomy_v1.0.0.md."""
+        from semantic_labels import RegimeType
+        self.assertIn("risk_on", [r.value for r in RegimeType])
+        self.assertIn("volatility_spike", [r.value for r in RegimeType])
+        self.assertIn("unknown", [r.value for r in RegimeType])
+
+    def test_thesis_type_values_match_taxonomy(self):
+        """ThesisType spot-check: 3 values present per taxonomy_v1.0.0.md."""
+        from semantic_labels import ThesisType
+        self.assertIn("catalyst_swing", [t.value for t in ThesisType])
+        self.assertIn("macro_overlay", [t.value for t in ThesisType])
+        self.assertIn("unknown", [t.value for t in ThesisType])
+
+    def test_validate_label_known_value(self):
+        """validate_label returns value unchanged for known enum member."""
+        from semantic_labels import validate_label, CatalystType
+        result = validate_label(CatalystType, "earnings_beat")
+        self.assertEqual(result, "earnings_beat")
+
+    def test_validate_label_unknown_allow(self):
+        """validate_label allows unknown value when allow_unknown=True (logs warning)."""
+        from semantic_labels import validate_label, CatalystType
+        result = validate_label(CatalystType, "invented_label", allow_unknown=True)
+        self.assertEqual(result, "invented_label")
+
+    def test_validate_label_unknown_disallow_raises(self):
+        """validate_label raises ValueError when allow_unknown=False and value not in enum."""
+        from semantic_labels import validate_label, CatalystType
+        with self.assertRaises(ValueError):
+            validate_label(CatalystType, "invented_label", allow_unknown=False)
+
+    # ── hindsight.py ──────────────────────────────────────────────────────────
+
+    def test_hindsight_write_read_roundtrip(self):
+        """log_hindsight_record writes to JSONL, get_hindsight_records reads it back."""
+        import hindsight as hs
+        import cost_attribution as ca
+        orig_path = hs._HINDSIGHT_PATH
+        orig_spine = ca._SPINE_ENABLED
+        try:
+            hs._HINDSIGHT_PATH = Path(self.tmpdir) / "hindsight.jsonl"
+            ca._SPINE_ENABLED = False  # suppress spine writes in test
+
+            import feature_flags as ff
+            orig_ff_path = ff._CONFIG_PATH
+            ff._CONFIG_PATH = Path(self.tmpdir) / "cfg.json"
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            ff._CONFIG_PATH.write_text(json.dumps({
+                "feature_flags": {"enable_recommendation_memory": True},
+                "shadow_flags": {}, "lab_flags": {},
+            }))
+
+            rec = hs.build_hindsight_record(
+                subject_id="dec_A1_test",
+                subject_type="trade",
+                expected_effect="GLD would rise 1%",
+                observed_result="GLD rose 2%",
+                verdict="confirmed",
+                confidence=0.8,
+                explanation="Thesis validated by price action",
+                evidence_window_start="2026-04-16T09:00:00Z",
+                evidence_window_end="2026-04-17T09:00:00Z",
+                evaluator_module="test_module",
+            )
+            result_id = hs.log_hindsight_record(rec)
+            self.assertIsNotNone(result_id)
+
+            records = hs.get_hindsight_records(days_back=30)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["subject_id"], "dec_A1_test")
+            self.assertEqual(records[0]["verdict"], "confirmed")
+        finally:
+            hs._HINDSIGHT_PATH = orig_path
+            ca._SPINE_ENABLED = orig_spine
+            ff._CONFIG_PATH = orig_ff_path
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+
+    def test_hindsight_flag_disabled_noop(self):
+        """log_hindsight_record returns None without writing when flag is disabled."""
+        import hindsight as hs
+        import feature_flags as ff
+        orig_path = hs._HINDSIGHT_PATH
+        orig_ff_path = ff._CONFIG_PATH
+        try:
+            hs._HINDSIGHT_PATH = Path(self.tmpdir) / "hindsight_disabled.jsonl"
+            ff._CONFIG_PATH = Path(self.tmpdir) / "cfg_dis.json"
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            ff._CONFIG_PATH.write_text(json.dumps({
+                "feature_flags": {"enable_recommendation_memory": False},
+                "shadow_flags": {}, "lab_flags": {},
+            }))
+            rec = hs.build_hindsight_record(
+                subject_id="x", subject_type="trade",
+                expected_effect="e", observed_result="o",
+                verdict="pending", confidence=0.5, explanation="test",
+                evidence_window_start="2026-04-16T00:00:00Z",
+                evidence_window_end="2026-04-17T00:00:00Z",
+            )
+            result = hs.log_hindsight_record(rec)
+            self.assertIsNone(result)
+            self.assertFalse(hs._HINDSIGHT_PATH.exists())
+        finally:
+            hs._HINDSIGHT_PATH = orig_path
+            ff._CONFIG_PATH = orig_ff_path
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+
+    # ── recommendation_store.py ───────────────────────────────────────────────
+
+    def test_recommendation_save_get_update_roundtrip(self):
+        """save + get + update_verdict round-trip works correctly."""
+        import recommendation_store as rs
+        import feature_flags as ff
+        orig_store = rs._STORE_PATH
+        orig_ff_path = ff._CONFIG_PATH
+        try:
+            rs._STORE_PATH = Path(self.tmpdir) / "rec_store.json"
+            ff._CONFIG_PATH = Path(self.tmpdir) / "cfg.json"
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            ff._CONFIG_PATH.write_text(json.dumps({
+                "feature_flags": {"enable_recommendation_memory": True},
+                "shadow_flags": {}, "lab_flags": {},
+            }))
+            from recommendation_store import RecommendationRecord
+            rec = RecommendationRecord(
+                rec_id="rec_2026-04-16_1",
+                week_str="2026-04-16",
+                created_at="2026-04-16T12:00:00Z",
+                source_module="test",
+                recommendation_text="Reduce leverage by 20%",
+                verdict="pending",
+            )
+            ok = rs.save_recommendation(rec)
+            self.assertTrue(ok)
+
+            fetched = rs.get_recommendation("rec_2026-04-16_1")
+            self.assertIsNotNone(fetched)
+            self.assertEqual(fetched.recommendation_text, "Reduce leverage by 20%")
+            self.assertEqual(fetched.verdict, "pending")
+
+            ok2 = rs.update_verdict("rec_2026-04-16_1", "verified", "Fix confirmed in live data")
+            self.assertTrue(ok2)
+            updated = rs.get_recommendation("rec_2026-04-16_1")
+            self.assertEqual(updated.verdict, "verified")
+        finally:
+            rs._STORE_PATH = orig_store
+            ff._CONFIG_PATH = orig_ff_path
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+
+    def test_recommendation_atomic_write(self):
+        """save_recommendation produces a valid JSON file (no .tmp left behind)."""
+        import recommendation_store as rs
+        import feature_flags as ff
+        orig_store = rs._STORE_PATH
+        orig_ff_path = ff._CONFIG_PATH
+        try:
+            store_path = Path(self.tmpdir) / "rec_store_atomic.json"
+            rs._STORE_PATH = store_path
+            ff._CONFIG_PATH = Path(self.tmpdir) / "cfg2.json"
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            ff._CONFIG_PATH.write_text(json.dumps({
+                "feature_flags": {"enable_recommendation_memory": True},
+                "shadow_flags": {}, "lab_flags": {},
+            }))
+            from recommendation_store import RecommendationRecord
+            rec = RecommendationRecord(rec_id="rec_atom_1", week_str="2026-04-16",
+                                       created_at="", source_module="test",
+                                       recommendation_text="atomic test")
+            rs.save_recommendation(rec)
+            self.assertTrue(store_path.exists())
+            self.assertFalse(store_path.with_suffix(".tmp").exists(), ".tmp must be cleaned up")
+            raw = json.loads(store_path.read_text())
+            self.assertIn("rec_atom_1", raw.get("records", {}))
+        finally:
+            rs._STORE_PATH = orig_store
+            ff._CONFIG_PATH = orig_ff_path
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+
+    # ── context_compiler.py ───────────────────────────────────────────────────
+
+    def test_context_compiler_flag_disabled_returns_none(self):
+        """compress_section returns None without making API call when flag is disabled."""
+        import context_compiler as cc
+        import feature_flags as ff
+        orig_ff_path = ff._CONFIG_PATH
+        try:
+            ff._CONFIG_PATH = Path(self.tmpdir) / "cfg.json"
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            ff._CONFIG_PATH.write_text(json.dumps({
+                "feature_flags": {},
+                "shadow_flags": {"enable_context_compressor_shadow": False},
+                "lab_flags": {},
+            }))
+            result = cc.compress_section("macro_backdrop", "Some macro content here.")
+            self.assertIsNone(result)
+        finally:
+            ff._CONFIG_PATH = orig_ff_path
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+
+    def test_compressed_section_schema(self):
+        """CompressedSection dataclass has all required fields."""
+        from context_compiler import CompressedSection
+        s = CompressedSection(
+            schema_version=1,
+            section_name="macro_backdrop",
+            cycle_id="cycle_001",
+            compressed_at="2026-04-16T12:00:00Z",
+            raw_length_chars=500,
+            compressed_length_chars=120,
+            compression_ratio=0.24,
+            raw_content="full macro text",
+            compressed_content="compressed",
+            model="claude-haiku-4-5-20251001",
+            input_tokens=100,
+            output_tokens=30,
+            estimated_cost_usd=0.00025,
+        )
+        self.assertEqual(s.schema_version, 1)
+        self.assertEqual(s.section_name, "macro_backdrop")
+        self.assertAlmostEqual(s.compression_ratio, 0.24)
+
+    # ── incident_schema.py ────────────────────────────────────────────────────
+
+    def test_incident_build_log_get_roundtrip(self):
+        """build_incident + log_incident + get_incidents round-trip."""
+        import incident_schema as isc
+        import feature_flags as ff
+        orig_path = isc._INCIDENT_PATH
+        orig_ff_path = ff._CONFIG_PATH
+        try:
+            isc._INCIDENT_PATH = Path(self.tmpdir) / "incidents.jsonl"
+            ff._CONFIG_PATH = Path(self.tmpdir) / "cfg.json"
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            ff._CONFIG_PATH.write_text(json.dumps({
+                "feature_flags": {"enable_schema_migrations": True},
+                "shadow_flags": {}, "lab_flags": {},
+            }))
+            rec = isc.build_incident(
+                incident_type="stop_missing",
+                account="account1",
+                severity="critical",
+                description="GLD has no stop-loss order",
+                subject_id="GLD",
+                subject_type="symbol",
+            )
+            inc_id = isc.log_incident(rec)
+            self.assertIsNotNone(inc_id)
+
+            results = isc.get_incidents(incident_type="stop_missing", days_back=1)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["account"], "account1")
+            self.assertEqual(results[0]["severity"], "critical")
+        finally:
+            isc._INCIDENT_PATH = orig_path
+            ff._CONFIG_PATH = orig_ff_path
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+
+    def test_divergence_wiring_nonfatal(self):
+        """incident wiring in divergence.log_divergence_event is non-fatal even if incident_schema fails."""
+        import divergence
+        import feature_flags as ff
+        orig_ff_path = ff._CONFIG_PATH
+        try:
+            # Point flags to a config where enable_schema_migrations is False
+            ff._CONFIG_PATH = Path(self.tmpdir) / "cfg.json"
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            ff._CONFIG_PATH.write_text(json.dumps({
+                "feature_flags": {"enable_schema_migrations": False},
+                "shadow_flags": {}, "lab_flags": {},
+            }))
+            # This should not raise even though incident logging is disabled
+            event = divergence.DivergenceEvent(
+                event_id="div_test",
+                timestamp="2026-04-16T12:00:00Z",
+                account="A1_TEST",
+                symbol="GLD",
+                event_type="stop_missing",
+                severity=divergence.DivergenceSeverity.DE_RISK,
+                scope=divergence.DivergenceScope.SYMBOL,
+                scope_id="GLD",
+                paper_expected=None,
+                live_observed=None,
+                delta=None,
+                recoverability="auto",
+                risk_impact="medium",
+                repaired=False,
+                repair_attempt_count=0,
+                decision_id="",
+                trade_id="",
+                structure_id="",
+            )
+            # Redirect divergence log to tempdir to avoid writing to production paths
+            orig_log = divergence.DIVERGENCE_LOG
+            divergence.DIVERGENCE_LOG = Path(self.tmpdir) / "div.jsonl"
+            try:
+                divergence.log_divergence_event(event)
+            finally:
+                divergence.DIVERGENCE_LOG = orig_log
+            # No exception = pass
+        finally:
+            ff._CONFIG_PATH = orig_ff_path
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+
+    # ── decision_outcomes.py alpha classification ─────────────────────────────
+
+    def test_classify_alpha_insufficient_sample_no_return(self):
+        """classify_alpha returns insufficient_sample when return_1d is None."""
+        from decision_outcomes import classify_alpha, DecisionOutcomeRecord
+        rec = DecisionOutcomeRecord(
+            decision_id="dec_test", account="A1", symbol="GLD",
+            timestamp="2026-04-16T12:00:00Z", action="buy",
+            status="submitted", return_1d=None,
+        )
+        result = classify_alpha(rec)
+        self.assertEqual(result, "insufficient_sample")
+
+    def test_classify_alpha_positive(self):
+        """classify_alpha returns alpha_positive for correct +1d direction with >0.3% return."""
+        from decision_outcomes import classify_alpha, DecisionOutcomeRecord
+        from datetime import datetime, timedelta, timezone
+        old_ts = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat().replace("+00:00", "Z")
+        rec = DecisionOutcomeRecord(
+            decision_id="dec_test", account="A1", symbol="GLD",
+            timestamp=old_ts, action="buy",
+            status="submitted",
+            return_1d=0.015, correct_1d=True,
+        )
+        result = classify_alpha(rec)
+        self.assertEqual(result, "alpha_positive")
+
+    def test_classify_alpha_insufficient_sample_recent(self):
+        """classify_alpha returns insufficient_sample for records < 24h old."""
+        from decision_outcomes import classify_alpha, DecisionOutcomeRecord
+        from datetime import datetime, timezone
+        rec = DecisionOutcomeRecord(
+            decision_id="dec_test", account="A1", symbol="GLD",
+            timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            action="buy", status="submitted",
+            return_1d=0.02, correct_1d=True,
+        )
+        result = classify_alpha(rec)
+        self.assertEqual(result, "insufficient_sample")
+
+    # ── abstention.py ─────────────────────────────────────────────────────────
+
+    def test_abstain_empty_reason_raises(self):
+        """abstain() raises ValueError when reason is empty."""
+        from abstention import abstain
+        with self.assertRaises(ValueError):
+            abstain(reason="", module_name="test_module")
+
+    def test_did_abstain_handles_none(self):
+        """did_abstain returns True when passed None."""
+        from abstention import did_abstain
+        self.assertTrue(did_abstain(None))
+
+    def test_abstention_rate_calculation(self):
+        """abstention_rate correctly computes rate from mixed records."""
+        from abstention import abstention_rate
+        records = [
+            {"abstention": {"abstain": True, "abstention_reason": "no data"}},
+            {"abstention": {"abstain": True, "abstention_reason": "unclear"}},
+            {"abstention": {"abstain": False}},
+            {"abstention": None},
+        ]
+        rate = abstention_rate(records)
+        self.assertAlmostEqual(rate, 0.5, places=2)
+
+    # ── model_tiering.py ──────────────────────────────────────────────────────
+
+    def test_get_model_for_module_correct_string(self):
+        """get_model_for_module returns correct canonical model string for known modules."""
+        import model_tiering as mt
+        import feature_flags as ff
+        orig_ff_path = ff._CONFIG_PATH
+        try:
+            ff._CONFIG_PATH = Path(self.tmpdir) / "cfg.json"
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            ff._CONFIG_PATH.write_text(json.dumps({
+                "feature_flags": {"enable_model_tiering": False},
+                "shadow_flags": {}, "lab_flags": {},
+            }))
+            haiku = mt.get_model_for_module("regime_classifier")
+            self.assertEqual(haiku, "claude-haiku-4-5-20251001")
+            sonnet = mt.get_model_for_module("main_decision")
+            self.assertEqual(sonnet, "claude-sonnet-4-6")
+        finally:
+            ff._CONFIG_PATH = orig_ff_path
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+
+    def test_escalation_predicate_fires_on_conflict(self):
+        """should_escalate_to_premium fires when signals conflict and scores are tight."""
+        from model_tiering import should_escalate_to_premium, EscalationContext
+        ctx = EscalationContext(
+            top_signal_scores=[65.0, 68.0, 70.0],  # tight range (<10 points)
+            regime_score=50,
+            regime_bias="bullish",
+            open_position_count=2,
+            signals_conflict=True,
+            catalyst_count=1,
+            deadline_approaching=False,
+            vix_level=20.0,
+        )
+        should, reason = should_escalate_to_premium(ctx)
+        self.assertTrue(should)
+        self.assertEqual(reason, "ambiguous_signal_environment")
+
+    def test_escalation_no_trigger(self):
+        """should_escalate_to_premium returns False when no trigger fires."""
+        from model_tiering import should_escalate_to_premium, EscalationContext
+        ctx = EscalationContext(
+            top_signal_scores=[50.0, 70.0, 90.0],  # wide range
+            regime_score=70,
+            regime_bias="bullish",
+            open_position_count=2,
+            signals_conflict=False,
+            catalyst_count=1,
+            deadline_approaching=False,
+            vix_level=18.0,
+        )
+        should, _ = should_escalate_to_premium(ctx)
+        self.assertFalse(should)
+
+
 if __name__ == "__main__":
     unittest.main()

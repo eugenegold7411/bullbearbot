@@ -147,6 +147,31 @@ def log_divergence_event(event: DivergenceEvent) -> None:
     except Exception as e:
         log.warning("[DIV] log_divergence_event failed: %s", e)
 
+    # T1.5 incident wiring — best-effort, non-fatal
+    _INCIDENT_SEVERITIES = {"reconcile", "de_risk", "halt"}
+    if event.severity.value in _INCIDENT_SEVERITIES:
+        try:
+            from incident_schema import build_incident, log_incident  # noqa: PLC0415
+            severity_map = {"reconcile": "warning", "de_risk": "critical", "halt": "halt"}
+            inc = build_incident(
+                incident_type=event.event_type,
+                account=event.account,
+                severity=severity_map.get(event.severity.value, "warning"),
+                description=(
+                    f"{event.event_type} on {event.symbol or 'account'} "
+                    f"scope={event.scope.value}"
+                ),
+                subject_id=event.decision_id or event.structure_id or event.symbol,
+                subject_type="decision" if event.decision_id else (
+                    "structure" if event.structure_id else "symbol"
+                ),
+                linked_divergence_event=event.event_id,
+                linked_structure_id=event.structure_id,
+            )
+            log_incident(inc)
+        except Exception as _inc_exc:
+            log.warning("[DIV] incident wiring failed (non-fatal): %s", _inc_exc)
+
 
 # ---------------------------------------------------------------------------
 # Section 3 — Operating mode state

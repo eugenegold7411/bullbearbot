@@ -709,6 +709,20 @@ Review the roadmap, identify what shipped vs planned, re-prioritize pending feat
 
 # ── Agent 10 input builder ────────────────────────────────────────────────────
 
+def _get_abstention_section() -> str:
+    """Non-fatal abstention rate summary from hindsight log for Agent 10."""
+    try:
+        import hindsight as _hs  # noqa: PLC0415
+        import abstention as _ab  # noqa: PLC0415
+        records = _hs.get_hindsight_records(days_back=7)
+        if not records:
+            return "No hindsight records in last 7 days — abstention metrics unavailable."
+        rate = _ab.abstention_rate(records)
+        return f"Overall abstention rate (7d): {rate:.1%} across {len(records)} hindsight records."
+    except Exception:
+        return "(abstention metrics unavailable)"
+
+
 def _build_agent10_input(ctx: dict) -> str:
     journal = ctx.get("journal_records", [])
     cfg = ctx.get("strategy_cfg", {})
@@ -758,8 +772,11 @@ PDT-related blocks: {len(pdt_blocks)}
 {json.dumps(submitted[:5], indent=2, default=str)[:1500]}
 ```
 
+### Abstention Metrics (last 7 days)
+{_get_abstention_section()}
+
 ### Your Task
-Audit for rule violations, near-misses, PDT compliance, position sizing, stop loss widths, catalyst discipline. Was the bot operating within its stated rules? Produce your JSON compliance report with a score 0-100."""
+Audit for rule violations, near-misses, PDT compliance, position sizing, stop loss widths, catalyst discipline. Was the bot operating within its stated rules? Flag any module with abstention_rate > 0.80 as a potential lazy-abstainer. Produce your JSON compliance report with a score 0-100."""
 
 
 # ── Agent 11 input builder ────────────────────────────────────────────────────
@@ -1016,6 +1033,32 @@ def _save_director_memo(memo: dict) -> None:
         log.info("Director memo history saved (%d entries)", len(history))
     except Exception as exc:
         log.warning("_save_director_memo failed (non-fatal): %s", exc)
+
+    # T1.3 recommendation store wiring — best-effort
+    try:
+        from feature_flags import is_enabled  # noqa: PLC0415
+        if is_enabled("enable_recommendation_memory"):
+            import recommendation_store as _rs  # noqa: PLC0415
+            from recommendation_store import RecommendationRecord  # noqa: PLC0415
+            week = memo.get("week", "")
+            for rec_dict in memo.get("key_recommendations", []):
+                if not rec_dict.get("rec_id"):
+                    continue
+                record = RecommendationRecord(
+                    schema_version=1,
+                    rec_id=rec_dict["rec_id"],
+                    week_str=week,
+                    created_at=rec_dict.get("created_at", ""),
+                    source_module="weekly_review_agent_6",
+                    recommendation_text=rec_dict.get("recommendation", "")[:500],
+                    target_metric=rec_dict.get("target_metric") or None,
+                    expected_direction=rec_dict.get("expected_direction") or None,
+                    verdict=rec_dict.get("verdict", "pending"),
+                    resolved_at=rec_dict.get("resolved_at") or None,
+                )
+                _rs.save_recommendation(record)
+    except Exception as exc:
+        log.warning("_save_director_memo recommendation_store wiring failed: %s", exc)
 
 
 def _format_director_history_for_prompt(history: list[dict]) -> str:
@@ -1364,6 +1407,15 @@ def _save_weekly_report(outputs: dict, final: str) -> None:
 
 # ── Agent 5 (CTO) input builder ───────────────────────────────────────────────
 
+def _get_tier_summary() -> str:
+    """Non-fatal wrapper for model_tiering.format_tier_summary_for_review()."""
+    try:
+        import model_tiering as _mt  # noqa: PLC0415
+        return _mt.format_tier_summary_for_review()
+    except Exception:
+        return "(model tier summary unavailable)"
+
+
 def _build_agent5_cto_input(ctx: dict, phase1_outputs: dict) -> str:
     """Build CTO (Agent 5) technical audit input using Phase 1 analyst reports."""
     costs = ctx.get("costs_data", {})
@@ -1443,6 +1495,11 @@ Scheduler: 24/7 loop, 5-min market / 15-min extended / 30-min overnight cycles
 - All external calls non-fatal; exceptions caught at WARNING level
 - Prompt caching on all system prompts (5-min TTL, aligns with market cycle)
 - VPS: DigitalOcean 2GB RAM, $12/month
+
+---
+
+### Model Tier Declarations
+{_get_tier_summary()}
 
 Produce your technical audit in markdown. Be specific: name modules, cite costs, propose exact changes."""
 
@@ -1789,6 +1846,13 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
     except Exception as _oc_err:
         log.warning("[REVIEW] decision_outcomes failed: %s", _oc_err)
 
+    _hindsight_section = ""
+    try:
+        import hindsight as _hindsight  # noqa: PLC0415
+        _hindsight_section = _hindsight.format_hindsight_summary_for_review(days_back=30)
+    except Exception as _hs_err:
+        log.warning("[REVIEW] hindsight summary failed: %s", _hs_err)
+
     agent4_input = f"""## WEEKLY BACKTEST ANALYST REVIEW INPUT
 
 ### Vector Memory (ChromaDB) Stats
@@ -1823,6 +1887,8 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
 ```
 
 {_outcomes_report}
+
+{_hindsight_section}
 
 Please analyze decision quality, compare live results to expectations, identify divergence patterns, and assess signal alpha from the backtest. For any symbol with has_alpha=true, note whether the bot acted on it. Provide your findings as a markdown section with 3-5 insights."""
 

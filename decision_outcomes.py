@@ -88,6 +88,10 @@ class DecisionOutcomeRecord:
     correct_1d:    Optional[bool]  = None
     correct_3d:    Optional[bool]  = None
     correct_5d:    Optional[bool]  = None
+    # T1.6 — alpha classification (alpha_measurement_framework_v1.0.0.md §9)
+    alpha_classification:        Optional[str] = None
+    alpha_classification_reason: Optional[str] = None
+    alpha_classified_at:         Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.module_tags is None:
@@ -97,6 +101,37 @@ class DecisionOutcomeRecord:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DecisionOutcomeRecord":
+        return cls(
+            decision_id=d.get("decision_id", ""),
+            account=d.get("account", ""),
+            symbol=d.get("symbol", ""),
+            timestamp=d.get("timestamp", ""),
+            action=d.get("action", ""),
+            tier=d.get("tier"),
+            confidence=d.get("confidence"),
+            catalyst=d.get("catalyst"),
+            session=d.get("session"),
+            order_id=d.get("order_id"),
+            entry_price=d.get("entry_price"),
+            stop_loss=d.get("stop_loss"),
+            take_profit=d.get("take_profit"),
+            status=d.get("status", "submitted"),
+            reject_reason=d.get("reject_reason"),
+            module_tags=d.get("module_tags") or {},
+            trigger_flags=d.get("trigger_flags") or {},
+            return_1d=d.get("return_1d"),
+            return_3d=d.get("return_3d"),
+            return_5d=d.get("return_5d"),
+            correct_1d=d.get("correct_1d"),
+            correct_3d=d.get("correct_3d"),
+            correct_5d=d.get("correct_5d"),
+            alpha_classification=d.get("alpha_classification"),
+            alpha_classification_reason=d.get("alpha_classification_reason"),
+            alpha_classified_at=d.get("alpha_classified_at"),
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -471,6 +506,57 @@ def format_outcomes_report(summary: dict) -> str:
     except Exception as exc:  # noqa: BLE001
         log.warning("[OUTCOMES] format_outcomes_report failed: %s", exc)
         return "**Decision Outcomes:** Report formatting error.\n"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alpha classification (alpha_measurement_framework_v1.0.0.md)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def classify_alpha(record: DecisionOutcomeRecord) -> str:
+    """
+    Apply alpha_measurement_framework_v1.0.0.md §9 classification rules.
+
+    Returns one of 7 classifications from ALPHA_CLASSIFICATIONS.
+    Returns "insufficient_sample" when:
+    - forward_return_1d is None (no outcome data yet)
+    - record is less than 1 trading day old (< 24h)
+
+    Never raises.
+    """
+    try:
+        # No outcome data or too recent → insufficient sample
+        if record.return_1d is None:
+            return "insufficient_sample"
+
+        # Age check: < 24h old → insufficient sample
+        try:
+            ts = datetime.fromisoformat(record.timestamp.replace("Z", "+00:00"))
+            age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+            if age_hours < 24:
+                return "insufficient_sample"
+        except Exception:
+            return "insufficient_sample"
+
+        # Only classify submitted trades (not rejections)
+        if record.status != "submitted":
+            return "quality_positive_non_alpha"
+
+        # Alpha classification based on 1d forward return direction
+        correct_1d = record.correct_1d
+        return_1d = record.return_1d
+
+        if correct_1d is True and return_1d is not None and return_1d > 0.003:
+            return "alpha_positive"
+        elif correct_1d is False and return_1d is not None and return_1d < -0.003:
+            return "alpha_negative"
+        elif correct_1d is not None:
+            return "alpha_neutral"
+        else:
+            return "insufficient_sample"
+
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[OUTCOMES] classify_alpha failed: %s", exc)
+        return "insufficient_sample"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -225,7 +225,8 @@
     "enable_schema_migrations": true,
     "enable_thesis_checksum": false,
     "enable_recommendation_memory": false,
-    "enable_abstention_contract": false
+    "enable_abstention_contract": false,
+    "enable_model_tiering": false
   },
   "shadow_flags": {
     "enable_replay_fork_debugger": false,

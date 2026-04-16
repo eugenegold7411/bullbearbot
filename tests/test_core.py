@@ -14,6 +14,7 @@ Suites:
   6-8. schemas      — symbol normalization, BrokerAction, validation, SignalScore, OptionsStructure
   9. risk_kernel     — eligibility, sizing, stops, VIX scaling, options structure selection
  22. Phase A        — decision_id timing fix, shadow lane id, executor isinstance routing
+ 23. Phase B        — obs mode v2, options lifecycle, time-stop, DecisionOutcomeRecord
 """
 
 import sys
@@ -4309,6 +4310,437 @@ class TestSuite22PhaseA(unittest.TestCase):
                       "to_dict() must map conviction → 'confidence' key")
         self.assertNotIn("source_idea", captured[0],
                          "source_idea must be excluded by to_dict()")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SUITE 23 — Phase B: obs mode v2, options lifecycle, time-stop, DecisionOutcomeRecord
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestSuite23PhaseB(unittest.TestCase):
+    """Suite 23 — Phase B: obs mode v2 schema, options lifecycle + time-stop, outcome log."""
+
+    # ── T01: check_iv_history_ready returns False when no history files exist ──
+
+    def test_obs_iv_not_ready_blocks_completion(self):
+        """check_iv_history_ready returns all_ready=False when no IV history files exist."""
+        import options_data as _od
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(_od, "_IV_DIR", Path(tmpdir)):
+                result = _od.check_iv_history_ready(["SPY", "QQQ", "NVDA"])
+
+        self.assertFalse(result["all_ready"],
+                         "all_ready must be False when no history files exist")
+        self.assertEqual(result["ready_count"], 0)
+        self.assertEqual(result["total_count"], 3)
+        for sym in ["SPY", "QQQ", "NVDA"]:
+            self.assertFalse(result["symbol_ready"][sym],
+                             f"{sym} must not be ready without history files")
+
+    # ── T02: _update_obs_mode_state returns True when days < 20 ─────────────
+
+    def test_obs_validation_days_insufficient(self):
+        """_update_obs_mode_state returns True (still in obs) when trading_days_observed < 20."""
+        import bot_options
+        from datetime import date
+
+        today_str = date.today().isoformat()
+        state = {
+            "version": 2,
+            "trading_days_observed": 5,
+            "first_seen_date": "2026-04-01",
+            "observation_complete": False,
+            "last_counted_date": today_str,   # already counted today → no increment
+            "iv_history_ready": False,
+            "iv_ready_symbols": {},
+        }
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "obs_mode_state.json"
+            with mock.patch("bot_options._OBS_MODE_FILE", tmp_file):
+                still_in_obs = bot_options._update_obs_mode_state(state)
+
+        self.assertTrue(still_in_obs,
+                        "5 trading days < 20 — should still be in obs mode")
+        self.assertFalse(state.get("observation_complete", False),
+                         "observation_complete must remain False")
+
+    # ── T03: observation_complete=True is never reset by _update_obs_mode ────
+
+    def test_obs_blockers_prevent_completion(self):
+        """_update_obs_mode_state returns False and never resets observation_complete=True."""
+        import bot_options
+
+        state = {
+            "trading_days_observed": 20,
+            "first_seen_date": "2026-04-01",
+            "observation_complete": True,
+            "last_counted_date": "2026-04-14",
+            # version absent → will trigger v2 migration path
+        }
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "obs_mode_state.json"
+            with mock.patch("bot_options._OBS_MODE_FILE", tmp_file), \
+                 mock.patch("bot_options._check_and_update_iv_ready",
+                            side_effect=lambda s: s):
+                result = bot_options._update_obs_mode_state(state)
+
+        self.assertFalse(result,
+                         "_update_obs_mode_state must return False when obs already complete")
+        self.assertTrue(state["observation_complete"],
+                        "observation_complete must not be reset to False")
+
+    # ── T04: _update_obs_mode_state completes at 20 days and stamps v2 fields ─
+
+    def test_obs_all_conditions_met(self):
+        """_update_obs_mode_state completes obs mode at exactly 20 days and writes v2 fields."""
+        import bot_options
+        from datetime import date
+
+        yesterday = (date.today() - __import__("datetime").timedelta(days=1)).isoformat()
+        state = {
+            "version": 1,
+            "trading_days_observed": 19,
+            "first_seen_date": "2026-03-01",
+            "observation_complete": False,
+            "last_counted_date": yesterday,   # different from today → will count
+        }
+
+        def _mock_iv_ready(s):
+            s["iv_history_ready"] = True
+            s["iv_ready_symbols"] = {"SPY": True}
+            return s
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "obs_mode_state.json"
+            with mock.patch("bot_options._OBS_MODE_FILE", tmp_file), \
+                 mock.patch("bot_options._is_trading_day", return_value=True), \
+                 mock.patch("bot_options._check_and_update_iv_ready",
+                            side_effect=_mock_iv_ready):
+                result = bot_options._update_obs_mode_state(state)
+
+        self.assertFalse(result,
+                         "Should return False — obs mode is now complete")
+        self.assertTrue(state["observation_complete"],
+                        "observation_complete must be True after reaching 20 days")
+        self.assertEqual(state["trading_days_observed"], 20)
+        self.assertEqual(state["version"], bot_options._OBS_SCHEMA_VERSION)
+        self.assertTrue(state.get("iv_history_ready", False),
+                        "iv_history_ready must be stamped when obs completes")
+
+    # ── T05: OptionsStructure lifecycle: PROPOSED is not open, not terminal ───
+
+    def test_options_structure_lifecycle_proposed_to_submitted(self):
+        """OptionsStructure in PROPOSED state is neither open nor terminal."""
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+
+        struct = OptionsStructure(
+            structure_id="test_lc_001",
+            underlying="AAPL",
+            strategy=OptionStrategy.CALL_DEBIT_SPREAD,
+            lifecycle=StructureLifecycle.PROPOSED,
+            legs=[],
+            contracts=1,
+            max_cost_usd=500.0,
+            opened_at="2026-04-15T10:00:00Z",
+            catalyst="earnings catalyst",
+            tier=Tier.CORE,
+        )
+        self.assertFalse(struct.is_terminal(),
+                         "PROPOSED structure must not be terminal")
+        self.assertFalse(struct.is_open(),
+                         "PROPOSED structure must not be is_open()")
+
+        struct.lifecycle = StructureLifecycle.SUBMITTED
+        self.assertFalse(struct.is_terminal(),
+                         "SUBMITTED structure must not be terminal")
+        self.assertFalse(struct.is_open(),
+                         "SUBMITTED structure is not yet fully open")
+
+    # ── T06: REJECTED lifecycle is terminal ──────────────────────────────────
+
+    def test_options_structure_lifecycle_rejected_is_terminal(self):
+        """OptionsStructure.is_terminal() returns True for REJECTED lifecycle."""
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+
+        for lc in (StructureLifecycle.REJECTED, StructureLifecycle.EXPIRED,
+                   StructureLifecycle.CANCELLED, StructureLifecycle.CLOSED):
+            struct = OptionsStructure(
+                structure_id=f"test_terminal_{lc.value}",
+                underlying="SPY",
+                strategy=OptionStrategy.SINGLE_CALL,
+                lifecycle=lc,
+                legs=[],
+                contracts=1,
+                max_cost_usd=300.0,
+                opened_at="2026-04-15T10:00:00Z",
+                catalyst="momentum",
+                tier=Tier.DYNAMIC,
+            )
+            self.assertTrue(struct.is_terminal(),
+                            f"{lc.value} must be a terminal lifecycle state")
+            self.assertFalse(struct.is_open(),
+                             f"{lc.value} must not satisfy is_open()")
+
+    # ── T07: reconcile_options_structures detects broken spread ──────────────
+
+    def test_options_structure_broken_triggers_close(self):
+        """reconcile_options_structures marks a spread as broken when only one leg is present."""
+        from schemas import (
+            OptionsStructure, OptionsLeg, OptionStrategy, StructureLifecycle, Tier,
+            BrokerSnapshot, NormalizedPosition,
+        )
+        from reconciliation import reconcile_options_structures
+
+        occ_long  = "AAPL260417C00200000"
+        occ_short = "AAPL260417C00210000"
+
+        legs = [
+            OptionsLeg(occ_symbol=occ_long,  underlying="AAPL", side="buy",
+                       qty=1, option_type="call", strike=200.0, expiration="2026-04-17"),
+            OptionsLeg(occ_symbol=occ_short, underlying="AAPL", side="sell",
+                       qty=1, option_type="call", strike=210.0, expiration="2026-04-17"),
+        ]
+        struct = OptionsStructure(
+            structure_id="test_broken_spread",
+            underlying="AAPL",
+            strategy=OptionStrategy.CALL_DEBIT_SPREAD,
+            lifecycle=StructureLifecycle.FULLY_FILLED,
+            legs=legs,
+            contracts=1,
+            max_cost_usd=400.0,
+            opened_at="2026-04-10T10:00:00Z",
+            catalyst="test",
+            tier=Tier.CORE,
+        )
+
+        # Snapshot has ONLY the long leg — short leg missing → broken
+        pos_long = NormalizedPosition(
+            symbol=occ_long, alpaca_sym=occ_long,
+            qty=1.0, avg_entry_price=5.0, current_price=5.5,
+            market_value=550.0, unrealized_pl=50.0, unrealized_plpc=0.1,
+            is_crypto_pos=False,
+        )
+        snapshot = BrokerSnapshot(
+            positions=[pos_long], open_orders=[],
+            equity=100_000.0, cash=90_000.0, buying_power=200_000.0,
+        )
+
+        result = reconcile_options_structures(
+            structures=[struct],
+            snapshot=snapshot,
+            current_time="2026-04-15T10:00:00Z",
+            config={},
+        )
+        self.assertIn("test_broken_spread", result.broken,
+                      "Spread with one missing leg must appear in broken list")
+        self.assertNotIn("test_broken_spread", result.intact,
+                         "Broken spread must not appear in intact list")
+
+    # ── T08: reconcile_options_structures detects DTE ≤ 2 as expiring_soon ───
+
+    def test_options_structure_expiry_approaching(self):
+        """reconcile_options_structures marks structure as expiring_soon when DTE ≤ 2."""
+        from datetime import date, timedelta
+        from schemas import (
+            OptionsStructure, OptionsLeg, OptionStrategy, StructureLifecycle, Tier,
+            BrokerSnapshot, NormalizedPosition,
+        )
+        from reconciliation import reconcile_options_structures
+
+        exp_date = date.today() + timedelta(days=1)
+        occ = f"SPY{exp_date.strftime('%y%m%d')}C00500000"
+
+        leg = OptionsLeg(
+            occ_symbol=occ, underlying="SPY", side="buy",
+            qty=1, option_type="call", strike=500.0,
+            expiration=exp_date.isoformat(),
+        )
+        struct = OptionsStructure(
+            structure_id="test_expiring",
+            underlying="SPY",
+            strategy=OptionStrategy.SINGLE_CALL,
+            lifecycle=StructureLifecycle.FULLY_FILLED,
+            legs=[leg],
+            contracts=1,
+            max_cost_usd=400.0,
+            opened_at="2026-04-01T10:00:00Z",
+            catalyst="test",
+            tier=Tier.CORE,
+            expiration=exp_date.isoformat(),
+        )
+
+        pos = NormalizedPosition(
+            symbol=occ, alpaca_sym=occ,
+            qty=1.0, avg_entry_price=5.0, current_price=5.5,
+            market_value=550.0, unrealized_pl=50.0, unrealized_plpc=0.1,
+            is_crypto_pos=False,
+        )
+        snapshot = BrokerSnapshot(
+            positions=[pos], open_orders=[],
+            equity=100_000.0, cash=90_000.0, buying_power=200_000.0,
+        )
+
+        result = reconcile_options_structures(
+            structures=[struct],
+            snapshot=snapshot,
+            current_time=datetime.now(timezone.utc).isoformat(),
+            config={},
+        )
+        self.assertIn("test_expiring", result.expiring_soon,
+                      "Structure expiring in 1 day must appear in expiring_soon")
+
+    # ── T09: time-stop fires at 40% elapsed DTE for single leg ───────────────
+
+    def test_options_structure_time_stop_single_leg(self):
+        """should_close_structure fires time_stop at 40% elapsed DTE for single-leg strategy."""
+        from datetime import date, timedelta
+        from schemas import OptionsStructure, OptionsLeg, OptionStrategy, StructureLifecycle, Tier
+        import options_executor
+
+        # 20-day total: opened 8 days ago, expires in 12 days → 8/20 = 40% elapsed
+        open_date = date.today() - timedelta(days=8)
+        exp_date  = date.today() + timedelta(days=12)
+
+        leg = OptionsLeg(
+            occ_symbol=f"SPY{exp_date.strftime('%y%m%d')}C00500000",
+            underlying="SPY", side="buy",
+            qty=1, option_type="call", strike=500.0,
+            expiration=exp_date.isoformat(),
+        )
+        struct = OptionsStructure(
+            structure_id="test_timestop_fires",
+            underlying="SPY",
+            strategy=OptionStrategy.SINGLE_CALL,
+            lifecycle=StructureLifecycle.FULLY_FILLED,
+            legs=[leg],
+            contracts=1,
+            max_cost_usd=500.0,
+            opened_at=f"{open_date.isoformat()}T10:00:00Z",
+            catalyst="momentum",
+            tier=Tier.CORE,
+            expiration=exp_date.isoformat(),
+        )
+
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).isoformat()
+        should_close, reason = options_executor.should_close_structure(
+            struct, current_prices={}, config={}, current_time=now_str,
+        )
+        self.assertTrue(should_close,
+                        "Time stop must fire at 40% elapsed DTE for single-leg strategy")
+        self.assertIn("time_stop", reason,
+                      f"Reason must contain 'time_stop', got: {reason!r}")
+
+    # ── T10: time-stop does NOT fire before 40% elapsed DTE ──────────────────
+
+    def test_options_structure_time_stop_no_fire_early(self):
+        """should_close_structure does NOT fire time_stop when elapsed DTE < 40%."""
+        from datetime import date, timedelta
+        from schemas import OptionsStructure, OptionsLeg, OptionStrategy, StructureLifecycle, Tier
+        import options_executor
+
+        # 31-day total: opened 1 day ago, expires in 30 days → 1/31 ≈ 3% elapsed
+        open_date = date.today() - timedelta(days=1)
+        exp_date  = date.today() + timedelta(days=30)
+
+        leg = OptionsLeg(
+            occ_symbol=f"SPY{exp_date.strftime('%y%m%d')}C00500000",
+            underlying="SPY", side="buy",
+            qty=1, option_type="call", strike=500.0,
+            expiration=exp_date.isoformat(),
+        )
+        struct = OptionsStructure(
+            structure_id="test_timestop_no_fire",
+            underlying="SPY",
+            strategy=OptionStrategy.SINGLE_CALL,
+            lifecycle=StructureLifecycle.FULLY_FILLED,
+            legs=[leg],
+            contracts=1,
+            max_cost_usd=500.0,
+            opened_at=f"{open_date.isoformat()}T10:00:00Z",
+            catalyst="momentum",
+            tier=Tier.CORE,
+            expiration=exp_date.isoformat(),
+        )
+
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).isoformat()
+        should_close, reason = options_executor.should_close_structure(
+            struct, current_prices={}, config={}, current_time=now_str,
+        )
+        if should_close:
+            self.assertNotIn(
+                "time_stop", reason,
+                f"time_stop must not fire at 3% elapsed DTE; reason was: {reason!r}",
+            )
+
+    # ── T11: DecisionOutcomeRecord round-trips through to_dict() ─────────────
+
+    def test_outcome_record_roundtrip(self):
+        """DecisionOutcomeRecord to_dict() produces expected keys and None sentinel for entry_price."""
+        from decision_outcomes import DecisionOutcomeRecord
+
+        record = DecisionOutcomeRecord(
+            decision_id="dec_A1_20260415_093500",
+            account="A1",
+            symbol="AAPL",
+            timestamp="2026-04-15T13:35:00Z",
+            action="buy",
+            tier="core",
+            confidence="high",
+            catalyst="earnings beat",
+            session="market",
+            order_id="abc123",
+            status="submitted",
+            module_tags={"sonnet_full": True, "risk_kernel": True},
+            trigger_flags={"new_catalyst": True},
+        )
+        d = record.to_dict()
+
+        self.assertEqual(d["decision_id"], "dec_A1_20260415_093500")
+        self.assertEqual(d["account"], "A1")
+        self.assertEqual(d["symbol"], "AAPL")
+        self.assertEqual(d["action"], "buy")
+        self.assertEqual(d["status"], "submitted")
+        self.assertIsNone(d["entry_price"],
+                          "entry_price must be None until ExecutionResult.fill_price is added")
+        self.assertIsNone(d["return_1d"],
+                          "forward returns are None at creation time")
+        self.assertIsNone(d["reject_reason"],
+                          "reject_reason must be None for submitted trade")
+        self.assertIn("sonnet_full", d["module_tags"])
+        self.assertTrue(d["module_tags"]["sonnet_full"])
+        self.assertEqual(d["confidence"], "high")
+        self.assertEqual(d["order_id"], "abc123")
+
+    # ── T12: generate_outcomes_summary returns valid empty dict when no log ───
+
+    def test_generate_outcomes_summary_empty(self):
+        """generate_outcomes_summary returns empty-but-valid dict when no log file exists."""
+        import decision_outcomes as _do
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_log = Path(tmpdir) / "decision_outcomes.jsonl"
+            # File intentionally not created — simulates first-run with no log
+            with mock.patch.object(_do, "OUTCOMES_LOG", tmp_log):
+                summary = _do.generate_outcomes_summary(days_back=7)
+
+        self.assertIsInstance(summary, dict,
+                              "Summary must be a dict even with no log file")
+        self.assertEqual(summary["total_decisions"], 0)
+        self.assertEqual(summary["submitted"], 0)
+        self.assertEqual(summary["rejected_by_kernel"], 0)
+        self.assertIsNone(summary["win_rate_1d"],
+                          "win_rate_1d must be None with no outcome data")
+        self.assertIn("note", summary,
+                      "Summary must include a 'note' field when no data available")
 
 
 if __name__ == "__main__":

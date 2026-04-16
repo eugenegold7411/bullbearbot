@@ -320,8 +320,24 @@ else:
 obs_path = BASE_DIR / "data" / "account2" / "obs_mode_state.json"
 if obs_path.exists():
     check(PASS, "data/account2/obs_mode_state.json: exists")
+    try:
+        _obs_state = json.loads(obs_path.read_text())
+        _obs_ver = _obs_state.get("version", 1)
+        if _obs_ver >= 2:
+            check(PASS, f"data/account2/obs_mode_state.json: version={_obs_ver} (Phase B migration complete)")
+        else:
+            check(WARN, f"data/account2/obs_mode_state.json: version={_obs_ver} — run migration script to upgrade to v2")
+    except Exception as _e:
+        check(WARN, f"data/account2/obs_mode_state.json: cannot parse for version check — {_e}")
 else:
     check(FAIL, "data/account2/obs_mode_state.json: file not found — account2 observation mode state missing")
+
+# decision_outcomes.py importable
+try:
+    import decision_outcomes as _do_check  # noqa: F401
+    check(PASS, "decision_outcomes.py: importable")
+except ImportError as _e:
+    check(WARN, f"decision_outcomes.py: import failed — {_e}")
 
 # memory/decisions.json
 dec_path = BASE_DIR / "memory" / "decisions.json"
@@ -824,9 +840,18 @@ _gate(
          f"(need 14 — run iv_history_seeder.py)",
 )
 
+# Gate 15 — data/analytics/ directory present (decision_outcomes.jsonl auto-creates there)
+_outcomes_log = BASE_DIR / "data" / "analytics" / "decision_outcomes.jsonl"
+_gate(
+    _outcomes_log.parent.exists(),
+    "Gate 15 — data/analytics/ dir present (decision_outcomes.jsonl will auto-create)"
+    if _outcomes_log.parent.exists()
+    else "Gate 15 — data/analytics/ dir MISSING — create it before first run",
+)
+
 _gates_passed = sum(1 for ok, _ in _gate_results if ok)
 print("─" * 65)
-print(f"  Go-live gates: {_gates_passed}/14 passing")
+print(f"  Go-live gates: {_gates_passed}/15 passing")
 print("─" * 65)
 print()
 

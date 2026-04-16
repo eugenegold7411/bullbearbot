@@ -170,6 +170,7 @@ _orb_scan_ran_date:            str = ""   # "YYYY-MM-DD" of last ORB scan
 _preopen_ran_date:             str = ""   # "YYYY-MM-DD" of last pre-open cycle
 _daily_digest_written_date:    str = ""   # "YYYY-MM-DD" of last daily digest
 _market_impact_backfill_date:  str = ""   # "YYYY-MM-DD" of last backfill
+_outcomes_backfill_date:       str = ""   # "YYYY-MM-DD" of last outcomes backfill
 _econ_calendar_refresh_key:    str = ""   # "YYYY-MM-DD-HHMM" slot key
 
 
@@ -1074,6 +1075,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_reset_session_watchlist()
         _maybe_write_daily_digest(dry_run)
         _maybe_backfill_market_impact(dry_run)
+        _maybe_backfill_decision_outcomes(dry_run)
         _maybe_generate_weekly_summary()
         _maybe_publish_flat_day()
         _maybe_publish_lookback()
@@ -1319,6 +1321,36 @@ def _maybe_backfill_market_impact(dry_run: bool = False) -> None:
 
     _market_impact_backfill_date = today
 
+
+def _maybe_backfill_decision_outcomes(dry_run: bool = False) -> None:
+    """Backfill forward returns into decision_outcomes.jsonl at 4:30 PM ET weekdays.
+
+    Runs once per trading day after market close. Joins submitted decisions
+    against backtest_latest.json on (symbol, date) to populate return_1d/3d/5d.
+    Non-fatal — a failed backfill never affects the scheduler loop.
+    """
+    global _outcomes_backfill_date
+    now_et  = datetime.now(ET)
+    today   = _today()
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+
+    if _outcomes_backfill_date == today:
+        return
+    if weekday >= 5:
+        return
+    if not (16 * 60 + 30 <= now_min <= 17 * 60):   # 4:30–5:00 PM window
+        return
+
+    if not dry_run:
+        try:
+            from decision_outcomes import backfill_forward_returns  # noqa: PLC0415
+            updated = backfill_forward_returns(days_back=30)
+            log.info("[OUTCOMES] Daily backfill complete — %d records updated", updated)
+        except Exception:
+            log.warning("[OUTCOMES] Daily backfill failed (non-fatal)", exc_info=True)
+
+    _outcomes_backfill_date = today
 
 
 if __name__ == "__main__":

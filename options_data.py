@@ -562,3 +562,38 @@ def detect_iv_crush(symbol: str, config: dict) -> tuple[bool, str]:
         return True, reason
 
     return False, ""
+
+
+def check_iv_history_ready(symbols: list[str]) -> dict:
+    """
+    Check which symbols have sufficient IV history to compute a valid IV rank.
+
+    Returns a dict with:
+      "symbol_ready"  : {symbol: bool}  — True if symbol has >= _MIN_IV_HISTORY entries
+      "all_ready"     : bool            — True if every symbol is ready
+      "ready_count"   : int
+      "total_count"   : int
+
+    Non-fatal: returns all-False dict on any exception.
+    Never raises.
+    """
+    try:
+        symbol_ready: dict[str, bool] = {}
+        for sym in symbols:
+            history = _load_iv_history(sym)
+            symbol_ready[sym] = len(history) >= _MIN_IV_HISTORY
+        ready_count = sum(1 for v in symbol_ready.values() if v)
+        return {
+            "symbol_ready": symbol_ready,
+            "all_ready":    ready_count == len(symbols) if symbols else True,
+            "ready_count":  ready_count,
+            "total_count":  len(symbols),
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[OPTIONS_DATA] check_iv_history_ready failed: %s", exc)
+        return {
+            "symbol_ready": {s: False for s in symbols},
+            "all_ready":    False,
+            "ready_count":  0,
+            "total_count":  len(symbols),
+        }

@@ -1656,6 +1656,28 @@ def run_cycle(
                     )
                 except Exception:
                     pass
+                # Decision outcomes — kernel rejection
+                try:
+                    from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
+                    from datetime import datetime as _d, timezone as _tz
+                    _outcome_rej = DecisionOutcomeRecord(
+                        decision_id=_decision_id,
+                        account="A1",
+                        symbol=_sym,
+                        timestamp=_d.now(_tz.utc).isoformat().replace("+00:00", "Z"),
+                        action=str(_idea.action.value) if hasattr(_idea.action, "value") else str(_idea.action),
+                        tier=str(_idea.tier.value) if hasattr(_idea.tier, "value") else str(getattr(_idea, "tier", "")),
+                        confidence=str(getattr(_idea, "conviction", "")),
+                        catalyst=getattr(_idea, "catalyst", None),
+                        session=session_tier,
+                        status="rejected_by_kernel",
+                        reject_reason=str(_result),
+                        module_tags=_module_tags,
+                        trigger_flags=_trigger_flags,
+                    )
+                    log_outcome_event(_outcome_rej)
+                except Exception:
+                    pass
 
     actions = [ba.to_dict() for ba in broker_actions]
 
@@ -1863,6 +1885,7 @@ def run_cycle(
             minutes_since_open=md["minutes_since_open"],
             current_prices=md.get("current_prices", {}),
             session_tier=session_tier,
+            decision_id=_decision_id,
         )
         print("\n" + "=" * 62)
         print("  EXECUTION RESULTS")
@@ -1888,6 +1911,34 @@ def run_cycle(
                     )
                 except Exception as _oa_exc:
                     log.debug("Attribution order_submitted failed (non-fatal): %s", _oa_exc)
+                # Decision outcomes — approved trade
+                try:
+                    from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
+                    from datetime import datetime as _d, timezone as _tz
+                    _matching_action = next(
+                        (a for a in actions if a.get("symbol") == r.symbol), {}
+                    )
+                    _outcome_sub = DecisionOutcomeRecord(
+                        decision_id=_decision_id,
+                        account="A1",
+                        symbol=r.symbol,
+                        timestamp=_d.now(_tz.utc).isoformat().replace("+00:00", "Z"),
+                        action=r.action,
+                        tier=_matching_action.get("tier"),
+                        confidence=_matching_action.get("confidence"),
+                        catalyst=_matching_action.get("catalyst"),
+                        session=session_tier,
+                        order_id=str(r.order_id) if r.order_id else None,
+                        entry_price=getattr(r, "fill_price", None),
+                        stop_loss=_matching_action.get("stop_loss"),
+                        take_profit=_matching_action.get("take_profit"),
+                        status="submitted",
+                        module_tags=_module_tags,
+                        trigger_flags=_trigger_flags,
+                    )
+                    log_outcome_event(_outcome_sub)
+                except Exception:
+                    pass
                 # Shadow lane — approved_trade (decision_id is set by attribution block above)
                 try:
                     from shadow_lane import log_shadow_event as _log_shadow  # noqa: PLC0415

@@ -581,6 +581,7 @@ def execute_all(
     minutes_since_open: int,
     current_prices:     dict = None,
     session_tier:       str  = "unknown",
+    decision_id:        str  = "",
 ) -> list[ExecutionResult]:
     results = []
 
@@ -821,6 +822,7 @@ def execute_all(
                 "option_strategy": action.get("option_strategy"),
                 "max_cost_usd": action.get("max_cost_usd"),
                 "session": session_tier,
+                "decision_id": decision_id,
             })
 
         except Exception as exc:

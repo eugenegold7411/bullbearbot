@@ -379,6 +379,7 @@ significant drawdown, or any time a full system assessment is needed.
 | `watchlist_manager.py` | Manages 3-tier watchlist (core/dynamic/intraday). Prunes stale entries. |
 | `attribution.py` | PnL attribution and module ROI tracking. Logs `decision_made` + `order_submitted` events to `data/analytics/attribution_log.jsonl`. Non-fatal everywhere — exceptions are caught and logged at WARNING. Public API: `generate_decision_id()`, `build_module_tags()`, `build_trigger_flags()`, `log_attribution_event()`, `get_attribution_summary()`. |
 | `divergence.py` | Live vs paper divergence tracking, classification, and operating mode management. Completely non-fatal. 11 sections: enums + DivergenceEvent dataclass, JSONL event log, AccountMode state (load/save/transition), classifier (22 event types, severity ladder INFO→RECONCILE→DE_RISK→HALT), repeat escalation, mode enforcement (`is_action_allowed()`), fill divergence detector, protection divergence detector, mode response engine, clean cycle recovery, weekly summary. Mode state files: `data/runtime/a1_mode.json`, `data/runtime/a2_mode.json`. Transition log: `data/runtime/mode_transitions.jsonl`. Divergence log: `data/analytics/divergence_log.jsonl`. |
+| `decision_outcomes.py` | Per-decision outcome log. `DecisionOutcomeRecord` dataclass. Joins attribution + execution + forward returns. `log_outcome_event()`, `generate_outcomes_summary()`, `format_outcomes_report()`. JSONL at `data/analytics/decision_outcomes.jsonl`. Forward returns joined on `(symbol, decision_date)` from `data/reports/backtest_latest.json`. |
 
 ### Communication & Reporting
 
@@ -765,6 +766,14 @@ all open orders for the symbol first (avoids OCA share-lock conflicts), then (2)
 `MarketOrderRequest` (DAY for equity/ETF, GTC for crypto). This is the only path guaranteed to fill
 before deadline expiry.
 
+### ⚠️ KNOWN GAP — `ExecutionResult` missing `fill_price` → `entry_price` always None
+**File:** `order_executor.py` / `decision_outcomes.py`
+**Description:** `ExecutionResult` has no `fill_price` field. `DecisionOutcomeRecord.entry_price`
+uses `getattr(r, "fill_price", None)` guard — it is always `None` until the gap is closed.
+**Impact:** Low — outcome records log correctly; only fill-price analytics are unavailable.
+**Fix:** Add `fill_price: Optional[float] = None` to `ExecutionResult` and populate it from
+the Alpaca order fill response in `execute_all()`.
+
 ---
 
 ## Git Workflow
@@ -849,6 +858,21 @@ A1: `_decision_id`/`_module_tags`/`_trigger_flags` generation moved before kerne
 A2: `execute_all()` normalisation block added: `BrokerAction` → `.to_dict()`, raw `dict` → WARNING + process (backward-compat), unknown type → WARNING + skip.
 A3: `docs/policy_ownership_map.md` created: dual-layer ownership rationale, constants table, executor input contract.
 5 new tests in Suite 22 — 215 total, all passing.
+
+**~~Phase B — obs mode v2, decision outcomes, outcome log wiring~~ ✅ COMPLETED 2026-04-16**
+obs_mode v2: `bot_options.py` gains `_OBS_SCHEMA_VERSION=2`, `_OBS_IV_SYMBOLS`, `_check_and_update_iv_ready()`. `_update_obs_mode_state()` migrates existing `observation_complete=True` states to v2 on first write. VPS migration ran: `version=2`, `iv_history_ready=True` (16/16). New function `check_iv_history_ready()` added to `options_data.py`.
+
+`decision_outcomes.py` (new): `DecisionOutcomeRecord` dataclass + `log_outcome_event()`, `build_outcome_from_attribution()`, `backfill_forward_returns()`, `generate_outcomes_summary()`, `format_outcomes_report()`. JSONL log at `data/analytics/decision_outcomes.jsonl`. Forward returns joined on `(symbol, decision_date)` from `data/reports/backtest_latest.json`.
+
+`bot.py` wired: kernel-rejection outcomes logged with `status="rejected_by_kernel"`; submitted-order outcomes logged with `status="submitted"`. `decision_id` threads through `execute_all()` → `log_trade()` submitted events as join key.
+
+`weekly_review.py`: Agent 4 input now includes `format_outcomes_report()` block. Module docstring updated to 11-agent / 3-phase description. `_build_agent6_final_input` docstring corrected (agents 1–5, 7–10; not Agent 11).
+
+`scheduler.py`: `_maybe_backfill_decision_outcomes()` runs 4:30–5:00 PM ET weekdays.
+
+`validate_config.py`: Gate 15 (`data/analytics/` present), obs mode v2 version check, `decision_outcomes.py` importable check.
+
+12 new tests (Suite 23) — 227 total, all passing.
 
 **F013 — Reddit credentials activation [5 min]**
 Once Reddit developer app is approved, add `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`
@@ -973,6 +997,7 @@ These run automatically in the main scheduler loop before each cycle:
 | 9:28–9:30 AM ET weekdays | Pre-open prep cycle | `_maybe_run_preopen_cycle()` |
 | 4:00 PM ET weekdays | Daily digest + flat-day post | `_maybe_write_daily_digest()`, `_maybe_publish_flat_day()` |
 | 4:15 PM ET weekdays | Market impact backfill | `_maybe_backfill_market_impact()` |
+| 4:30–5:00 PM ET weekdays | Decision outcomes backfill | `_maybe_backfill_decision_outcomes()` |
 | Every cycle | Reddit sentiment refresh | `_maybe_refresh_reddit_sentiment()` |
 | Every cycle | Form 4 + Congressional refresh | `_maybe_refresh_form4_trades()` |
 | Every cycle | Macro wire refresh | `_maybe_refresh_macro_wire()` |

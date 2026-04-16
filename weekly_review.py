@@ -1,12 +1,26 @@
 """
-weekly_review.py — 5-agent automated weekly performance review.
+weekly_review.py — 11-agent automated weekly performance review.
 
-Runs 5 sequential Claude API calls, each with a focused role:
-  1. Quant Analyst      — signal quality, timing, sector/strategy patterns
-  2. Risk Manager       — position sizing, drawdown, stop effectiveness
-  3. Execution Engineer — fill quality, rejections, API reliability
-  4. Backtest Analyst   — live vs expected performance, vector memory divergences
-  5. Strategy Director  — synthesizes all 4 reports → strategic memo + JSON params
+Runs 12 total Claude API calls across three phases:
+
+  Phase 1 — Batch API (50% discount, parallel):
+    1. Quant Analyst      — signal quality, timing, sector/strategy patterns
+    2. Risk Manager       — position sizing, drawdown, stop effectiveness
+    3. Execution Engineer — fill quality, rejections, API reliability
+    4. Backtest Analyst   — live vs expected, decision outcomes, vector memory
+
+  Phase 2 — Sequential:
+    5. CTO                — technical audit: module ROI, pipeline cost, architecture
+    6. Strategy Director  — first-pass synthesis → draft memo + JSON params
+    7–11 (parallel via Batch API):
+       7. Market Intelligence Researcher — external landscape, competitor signals
+       8. CFO                            — cost tracking, burn projection, layer ROI
+       9. Product Manager               — roadmap updates, technical debt
+      10. Compliance/Risk Auditor        — rule violations, near-misses
+      11. Narrative Director             — weekly Twitter thread script
+
+  Phase 3 — Final synthesis:
+    6. Strategy Director  — second-pass with all 11 reports → final strategy_config.json
 
 Output: data/reports/weekly_review_YYYY-MM-DD.md
 Side effects: updates strategy_config.json, sends Twilio SMS summary.
@@ -1113,7 +1127,14 @@ def _extract_cto_score(cto_output: str) -> float:
 
 
 def _build_agent6_final_input(ctx: dict, all_outputs: dict) -> str:
-    """Build Agent 6 Strategy Director's second-pass input with all 11 agent reports."""
+    """
+    Build Agent 6 Strategy Director's second-pass input.
+
+    Includes reports from: Agent 1 (Quant), 2 (Risk), 3 (Execution), 4 (Backtest),
+    5 (CTO), 7 (Researcher), 8 (CFO), 9 (PM), 10 (Compliance).
+    Does NOT include Agent 6's own first-pass output (avoid circular input) or
+    Agent 11 (Narrative Director — post-synthesis, not a strategic input).
+    """
     cfg = ctx.get("strategy_cfg", {})
 
     def _snip(key: str, n: int = 1500) -> str:
@@ -1688,6 +1709,14 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
         _bt_report    = "Backtest unavailable this week."
         _shadow_stats = {"total": 0, "note": "unavailable"}
 
+    _outcomes_report = "Decision outcomes unavailable this week."
+    try:
+        import decision_outcomes as _decision_outcomes
+        _outcomes_summary = _decision_outcomes.generate_outcomes_summary(days_back=7)
+        _outcomes_report  = _decision_outcomes.format_outcomes_report(_outcomes_summary)
+    except Exception as _oc_err:
+        log.warning("[REVIEW] decision_outcomes failed: %s", _oc_err)
+
     agent4_input = f"""## WEEKLY BACKTEST ANALYST REVIEW INPUT
 
 ### Vector Memory (ChromaDB) Stats
@@ -1720,6 +1749,8 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
 ```json
 {json.dumps(_shadow_stats, indent=2)}
 ```
+
+{_outcomes_report}
 
 Please analyze decision quality, compare live results to expectations, identify divergence patterns, and assess signal alpha from the backtest. For any symbol with has_alpha=true, note whether the bot acted on it. Provide your findings as a markdown section with 3-5 insights."""
 

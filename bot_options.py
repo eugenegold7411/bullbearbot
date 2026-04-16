@@ -65,8 +65,14 @@ _A2_DIR.mkdir(parents=True, exist_ok=True)
 (_A2_DIR / "positions").mkdir(exist_ok=True)
 
 # Observation mode: first 20 trading days while IV history builds
-_OBS_MODE_DAYS   = 20
-_OBS_MODE_FILE   = _A2_DIR / "obs_mode_state.json"
+_OBS_MODE_DAYS        = 20
+_OBS_MODE_FILE        = _A2_DIR / "obs_mode_state.json"
+_OBS_SCHEMA_VERSION   = 2
+# Core A2 symbols required for IV history before obs mode is fully meaningful
+_OBS_IV_SYMBOLS = [
+    "SPY", "QQQ", "NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL",
+    "TSM", "AMD", "XLE", "GLD", "TLT", "IWM", "XLF", "XBI",
+]
 
 # Equity floor
 _EQUITY_FLOOR = 25_000.0
@@ -135,7 +141,14 @@ def _get_obs_mode_state() -> dict:
             return json.loads(_OBS_MODE_FILE.read_text())
         except Exception:
             pass
-    return {"trading_days_observed": 0, "first_seen_date": None, "observation_complete": False}
+    return {
+        "version": _OBS_SCHEMA_VERSION,
+        "trading_days_observed": 0,
+        "first_seen_date": None,
+        "observation_complete": False,
+        "iv_history_ready": False,
+        "iv_ready_symbols": {},
+    }
 
 
 def _is_trading_day(iso_date: str) -> bool:
@@ -183,6 +196,15 @@ def _update_obs_mode_state(state: dict) -> bool:
     today = date.today().isoformat()
 
     if state.get("observation_complete"):
+        # v2 migration: patch in new fields if this is a pre-v2 state file
+        if state.get("version", 1) < _OBS_SCHEMA_VERSION:
+            state = _check_and_update_iv_ready(state)
+            state["version"] = _OBS_SCHEMA_VERSION
+            try:
+                _OBS_MODE_FILE.write_text(json.dumps(state, indent=2))
+                log.info("[OPTS] obs_mode_state.json migrated to v%d", _OBS_SCHEMA_VERSION)
+            except Exception:
+                pass
         return False
 
     if state.get("first_seen_date") is None:
@@ -200,6 +222,8 @@ def _update_obs_mode_state(state: dict) -> bool:
 
     if days >= _OBS_MODE_DAYS:
         state["observation_complete"] = True
+        state["version"] = _OBS_SCHEMA_VERSION
+        state = _check_and_update_iv_ready(state)
         log.info("[OPTS] Observation mode COMPLETE — Account 2 now live trading")
 
     try:
@@ -214,6 +238,26 @@ def is_observation_mode() -> bool:
     """Quick check: is Account 2 still in observation mode?"""
     state = _get_obs_mode_state()
     return not state.get("observation_complete", False)
+
+
+def _check_and_update_iv_ready(state: dict) -> dict:
+    """
+    Check IV history readiness for all core A2 symbols via options_data.
+    Writes iv_history_ready + iv_ready_symbols into state dict (in-place).
+    Never modifies observation_complete. Non-fatal.
+    Returns the mutated state dict.
+    """
+    try:
+        result = options_data.check_iv_history_ready(_OBS_IV_SYMBOLS)
+        state["iv_history_ready"] = result["all_ready"]
+        state["iv_ready_symbols"] = result["symbol_ready"]
+        log.info("[OPTS] IV history check: %d/%d symbols ready",
+                 result["ready_count"], result["total_count"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[OPTS] _check_and_update_iv_ready failed (non-fatal): %s", exc)
+        state.setdefault("iv_history_ready", False)
+        state.setdefault("iv_ready_symbols", {})
+    return state
 
 
 # ── Account 1 awareness ───────────────────────────────────────────────────────

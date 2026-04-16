@@ -96,6 +96,16 @@
       "exit_by": "2026-04-22T19:45:00+00:00",
       "deadline_et": "2026-04-22 15:45",
       "reason": "backstop_exit: max_hold_7d"
+    },
+    {
+      "symbol": "QQQ",
+      "exit_by": "2026-04-23T19:45:00+00:00",
+      "reason": "backstop_exit: max_hold_7d"
+    },
+    {
+      "symbol": "MSFT",
+      "exit_by": "2026-04-23T19:45:00+00:00",
+      "reason": "backstop_exit: max_hold_7d"
     }
   ],
   "exit_management": {
@@ -153,7 +163,7 @@
     "iv_monitoring": {
       "enabled": true,
       "auto_close_on_crush": false,
-      "crush_threshold": 0.30,
+      "crush_threshold": 0.3,
       "min_pre_event_history_days": 3
     }
   },
@@ -207,6 +217,6 @@
       "structure_rejected"
     ],
     "weekly_review_lookback_days": 7,
-    "note": "Shadow lane logs decisions only — zero execution side effects"
+    "note": "Shadow lane logs decisions only \u2014 zero execution side effects"
   }
 }

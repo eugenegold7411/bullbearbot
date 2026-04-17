@@ -1975,6 +1975,30 @@ def run_cycle(
                             )
                     except Exception as _pub_exc:
                         log.debug("publisher trade_entry failed (non-fatal): %s", _pub_exc)
+                # Thesis checksum + catalyst normalizer (T2.1/T2.2)
+                if r.action == "buy":
+                    try:
+                        from feature_flags import is_enabled as _ff_enabled  # noqa: PLC0415
+                        if _ff_enabled("enable_thesis_checksum"):
+                            from thesis_checksum import build_checksum_from_decision, log_checksum  # noqa: PLC0415
+                            from catalyst_normalizer import normalize_catalyst, log_catalyst  # noqa: PLC0415
+                            _cs = build_checksum_from_decision(
+                                decision_id=_decision_id,
+                                symbol=r.symbol,
+                                idea=_matching_action,
+                                regime_obj=regime_obj,
+                                signal_scores=signal_scores_obj,
+                            )
+                            if _cs:
+                                log_checksum(_cs)
+                            _cat = normalize_catalyst(
+                                raw_text=_matching_action.get("catalyst", ""),
+                                decision_id=_decision_id,
+                                symbol=r.symbol,
+                            )
+                            log_catalyst(_cat)
+                    except Exception as _tc_exc:
+                        log.debug("[CHECKSUM] thesis/catalyst capture failed (non-fatal): %s", _tc_exc)
                 # Fill divergence detection
                 try:
                     from divergence import detect_fill_divergence  # noqa: PLC0415
@@ -1992,6 +2016,31 @@ def run_cycle(
                 except Exception as _fd_exc:
                     log.debug("[DIV] fill divergence check failed (non-fatal): %s", _fd_exc)
         print("=" * 62)
+
+        # Forensic review for closed positions (T2.3)
+        for _fr in results:
+            if _fr.status != "submitted" or _fr.action not in ("sell", "close"):
+                continue
+            try:
+                from feature_flags import is_enabled as _ff_fr  # noqa: PLC0415
+                if _ff_fr("enable_thesis_checksum"):
+                    from forensic_reviewer import review_closed_trade  # noqa: PLC0415
+                    _fr_action = next((a for a in actions if a.get("symbol") == _fr.symbol), {})
+                    _entry_price: float = float(_fr.fill_price or 0) or 0.0
+                    _exit_price: float = float(_fr.fill_price or 0) or 0.0
+                    review_closed_trade(
+                        decision_id=_decision_id,
+                        symbol=_fr.symbol,
+                        entry_price=_entry_price,
+                        exit_price=_exit_price,
+                        realized_pnl=0.0,
+                        hold_duration_hours=0.0,
+                        entry_decision=_fr_action,
+                        exit_reason=_fr_action.get("catalyst", ""),
+                        regime_at_entry=regime_obj,
+                    )
+            except Exception as _frev_exc:
+                log.debug("[FORENSIC] review_closed_trade failed (non-fatal): %s", _frev_exc)
 
         # Seed backstop for each new buy executed (via reconciliation module)
         try:

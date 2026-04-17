@@ -79,6 +79,11 @@ MODULE_TIER_DECLARATIONS: dict[str, dict] = {
     "options_debate":                 {"tier": ModelTier.DEFAULT, "ring": "prod",   "budget_class": BudgetClass.LOW},
     "context_compiler":               {"tier": ModelTier.CHEAP,   "ring": "shadow", "budget_class": BudgetClass.EXPERIMENTAL},
     "morning_brief":                  {"tier": ModelTier.CHEAP,   "ring": "prod",   "budget_class": BudgetClass.LOW},
+    "forensic_reviewer":              {"tier": ModelTier.CHEAP,   "ring": "prod",   "budget_class": BudgetClass.LOW},
+    "divergence_summarizer":          {"tier": ModelTier.CHEAP,   "ring": "prod",   "budget_class": BudgetClass.LOW},
+    "recommendation_resolver":        {"tier": ModelTier.CHEAP,   "ring": "prod",   "budget_class": BudgetClass.NEGLIGIBLE},
+    "anti_pattern_miner":             {"tier": ModelTier.CHEAP,   "ring": "prod",   "budget_class": BudgetClass.NEGLIGIBLE},
+    "experience_library":             {"tier": ModelTier.CHEAP,   "ring": "prod",   "budget_class": BudgetClass.NEGLIGIBLE},
 }
 
 

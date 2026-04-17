@@ -6154,5 +6154,493 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
         self.assertFalse(should)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Suite 29 — Epic 2 Production Learning Core (T2.1–T2.8)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class Suite29Epic2ProductionLearning(unittest.TestCase):
+    """Smoke + behavior tests for all 8 Epic 2 modules."""
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    # ── T2.1 thesis_checksum ─────────────────────────────────────────────────
+
+    def test_checksum_build_from_decision(self):
+        """build_checksum_from_decision returns ThesisChecksum with required fields."""
+        import thesis_checksum as tc
+        idea = {"catalyst": "Strong earnings beat above consensus", "tier": "core", "action": "buy", "confidence": "high"}
+        regime = {"bias": "bullish", "regime_score": 65, "vix": 18}
+        scores = {"scored_symbols": {"AAPL": {"score": 72}}}
+        result = tc.build_checksum_from_decision(
+            decision_id="dec-001",
+            symbol="AAPL",
+            idea=idea,
+            regime_obj=regime,
+            signal_scores=scores,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.decision_id, "dec-001")
+        self.assertEqual(result.symbol, "AAPL")
+        self.assertIsNotNone(result.checksum_id)
+        self.assertIsNotNone(result.thesis_type)
+        self.assertIsNotNone(result.catalyst_type)
+        self.assertEqual(result.signal_score_at_entry, 72)
+
+    def test_checksum_log_get_roundtrip(self):
+        """log_checksum + get_checksum roundtrip returns matching record."""
+        import thesis_checksum as tc
+        from pathlib import Path
+        orig_path = tc._CHECKSUM_PATH
+        try:
+            tc._CHECKSUM_PATH = Path(self.tmpdir) / "thesis_checksums.jsonl"
+            cs = tc.ThesisChecksum(
+                decision_id="dec-roundtrip",
+                symbol="MSFT",
+                thesis_type="catalyst_swing",
+                raw_catalyst_text="Fed signal hawkish",
+            )
+            cid = tc.log_checksum(cs)
+            self.assertIsNotNone(cid)
+            found = tc.get_checksum("dec-roundtrip")
+            self.assertIsNotNone(found)
+            self.assertEqual(found.symbol, "MSFT")
+        finally:
+            tc._CHECKSUM_PATH = orig_path
+
+    def test_checksum_returns_none_on_empty_decision_id(self):
+        """build_checksum_from_decision returns None if decision_id is empty."""
+        import thesis_checksum as tc
+        result = tc.build_checksum_from_decision("", "AAPL", {}, {}, {})
+        self.assertIsNone(result)
+
+    # ── T2.2 catalyst_normalizer ─────────────────────────────────────────────
+
+    def test_catalyst_normalizer_earnings_keyword(self):
+        """'beat consensus' maps to earnings_beat catalyst type."""
+        import catalyst_normalizer as cn
+        obj = cn.normalize_catalyst("Strong earnings beat above consensus Q3", "d1", "AAPL")
+        self.assertEqual(obj.catalyst_type, "earnings_beat")
+        self.assertGreater(obj.confidence, 0.5)
+
+    def test_catalyst_normalizer_empty_text_abstains(self):
+        """Empty catalyst text results in abstention with unknown catalyst_type."""
+        import catalyst_normalizer as cn
+        obj = cn.normalize_catalyst("", "d2", "AAPL")
+        self.assertEqual(obj.catalyst_type, "unknown")
+        self.assertIsNotNone(obj.abstention)
+        self.assertTrue(obj.abstention.get("abstain"))
+
+    def test_catalyst_normalizer_unknown_text_low_confidence(self):
+        """Unrecognized text gets catalyst_type=unknown, confidence=0.1."""
+        import catalyst_normalizer as cn
+        obj = cn.normalize_catalyst("something completely unrelated xyz", "d3", "SPY")
+        self.assertEqual(obj.catalyst_type, "unknown")
+        self.assertEqual(obj.confidence, 0.1)
+
+    def test_catalyst_log_get_roundtrip(self):
+        """log_catalyst + get_catalyst roundtrip."""
+        import catalyst_normalizer as cn
+        from pathlib import Path
+        orig_path = cn._CATALYST_LOG
+        try:
+            cn._CATALYST_LOG = Path(self.tmpdir) / "catalyst_log.jsonl"
+            obj = cn.normalize_catalyst("Fed signal rate decision", "d-fed", "TLT")
+            cid = cn.log_catalyst(obj)
+            self.assertIsNotNone(cid)
+            found = cn.get_catalyst("d-fed")
+            self.assertIsNotNone(found)
+            self.assertEqual(found.symbol, "TLT")
+        finally:
+            cn._CATALYST_LOG = orig_path
+
+    # ── T2.3 forensic_reviewer ───────────────────────────────────────────────
+
+    def test_forensic_flag_disabled_returns_none(self):
+        """review_closed_trade returns None when enable_thesis_checksum is False."""
+        import forensic_reviewer as fr
+        import feature_flags as ff
+        orig_path = ff._CONFIG_PATH
+        orig_cache = dict(ff._FLAG_CACHE)
+        orig_loaded = ff._CACHE_LOADED
+        import tempfile, json
+        from pathlib import Path
+        tmp_cfg = Path(self.tmpdir) / "cfg.json"
+        tmp_cfg.write_text(json.dumps({"feature_flags": {"enable_thesis_checksum": False}}))
+        try:
+            ff._CONFIG_PATH = tmp_cfg
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            result = fr.review_closed_trade(
+                decision_id="d-dis", symbol="AAPL",
+                entry_price=150.0, exit_price=155.0,
+                realized_pnl=5.0, hold_duration_hours=24.0,
+                entry_decision={}, exit_reason="stop_hit",
+            )
+            self.assertIsNone(result)
+        finally:
+            ff._CONFIG_PATH = orig_path
+            ff._FLAG_CACHE = orig_cache
+            ff._CACHE_LOADED = orig_loaded
+
+    def test_forensic_record_schema(self):
+        """ForensicRecord has all required schema_version fields."""
+        from forensic_reviewer import ForensicRecord
+        r = ForensicRecord(decision_id="d1", symbol="MSFT")
+        self.assertEqual(r.schema_version, 1)
+        self.assertIn("thesis_verdict", r.to_dict())
+        self.assertIn("execution_verdict", r.to_dict())
+        self.assertIn("model_used", r.to_dict())
+
+    def test_forensic_log_get_roundtrip(self):
+        """log_forensic + get_forensic roundtrip."""
+        import forensic_reviewer as fr
+        from pathlib import Path
+        orig_path = fr._FORENSIC_LOG
+        try:
+            fr._FORENSIC_LOG = Path(self.tmpdir) / "forensic_log.jsonl"
+            rec = fr.ForensicRecord(decision_id="d-flog", symbol="GLD", thesis_verdict="correct")
+            fid = fr.log_forensic(rec)
+            self.assertIsNotNone(fid)
+            found = fr.get_forensic("d-flog")
+            self.assertIsNotNone(found)
+            self.assertEqual(found.thesis_verdict, "correct")
+        finally:
+            fr._FORENSIC_LOG = orig_path
+
+    # ── T2.4 recommendation_resolver ────────────────────────────────────────
+
+    def test_resolver_flag_disabled_returns_empty(self):
+        """resolve_pending_recommendations returns [] when flag disabled."""
+        import recommendation_resolver as rr
+        import feature_flags as ff
+        import json
+        from pathlib import Path
+        orig_path = ff._CONFIG_PATH
+        orig_cache = dict(ff._FLAG_CACHE)
+        orig_loaded = ff._CACHE_LOADED
+        tmp_cfg = Path(self.tmpdir) / "cfg.json"
+        tmp_cfg.write_text(json.dumps({"feature_flags": {"enable_recommendation_memory": False}}))
+        try:
+            ff._CONFIG_PATH = tmp_cfg
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            result = rr.resolve_pending_recommendations()
+            self.assertEqual(result, [])
+        finally:
+            ff._CONFIG_PATH = orig_path
+            ff._FLAG_CACHE = orig_cache
+            ff._CACHE_LOADED = orig_loaded
+
+    def test_resolver_too_young_rec_stays_pending(self):
+        """Recommendation created today is not resolved (min_age_days=7)."""
+        import recommendation_resolver as rr
+        from datetime import datetime, timezone
+        from dataclasses import dataclass
+        from typing import Optional
+
+        @dataclass
+        class MockRec:
+            rec_id: str = "rec-test-1"
+            created_at: str = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            expected_direction: str = "up"
+            target_metric: str = "return_1d"
+            verdict: str = "pending"
+            text: str = "test recommendation"
+            resolved_at: Optional[str] = None
+
+        mock_rec = MockRec()
+        now = datetime.now(timezone.utc)
+        from datetime import timedelta
+        min_age_cutoff = now - timedelta(days=7)
+
+        result = rr._resolve_single(mock_rec, {"submitted_count": 5, "avg_return_1d": 0.01}, min_age_cutoff, now)
+        self.assertIsNone(result)  # too young — should not be resolved
+
+    # ── T2.5 anti_pattern_miner ──────────────────────────────────────────────
+
+    def test_anti_pattern_below_threshold_abstains(self):
+        """Patterns with fewer than min_occurrences are not surfaced."""
+        import anti_pattern_miner as apm
+        import json
+        from pathlib import Path
+        import feature_flags as ff
+        orig_path = ff._CONFIG_PATH
+        orig_cache = dict(ff._FLAG_CACHE)
+        orig_loaded = ff._CACHE_LOADED
+        tmp_cfg = Path(self.tmpdir) / "cfg.json"
+        tmp_cfg.write_text(json.dumps({"feature_flags": {"enable_thesis_checksum": True}}))
+        orig_forensic = apm.Path("data/analytics/forensic_log.jsonl")
+
+        from pathlib import Path as _P
+        forensic_log = _P(self.tmpdir) / "forensic_log.jsonl"
+        # Write 2 records with same pattern (below threshold of 3)
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        for _ in range(2):
+            forensic_log.open("a").write(json.dumps({
+                "schema_version": 1,
+                "forensic_id": "f1",
+                "decision_id": "d1",
+                "symbol": "AAPL",
+                "created_at": now_str,
+                "thesis_verdict": "incorrect",
+                "execution_verdict": "poor",
+                "pattern_tags": ["momentum_continuation"],
+                "realized_pnl": -50.0,
+            }) + "\n")
+
+        try:
+            ff._CONFIG_PATH = tmp_cfg
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            # Temporarily redirect forensic path
+            import anti_pattern_miner as _apm2
+            orig_forensic_path = _apm2.Path("data/analytics/forensic_log.jsonl")
+
+            # Patch the path inside the module
+            import unittest.mock as mock
+            with mock.patch("anti_pattern_miner.Path") as mock_path:
+                def path_side_effect(p):
+                    if "forensic_log" in str(p):
+                        return forensic_log
+                    return _P(p)
+                mock_path.side_effect = path_side_effect
+                patterns = apm.mine_anti_patterns(min_occurrences=3)
+                self.assertEqual(patterns, [])  # 2 < 3, not surfaced
+        finally:
+            ff._CONFIG_PATH = orig_path
+            ff._FLAG_CACHE = orig_cache
+            ff._CACHE_LOADED = orig_loaded
+
+    def test_anti_pattern_above_threshold_surfaces_pattern(self):
+        """Patterns with >= min_occurrences are surfaced as findings."""
+        import anti_pattern_miner as apm
+        import json
+        from pathlib import Path
+        import feature_flags as ff
+        orig_path = ff._CONFIG_PATH
+        orig_cache = dict(ff._FLAG_CACHE)
+        orig_loaded = ff._CACHE_LOADED
+        tmp_cfg = Path(self.tmpdir) / "cfg.json"
+        tmp_cfg.write_text(json.dumps({"feature_flags": {"enable_thesis_checksum": True}}))
+        forensic_log = Path(self.tmpdir) / "forensic_log.jsonl"
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        for i in range(4):
+            with forensic_log.open("a") as f:
+                f.write(json.dumps({
+                    "schema_version": 1,
+                    "forensic_id": f"f{i}",
+                    "decision_id": f"d{i}",
+                    "symbol": "AAPL",
+                    "created_at": now_str,
+                    "thesis_verdict": "incorrect",
+                    "execution_verdict": "neutral",
+                    "pattern_tags": ["mean_reversion", "thin_tape"],
+                    "realized_pnl": -100.0,
+                }) + "\n")
+        try:
+            ff._CONFIG_PATH = tmp_cfg
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            import unittest.mock as mock
+            from pathlib import Path as _P
+            with mock.patch("anti_pattern_miner.Path") as mock_path:
+                def path_side_effect(p):
+                    if "forensic_log" in str(p):
+                        return forensic_log
+                    return _P(p)
+                mock_path.side_effect = path_side_effect
+                patterns = apm.mine_anti_patterns(min_occurrences=3)
+                self.assertGreater(len(patterns), 0)
+                self.assertEqual(patterns[0].occurrence_count, 4)
+        finally:
+            ff._CONFIG_PATH = orig_path
+            ff._FLAG_CACHE = orig_cache
+            ff._CACHE_LOADED = orig_loaded
+
+    # ── T2.6 divergence_summarizer ───────────────────────────────────────────
+
+    def test_divergence_summarizer_below_min_returns_none(self):
+        """summarize_divergence_incidents returns None when fewer than min_incidents."""
+        import divergence_summarizer as ds
+        import json
+        from pathlib import Path
+        import feature_flags as ff
+        orig_path = ff._CONFIG_PATH
+        orig_cache = dict(ff._FLAG_CACHE)
+        orig_loaded = ff._CACHE_LOADED
+        tmp_cfg = Path(self.tmpdir) / "cfg.json"
+        tmp_cfg.write_text(json.dumps({"feature_flags": {"enable_divergence_summarizer": True}}))
+        try:
+            ff._CONFIG_PATH = tmp_cfg
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            incident_log = Path(self.tmpdir) / "incident_log.jsonl"
+            # Only 1 incident
+            from datetime import datetime, timezone
+            incident_log.write_text(json.dumps({
+                "incident_id": "i1", "incident_type": "stop_missing",
+                "severity": "warning", "detected_at": datetime.now(timezone.utc).isoformat(),
+            }) + "\n")
+            import unittest.mock as mock
+            from pathlib import Path as _P
+            with mock.patch("divergence_summarizer._INCIDENT_LOG", incident_log):
+                result = ds.summarize_divergence_incidents(min_incidents=2)
+                self.assertIsNone(result)
+        finally:
+            ff._CONFIG_PATH = orig_path
+            ff._FLAG_CACHE = orig_cache
+            ff._CACHE_LOADED = orig_loaded
+
+    def test_divergence_summarizer_summary_dict_schema(self):
+        """Summary dict has required keys: clusters, root_causes, recommendations."""
+        from divergence_summarizer import _cluster_incidents
+        incidents = [
+            {"severity": "warning", "incident_type": "stop_missing", "description": "stop missing on GLD"},
+            {"severity": "critical", "incident_type": "fill_price_drift", "description": "drift on MSFT"},
+            {"severity": "warning", "incident_type": "stop_missing", "description": "stop missing on TSM"},
+        ]
+        clusters = _cluster_incidents(incidents)
+        self.assertIn("warning:stop_missing", clusters)
+        self.assertEqual(clusters["warning:stop_missing"]["count"], 2)
+
+    # ── T2.7 experience_library ──────────────────────────────────────────────
+
+    def test_experience_repaired_failure_requires_repair_marker(self):
+        """save_experience raises ValueError for repaired_failure_case without repair_marker."""
+        import experience_library as el
+        import feature_flags as ff
+        import json
+        from pathlib import Path
+        orig_path = ff._CONFIG_PATH
+        orig_cache = dict(ff._FLAG_CACHE)
+        orig_loaded = ff._CACHE_LOADED
+        tmp_cfg = Path(self.tmpdir) / "cfg.json"
+        tmp_cfg.write_text(json.dumps({"feature_flags": {"enable_experience_library": True}}))
+        try:
+            ff._CONFIG_PATH = tmp_cfg
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            rec = el.ExperienceRecord(
+                record_type="repaired_failure_case",
+                symbol="AAPL",
+                decision_id="d-repair",
+                summary="test",
+                repair_marker="",  # empty — should raise
+            )
+            with self.assertRaises(ValueError):
+                el.save_experience(rec)
+        finally:
+            ff._CONFIG_PATH = orig_path
+            ff._FLAG_CACHE = orig_cache
+            ff._CACHE_LOADED = orig_loaded
+
+    def test_experience_roundtrip(self):
+        """save_experience + get_experiences roundtrip returns correct record."""
+        import experience_library as el
+        import feature_flags as ff
+        import json
+        from pathlib import Path
+        orig_path = ff._CONFIG_PATH
+        orig_cache = dict(ff._FLAG_CACHE)
+        orig_loaded = ff._CACHE_LOADED
+        orig_exp_log = el._EXPERIENCE_LOG
+        tmp_cfg = Path(self.tmpdir) / "cfg.json"
+        tmp_cfg.write_text(json.dumps({"feature_flags": {"enable_experience_library": True}}))
+        try:
+            ff._CONFIG_PATH = tmp_cfg
+            ff._FLAG_CACHE = {}
+            ff._CACHE_LOADED = False
+            el._EXPERIENCE_LOG = Path(self.tmpdir) / "experience_library.jsonl"
+            rec = el.ExperienceRecord(
+                record_type="success_case",
+                symbol="GLD",
+                decision_id="d-exp",
+                summary="GLD catalyst swing success",
+                realized_pnl=150.0,
+                thesis_type="catalyst_swing",
+            )
+            eid = el.save_experience(rec)
+            self.assertIsNotNone(eid)
+            results = el.get_experiences(symbol="GLD")
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].thesis_type, "catalyst_swing")
+        finally:
+            ff._CONFIG_PATH = orig_path
+            ff._FLAG_CACHE = orig_cache
+            ff._CACHE_LOADED = orig_loaded
+            el._EXPERIENCE_LOG = orig_exp_log
+
+    # ── T2.8 experience_retrieval ────────────────────────────────────────────
+
+    def test_experience_retrieval_relevance_scoring(self):
+        """retrieve_similar_experiences scores symbol match higher than regime match."""
+        import experience_retrieval as er
+        from experience_retrieval import _score_record
+        from experience_library import ExperienceRecord
+
+        rec = ExperienceRecord(
+            symbol="AAPL",
+            record_type="success_case",
+            decision_id="d1",
+            experience_id="e1",
+            thesis_type="catalyst_swing",
+            catalyst_type="earnings_beat",
+            regime_at_entry="risk_on",
+            summary="AAPL earnings beat success",
+        )
+        # Symbol + thesis + catalyst + regime match = 3+2+2+1 = 8
+        score_all = _score_record(rec, symbol="AAPL", thesis_type="catalyst_swing", catalyst_type="earnings_beat", regime="risk_on")
+        # Symbol only = 3
+        score_sym = _score_record(rec, symbol="AAPL", thesis_type=None, catalyst_type=None, regime=None)
+        # Regime only = 1
+        score_reg = _score_record(rec, symbol=None, thesis_type=None, catalyst_type=None, regime="risk_on")
+
+        self.assertEqual(score_all, 8)
+        self.assertEqual(score_sym, 3)
+        self.assertEqual(score_reg, 1)
+        self.assertGreater(score_sym, score_reg)
+
+    def test_experience_retrieval_provenance_required(self):
+        """Results without decision_id are filtered out by _to_result."""
+        from experience_retrieval import _to_result
+        from experience_library import ExperienceRecord
+
+        rec_no_dec = ExperienceRecord(
+            symbol="AAPL",
+            record_type="success_case",
+            experience_id="e1",
+            decision_id="",  # missing — should be filtered
+            summary="test",
+        )
+        result = _to_result(rec_no_dec, score=5)
+        self.assertIsNone(result)
+
+    def test_experience_retrieval_provenance_present(self):
+        """Results with all IDs include provenance dict with experience_id and decision_id."""
+        from experience_retrieval import _to_result
+        from experience_library import ExperienceRecord
+
+        rec = ExperienceRecord(
+            symbol="AAPL",
+            record_type="success_case",
+            experience_id="e-uuid-123",
+            decision_id="d-uuid-456",
+            summary="test",
+        )
+        result = _to_result(rec, score=3)
+        self.assertIsNotNone(result)
+        self.assertIn("provenance", result)
+        self.assertEqual(result["provenance"]["experience_id"], "e-uuid-123")
+        self.assertEqual(result["provenance"]["decision_id"], "d-uuid-456")
+
+
 if __name__ == "__main__":
     unittest.main()

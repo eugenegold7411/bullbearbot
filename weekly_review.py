@@ -775,6 +775,9 @@ PDT-related blocks: {len(pdt_blocks)}
 ### Abstention Metrics (last 7 days)
 {_get_abstention_section()}
 
+### Divergence Incident Summary (last 7 days)
+{_get_divergence_summary_section()}
+
 ### Your Task
 Audit for rule violations, near-misses, PDT compliance, position sizing, stop loss widths, catalyst discipline. Was the bot operating within its stated rules? Flag any module with abstention_rate > 0.80 as a potential lazy-abstainer. Produce your JSON compliance report with a score 0-100."""
 
@@ -1416,6 +1419,15 @@ def _get_tier_summary() -> str:
         return "(model tier summary unavailable)"
 
 
+def _get_divergence_summary_section() -> str:
+    """Non-fatal divergence incident summary for Agent 5 (CTO) and Agent 10 (Compliance)."""
+    try:
+        import divergence_summarizer as _ds  # noqa: PLC0415
+        return _ds.format_divergence_summary_for_review(days_back=7)
+    except Exception:
+        return "(divergence summarizer unavailable)"
+
+
 def _build_agent5_cto_input(ctx: dict, phase1_outputs: dict) -> str:
     """Build CTO (Agent 5) technical audit input using Phase 1 analyst reports."""
     costs = ctx.get("costs_data", {})
@@ -1501,6 +1513,9 @@ Scheduler: 24/7 loop, 5-min market / 15-min extended / 30-min overnight cycles
 ### Model Tier Declarations
 {_get_tier_summary()}
 
+### Divergence Incident Summary (last 7 days)
+{_get_divergence_summary_section()}
+
 Produce your technical audit in markdown. Be specific: name modules, cite costs, propose exact changes."""
 
 
@@ -1557,6 +1572,13 @@ def run_review(emergency: bool = False, reason: str = "") -> str:
         pattern_watchlist_str  = json.dumps(pattern_watchlist_data, indent=2)
     except Exception:
         pass
+
+    # T2.4 — resolve pending recommendations before agent runs
+    try:
+        import recommendation_resolver as _rec_resolver  # noqa: PLC0415
+        _rec_resolver.resolve_pending_recommendations(days_back=90)
+    except Exception as _rr_err:
+        log.warning("[REVIEW] recommendation_resolver failed (non-fatal): %s", _rr_err)
 
     # Cost data (needed for CTO agent and Phase 2 context)
     costs_data: dict = {}
@@ -1664,7 +1686,18 @@ Please include pattern watchlist analysis in your report section.
 
 ### DIVERGENCE REPORT (last 7 days)
 {_div_text}
+
+{_anti_pattern_section_placeholder}
 """
+
+    # Anti-pattern section for Agent 1
+    _anti_pattern_section_a1 = ""
+    try:
+        import anti_pattern_miner as _apm_a1  # noqa: PLC0415
+        _anti_pattern_section_a1 = _apm_a1.format_anti_patterns_for_review(days_back=90)
+    except Exception as _apm_a1_err:
+        log.warning("[REVIEW] anti_pattern agent1 failed: %s", _apm_a1_err)
+    agent1_input = agent1_input.replace("{_anti_pattern_section_placeholder}", _anti_pattern_section_a1)
 
     # Attribution summary for Agent 1
     _attr_text = "(attribution data not yet available)"
@@ -1751,7 +1784,18 @@ Please include pattern watchlist analysis in your report section.
 {json.dumps(strategy_cfg.get("parameters", {}), indent=2)}
 ```
 
+### Experience Library (last 30 days)
+{_experience_library_section_placeholder}
+
 Please audit risk controls, position sizing, drawdown exposure, stop-loss effectiveness, and PDT usage. Provide your findings as a markdown section with 3-5 specific parameter adjustments (include numeric values)."""
+
+    _experience_library_section_a2 = ""
+    try:
+        import experience_library as _exp_lib_a2  # noqa: PLC0415
+        _experience_library_section_a2 = _exp_lib_a2.format_experience_summary_for_review(days_back=30)
+    except Exception as _exp_a2_err:
+        log.warning("[REVIEW] experience_library agent2 failed: %s", _exp_a2_err)
+    agent2_input = agent2_input.replace("{_experience_library_section_placeholder}", _experience_library_section_a2)
 
     exec_keywords = ("REJECTED", "SUBMITTED", "ERROR", "Cycle done in",
                      "submitted", "rejected", "error", "exception", "Exception")
@@ -1853,6 +1897,27 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
     except Exception as _hs_err:
         log.warning("[REVIEW] hindsight summary failed: %s", _hs_err)
 
+    _forensic_section = ""
+    try:
+        import forensic_reviewer as _forensic_reviewer  # noqa: PLC0415
+        _forensic_section = _forensic_reviewer.format_forensic_summary_for_review(days_back=30)
+    except Exception as _frev_err:
+        log.warning("[REVIEW] forensic summary failed: %s", _frev_err)
+
+    _anti_pattern_section = ""
+    try:
+        import anti_pattern_miner as _apm  # noqa: PLC0415
+        _anti_pattern_section = _apm.format_anti_patterns_for_review(days_back=90)
+    except Exception as _apm_err:
+        log.warning("[REVIEW] anti_pattern_miner failed: %s", _apm_err)
+
+    _experience_retrieval_section = ""
+    try:
+        import experience_retrieval as _exp_ret  # noqa: PLC0415
+        _experience_retrieval_section = _exp_ret.format_retrieval_for_review()
+    except Exception as _er_err:
+        log.warning("[REVIEW] experience_retrieval failed: %s", _er_err)
+
     agent4_input = f"""## WEEKLY BACKTEST ANALYST REVIEW INPUT
 
 ### Vector Memory (ChromaDB) Stats
@@ -1889,6 +1954,10 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
 {_outcomes_report}
 
 {_hindsight_section}
+
+{_forensic_section}
+
+{_experience_retrieval_section}
 
 Please analyze decision quality, compare live results to expectations, identify divergence patterns, and assess signal alpha from the backtest. For any symbol with has_alpha=true, note whether the bot acted on it. Provide your findings as a markdown section with 3-5 insights."""
 
@@ -1934,6 +2003,14 @@ Please analyze decision quality, compare live results to expectations, identify 
     # ── Agent 6: Strategy Director (always sequential — needs all 4 reports) ──
     print("[6/11] Running Strategy Director (draft)...")
 
+    # T2.4 recommendation resolution summary for Agent 6
+    _rec_resolution_section = ""
+    try:
+        import recommendation_resolver as _rr_a6  # noqa: PLC0415
+        _rec_resolution_section = _rr_a6.format_resolution_summary_for_review(days_back=30)
+    except Exception as _rr_a6_err:
+        log.warning("[REVIEW] rec resolution summary failed: %s", _rr_a6_err)
+
     # Load director memo history for continuity across weeks
     _director_history = _load_director_memo_history()
     _history_text     = _format_director_history_for_prompt(_director_history)
@@ -1973,6 +2050,11 @@ You have received reports from four specialist analysts. Synthesize their findin
 
 ### YOUR PRIOR RECOMMENDATIONS (last 4 weeks)
 {_history_text}
+
+---
+
+### RECOMMENDATION RESOLUTION SUMMARY
+{_rec_resolution_section}
 
 ---
 

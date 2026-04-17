@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-04-17T01:22:26.927105Z",
+  "categories": {
+    "running_live": [
+      {
+        "module": "regime_classifier",
+        "reason": "always_on",
+        "flag": null
+      },
+      {
+        "module": "signal_scorer",
+        "reason": "always_on",
+        "flag": null
+      },
+      {
+        "module": "main_decision",
+        "reason": "always_on",
+        "flag": null
+      },
+      {
+        "module": "risk_kernel",
+        "reason": "always_on",
+        "flag": null
+      },
+      {
+        "module": "order_executor",
+        "reason": "always_on",
+        "flag": null
+      },
+      {
+        "module": "exit_manager",
+        "reason": "always_on",
+        "flag": null
+      },
+      {
+        "module": "market_data",
+        "reason": "always_on",
+        "flag": null
+      },
+      {
+        "module": "attribution",
+        "reason": "always_on",
+        "flag": null
+      },
+      {
+        "module": "cost_attribution_spine",
+        "reason": "enable_cost_attribution_spine=true",
+        "flag": "enable_cost_attribution_spine",
+        "file_exists": false
+      },
+      {
+        "module": "divergence_summarizer",
+        "reason": "enable_divergence_summarizer=true",
+        "flag": "enable_divergence_summarizer",
+        "file_exists": true
+      },
+      {
+        "module": "schema_migrations",
+        "reason": "enable_schema_migrations=true",
+        "flag": "enable_schema_migrations",
+        "file_exists": false
+      },
+      {
+        "module": "thesis_checksum",
+        "reason": "enable_thesis_checksum=true",
+        "flag": "enable_thesis_checksum",
+        "file_exists": true
+      }
+    ],
+    "flag_off_ready": [
+      {
+        "module": "abstention_contract",
+        "flag": "enable_abstention_contract",
+        "file_exists": false
+      },
+      {
+        "module": "context_compressor_shadow",
+        "flag": "enable_context_compressor_shadow",
+        "file_exists": false
+      },
+      {
+        "module": "model_tiering",
+        "flag": "enable_model_tiering",
+        "file_exists": true
+      },
+      {
+        "module": "recommendation_memory",
+        "flag": "enable_recommendation_memory",
+        "file_exists": false
+      },
+      {
+        "module": "replay_fork_debugger",
+        "flag": "enable_replay_fork_debugger",
+        "file_exists": false
+      }
+    ],
+    "waiting_for_data": [
+      {
+        "module": "experience_library",
+        "flag": "enable_experience_library",
+        "requires": "forensic_log.jsonl has records",
+        "prerequisite_met": false,
+        "file_exists": true
+      }
+    ],
+    "experiments": [
+      {
+        "module": "confession_channel",
+        "flag": "enable_confession_channel",
+        "file_exists": true
+      },
+      {
+        "module": "dream_mode",
+        "flag": "enable_dream_mode",
+        "file_exists": true
+      },
+      {
+        "module": "personality_forks",
+        "flag": "enable_personality_forks",
+        "file_exists": true
+      }
+    ],
+    "verify_next": [
+      {
+        "issue": "spine module_name='unknown' rate",
+        "check_cmd": "python3 scripts/report_cost_spine_unknowns.py --days 1",
+        "note": "Should be near 0% after O1 enrichment deploy"
+      },
+      {
+        "issue": "session_tag on rejected trades",
+        "check_cmd": "grep session logs/trades.jsonl | grep unknown | head -5",
+        "note": "BUG-013 fixed; verify session field present on all recent trade records"
+      },
+      {
+        "issue": "TSM/AMZN/XBI/QQQ/MSFT backstop exits",
+        "check_cmd": "python3 -c \"import json; print([a['symbol'] for a in json.load(open('strategy_config.json'))['time_bound_actions']])\"",
+        "note": "Verify these are cleared or still active"
+      },
+      {
+        "issue": "Account 2 observation mode status",
+        "check_cmd": "cat data/account2/obs_mode_state.json",
+        "note": "Should show observation_complete=true after 20 trading days"
+      }
+    ]
+  },
+  "summary": {
+    "total_modules": 21,
+    "running_live_count": 12,
+    "flag_off_ready_count": 5,
+    "waiting_count": 1,
+    "experiment_count": 3,
+    "test_count": 329,
+    "spine_record_count_24h": 4,
+    "last_cycle_at": "2026-04-16T20:24:51.294022Z"
+  }
+}

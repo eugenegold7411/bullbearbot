@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "document_type": "LIVING DOCUMENT",
+  "version": "1.0.0",
+  "generated_at": "2026-04-16T00:00:00Z",
+  "failure_modes": [
+    {
+      "id": "FM-001",
+      "category": "data_ingestion",
+      "title": "Stale market data served to decision engine",
+      "severity": "high",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["4 AM data warehouse pre-fetch", "cache-first data loading", "try/except on all external calls"],
+      "detection": "[WARN] market data stale in bot.log"
+    },
+    {
+      "id": "FM-002",
+      "category": "data_ingestion",
+      "title": "IV history file missing or corrupted for A2 symbol",
+      "severity": "medium",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["iv_history_seeder.py validates entries", "BUG-005 fix targets 7-14 DTE"],
+      "detection": "IV rank = 0 or IV environment = unknown"
+    },
+    {
+      "id": "FM-003",
+      "category": "data_ingestion",
+      "title": "Citrini positions file stale",
+      "severity": "low",
+      "status": "accepted",
+      "review_cadence": "monthly",
+      "mitigations": ["Agent 8 CFO reminder every weekly review"],
+      "detection": "citrini_positions.json mtime > 30 days"
+    },
+    {
+      "id": "FM-004",
+      "category": "model_api",
+      "title": "Claude API timeout causes empty decision",
+      "severity": "high",
+      "status": "mitigated",
+      "review_cadence": "weekly_review",
+      "mitigations": ["All Claude calls wrapped in try/except", "graceful degradation", "overnight uses Haiku"],
+      "detection": "[ERROR] ask_claude failed in bot.log"
+    },
+    {
+      "id": "FM-005",
+      "category": "model_api",
+      "title": "Batch API returns empty responses for weekly review agents 1-4",
+      "severity": "medium",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["run_weekly_review.py is idempotent", "5-minute retry guidance in runbook"],
+      "detection": "weekly review report missing agent 1-4 sections"
+    },
+    {
+      "id": "FM-006",
+      "category": "model_api",
+      "title": "Model tier escalation triggers cache miss storm",
+      "severity": "medium",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["escalation only on main_decision", "CACHE_INVALIDATION_WARNING documented", "spine monitoring"],
+      "detection": "cost spike in spine; high cache_creation_input_tokens"
+    },
+    {
+      "id": "FM-007",
+      "category": "risk_management",
+      "title": "PDT floor check bypassed",
+      "severity": "critical",
+      "status": "mitigated",
+      "review_cadence": "weekly_review",
+      "mitigations": ["PDT check in bot.py AND order_executor.py (dual-layer)", "preflight PDT check"],
+      "detection": "trade submitted with equity < $26,000 (impossible under dual-layer check)"
+    },
+    {
+      "id": "FM-008",
+      "category": "risk_management",
+      "title": "Bracket stop-loss child invisible to exit_manager",
+      "severity": "high",
+      "status": "mitigated",
+      "review_cadence": "weekly_review",
+      "mitigations": ["_has_stop_order() uses status=all query", "tp_only status triggers stop repair", "BUG-009 fixed 2026-04-15"],
+      "detection": "exit_manager logs tp_only status; position without stop_price"
+    },
+    {
+      "id": "FM-009",
+      "category": "risk_management",
+      "title": "Dynamic/intraday position held overnight",
+      "severity": "high",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["reconciliation.py checks DYNAMIC tier at session boundary", "time_bound_actions in strategy_config.json"],
+      "detection": "DYNAMIC position in overnight session log"
+    },
+    {
+      "id": "FM-010",
+      "category": "execution",
+      "title": "Market order fails on crypto GTC requirement",
+      "severity": "medium",
+      "status": "mitigated",
+      "review_cadence": "monthly",
+      "mitigations": ["order_executor.py hardcodes GTC for symbols containing /", "BUG-008 fix validates crypto stops"],
+      "detection": "Alpaca rejection with TimeInForce not valid for asset"
+    },
+    {
+      "id": "FM-011",
+      "category": "execution",
+      "title": "Options structure leg submission fails midway",
+      "severity": "high",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["sequential leg submission with poll-and-retry", "reconcile_options_structures detects BROKEN", "plan_structure_repair closes broken legs"],
+      "detection": "structure.lifecycle = BROKEN; options_log.jsonl close_reason_code = broken_leg"
+    },
+    {
+      "id": "FM-012",
+      "category": "memory_state",
+      "title": "decisions.json grows beyond rolling limit",
+      "severity": "low",
+      "status": "active",
+      "review_cadence": "monthly",
+      "mitigations": ["memory.py trims to last 500 decisions on each save"],
+      "detection": "File size > 2MB; OOM in VPS logs"
+    },
+    {
+      "id": "FM-013",
+      "category": "memory_state",
+      "title": "ChromaDB protobuf conflict disables vector memory",
+      "severity": "medium",
+      "status": "mitigated",
+      "review_cadence": "monthly",
+      "mitigations": ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python in .env and systemd", "graceful degradation"],
+      "detection": "[ChromaDB] disabled for this process warning in log"
+    },
+    {
+      "id": "FM-014",
+      "category": "annex_shadow",
+      "title": "Annex module writes to prod data directory",
+      "severity": "high",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["annex sandbox contract enforced by convention", "data/annex/{module} write path", "lab_flags gate"],
+      "detection": "unexpected writes to data/analytics/ from annex module"
+    },
+    {
+      "id": "FM-015",
+      "category": "annex_shadow",
+      "title": "Shadow flag enables shadow module in prod pipeline",
+      "severity": "high",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["# SHADOW MODULE header in all shadow files", "ring=shadow in TIER_DECLARATIONS", "validate_tier_usage()"],
+      "detection": "ring=shadow module appearing in prod spine records"
+    },
+    {
+      "id": "FM-016",
+      "category": "operational",
+      "title": "VPS disk fills due to log rotation failure",
+      "severity": "medium",
+      "status": "active",
+      "review_cadence": "monthly",
+      "mitigations": ["RotatingFileHandler 5MB/3 backups", "logs/ excluded from rsync"],
+      "detection": "df -h shows >80% disk"
+    },
+    {
+      "id": "FM-017",
+      "category": "operational",
+      "title": "Scheduler misses Sunday weekly review",
+      "severity": "low",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["run_weekly_review.py manual trigger documented in runbook", "idempotent re-run"],
+      "detection": "no weekly_review_YYYY-MM-DD.md for Sunday date"
+    },
+    {
+      "id": "FM-018",
+      "category": "emergent_behavior",
+      "title": "Claude self-references or breaks fourth wall in trade output",
+      "severity": "medium",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["system prompt instructs institutional trading desk persona", "Agent 10 audits behavioral consistency"],
+      "detection": "Agent 10 flags self-reference or AI language in output"
+    },
+    {
+      "id": "FM-019",
+      "category": "emergent_behavior",
+      "title": "Model recommends position violating watchlist exclusion",
+      "severity": "high",
+      "status": "active",
+      "review_cadence": "weekly_review",
+      "mitigations": ["risk_kernel validates all symbols against watchlist", "non-watchlist symbols rejected"],
+      "detection": "rejected orders with symbol not in watchlist reason in trades.jsonl"
+    }
+  ]
+}

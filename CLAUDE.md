@@ -62,7 +62,8 @@ rsync -avz -e 'ssh -i ~/.ssh/trading_bot' \
 rsync -avz -e 'ssh -i ~/.ssh/trading_bot' \
   --exclude .venv --exclude __pycache__ --exclude '*.pyc' \
   --exclude .env --exclude 'logs/*.log' --exclude 'logs/*.jsonl' \
-  --exclude nohup.out /Users/eugene.gold/trading-bot/ tradingbot:/home/trading-bot/  # push
+  --exclude nohup.out --exclude 'data/runtime/' \
+  /Users/eugene.gold/trading-bot/ tradingbot:/home/trading-bot/  # push
 ```
 
 **Single-file edit workflow** (IMPORTANT — Edit tool requires local files):
@@ -411,7 +412,7 @@ significant drawdown, or any time a full system assessment is needed.
 | File | Purpose |
 |------|---------|
 | `ingest_citrini_memo.py` | **Manual one-shot tool.** Parses Citrini Research PDF memos. Usage: `python3 ingest_citrini_memo.py path/to/memo.pdf` |
-| `backtest_runner.py` | Strategy backtesting harness. `run_backtest()` = 5-strategy simulation. `run_weekly_backtest()` = compact hybrid-only summary for Agent 4 (non-fatal, read-only). |
+| `backtest_runner.py` | Strategy backtesting harness. `run_backtest()` = 5-strategy simulation (LLM-in-the-loop when `backtest_llm_enabled` flag is True; deterministic rule-based path by default). `run_weekly_backtest()` = compact hybrid-only summary for Agent 4 (non-fatal, read-only). **Does NOT write strategy_config.json** (Phase 5). `_run_strategy_director()` returns parameter recommendations only; `_write_strategy_config()` is a no-op. The sole authorised writer to strategy_config.json is `weekly_review.py` Agent 6. Director call is also gated: skipped if `n_closed_trades < backtest_minimum_sample_before_recalibration` (default 30). |
 | `signal_backtest.py` | Signal-level forward-return backtest. Extracts signals from decisions.json + near_miss_log.jsonl, computes +1d/+3d/+5d returns from daily bars. `SignalBacktestResult`, `SignalBacktestSummary`, `has_alpha` flag. Saves to `data/reports/backtest_latest.json`. Never raises. |
 | `shadow_lane.py` | Counterfactual decision log. `log_shadow_event()` + `get_shadow_stats()`. Appends to `data/analytics/near_miss_log.jsonl`. 7 event types. Completely non-fatal. Zero execution side effects. |
 | `iv_history_seeder.py` | **Manual one-shot/occasional calibration tool.** Seeds synthetic IV history for Account 2 symbols using yfinance. Phases: Phase 1 (16 core A2 names), Phase 2 (27 extended names). `run_phase1_seed()`, `run_phase2_seed()`, `validate_seed_quality()`. Bad entries (iv < 0.05) replaced. CLI: `python3 iv_history_seeder.py [--phase2] [--dry-run]`. Designed for future Account 3 fresh observation mode start. |
@@ -575,7 +576,7 @@ and uses the extracted positions as high-conviction macro overlay for trade deci
 
 ## strategy_config.json
 
-Written by the weekly review's Strategy Director (Agent 5). Bot reads it each cycle.
+**Sole authorised writer: `weekly_review.py` Agent 6 (Strategy Director).** No other module may write this file. `backtest_runner.py` was the previous writer; that write authority was removed in Phase 5. Bot reads it each cycle.
 Key sections:
 - `active_strategy`: "hybrid" (momentum + mean-reversion + news + cross-sector)
 - `parameters`: `stop_loss_pct_core=0.035`, `take_profit_multiple=2.5`, `max_positions=15`, etc.
@@ -1236,3 +1237,9 @@ ssh tradingbot 'cd /home/trading-bot && source .venv/bin/activate && python3 bot
     going live. Verify that `bot.py:run_cycle()` writes signal scores to disk after scoring.
     If not, add: `(Path(__file__).parent / "data/market/signal_scores.json").write_text(json.dumps(signals))`
     after the `score_signals()` call.
+
+## Systemd Service Note (updated 2026-04-18)
+`StandardOutput` and `StandardError` redirects removed from trading-bot.service.
+Python's RotatingFileHandler in log_setup.py owns bot.log exclusively.
+Stdout/stderr go to journald only (viewable via `journalctl -u trading-bot`).
+If you reprovision the server, do NOT add StandardOutput/StandardError to the service unit.

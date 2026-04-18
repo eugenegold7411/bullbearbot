@@ -49,8 +49,9 @@ _RECONCILE_MODES = frozenset({"RECONCILE_ONLY", "RISK_CONTAINMENT"})
 class CheckResult:
     name: str
     passed: bool
-    severity: str    # "hard" | "soft"
+    severity: str          # "hard" | "soft"
     message: str
+    verdict_hint: Optional[str] = None  # "halt" | "reconcile_only" | None
 
 
 @dataclass
@@ -90,19 +91,33 @@ def _check_operating_mode(account_id: str = "a1") -> CheckResult:
     """Divergence operating mode must not be HALTED before starting a trade cycle."""
     path = _A1_MODE if account_id == "a1" else _A2_MODE
     if not path.exists():
-        return CheckResult(f"operating_mode_{account_id}", True, "soft", "mode file absent — assuming NORMAL")
+        return CheckResult(
+            f"operating_mode_{account_id}", False, "hard",
+            f"{account_id} mode file absent — entering reconcile_only until state is verified",
+            verdict_hint="reconcile_only",
+        )
     try:
         data = json.loads(path.read_text())
         mode = data.get("mode", "NORMAL").upper()
         if mode in _HALT_MODES:
-            return CheckResult(f"operating_mode_{account_id}", False, "hard",
-                               f"{account_id} divergence mode={mode} — halt")
+            return CheckResult(
+                f"operating_mode_{account_id}", False, "hard",
+                f"{account_id} divergence mode={mode} — halt",
+                verdict_hint="halt",
+            )
         if mode in _RECONCILE_MODES:
-            return CheckResult(f"operating_mode_{account_id}", False, "hard",
-                               f"{account_id} divergence mode={mode} — reconcile_only")
+            return CheckResult(
+                f"operating_mode_{account_id}", False, "hard",
+                f"{account_id} divergence mode={mode} — reconcile_only",
+                verdict_hint="reconcile_only",
+            )
         return CheckResult(f"operating_mode_{account_id}", True, "hard", f"{account_id} mode={mode} OK")
     except Exception as exc:
-        return CheckResult(f"operating_mode_{account_id}", True, "soft", f"mode read error: {exc}")
+        return CheckResult(
+            f"operating_mode_{account_id}", False, "hard",
+            f"{account_id} mode file unreadable ({exc}) — entering reconcile_only until state is verified",
+            verdict_hint="reconcile_only",
+        )
 
 
 def _check_watchlist_present() -> CheckResult:
@@ -190,30 +205,114 @@ def _check_strategy_config_keys() -> CheckResult:
         return CheckResult("config_keys", False, "soft", f"config keys check failed: {exc}")
 
 
+def _check_director_notes_shape() -> CheckResult:
+    """
+    Soft/hard: director_notes must be a structured dict with active_context key.
+    Old plain-string form → soft warn (still usable).
+    Present but malformed dict (dict without active_context) → hard fail (cannot trust memo).
+    Absent → soft pass (first-run safe).
+    """
+    try:
+        data = json.loads(_CONFIG.read_text())
+        dn = data.get("director_notes")
+        if dn is None:
+            return CheckResult("director_notes_shape", True, "soft", "director_notes absent — skipped")
+        if isinstance(dn, str):
+            return CheckResult(
+                "director_notes_shape", False, "soft",
+                "director_notes is plain string — should be migrated to {active_context, expiry, priority}",
+            )
+        if isinstance(dn, dict):
+            if "active_context" not in dn:
+                return CheckResult(
+                    "director_notes_shape", False, "hard",
+                    "director_notes dict missing required key 'active_context'",
+                )
+            return CheckResult("director_notes_shape", True, "soft", "director_notes shape OK")
+        return CheckResult(
+            "director_notes_shape", False, "hard",
+            f"director_notes has unexpected type {type(dn).__name__}",
+        )
+    except Exception as exc:
+        return CheckResult("director_notes_shape", False, "soft", f"director_notes check failed: {exc}")
+
+
+_REQUIRED_TIER_KEYS = frozenset({"core_tier_pct", "dynamic_tier_pct", "intraday_tier_pct"})
+
+
+def _check_tier_sizing_vocabulary() -> CheckResult:
+    """Hard: position_sizing block must contain exactly the three kernel tier keys."""
+    try:
+        data = json.loads(_CONFIG.read_text())
+        sizing = data.get("position_sizing", {})
+        tier_keys = {k for k in sizing if k.endswith("_tier_pct")}
+
+        missing = sorted(_REQUIRED_TIER_KEYS - tier_keys)
+        if missing:
+            return CheckResult(
+                "tier_sizing_vocabulary", False, "hard",
+                f"position_sizing missing required tier key(s): {missing}",
+            )
+
+        rogue = sorted(tier_keys - _REQUIRED_TIER_KEYS)
+        if rogue:
+            return CheckResult(
+                "tier_sizing_vocabulary", False, "hard",
+                f"position_sizing contains unrecognized tier key(s): {rogue}",
+            )
+
+        bad_values = [
+            f"{k}={sizing[k]}" for k in _REQUIRED_TIER_KEYS
+            if not (isinstance(sizing[k], (int, float)) and 0 < sizing[k] < 1)
+        ]
+        if bad_values:
+            return CheckResult(
+                "tier_sizing_vocabulary", False, "hard",
+                f"tier key value(s) not in (0, 1): {bad_values}",
+            )
+
+        return CheckResult(
+            "tier_sizing_vocabulary", True, "hard",
+            f"tier keys OK: { {k: sizing[k] for k in sorted(_REQUIRED_TIER_KEYS)} }",
+        )
+    except Exception as exc:
+        return CheckResult("tier_sizing_vocabulary", False, "hard",
+                           f"tier sizing check failed: {exc}")
+
+
 def _derive_verdict(checks: list[CheckResult]) -> tuple[str, list[str], list[str]]:
-    """Derive verdict from check results. Returns (verdict, blockers, warnings)."""
+    """Derive verdict from check results. Returns (verdict, blockers, warnings).
+
+    Precedence (highest → lowest):
+      1. Any check with verdict_hint="halt"    → halt
+      2. Any check with verdict_hint="reconcile_only" → reconcile_only
+      3. Any hard-fail without a hint          → halt
+      4. Any soft-fail                         → go_degraded
+      5. All passed                            → go
+    """
     blockers = []
     warnings = []
-
-    # Collect HALT mode check results separately
-    has_reconcile_mode = False
-    has_hard_fail = False
+    has_halt_hint      = False
+    has_reconcile_hint = False
+    has_hard_fail      = False
 
     for c in checks:
         if c.passed:
             continue
         if c.severity == "hard":
-            if "reconcile_only" in c.message or "reconcile" in c.message.lower():
-                has_reconcile_mode = True
+            if c.verdict_hint == "halt":
+                has_halt_hint = True
+            elif c.verdict_hint == "reconcile_only":
+                has_reconcile_hint = True
             else:
                 has_hard_fail = True
             blockers.append(f"{c.name}: {c.message}")
         else:
             warnings.append(f"{c.name}: {c.message}")
 
-    if has_hard_fail:
+    if has_halt_hint or has_hard_fail:
         return "halt", blockers, warnings
-    if has_reconcile_mode:
+    if has_reconcile_hint:
         return "reconcile_only", blockers, warnings
     if warnings:
         return "go_degraded", blockers, warnings
@@ -264,6 +363,8 @@ def run_preflight(
     checks.append(_check_feature_flags_loadable())
     checks.append(_check_data_dirs())
     checks.append(_check_strategy_config_keys())
+    checks.append(_check_director_notes_shape())
+    checks.append(_check_tier_sizing_vocabulary())
 
     result.checks = [asdict(c) for c in checks]
     verdict, blockers, warnings = _derive_verdict(checks)

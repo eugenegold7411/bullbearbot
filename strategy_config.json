@@ -6,8 +6,8 @@
   "backtest_results": {},
   "position_sizing": {
     "core_tier_pct": 0.15,
-    "standard_tier_pct": 0.08,
-    "speculative_tier_pct": 0.05,
+    "dynamic_tier_pct": 0.08,
+    "intraday_tier_pct": 0.05,
     "max_total_exposure_pct": 0.67,
     "cash_reserve_pct": 0.2
   },
@@ -54,8 +54,8 @@
     "cash_reserve_pct": 0.2,
     "margin_authorized": false,
     "core_tier_pct": 0.15,
-    "standard_tier_pct": 0.08,
-    "speculative_tier_pct": 0.05,
+    "dynamic_tier_pct": 0.08,
+    "intraday_tier_pct": 0.05,
     "catalyst_tag_required_for_entry": true,
     "catalyst_tag_disallowed_values": [
       "no",
@@ -82,7 +82,11 @@
       }
     ]
   },
-  "director_notes": "FINAL CONFIG 2026-04-15: System is in diagnostic/pre-operational state. The session classifier bug (all orders tagged 'unknown' and rejected) is the single highest-priority fix \u2014 no strategy change will improve fill rate until this is resolved. Session gate remains enforced; the fix is to capture session at signal generation time and assert non-unknown before routing, not to disable the gate. Three conflicting position-size parameters have been unified: max_single_name_pct=0.04 is the operative single-name ceiling; max_position_pct_equity=0.07 governs tier slot sizing; the redundant max_single_position_pct fields in both config blocks are deprecated. Margin authorization is removed from director notes \u2014 no margin is approved until compliance is formally confirmed. Catalyst tag is now a hard entry gate: any entry without a named, non-null catalyst is blocked. Sector rotation bias is temporarily set to commodities_overweight (energy, gold) reflecting geopolitical context; this expires 2026-04-22 and must be reviewed. No signal weight changes are authorized this cycle \u2014 n=2 closed trades provides zero statistical basis for recalibration. Recalibration gate set at n=30 confirmed fills. Vector memory must be restored before any confidence-based signal calibration is meaningful.",
+  "director_notes": {
+    "active_context": "FINAL CONFIG 2026-04-15: System is in diagnostic/pre-operational state. The session classifier bug (all orders tagged 'unknown' and rejected) is the single highest-priority fix \u2014 no strategy change will improve fill rate until this is resolved. Session gate remains enforced; the fix is to capture session at signal generation time and assert non-unknown before routing, not to disable the gate. Three conflicting position-size parameters have been unified: max_single_name_pct=0.04 is the operative single-name ceiling; max_position_pct_equity=0.07 governs tier slot sizing; the redundant max_single_position_pct fields in both config blocks are deprecated. Margin authorization is removed from director notes \u2014 no margin is approved until compliance is formally confirmed. Catalyst tag is now a hard entry gate: any entry without a named, non-null catalyst is blocked. Sector rotation bias is temporarily set to commodities_overweight (energy, gold) reflecting geopolitical context; this expires 2026-04-22 and must be reviewed. No signal weight changes are authorized this cycle \u2014 n=2 closed trades provides zero statistical basis for recalibration. Recalibration gate set at n=30 confirmed fills. Vector memory must be restored before any confidence-based signal calibration is meaningful.",
+    "expiry": "2026-04-22",
+    "priority": "elevated"
+  },
   "launch_date": "2026-04-13",
   "time_bound_actions": [
     {

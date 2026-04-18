@@ -19,6 +19,7 @@ import market_data
 import memory as mem
 import order_executor
 import portfolio_intelligence as pi
+import preflight as _preflight
 import reconciliation as recon
 import sonnet_gate as _gate
 import risk_kernel
@@ -43,13 +44,44 @@ load_dotenv()
 log = get_logger(__name__)
 
 # ── Prompt directory ──────────────────────────────────────────────────────────
-PROMPTS_DIR = Path(__file__).parent / "prompts"
+PROMPTS_DIR    = Path(__file__).parent / "prompts"
+_CAPTURES_DIR  = Path(__file__).parent / "data" / "captures"
 
 def _load_prompts() -> tuple[str, str]:
     """Read prompt files fresh each cycle so edits take effect without restart."""
     system   = (PROMPTS_DIR / "system_v1.txt").read_text().strip()
     template = (PROMPTS_DIR / "user_template_v1.txt").read_text().strip()
     return system, template
+
+
+def _write_decision_capture(
+    decision_id: str,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    raw_response: str,
+    broker_actions: list,
+) -> None:
+    """Write a decision capture artifact for the replay harness. Non-fatal."""
+    try:
+        _CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        record = {
+            "schema_version": 1,
+            "decision_id":    decision_id,
+            "timestamp":      datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "model":          model,
+            "system_prompt":  system_prompt,
+            "user_prompt":    user_prompt,
+            "raw_response":   raw_response,
+            "broker_actions": broker_actions,
+        }
+        _path = _CAPTURES_DIR / f"{decision_id}.json"
+        _tmp  = _path.with_suffix(".tmp")
+        _tmp.write_text(json.dumps(record, indent=2))
+        os.replace(_tmp, _path)
+    except Exception as _cap_exc:
+        log.debug("[CAPTURE] non-fatal write failure: %s", _cap_exc)
 
 
 def _legacy_action_to_intent(action: dict) -> str:
@@ -117,9 +149,11 @@ MODEL      = "claude-sonnet-4-6"
 MODEL_FAST = "claude-haiku-4-5-20251001"
 
 # ── Drawdown guard ────────────────────────────────────────────────────────────
-_DRAWDOWN_THRESHOLD  = 0.20
-_last_drawdown_alert = 0.0
-_peak_equity         = None
+_DRAWDOWN_THRESHOLD    = 0.20
+_last_drawdown_alert   = 0.0
+_peak_equity           = None
+_drawdown_state_loaded = False
+_DRAWDOWN_STATE_FILE   = Path("data/runtime/drawdown_state.json")
 
 
 # ── Twilio SMS ────────────────────────────────────────────────────────────────
@@ -142,18 +176,58 @@ def _send_sms(message: str) -> None:
         log.error("SMS failed: %s", exc)
 
 
+# ── Drawdown persistence helpers ─────────────────────────────────────────────
+
+def _load_drawdown_state() -> None:
+    """Load persisted peak_equity and last_drawdown_alert. Non-fatal."""
+    global _peak_equity, _last_drawdown_alert, _drawdown_state_loaded
+    _drawdown_state_loaded = True
+    if not _DRAWDOWN_STATE_FILE.exists():
+        return
+    try:
+        data = json.loads(_DRAWDOWN_STATE_FILE.read_text())
+        if data.get("peak_equity") is not None:
+            _peak_equity = float(data["peak_equity"])
+        if data.get("last_drawdown_alert") is not None:
+            _last_drawdown_alert = data["last_drawdown_alert"]
+        log.info("[DRAWDOWN] Loaded persisted state: peak=$%s  last_alert=%s",
+                 f"{_peak_equity:,.0f}" if _peak_equity is not None else "None",
+                 _last_drawdown_alert)
+    except Exception as exc:
+        log.warning("[DRAWDOWN] Failed to load persisted state (%s) — starting fresh", exc)
+
+
+def _save_drawdown_state() -> None:
+    """Atomically persist peak_equity and last_drawdown_alert. Non-fatal."""
+    try:
+        _DRAWDOWN_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _DRAWDOWN_STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "peak_equity":         _peak_equity,
+            "last_drawdown_alert": _last_drawdown_alert,
+        }, indent=2))
+        os.replace(tmp, _DRAWDOWN_STATE_FILE)
+    except Exception as exc:
+        log.warning("[DRAWDOWN] Failed to save state: %s", exc)
+
+
 # ── Drawdown check ────────────────────────────────────────────────────────────
 
 def _check_drawdown(equity: float) -> bool:
-    global _peak_equity, _last_drawdown_alert
+    global _peak_equity, _last_drawdown_alert, _drawdown_state_loaded
+
+    if not _drawdown_state_loaded:
+        _load_drawdown_state()
 
     if _peak_equity is None or equity > _peak_equity:
         _peak_equity = equity
+        _save_drawdown_state()
 
     drawdown = (_peak_equity - equity) / _peak_equity
 
     if drawdown >= _DRAWDOWN_THRESHOLD and equity != _last_drawdown_alert:
         _last_drawdown_alert = equity
+        _save_drawdown_state()
         msg = (f"TRADING BOT ALERT: 20% drawdown triggered. "
                f"Peak equity ${_peak_equity:,.0f} → current ${equity:,.0f} "
                f"({drawdown:.1%} drawdown). Bot halting — review required.")
@@ -1178,6 +1252,33 @@ def run_cycle(
     log.info("Account  equity=$%s  cash=$%s  exposure=%.1f%%  positions=%d",
              f"{equity:,.0f}", f"{cash:,.0f}", exposure, len(positions))
 
+    # 1b. Preflight gate
+    _allow_live_orders  = True
+    _allow_new_entries  = True
+    _pf_result = None
+    try:
+        _pf_result = _preflight.run_preflight(
+            caller="run_cycle",
+            session_tier=session_tier,
+            equity=equity,
+            account_id="a1",
+        )
+        if _pf_result.verdict == "halt":
+            log.error("[PREFLIGHT] verdict=halt — aborting cycle  blockers=%s",
+                      _pf_result.blockers)
+            return
+        elif _pf_result.verdict == "reconcile_only":
+            log.warning("[PREFLIGHT] verdict=reconcile_only — new entries blocked  blockers=%s",
+                        _pf_result.blockers)
+            _allow_new_entries = False
+        elif _pf_result.verdict == "shadow_only":
+            log.warning("[PREFLIGHT] verdict=shadow_only — live orders suppressed")
+            _allow_live_orders = False
+        elif _pf_result.verdict == "go_degraded":
+            log.warning("[PREFLIGHT] verdict=go_degraded  warnings=%s", _pf_result.warnings)
+    except Exception as _pf_exc:
+        log.error("[PREFLIGHT] unexpected exception (proceeding with caution): %s", _pf_exc)
+
     # 2. Drawdown guard
     if _check_drawdown(equity):
         log.error("Drawdown guard triggered — halting cycle")
@@ -1351,6 +1452,17 @@ def run_cycle(
         if _div_events:
             _a1_mode = respond_to_divergence(_div_events, "A1", _a1_mode)
         _a1_mode = check_clean_cycle("A1", _a1_mode, _div_events)
+        # Desync tripwire: preflight passed as "go" but live mode is non-NORMAL
+        if (
+            _pf_result is not None
+            and _pf_result.verdict == "go"
+            and _a1_mode.mode != OperatingMode.NORMAL
+        ):
+            log.error(
+                "[PREFLIGHT] DESYNC: preflight verdict=go but _a1_mode=%s — "
+                "preflight operating-mode check may have read stale state",
+                _a1_mode.mode.value,
+            )
         if _a1_mode.mode != OperatingMode.NORMAL:
             log.warning("[DIV] A1 mode=%s scope=%s/%s",
                         _a1_mode.mode.value,
@@ -1445,6 +1557,7 @@ def run_cycle(
     # 5b. Build prompt & call Claude
     # C3: overnight session uses a lightweight Haiku call instead of Sonnet.
     # Saves ~$0.042/cycle × 24 cycles/day ≈ $1.01/day.
+    _cap_sys = _cap_user = _cap_raw = None   # set only when Sonnet fires
     if session_tier == "overnight":
         decision = _ask_claude_overnight(
             positions=positions,
@@ -1538,7 +1651,10 @@ def run_cycle(
                     macro_backdrop=macro_backdrop_str,
                     scratchpad_section=_scratchpad.format_scratchpad_section(scratchpad_result),
                 )
-            decision = ask_claude(user_prompt)
+            _cap_sys, _ = _load_prompts()
+            _cap_user    = user_prompt
+            decision     = ask_claude(user_prompt)
+            _cap_raw     = json.dumps(decision)
     # Parse Claude's response — supports both new intent-based and legacy formats
     try:
         claude_decision = validate_claude_decision(decision)
@@ -1594,7 +1710,7 @@ def run_cycle(
 
     # Process ideas through risk kernel → broker-ready action dicts
     broker_actions: list = []
-    if claude_decision and claude_decision.ideas and regime != "halt":
+    if claude_decision and claude_decision.ideas and regime != "halt" and _allow_new_entries:
         _prices = md.get("current_prices", {})
         # Build snapshot for risk kernel (reuse normalized positions built above)
         _rk_positions = []
@@ -1680,6 +1796,10 @@ def run_cycle(
                     pass
 
     actions = [ba.to_dict() for ba in broker_actions]
+
+    # Decision capture — written after broker_actions are resolved; non-fatal
+    if _decision_id and _cap_user is not None:
+        _write_decision_capture(_decision_id, _cap_sys, _cap_user, MODEL, _cap_raw, actions)
 
     # Mode gate — filter new entries if operating mode is not NORMAL
     if _a1_mode is not None:
@@ -1876,7 +1996,7 @@ def run_cycle(
                      len(vetoed_syms), len(actions))
 
     # 7. Execute
-    if actions and regime != "halt":
+    if actions and regime != "halt" and _allow_live_orders:
         results = order_executor.execute_all(
             actions=actions,
             account=account,
@@ -1943,6 +2063,30 @@ def run_cycle(
                     log_outcome_event(_outcome_sub)
                 except Exception:
                     pass
+            else:
+                # Non-submitted result — log rejected_by_executor outcome
+                try:
+                    from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
+                    from datetime import datetime as _d, timezone as _tz
+                    _rej_action = next((a for a in actions if a.get("symbol") == r.symbol), {})
+                    _outcome_rej_ex = DecisionOutcomeRecord(
+                        decision_id=_decision_id,
+                        account="A1",
+                        symbol=r.symbol,
+                        timestamp=_d.now(_tz.utc).isoformat().replace("+00:00", "Z"),
+                        action=getattr(r, "action", _rej_action.get("action", "")),
+                        tier=_rej_action.get("tier"),
+                        confidence=_rej_action.get("confidence"),
+                        catalyst=_rej_action.get("catalyst"),
+                        session=session_tier,
+                        status="rejected_by_executor",
+                        reject_reason=getattr(r, "reason", None) or str(r.status),
+                        module_tags=_module_tags,
+                        trigger_flags=_trigger_flags,
+                    )
+                    log_outcome_event(_outcome_rej_ex)
+                except Exception as _rej_ex_exc:
+                    log.warning("[OUTCOMES] rejected_by_executor log failed: %s", _rej_ex_exc)
                 # Shadow lane — approved_trade (decision_id is set by attribution block above)
                 try:
                     from shadow_lane import log_shadow_event as _log_shadow  # noqa: PLC0415
@@ -2061,7 +2205,39 @@ def run_cycle(
             log.warning('Backstop seeding failed: %s', _tba_exc)
 
     else:
-        log.info("Execute  no actions this cycle")
+        if actions and not _allow_live_orders and regime != "halt":
+            # shadow_only preflight verdict: actions exist but live submission suppressed
+            log.warning("[PREFLIGHT] shadow_only — %d action(s) blocked; logging blocked_by_mode",
+                        len(actions))
+            try:
+                from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
+                from datetime import datetime as _d, timezone as _tz
+                _pf_reason = (
+                    f"preflight verdict={_pf_result.verdict}"
+                    if "_pf_result" in dir() and _pf_result is not None
+                    else "shadow_only mode — live orders suppressed"
+                )
+                for _ba in actions:
+                    _outcome_blocked = DecisionOutcomeRecord(
+                        decision_id=_decision_id,
+                        account="A1",
+                        symbol=_ba.get("symbol", ""),
+                        timestamp=_d.now(_tz.utc).isoformat().replace("+00:00", "Z"),
+                        action=_ba.get("action", ""),
+                        tier=_ba.get("tier"),
+                        confidence=_ba.get("confidence"),
+                        catalyst=_ba.get("catalyst"),
+                        session=session_tier,
+                        status="blocked_by_mode",
+                        reject_reason=_pf_reason,
+                        module_tags=_module_tags,
+                        trigger_flags=_trigger_flags,
+                    )
+                    log_outcome_event(_outcome_blocked)
+            except Exception as _bm_exc:
+                log.warning("[OUTCOMES] blocked_by_mode log failed: %s", _bm_exc)
+        else:
+            log.info("Execute  no actions this cycle")
 
     elapsed = time.monotonic() - t_start
     log.info("── Cycle done in %.1fs ─────────────────────────────────", elapsed)

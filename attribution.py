@@ -173,6 +173,10 @@ def log_attribution_event(
             record.update(extra)
         with open(ATTRIBUTION_LOG, "a") as fh:
             fh.write(json.dumps(record) + "\n")
+        try:
+            _emit_spine_record(record, extra or {})
+        except Exception as _spine_exc:
+            log.warning("[ATTR] spine emit failed: %s", _spine_exc)
     except Exception as exc:  # noqa: BLE001
         log.warning("[ATTR] log_attribution_event failed: %s", exc)
 

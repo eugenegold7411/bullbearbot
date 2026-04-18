@@ -24,10 +24,6 @@ log = logging.getLogger(__name__)
 
 _SPINE_PATH = Path("data/analytics/cost_attribution_spine.jsonl")
 
-# Cached on first call; never re-read within the same process.
-# None = not yet loaded. bool = loaded value.
-_SPINE_ENABLED: Optional[bool] = None
-
 VALID_LAYER_NAMES: frozenset[str] = frozenset({
     "execution_control",
     "semantic_normalization",
@@ -67,22 +63,18 @@ class SpineRecord:
 
 def _is_spine_enabled() -> bool:
     """
-    Read enable_cost_attribution_spine from strategy_config.json.
-    Cached for the process lifetime.
-    # TODO(T0.6): replace with feature_flags.is_enabled("enable_cost_attribution_spine")
+    Read enable_cost_attribution_spine from strategy_config.json on every call.
+    Returns False on any read/parse failure so flag toggles take effect immediately
+    without requiring a process restart.
     """
-    global _SPINE_ENABLED
-    if _SPINE_ENABLED is not None:
-        return _SPINE_ENABLED
     try:
         config = json.loads(Path("strategy_config.json").read_text())
-        _SPINE_ENABLED = bool(
+        return bool(
             config.get("feature_flags", {}).get("enable_cost_attribution_spine", False)
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("[SPINE] _is_spine_enabled failed to read config: %s", exc)
-        _SPINE_ENABLED = False
-    return _SPINE_ENABLED
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -78,7 +78,7 @@ class DecisionOutcomeRecord:
     entry_price:   Optional[float] = None
     stop_loss:     Optional[float] = None
     take_profit:   Optional[float] = None
-    status:        str             = "submitted"   # submitted | rejected_by_kernel | rejected_by_executor
+    status:        str             = "submitted"   # submitted | rejected_by_kernel | rejected_by_executor | blocked_by_mode
     reject_reason: Optional[str]  = None
     module_tags:   dict            = None   # type: ignore[assignment]
     trigger_flags: dict            = None   # type: ignore[assignment]
@@ -363,6 +363,7 @@ def generate_outcomes_summary(days_back: int = 7) -> dict:
         "submitted":           0,
         "rejected_by_kernel":  0,
         "rejected_by_executor": 0,
+        "blocked_by_mode":     0,
         "with_returns":        0,
         "win_rate_1d":         None,
         "win_rate_3d":         None,
@@ -403,6 +404,7 @@ def generate_outcomes_summary(days_back: int = 7) -> dict:
         submitted   = [r for r in records if r.get("status") == "submitted"]
         k_rejected  = [r for r in records if r.get("status") == "rejected_by_kernel"]
         ex_rejected = [r for r in records if r.get("status") == "rejected_by_executor"]
+        mode_blocked = [r for r in records if r.get("status") == "blocked_by_mode"]
 
         # Forward returns (submitted trades with data)
         with_returns = [r for r in submitted if r.get("return_1d") is not None]
@@ -444,6 +446,7 @@ def generate_outcomes_summary(days_back: int = 7) -> dict:
             "submitted":            len(submitted),
             "rejected_by_kernel":   len(k_rejected),
             "rejected_by_executor": len(ex_rejected),
+            "blocked_by_mode":      len(mode_blocked),
             "with_returns":         len(with_returns),
             "win_rate_1d":          _win_rate(with_returns, "correct_1d"),
             "win_rate_3d":          _win_rate(with_returns, "correct_3d"),
@@ -480,6 +483,7 @@ def format_outcomes_report(summary: dict) -> str:
             f"- Submitted to Alpaca: {summary['submitted']}",
             f"- Rejected by risk kernel: {summary['rejected_by_kernel']}",
             f"- Rejected by executor: {summary['rejected_by_executor']}",
+            f"- Blocked by mode/preflight: {summary.get('blocked_by_mode', 0)}",
             f"- With forward return data: {summary['with_returns']}",
         ]
 

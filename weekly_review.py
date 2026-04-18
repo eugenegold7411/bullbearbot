@@ -159,10 +159,12 @@ def _load_strategy_config() -> dict:
 def _save_strategy_config(config: dict) -> None:
     """Write strategy_config.json atomically. Logs on failure."""
     try:
-        _STRATEGY_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        tmp = _STRATEGY_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        os.replace(tmp, _STRATEGY_FILE)
         log.info("strategy_config.json updated")
     except Exception as exc:
-        log.error("Failed to save strategy_config.json: %s", exc)
+        log.error("[REVIEW] strategy_config save failed: %s", exc)
 
 
 def _load_global_indices_history(days: int = 7) -> str:
@@ -220,16 +222,32 @@ def _load_global_indices_history(days: int = 7) -> str:
 
 # ── Claude caller ─────────────────────────────────────────────────────────────
 
-def _call_claude(system_prompt: str, user_content: str, agent_name: str) -> str:
+def _call_claude(
+    system_prompt: str,
+    user_content: str,
+    agent_name: str,
+    module_name: str = "",
+) -> str:
     """
     Make one Claude API call with prompt caching on the system prompt.
     Returns the response text. Logs timing. Sleeps 1s to respect rate limits.
+
+    If module_name is provided, resolves the model via model_tiering.get_model_for_module()
+    (feature-flagged). Falls back to _MODEL on any error or when module_name is empty.
     """
+    model = _MODEL
+    if module_name:
+        try:
+            import model_tiering as _mt  # noqa: PLC0415
+            model = _mt.get_model_for_module(module_name)
+        except Exception as _mt_exc:
+            log.warning("[TIERING] model resolution failed for %s: %s", module_name, _mt_exc)
+
     t_start = time.monotonic()
-    log.info("Agent %s: calling Claude...", agent_name)
+    log.info("Agent %s: calling Claude (%s)...", agent_name, model)
     try:
         response = _claude.messages.create(
-            model=_MODEL,
+            model=model,
             max_tokens=3000,
             system=[{
                 "type": "text",
@@ -242,7 +260,7 @@ def _call_claude(system_prompt: str, user_content: str, agent_name: str) -> str:
         result = response.content[0].text.strip()
         try:
             from cost_tracker import get_tracker
-            get_tracker().record_api_call(_MODEL, response.usage,
+            get_tracker().record_api_call(model, response.usage,
                                           caller=f"weekly_agent_{agent_name[:20]}")
         except Exception:
             pass
@@ -330,6 +348,24 @@ def _run_agents_via_batch(
                     )
                 except Exception:
                     pass
+                try:
+                    from cost_attribution import log_spine_record  # noqa: PLC0415
+                    _u = result.result.message.usage
+                    _agent_idx = int(cid.split("-")[-1]) - 1
+                    _mn = agent_inputs[_agent_idx][2] if _agent_idx < len(agent_inputs) else cid
+                    log_spine_record(
+                        module_name=f"weekly_review_{_mn.lower().replace('-', '_').replace(' ', '_')}",
+                        layer_name="governance_review",
+                        ring="prod",
+                        model=_MODEL,
+                        purpose="weekly_review",
+                        input_tokens=getattr(_u, "input_tokens", None),
+                        output_tokens=getattr(_u, "output_tokens", None),
+                        cached_tokens=getattr(_u, "cache_read_input_tokens", None),
+                        estimated_cost_usd=None,
+                    )
+                except Exception as _sp_exc:
+                    log.warning("[SPINE] batch spine record failed (%s): %s", cid, _sp_exc)
             else:
                 err_type = result.result.type
                 log.warning("Batch result %s: error type=%s", cid, err_type)
@@ -440,7 +476,19 @@ _SYSTEM_AGENT5 = """You are the Chief Technology Officer of an AI trading bot. Y
 
 Produce a focused technical audit in markdown. Cover: (1) module performance ROI — which components are earning their complexity cost; (2) pipeline bottlenecks — where latency or cost is concentrated; (3) architecture risks — tight couplings, missing fallbacks, fragile dependencies; (4) one concrete recommendation to increase intelligence per dollar spent. Do not recommend the same change two weeks in a row. Be specific: name modules, cite costs, propose exact changes. Keep under 800 words."""
 
-_SYSTEM_AGENT6 = """You are the Strategy Director of an AI trading operation. You receive weekly reports from four specialist analysts — Quant Analyst, Risk Manager, Execution Engineer, and Backtest Analyst — and must synthesize their findings into a definitive strategic direction for the coming week. Be specific and concrete: recommend exact parameter values, not vague directions. Your memo should explain the strategic rationale clearly, then provide a JSON block with the precise parameter adjustments to be applied. Prioritize changes with the strongest evidence base and flag any conflicting recommendations across analysts."""
+_SYSTEM_AGENT6 = """You are the Strategy Director of an AI trading operation. You receive weekly reports from specialist analysts and must synthesize their findings into a definitive strategic direction for the coming week. Be specific and concrete: recommend exact parameter values, not vague directions. Your memo should explain the strategic rationale clearly, then provide a JSON block with the precise parameter adjustments to be applied. Prioritize changes with the strongest evidence base and flag any conflicting recommendations across analysts.
+
+IMPORTANT — director_notes format: The "director_notes" field in your JSON output MUST be a structured object, not a plain string:
+{
+  "active_context": "<2-4 paragraph strategy memo>",
+  "expiry": "<ISO date YYYY-MM-DD — when this memo expires, typically next Sunday>",
+  "priority": "normal|elevated|critical"
+}
+Use priority "elevated" when major regime changes or governance issues need urgent attention next cycle. Use "critical" only for halt-level concerns. "normal" is the default.
+
+IMPORTANT — recommendations format: The "recommendations" field MUST be a list of objects:
+[{"text": "<concrete action>", "target_metric": "<what to measure>", "priority": "high|medium|low"}]
+Limit to 3 items. Each recommendation must be actionable within one week."""
 
 _SYSTEM_AGENT7 = """You are the Market Intelligence Researcher for an AI trading bot. Your job is to survey the external landscape weekly — what strategies are working, what signals people are finding, what academic research is relevant, what competitors are doing. You have access to web search.
 
@@ -775,11 +823,14 @@ PDT-related blocks: {len(pdt_blocks)}
 ### Abstention Metrics (last 7 days)
 {_get_abstention_section()}
 
+### Taxonomy Drift (last 7 days)
+{_format_taxonomy_drift_block(_compute_taxonomy_drift(days_back=7))}
+
 ### Divergence Incident Summary (last 7 days)
 {_get_divergence_summary_section()}
 
 ### Your Task
-Audit for rule violations, near-misses, PDT compliance, position sizing, stop loss widths, catalyst discipline. Was the bot operating within its stated rules? Flag any module with abstention_rate > 0.80 as a potential lazy-abstainer. Produce your JSON compliance report with a score 0-100."""
+Audit for rule violations, near-misses, PDT compliance, position sizing, stop loss widths, catalyst discipline. Was the bot operating within its stated rules? Flag any module with abstention_rate > 0.80 as a potential lazy-abstainer. Note any taxonomy drift fields with unknown values — these indicate labeling gaps that degrade signal quality over time. Produce your JSON compliance report with a score 0-100."""
 
 
 # ── Agent 11 input builder ────────────────────────────────────────────────────
@@ -962,6 +1013,22 @@ def _run_phase2_agents(ctx: dict, phase1_outputs: dict) -> dict:
                     )
                 except Exception as _ct_exc:
                     log.warning("Cost tracker failed: %s", _ct_exc)
+                try:
+                    from cost_attribution import log_spine_record  # noqa: PLC0415
+                    _u2 = result.result.message.usage
+                    log_spine_record(
+                        module_name=f"weekly_review_{cid}",
+                        layer_name="governance_review",
+                        ring="prod",
+                        model=_MODEL_HAIKU,
+                        purpose="weekly_review",
+                        input_tokens=getattr(_u2, "input_tokens", None),
+                        output_tokens=getattr(_u2, "output_tokens", None),
+                        cached_tokens=getattr(_u2, "cache_read_input_tokens", None),
+                        estimated_cost_usd=None,
+                    )
+                except Exception as _sp2_exc:
+                    log.warning("[SPINE] phase2 spine record failed (%s): %s", cid, _sp2_exc)
             else:
                 err = getattr(result.result, "error", {})
                 batch_outputs[cid] = f"(batch error: {err})"
@@ -1127,11 +1194,42 @@ def _format_director_history_for_prompt(history: list[dict]) -> str:
 
 def _extract_recommendations(text: str, week_str: str = "") -> list[dict]:
     """
-    Extract top 3 recommendation bullets from Strategy Director output.
-    Looks for lines starting with - or * after a Recommendation header.
-    Returns [] if none found. Assigns stable rec_id and tracking metadata.
+    Extract top 3 recommendations from Strategy Director output.
+    Prefers structured JSON path (recommendations[] key from _extract_json_block),
+    falls back to markdown bullet extraction. Assigns stable rec_id and tracking metadata.
     """
     recs: list[dict] = []
+
+    # Structured path: parse JSON block and read recommendations[]
+    try:
+        parsed = _extract_json_block(text)
+        if parsed and isinstance(parsed.get("recommendations"), list):
+            _n = 0
+            for item in parsed["recommendations"][:3]:
+                if not isinstance(item, dict):
+                    continue
+                rec_text = str(item.get("text", "")).strip()
+                if len(rec_text) < 10:
+                    continue
+                _n += 1
+                recs.append({
+                    "rec_id":             f"rec_{week_str}_{_n}" if week_str else "",
+                    "recommendation":     rec_text[:200],
+                    "rationale":          "",
+                    "target_metric":      str(item.get("target_metric", "")),
+                    "expected_direction": "monitor",
+                    "follow_up":          "",
+                    "outcome":            "",
+                    "verdict":            "pending",
+                    "created_at":         datetime.now(timezone.utc).isoformat(),
+                    "resolved_at":        "",
+                })
+            if recs:
+                return recs
+    except Exception:
+        pass
+
+    # Markdown fallback: bullet extraction after Recommendations header
     in_rec_section = False
     _n = 0
     for line in text.splitlines():
@@ -1301,6 +1399,28 @@ You have received reports from 10 specialist agents (11 total including this sec
 
 ---
 
+## GOVERNANCE SIGNALS
+```json
+{_build_governance_signals_block()}
+```
+
+Key:
+- n_closed_trades: confirmed filled trades (recalibration gate = 30)
+- alpha_positive_pct: fraction of classified decisions with positive alpha
+- preflight_verdicts_7d: go/go_degraded/reconcile_only/halt counts this week
+- module_availability: True/False per governance module
+- cost_spine_available: attribution log present and non-empty
+- abstention_rate_7d: fraction of hindsight records where module abstained
+- unknown_session_label_pct: fraction of outcome records missing session tag
+- resolver_pending_count: unresolved recommendations in store
+- promotion_contracts_count: modules authorized to use PREMIUM tier (null=registry missing)
+- taxonomy_drift: per-field {unknown_count, total_count} for catalyst/session/exit_type/reject_reason
+- abstention_per_module: {module_name: rate} for modules seen in hindsight records (7d)
+- lazy_abstainer_candidates: modules flagged >0.80 in two consecutive weekly windows (advisory)
+- shadow_counterfactual: {right, wrong, neutral, cumulative_accuracy, advisory, note} — advisory until n>=50
+
+---
+
 ## SYNTHESIS GUIDANCE
 - Agent 5 (CTO): Are there architecture or cost changes that affect strategy parameters?
 - Agent 7 (Researcher): Are there signals or strategies worth adding?
@@ -1317,11 +1437,19 @@ Provide: (1) strategy memo starting with `## STRATEGY DIRECTOR FINAL MEMO` and (
   "parameter_adjustments": {{ ... }},
   "watchlist_updates": {{ ... }},
   "signal_weights_recommended": {{ ... }},
-  "director_notes": "<3-4 paragraph final memo>"
+  "director_notes": {{
+    "active_context": "<3-4 paragraph final memo>",
+    "expiry": "<ISO date YYYY-MM-DD — typically next Sunday>",
+    "priority": "normal|elevated|critical"
+  }},
+  "recommendations": [
+    {{"text": "<concrete action>", "target_metric": "<metric name>", "priority": "high|medium|low"}}
+  ]
 }}
 ```
 
-Be specific. Every value must be concrete."""
+Be specific. Every value must be concrete.
+For recommendations: up to 3 items, each with a measurable target_metric."""
 
 
 # ── Roadmap updater ───────────────────────────────────────────────────────────
@@ -1426,6 +1554,400 @@ def _get_divergence_summary_section() -> str:
         return _ds.format_divergence_summary_for_review(days_back=7)
     except Exception:
         return "(divergence summarizer unavailable)"
+
+
+def _compute_taxonomy_drift(days_back: int = 7) -> dict:
+    """
+    Scan recent log artifacts for unknown / unexpected enum values in key fields.
+    Returns per-field summary: {field: {unknown_count, total_count, samples}}.
+    Advisory only — never raises, non-fatal.
+
+    Fields scanned:
+      catalyst      — from decision_outcomes.jsonl
+      regime        — from decision_outcomes.jsonl (session as proxy)
+      exit_type     — from attribution_log.jsonl
+      reject_reason — top distinct values from decision_outcomes.jsonl (not strict unknown check)
+    """
+    result: dict = {}
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+
+    # Load known labels from semantic_labels if available
+    known_catalysts: set[str] = set()
+    known_regimes:   set[str] = set()
+    known_close_reasons: set[str] = set()
+    try:
+        from semantic_labels import CatalystType, RegimeType, CloseReasonType  # noqa: PLC0415
+        known_catalysts      = {e.value for e in CatalystType}
+        known_regimes        = {e.value for e in RegimeType}
+        known_close_reasons  = {e.value for e in CloseReasonType}
+    except Exception:
+        pass
+
+    def _scan_field(
+        records: list[dict],
+        field: str,
+        known: set[str],
+        allow_null: bool = True,
+    ) -> dict:
+        vals = [r.get(field) for r in records]
+        non_null = [str(v).strip() for v in vals if v not in (None, "", "null")]
+        unknown_samples: list[str] = []
+        unknown_count = 0
+        for v in non_null:
+            if known and v.lower() not in known:
+                unknown_count += 1
+                if v not in unknown_samples and len(unknown_samples) < 5:
+                    unknown_samples.append(v)
+        return {
+            "total_count":   len(non_null),
+            "unknown_count": unknown_count if known else 0,
+            "samples":       unknown_samples[:5],
+        }
+
+    # Scan decision_outcomes.jsonl — catalyst, regime (via session), reject_reason
+    try:
+        _outcomes_path = Path("data/analytics/decision_outcomes.jsonl")
+        outcomes_recs: list[dict] = []
+        if _outcomes_path.exists():
+            for line in _outcomes_path.read_text(errors="replace").splitlines()[-2000:]:
+                try:
+                    r = json.loads(line)
+                    if r.get("timestamp", "") >= cutoff:
+                        outcomes_recs.append(r)
+                except Exception:
+                    continue
+
+        if outcomes_recs:
+            result["catalyst"] = _scan_field(
+                outcomes_recs, "catalyst", known_catalysts,
+            )
+            # Session is the closest proxy for regime in this log
+            result["session"] = _scan_field(
+                outcomes_recs, "session",
+                {"market", "extended", "overnight", "pre_market", "pre_open"},
+            )
+            # reject_reason — report top distinct values, not strict unknown check
+            reject_vals = [
+                str(r.get("reject_reason", "")).strip()
+                for r in outcomes_recs
+                if r.get("reject_reason") not in (None, "", "null")
+            ]
+            from collections import Counter as _Counter
+            top_reject = [v for v, _ in _Counter(reject_vals).most_common(5)]
+            result["reject_reason"] = {
+                "total_count":   len(reject_vals),
+                "unknown_count": 0,   # not a strict-enum field
+                "samples":       top_reject,
+            }
+    except Exception as exc:
+        log.warning("[TAXONOMY] outcomes scan failed: %s", exc)
+
+    # Scan attribution_log.jsonl — exit_type
+    try:
+        _attr_path = Path("data/analytics/attribution_log.jsonl")
+        attr_recs: list[dict] = []
+        if _attr_path.exists():
+            for line in _attr_path.read_text(errors="replace").splitlines()[-2000:]:
+                try:
+                    r = json.loads(line)
+                    if r.get("timestamp", "") >= cutoff and r.get("exit_type"):
+                        attr_recs.append(r)
+                except Exception:
+                    continue
+        if attr_recs:
+            result["exit_type"] = _scan_field(
+                attr_recs, "exit_type", known_close_reasons,
+            )
+    except Exception as exc:
+        log.warning("[TAXONOMY] attribution scan failed: %s", exc)
+
+    return result
+
+
+def _format_taxonomy_drift_block(drift: dict) -> str:
+    """Format _compute_taxonomy_drift() result as a markdown section for Agent 10."""
+    if not drift:
+        return "Taxonomy drift: no data available for 7-day window."
+    lines = ["**Taxonomy Drift (last 7 days)**"]
+    for field, stats in sorted(drift.items()):
+        unk   = stats.get("unknown_count", 0)
+        total = stats.get("total_count", 0)
+        samps = stats.get("samples", [])
+        flag  = " ⚠️" if unk > 0 else ""
+        lines.append(
+            f"- `{field}`: {total} values, {unk} unknown{flag}"
+            + (f" — samples: {samps}" if samps else "")
+        )
+    return "\n".join(lines)
+
+
+def _get_abstention_section() -> str:
+    """
+    Per-module abstention table (7d). Flags modules with rate > 0.80.
+    Persists flag history to data/governance/abstention_flag_history.json for
+    two-consecutive-window lazy-abstainer detection. Advisory only.
+    """
+    try:
+        import hindsight as _hs   # noqa: PLC0415
+        import abstention as _ab  # noqa: PLC0415
+        records = _hs.get_hindsight_records(days_back=7)
+        if not records:
+            return "No hindsight records in last 7 days — abstention metrics unavailable."
+
+        modules = _ab.list_modules(records)
+        if not modules:
+            # Fall back to aggregate
+            rate = _ab.abstention_rate(records)
+            return f"Overall abstention rate (7d): {rate:.1%} across {len(records)} hindsight records. (No per-module breakdown available.)"
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        flag_history_path = Path("data/governance/abstention_flag_history.json")
+
+        # Load prior flag history
+        flag_history: dict = {}
+        try:
+            if flag_history_path.exists():
+                flag_history = json.loads(flag_history_path.read_text())
+        except Exception:
+            pass
+
+        rows: list[tuple[str, float, bool]] = []  # (module, rate, flagged)
+        flagged_this_week: list[str] = []
+
+        for mod in modules:
+            rate = _ab.abstention_rate(records, module_name=mod)
+            flagged = rate > 0.80
+            rows.append((mod, rate, flagged))
+            if flagged:
+                flagged_this_week.append(mod)
+
+        # Detect lazy-abstainer candidates: flagged in two consecutive windows
+        lazy_candidates: list[str] = []
+        for mod in flagged_this_week:
+            prior_flags = flag_history.get(mod, [])
+            # Keep last 4 weekly entries; flag candidate if previous window was also flagged
+            if prior_flags and prior_flags[-1].get("flagged"):
+                lazy_candidates.append(mod)
+
+        # Persist this week's flags
+        for mod, rate, flagged in rows:
+            history = flag_history.get(mod, [])
+            history.append({"week": today_str, "rate": round(rate, 4), "flagged": flagged})
+            flag_history[mod] = history[-4:]   # keep last 4 weeks
+
+        try:
+            flag_history_path.parent.mkdir(parents=True, exist_ok=True)
+            flag_history_path.write_text(json.dumps(flag_history, indent=2))
+        except Exception as exc:
+            log.warning("[ABSTENTION] flag history save failed: %s", exc)
+
+        # Format table
+        lines = [
+            f"**Per-module abstention (7d) — {len(records)} hindsight records, {len(modules)} modules**",
+            "",
+            "| Module | Abstention Rate | Flag |",
+            "|--------|----------------|------|",
+        ]
+        for mod, rate, flagged in rows:
+            flag_str = "⚠️ >0.80" if flagged else "OK"
+            lines.append(f"| {mod} | {rate:.1%} | {flag_str} |")
+
+        if lazy_candidates:
+            lines += [
+                "",
+                f"**Lazy-abstainer candidates (flagged ≥2 consecutive weeks, advisory only):** "
+                + ", ".join(lazy_candidates),
+            ]
+
+        return "\n".join(lines)
+
+    except Exception as exc:
+        log.warning("[ABSTENTION] _get_abstention_section failed: %s", exc)
+        return "(abstention metrics unavailable)"
+
+
+def _build_governance_signals_block() -> str:
+    """
+    Build ## Governance Signals JSON block for Agent 6 final input.
+    Reads: decision_outcomes, preflight log, module availability, cost spine, abstention.
+    Non-fatal — returns a safe JSON stub on any error.
+    """
+    signals: dict = {
+        "n_closed_trades": 0,
+        "alpha_positive_pct": None,
+        "preflight_verdicts_7d": {},
+        "module_availability": {},
+        "cost_spine_available": False,
+        "abstention_rate_7d": None,
+        "unknown_session_label_pct": None,
+        "resolver_pending_count": 0,
+    }
+
+    # Decision outcomes — closed trade count + alpha
+    try:
+        from decision_outcomes import generate_outcomes_summary  # noqa: PLC0415
+        summary = generate_outcomes_summary(days_back=7)
+        signals["n_closed_trades"] = summary.get("submitted", 0)
+        classified = summary.get("alpha_classified", 0)
+        positive   = summary.get("alpha_positive", 0)
+        if classified > 0:
+            signals["alpha_positive_pct"] = round(positive / classified, 3)
+    except Exception:
+        pass
+
+    # Preflight log — verdict distribution last 7 days
+    try:
+        _pf_log = Path("data/status/preflight_log.jsonl")
+        if _pf_log.exists():
+            from datetime import timedelta  # noqa: PLC0415
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            verdict_counts: dict[str, int] = {}
+            for line in _pf_log.read_text(errors="replace").splitlines()[-500:]:
+                try:
+                    rec = json.loads(line)
+                    if rec.get("checked_at", "") >= cutoff:
+                        v = rec.get("verdict", "unknown")
+                        verdict_counts[v] = verdict_counts.get(v, 0) + 1
+                except Exception:
+                    continue
+            signals["preflight_verdicts_7d"] = verdict_counts
+    except Exception:
+        pass
+
+    # Module availability from governance probe
+    try:
+        import governance_probe as _gp  # noqa: PLC0415
+        avail = _gp.load_module_availability()
+        if avail and isinstance(avail.get("modules"), dict):
+            signals["module_availability"] = avail["modules"]
+    except Exception:
+        pass
+
+    # Cost spine availability
+    try:
+        _spine = Path("data/analytics/cost_attribution_spine.jsonl")
+        signals["cost_spine_available"] = _spine.exists() and _spine.stat().st_size > 0
+    except Exception:
+        pass
+
+    # Abstention rate
+    try:
+        import abstention as _ab  # noqa: PLC0415
+        import hindsight as _hs  # noqa: PLC0415
+        records = _hs.get_hindsight_records(days_back=7)
+        if records:
+            signals["abstention_rate_7d"] = round(_ab.abstention_rate(records), 3)
+    except Exception:
+        pass
+
+    # Unknown session label prevalence (from decision outcomes)
+    try:
+        _outcomes_path = Path("data/analytics/decision_outcomes.jsonl")
+        if _outcomes_path.exists():
+            from datetime import timedelta as _td  # noqa: PLC0415
+            cutoff_dt = (datetime.now(timezone.utc) - _td(days=7)).isoformat()
+            total, unknown = 0, 0
+            for line in _outcomes_path.read_text(errors="replace").splitlines()[-1000:]:
+                try:
+                    rec = json.loads(line)
+                    if rec.get("timestamp", "") >= cutoff_dt:
+                        total += 1
+                        if rec.get("session", "") in ("", "unknown", None):
+                            unknown += 1
+                except Exception:
+                    continue
+            if total > 0:
+                signals["unknown_session_label_pct"] = round(unknown / total, 3)
+    except Exception:
+        pass
+
+    # Resolver pending count
+    try:
+        import recommendation_store as _rs  # noqa: PLC0415
+        all_recs = _rs.get_recommendations()
+        signals["resolver_pending_count"] = sum(
+            1 for r in all_recs if r.verdict == "pending"
+        )
+    except Exception:
+        pass
+
+    # Promotion contracts advisory
+    try:
+        _contracts_path = Path("data/governance/promotion_contracts.json")
+        if _contracts_path.exists():
+            _contracts_data = json.loads(_contracts_path.read_text())
+            signals["promotion_contracts_count"] = len(
+                _contracts_data.get("contracts", [])
+            )
+        else:
+            signals["promotion_contracts_count"] = None
+            log.warning("[GOVERNANCE] promotion_contracts.json absent — annex premium tier unguarded")
+    except Exception:
+        pass
+
+    # Taxonomy drift summary — counts only (full detail in Agent 10 input)
+    try:
+        _drift = _compute_taxonomy_drift(days_back=7)
+        signals["taxonomy_drift"] = {
+            field: {
+                "unknown_count": stats.get("unknown_count", 0),
+                "total_count":   stats.get("total_count", 0),
+            }
+            for field, stats in _drift.items()
+        }
+    except Exception:
+        pass
+
+    # Per-module abstention — lazy-abstainer candidates
+    try:
+        import hindsight as _hs   # noqa: PLC0415
+        import abstention as _ab  # noqa: PLC0415
+        _records = _hs.get_hindsight_records(days_back=7)
+        _modules = _ab.list_modules(_records) if _records else []
+        _per_mod = {}
+        _lazy_candidates = []
+        for _mod in _modules:
+            _rate = _ab.abstention_rate(_records, module_name=_mod)
+            _per_mod[_mod] = round(_rate, 4)
+            if _rate > 0.80:
+                _lazy_candidates.append(_mod)
+        # Check flag history for consecutive-window candidates
+        _flag_hist_path = Path("data/governance/abstention_flag_history.json")
+        _two_week_lazy = []
+        if _flag_hist_path.exists():
+            try:
+                _fh = json.loads(_flag_hist_path.read_text())
+                for _mod in _lazy_candidates:
+                    _prior = _fh.get(_mod, [])
+                    if len(_prior) >= 2 and _prior[-2].get("flagged") and _prior[-1].get("flagged"):
+                        _two_week_lazy.append(_mod)
+            except Exception:
+                pass
+        signals["abstention_per_module"] = _per_mod
+        signals["lazy_abstainer_candidates"] = _two_week_lazy
+    except Exception:
+        pass
+
+    # Shadow counterfactual summary
+    try:
+        import shadow_counterfactual as _scf  # noqa: PLC0415
+        _cf = _scf.compute_verdicts()
+        signals["shadow_counterfactual"] = {
+            "verdicted_new":       _cf.get("verdicted_new", 0),
+            "right":               _cf.get("right", 0),
+            "wrong":               _cf.get("wrong", 0),
+            "neutral":             _cf.get("neutral", 0),
+            "cumulative_accuracy": _cf.get("cumulative_accuracy"),
+            "advisory":            _cf.get("advisory", True),
+            "note":                _cf.get("note", ""),
+        }
+    except Exception:
+        pass
+
+    try:
+        return json.dumps(signals, indent=2)
+    except Exception:
+        return '{"error": "governance_signals_unavailable"}'
 
 
 def _build_agent5_cto_input(ctx: dict, phase1_outputs: dict) -> str:
@@ -1555,6 +2077,10 @@ def run_review(emergency: bool = False, reason: str = "") -> str:
     log_tail_500    = _read_log_tail(500)
     decisions_raw   = _load_decisions_raw()
     strategy_cfg    = _load_strategy_config()
+    _prior_strategy_config = (
+        json.loads(_STRATEGY_FILE.read_text(encoding="utf-8"))
+        if _STRATEGY_FILE.exists() else {}
+    )
     vector_stats    = trade_memory.get_collection_stats()
 
     try:
@@ -1619,6 +2145,11 @@ def run_review(emergency: bool = False, reason: str = "") -> str:
         pass
 
     # ── Build all agent inputs (independent — can run in parallel via batch) ───
+    # Defaults for agent1_input placeholders — replaced by .replace() calls below
+    _attr_text = "(attribution pending — will be rebuilt)"
+    _div_text  = "(divergence pending — will be rebuilt)"
+    _anti_pattern_section_placeholder = "{_anti_pattern_section_placeholder}"
+
     ticker_stats_str       = json.dumps(ticker_stats, indent=2) if ticker_stats else "{}"
     perf_str               = json.dumps(perf_summary, indent=2)
     global_indices_history = _load_global_indices_history(days=7)
@@ -1978,13 +2509,13 @@ Please analyze decision quality, compare live results to expectations, identify 
     else:
         log.info("Batch failed — running agents 1-4 sequentially")
         print("[1/11] Running Quant Analyst (sequential)...")
-        agent1_output = _call_claude(_SYSTEM_AGENT1, agent1_input, "1-QuantAnalyst")
+        agent1_output = _call_claude(_SYSTEM_AGENT1, agent1_input, "1-QuantAnalyst", module_name="weekly_review_agent_1")
         print("[2/11] Running Risk Manager (sequential)...")
-        agent2_output = _call_claude(_SYSTEM_AGENT2, agent2_input, "2-RiskManager")
+        agent2_output = _call_claude(_SYSTEM_AGENT2, agent2_input, "2-RiskManager", module_name="weekly_review_agent_2")
         print("[3/11] Running Execution Engineer (sequential)...")
-        agent3_output = _call_claude(_SYSTEM_AGENT3, agent3_input, "3-ExecutionEngineer")
+        agent3_output = _call_claude(_SYSTEM_AGENT3, agent3_input, "3-ExecutionEngineer", module_name="weekly_review_agent_3")
         print("[4/11] Running Backtest Analyst (sequential)...")
-        agent4_output = _call_claude(_SYSTEM_AGENT4, agent4_input, "4-BacktestAnalyst")
+        agent4_output = _call_claude(_SYSTEM_AGENT4, agent4_input, "4-BacktestAnalyst", module_name="weekly_review_agent_4")
 
     # ── Agent 5: CTO (technical audit — needs all 4 reports) ─────────────────
     print("[5/11] Running CTO (technical audit)...")
@@ -1998,6 +2529,7 @@ Please analyze decision quality, compare live results to expectations, identify 
         _SYSTEM_AGENT5,
         _build_agent5_cto_input({"costs_data": costs_data}, _cto_phase1),
         "5-CTO",
+        module_name="weekly_review_agent_5_cto",
     )
 
     # ── Agent 6: Strategy Director (always sequential — needs all 4 reports) ──
@@ -2095,16 +2627,25 @@ Provide two things:
     "macro_wire": "high|medium|low|ignore",
     "earnings_intel": "high|medium|low|ignore"
   }},
-  "director_notes": "<2-3 paragraph strategy memo for next week>"
+  "director_notes": {{
+    "active_context": "<2-3 paragraph strategy memo for next week>",
+    "expiry": "<ISO date YYYY-MM-DD when this memo expires, typically next Sunday>",
+    "priority": "normal|elevated|critical"
+  }},
+  "recommendations": [
+    {{"text": "<concrete action>", "target_metric": "<metric name>", "priority": "high|medium|low"}},
+    {{"text": "<concrete action>", "target_metric": "<metric name>", "priority": "high|medium|low"}}
+  ]
 }}
 ```
 
 Be specific. Every parameter value must be a concrete number or string, not a placeholder.
 For watchlist_updates: only include symbols that are currently in the pattern learning watchlist.
 If no updates needed, set watchlist_updates to {{}}.
-For signal_weights_recommended: based on this week's accuracy data, suggest weight levels."""
+For signal_weights_recommended: based on this week's accuracy data, suggest weight levels.
+For recommendations: list up to 3 concrete, actionable recommendations with measurable targets."""
 
-    agent6_output = _call_claude(_SYSTEM_AGENT6, agent6_input, "6-StrategyDirector")
+    agent6_output = _call_claude(_SYSTEM_AGENT6, agent6_input, "6-StrategyDirector", module_name="weekly_review_agent_6_director")
 
     # ── Save director memo to rolling history ─────────────────────────────────
     try:
@@ -2131,6 +2672,8 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
         if _json_match:
             _updates_raw = json.loads(_json_match.group())
             _rec_updates = _updates_raw.get("recommendation_updates", [])
+            if "_director_history" not in dir() or _director_history is None:
+                _director_history = _load_director_memo_history()
             if _rec_updates and _director_history:
                 _director_history = _apply_recommendation_updates(
                     _director_history, _rec_updates
@@ -2140,7 +2683,7 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
                 )
                 log.info("[REVIEW] Applied %d recommendation update(s)", len(_rec_updates))
     except Exception as _ru_err:
-        log.debug("[REVIEW] recommendation update parsing failed (non-fatal): %s", _ru_err)
+        log.warning("[REVIEW] recommendation update failed: %s", _ru_err)
 
     # ── Parse Agent 6 JSON ────────────────────────────────────────────────────
     params_update = _extract_json_block(agent6_output)
@@ -2168,19 +2711,37 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
         if active_strategy:
             config["active_strategy"] = active_strategy
         if director_notes:
-            config["director_notes"] = director_notes
+            if isinstance(director_notes, dict) and "active_context" in director_notes:
+                config["director_notes"] = director_notes
+            elif isinstance(director_notes, str):
+                config["director_notes"] = {
+                    "active_context": director_notes,
+                    "expiry": "",
+                    "priority": "normal",
+                }
+                log.warning("[REVIEW] Agent 6 draft returned plain-string director_notes — auto-migrated")
 
-        # Merge only the keys that exist in the current config parameters
-        # to avoid injecting unexpected keys from the model
+        # Merge only whitelisted keys (must already exist in config parameters)
+        _known_keys = set(config.get("parameters", {}).keys())
+        _unknown = []
         for key, value in param_adjustments.items():
-            config["parameters"][key] = value
+            if key in _known_keys:
+                config["parameters"][key] = value
+            else:
+                _unknown.append(key)
+        if _unknown:
+            log.warning(
+                "[REVIEW] Agent 6 proposed unrecognized parameter keys "
+                "(not merged): %s", _unknown,
+            )
 
         # Save signal weights if provided
         signal_weights = params_update.get("signal_weights_recommended", {})
         if signal_weights:
             config["signal_weights"] = signal_weights
 
-        _save_strategy_config(config)
+        # Phase 3a draft — intentionally NOT written to disk here.
+        # The single authoritative write happens after Phase 3b succeeds.
 
         # Apply watchlist updates from Strategy Director
         watchlist_updates = params_update.get("watchlist_updates", {})
@@ -2193,11 +2754,11 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
             except Exception as _wl_exc:
                 log.warning("Watchlist update from review failed: %s", _wl_exc)
     else:
-        # Graceful fallback: update metadata only
+        # Graceful fallback: load fresh config so Phase 3b has something to merge into
         config = _load_strategy_config()
         config["generated_at"] = datetime.now().isoformat()
         config["generated_by"] = "weekly_review"
-        _save_strategy_config(config)
+        # Intentionally NOT written to disk — Phase 3b is the single authoritative write.
     # agent6_output is the Strategy Director draft (referenced below in all_outputs)
 
 
@@ -2238,6 +2799,13 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
         agent11_output = "(unavailable)"
     all_outputs["agent11"] = agent11_output
 
+    # Phase 3b: governance probe — refresh module availability before Agent 6 final
+    try:
+        import governance_probe as _gp_run  # noqa: PLC0415
+        _gp_run.run_governance_probe()
+    except Exception as _gp_exc:
+        log.warning("[REVIEW] governance_probe run failed (non-fatal): %s", _gp_exc)
+
     # Phase 3b: Agent 6 final — re-runs with ALL 11 agent reports
     print("[Phase 3b] Running Agent 6 Strategy Director (final synthesis)...")
     try:
@@ -2245,6 +2813,7 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
             _SYSTEM_AGENT6,
             _build_agent6_final_input(review_context, all_outputs),
             "6-StrategyDirector-Final",
+            module_name="weekly_review_agent_6_director",
         )
         final_params = _extract_json_block(agent6_final)
         if final_params:
@@ -2256,11 +2825,31 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
             if final_params.get("active_strategy"):
                 config["active_strategy"] = final_params["active_strategy"]
                 active_strategy = final_params["active_strategy"]
-            if final_params.get("director_notes"):
-                config["director_notes"] = final_params["director_notes"]
-                director_notes = final_params["director_notes"]
+            _dn_final = final_params.get("director_notes")
+            if _dn_final:
+                if isinstance(_dn_final, dict) and "active_context" in _dn_final:
+                    config["director_notes"] = _dn_final
+                elif isinstance(_dn_final, str):
+                    # Agent returned old-format string — migrate to structured form
+                    config["director_notes"] = {
+                        "active_context": _dn_final,
+                        "expiry": "",
+                        "priority": "normal",
+                    }
+                    log.warning("[REVIEW] Agent 6 returned plain-string director_notes — auto-migrated to dict")
+                director_notes = config["director_notes"]
+            _known_keys_final = set(config.get("parameters", {}).keys())
+            _unknown_final = []
             for _k, _v in final_params.get("parameter_adjustments", {}).items():
-                config["parameters"][_k] = _v
+                if _k in _known_keys_final:
+                    config["parameters"][_k] = _v
+                else:
+                    _unknown_final.append(_k)
+            if _unknown_final:
+                log.warning(
+                    "[REVIEW] Agent 6 final proposed unrecognized parameter keys "
+                    "(not merged): %s", _unknown_final,
+                )
             _sw_final = final_params.get("signal_weights_recommended", {})
             if _sw_final:
                 config["signal_weights"] = _sw_final
@@ -2269,7 +2858,11 @@ For signal_weights_recommended: based on this week's accuracy data, suggest weig
         else:
             log.warning("Agent 6 final JSON parse failed — using draft config")
     except Exception as _a6f_exc:
-        log.warning("Phase 3 Agent 6 Final failed: %s", _a6f_exc)
+        log.critical("[REVIEW] Phase 3b failed — strategy_config NOT updated: %s", _a6f_exc)
+        _send_sms(
+            f"[BullBearBot] CRITICAL: Phase 3b weekly review failed — "
+            f"strategy_config unchanged. {_a6f_exc}"
+        )
         agent6_final = "(unavailable)"
     all_outputs["agent6_final"] = agent6_final
 

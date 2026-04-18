@@ -1,0 +1,19 @@
+{
+  "probed_at": "2026-04-18T01:52:43.791147Z",
+  "modules": {
+    "model_tiering": true,
+    "feature_flags": true,
+    "cost_attribution": true,
+    "abstention": true,
+    "recommendation_store": true,
+    "recommendation_resolver": true,
+    "incident_schema": true,
+    "hindsight": true,
+    "semantic_labels": true,
+    "versioning": true,
+    "divergence": true,
+    "preflight": true
+  },
+  "available_count": 12,
+  "total_count": 12
+}

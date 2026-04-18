@@ -28,6 +28,7 @@ import options_executor
 import options_intelligence
 import options_state
 import order_executor_options as oe_opts
+import preflight as _preflight
 from dataclasses import asdict
 from log_setup import get_logger
 from reconciliation import (
@@ -817,6 +818,32 @@ def run_options_cycle(
         log.warning("[OPTS] Account 2 equity $%.0f below floor $%.0f — halting", equity, _EQUITY_FLOOR)
         return
 
+    # 1b. Preflight gate
+    _pf_allow_live_orders = True
+    _pf_allow_new_entries = True
+    try:
+        _pf_result = _preflight.run_preflight(
+            caller="run_options_cycle",
+            session_tier=session_tier,
+            equity=equity,
+            account_id="a2",
+        )
+        if _pf_result.verdict == "halt":
+            log.error("[PREFLIGHT] verdict=halt — aborting options cycle  blockers=%s",
+                      _pf_result.blockers)
+            return
+        elif _pf_result.verdict == "reconcile_only":
+            log.warning("[PREFLIGHT] verdict=reconcile_only — new A2 entries blocked  blockers=%s",
+                        _pf_result.blockers)
+            _pf_allow_new_entries = False
+        elif _pf_result.verdict == "shadow_only":
+            log.warning("[PREFLIGHT] verdict=shadow_only — A2 live orders suppressed")
+            _pf_allow_live_orders = False
+        elif _pf_result.verdict == "go_degraded":
+            log.warning("[PREFLIGHT] verdict=go_degraded  warnings=%s", _pf_result.warnings)
+    except Exception as _pf_exc:
+        log.error("[PREFLIGHT] unexpected exception (proceeding with caution): %s", _pf_exc)
+
     # 2. Observation mode check
     obs_state = _get_obs_mode_state()
     obs_mode = _update_obs_mode_state(obs_state)
@@ -971,7 +998,9 @@ def run_options_cycle(
 
     # 10. Execute approved trades
     execution_results = []
-    for action in debate_result.get("actions", []):
+    if not _pf_allow_new_entries:
+        log.warning("[PREFLIGHT] New A2 entries suppressed by preflight (reconcile_only)")
+    for action in debate_result.get("actions", []) if _pf_allow_new_entries else []:
         if action.get("action") == "hold":
             log.info("[OPTS] HOLD %s — %s",
                      action.get("symbol", "?"), action.get("reason", ""))
@@ -1043,7 +1072,11 @@ def run_options_cycle(
         options_state.save_structure(structure)
 
         # Submit — options_executor updates lifecycle and re-persists
-        result = oe_opts.submit_options_order(structure, equity, obs_mode)
+        # shadow_only: treat as observation regardless of obs_mode flag
+        _effective_obs = obs_mode or (not _pf_allow_live_orders)
+        if not _pf_allow_live_orders:
+            log.warning("[PREFLIGHT] shadow_only — suppressing live A2 submission for %s", sym)
+        result = oe_opts.submit_options_order(structure, equity, _effective_obs)
         execution_results.append(result.to_dict())
         log.info("[OPTS] %s %s  status=%s%s",
                  sym, structure.strategy.value, result.status,

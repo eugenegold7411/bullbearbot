@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "description": "Promotion contract registry. Each entry authorizes a module to use PREMIUM tier after numeric evaluation. Annex modules may not use PREMIUM without an entry here.",
+  "contracts": []
+}

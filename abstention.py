@@ -102,6 +102,25 @@ def validate_abstention(record: AbstentionRecord) -> list[str]:
     return errors
 
 
+def list_modules(records: list[dict]) -> list[str]:
+    """
+    Return sorted list of distinct module_name values seen in the hindsight records.
+    Reads from records[*]["abstention"]["module_name"]. Non-fatal.
+    """
+    try:
+        names: set[str] = set()
+        for r in records:
+            ab = r.get("abstention") or {}
+            if isinstance(ab, dict):
+                mn = ab.get("module_name", "")
+                if mn:
+                    names.add(mn)
+        return sorted(names)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[ABSTENTION] list_modules failed: %s", exc)
+        return []
+
+
 def abstention_rate(
     records: list[dict],
     module_name: Optional[str] = None,

@@ -339,3 +339,35 @@ def _migrate_cost_attribution_record_v0_to_v1(artifact: dict) -> dict:
 register_migration("recommendation_record", 0, _migrate_recommendation_record_v0_to_v1)
 register_migration("a2_readiness_state", 1, _migrate_a2_readiness_state_v1_to_v2)
 register_migration("cost_attribution_record", 0, _migrate_cost_attribution_record_v0_to_v1)
+
+
+def _migrate_strategy_config_v1_to_v2(artifact: dict) -> dict:
+    """
+    v1→v2: Remove 9 duplicated keys from parameters (canonical locations are
+    position_sizing for tier/exposure keys and signal_weights for weight keys).
+    Also removes _DEPRECATED string-marker fields from parameters.
+    Bumps top-level 'version' from 1 to 2.
+
+    Note: strategy_config.json uses 'version' (not 'schema_version').
+    This migration is registered here for discoverability and dry-run support
+    via migrate_artifact(); callers must pass artifact_type='strategy_config'.
+    """
+    result = dict(artifact)
+    params = dict(result.get("parameters", {}))
+    _DUP_KEYS = [
+        "core_tier_pct", "dynamic_tier_pct", "intraday_tier_pct",
+        "max_total_exposure_pct", "cash_reserve_pct",
+        "momentum_weight", "mean_reversion_weight",
+        "news_sentiment_weight", "cross_sector_weight",
+    ]
+    for k in _DUP_KEYS:
+        params.pop(k, None)
+    for k in list(params.keys()):
+        if k.endswith("_DEPRECATED"):
+            params.pop(k)
+    result["parameters"] = params
+    result["version"] = 2
+    return result
+
+
+register_migration("strategy_config", 1, _migrate_strategy_config_v1_to_v2)

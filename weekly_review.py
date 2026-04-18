@@ -2968,7 +2968,8 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
 
     # ── Send SMS ──────────────────────────────────────────────────────────────
     sms_strategy = active_strategy or strategy_cfg.get("active_strategy", "unknown")
-    sms_notes    = (director_notes or "No director notes parsed.")[:140]
+    _dn_text     = (director_notes.get("active_context", "") if isinstance(director_notes, dict) else str(director_notes or ""))
+    sms_notes    = (_dn_text or "No director notes parsed.")[:140]
     sms_message  = f"WEEKLY REVIEW COMPLETE: winner={sms_strategy} notes={sms_notes}"
     _send_sms(sms_message)
 

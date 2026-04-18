@@ -65,6 +65,43 @@ if cfg:
     else:
         check(PASS, "strategy_config.json: max_single_position_pct correctly absent (deprecated)")
 
+    # schema version
+    cfg_version = cfg.get("version")
+    if cfg_version == 2:
+        check(PASS, "strategy_config.json: version=2 (Phase 6 schema)")
+    elif cfg_version == 1:
+        check(WARN, "strategy_config.json: version=1 — Phase 6 migration pending")
+    else:
+        check(WARN, f"strategy_config.json: version={cfg_version!r} unexpected")
+
+    # Duplicate keys — must not appear in parameters (canonical location shown)
+    _DUP_CHECKS = [
+        ("core_tier_pct",          "position_sizing"),
+        ("dynamic_tier_pct",       "position_sizing"),
+        ("intraday_tier_pct",      "position_sizing"),
+        ("max_total_exposure_pct", "position_sizing"),
+        ("cash_reserve_pct",       "position_sizing"),
+        ("momentum_weight",        "signal_weights"),
+        ("mean_reversion_weight",  "signal_weights"),
+        ("news_sentiment_weight",  "signal_weights"),
+        ("cross_sector_weight",    "signal_weights"),
+    ]
+    _params_block = cfg.get("parameters", {})
+    _dup_present = [k for k, _ in _DUP_CHECKS if k in _params_block]
+    if _dup_present:
+        check(FAIL, (f"strategy_config.json: duplicate keys in parameters "
+                     f"(canonical location in parentheses): "
+                     + ", ".join(f"{k} ({next(c for kk,c in _DUP_CHECKS if kk==k)})" for k in _dup_present)))
+    else:
+        check(PASS, "strategy_config.json: no duplicate keys in parameters block")
+
+    # _DEPRECATED string-marker fields
+    _deprecated_present = [k for k in _params_block if k.endswith("_DEPRECATED")]
+    if _deprecated_present:
+        check(FAIL, f"strategy_config.json: _DEPRECATED marker field(s) in parameters: {_deprecated_present}")
+    else:
+        check(PASS, "strategy_config.json: no _DEPRECATED marker fields in parameters")
+
     # cash_reserve_pct
     crp = cfg.get("position_sizing", {}).get("cash_reserve_pct")
     if crp is None:
@@ -132,21 +169,30 @@ if cfg:
             if deadline_str:
                 check(FAIL, f"strategy_config.json: time_bound_action {sym} invalid deadline: {deadline_str!r}")
 
-    # director_notes age
-    notes = cfg.get("director_notes", "")
-    m = re.search(r"UPDATED (\d{4}-\d{2}-\d{2})", notes)
-    if m:
-        try:
-            updated  = datetime.strptime(m.group(1), "%Y-%m-%d")
-            age_days = (datetime.now() - updated).days
-            if age_days > 14:
-                check(WARN, f"strategy_config.json: director_notes last updated {age_days} days ago ({m.group(1)}) — consider refreshing")
-            else:
-                check(PASS, f"strategy_config.json: director_notes updated {age_days} day(s) ago ({m.group(1)})")
-        except Exception:
-            check(WARN, "strategy_config.json: UPDATED date in director_notes could not be parsed")
+    # director_notes check (dict format since Phase 6)
+    notes = cfg.get("director_notes", {})
+    if isinstance(notes, dict):
+        _expiry_str = notes.get("expiry", "")
+        if _expiry_str:
+            try:
+                _expiry  = datetime.strptime(_expiry_str, "%Y-%m-%d")
+                age_days = (datetime.now() - _expiry).days
+                if age_days > 0:
+                    check(WARN, f"strategy_config.json: director_notes expired {age_days} day(s) ago ({_expiry_str}) — Agent 6 should refresh")
+                else:
+                    check(PASS, f"strategy_config.json: director_notes expires {_expiry_str} ({-age_days} day(s) away)")
+            except Exception:
+                check(WARN, "strategy_config.json: director_notes.expiry could not be parsed")
+        else:
+            check(WARN, "strategy_config.json: director_notes.expiry not set")
+        if not notes.get("active_context"):
+            check(WARN, "strategy_config.json: director_notes.active_context is empty")
+        else:
+            check(PASS, "strategy_config.json: director_notes has active_context")
+    elif isinstance(notes, str) and notes:
+        check(WARN, "strategy_config.json: director_notes is a plain string — Agent 6 should emit dict {active_context, expiry, priority}")
     else:
-        check(WARN, "strategy_config.json: director_notes has no 'UPDATED YYYY-MM-DD' date")
+        check(WARN, "strategy_config.json: director_notes missing or empty")
 
     # account2 checks
     a2 = cfg.get("account2", {})
@@ -866,9 +912,18 @@ _gate(
     else "Gate 15 — data/analytics/ dir MISSING — create it before first run",
 )
 
+# Gate 16 — strategy_config.json version=2 (Phase 6 schema hygiene)
+_cfg_version = cfg.get("version", 0) if isinstance(cfg, dict) else 0
+_gate(
+    _cfg_version >= 2,
+    f"Gate 16 — strategy_config.json version={_cfg_version} (Phase 6 clean schema)"
+    if _cfg_version >= 2
+    else f"Gate 16 — strategy_config.json version={_cfg_version} — Phase 6 migration pending",
+)
+
 _gates_passed = sum(1 for ok, _ in _gate_results if ok)
 print("─" * 65)
-print(f"  Go-live gates: {_gates_passed}/15 passing")
+print(f"  Go-live gates: {_gates_passed}/16 passing")
 print("─" * 65)
 print()
 
@@ -883,7 +938,7 @@ def _write_readiness_status() -> None:
             "overall_status":  "ready" if _gates_passed >= 15 else "not_ready",
             "a1_live_ready":   _gates_passed >= 15 and _clean_days >= 7,
             "gates_passed":    _gates_passed,
-            "gates_total":     15,
+            "gates_total":     16,
             "sev1_clean_days": _clean_days,
             "failures":        [label for ok, label in _gate_results if not ok],
             "generated_at":    datetime.now(timezone.utc).isoformat(),

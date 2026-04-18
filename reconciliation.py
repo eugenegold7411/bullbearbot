@@ -320,7 +320,8 @@ def diff_state(
         # objects; normalises enum prefixes; includes trailing_stop).
         if sym in pos_by_sym:
             sym_orders = orders_by_sym.get(sym, [])
-            has_stop = _has_stop_order(sym, sym_orders)
+            is_short = pos_by_sym[sym].qty < 0
+            has_stop = _has_stop_order(sym, sym_orders, is_short=is_short)
             if not has_stop:
                 missing_stops.append(sym)
                 actions.append(ReconciliationAction(
@@ -421,6 +422,20 @@ def execute_reconciliation_plan(
             try:
                 if dry_run:
                     results.append(f"[RECON] DRY_RUN {atype} {sym}")
+                    continue
+
+                # Short positions (negative qty) require a buy-to-cover order, not a sell.
+                # Skip all close/exit actions to avoid submitting wrong-side orders;
+                # operator must handle short positions manually.
+                if action.qty < 0 and atype in ("deadline_exit_market", "close_all", "close_half"):
+                    log.warning(
+                        "[RECON] Skipping %s for SHORT position %s qty=%.0f — "
+                        "manual intervention required",
+                        atype, sym, action.qty,
+                    )
+                    results.append(
+                        f"[RECON] SKIPPED {atype} for SHORT {sym} qty={action.qty:.0f}"
+                    )
                     continue
 
                 if atype == "deadline_exit_market":

@@ -57,14 +57,18 @@ def _position_qty(position) -> float:
     return float(abs(int(raw)))
 
 
-def _has_stop_order(symbol: str, open_orders: list) -> bool:
+def _has_stop_order(symbol: str, open_orders: list, is_short: bool = False) -> bool:
     """
-    Return True if any order in open_orders is a stop or stop_limit sell for symbol.
+    Return True if any order in open_orders is a protective stop for symbol.
+
+    For long positions (is_short=False): looks for sell-stop orders.
+    For short positions (is_short=True): looks for buy-stop orders (cover-on-rise).
 
     Handles both raw Alpaca order objects (o.type = "OrderType.STOP") and
     NormalizedOrder objects (o.order_type = "stop") via flexible attribute lookup
     and enum-prefix stripping.
     """
+    expected_side = "buy" if is_short else "sell"
     for order in open_orders:
         order_symbol = getattr(order, "symbol", "")
         if order_symbol != symbol and order_symbol != symbol.replace("/", ""):
@@ -74,7 +78,7 @@ def _has_stop_order(symbol: str, open_orders: list) -> bool:
         ).lower()
         order_type = raw_type.split(".")[-1]
         order_side = str(getattr(order, "side", "")).lower().split(".")[-1]
-        if order_side == "sell" and order_type in ("stop", "stop_limit", "trailing_stop"):
+        if order_side == expected_side and order_type in ("stop", "stop_limit", "trailing_stop"):
             return True
     return False
 
@@ -157,8 +161,9 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
     result: dict[str, dict] = {}
 
     for pos in positions:
-        if float(pos.qty) <= 0:
+        if float(pos.qty) == 0:
             continue
+        is_short    = float(pos.qty) < 0
         sym         = pos.symbol
         cur_price   = float(pos.current_price)
         open_orders = orders_by_sym.get(sym, [])
@@ -167,7 +172,10 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
         stop_oid     = None
         target_price = None
         target_oid   = None
-        any_sell_oid = None  # fallback: any sell order counts as protection
+        any_sell_oid = None  # fallback for long positions: any sell order counts as protection
+
+        # Protective orders are buy-side for shorts, sell-side for longs.
+        protective_side = "buy" if is_short else "sell"
 
         for o in open_orders:
             o_type = str(getattr(o, "type", "")).lower()
@@ -175,16 +183,16 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
             # Normalize Alpaca enum repr: "OrderType.STOP" → "stop", "OrderSide.SELL" → "sell"
             o_type = o_type.split(".")[-1]
             o_side = o_side.split(".")[-1]
-            if "sell" not in o_side:
+            if protective_side not in o_side:
                 continue
-            if any_sell_oid is None:
+            if not is_short and any_sell_oid is None:
                 any_sell_oid = str(o.id)
             if o_type in ("stop", "stop_limit"):
                 sp = getattr(o, "stop_price", None)
                 if sp:
                     stop_price = float(sp)
                     stop_oid   = str(o.id)
-            elif o_type == "limit":
+            elif o_type == "limit" and not is_short:
                 lp = getattr(o, "limit_price", None)
                 if lp:
                     lp_f = float(lp)
@@ -197,7 +205,10 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
                         stop_price = lp_f
                         stop_oid   = str(o.id)
 
-        if stop_price and target_price:
+        if is_short:
+            # Short positions: a buy-stop is full protection; no TP tracking here.
+            status = "partial" if stop_price else "unprotected"
+        elif stop_price and target_price:
             status = "protected"
         elif stop_price:
             status = "partial"
@@ -544,8 +555,9 @@ def run_exit_manager(
         exits = {}
 
     for pos in positions:
-        if float(pos.qty) <= 0:
+        if float(pos.qty) == 0:
             continue
+        is_short = float(pos.qty) < 0
         sym = pos.symbol
         ei  = exits.get(sym, {"status": "unknown"})
 
@@ -564,6 +576,11 @@ def run_exit_manager(
                         "  target=$%s", sym, _tp)
         elif _status in ("unprotected", "unknown"):
             log.warning("[EXIT_MGR] %s: UNPROTECTED — no stop order found", sym)
+
+        if is_short:
+            log.info("[EXIT_MGR] %s: SHORT position (qty=%.0f) — auto-management skipped",
+                     sym, float(pos.qty))
+            continue
 
         # Refresh if UNPROTECTED / tp_only / stale
         try:
@@ -616,12 +633,13 @@ def format_exit_status_section(
 
     lines = []
     for pos in positions:
-        if float(pos.qty) <= 0:
+        if float(pos.qty) == 0:
             continue
         sym     = pos.symbol
         current = float(pos.current_price)
         entry   = float(pos.avg_entry_price)
         qty     = float(pos.qty)
+        is_short = qty < 0
         unreal  = float(pos.unrealized_pl)
         sign    = "+" if unreal >= 0 else ""
         cost    = abs(entry * qty)
@@ -642,6 +660,7 @@ def format_exit_status_section(
         )
         pnl_str = f"P&L={sign}${unreal:.0f} ({sign}{pnl_pct:.1f}%)"
 
+        side_label = "[SHORT]" if is_short else ""
         flag = ""
         if status == "unprotected":
             flag = "  *** UNPROTECTED — NO STOP LOSS ***"
@@ -651,7 +670,7 @@ def format_exit_status_section(
             flag = "  ! partial protection (stop only)"
 
         lines.append(
-            f"  {sym:<8}  {stop_str}  {tgt_str}  {pnl_str}  [{status.upper()}]{flag}"
+            f"  {sym:<8}  {stop_str}  {tgt_str}  {pnl_str}  [{status.upper()}]{side_label}{flag}"
         )
 
     return "\n".join(lines) if lines else "  (no positions)"

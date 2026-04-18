@@ -94,6 +94,15 @@ def run_precycle(
     log.info("Account  equity=$%s  cash=$%s  exposure=%.1f%%  positions=%d",
              f"{equity:,.0f}", f"{cash:,.0f}", exposure, len(positions))
 
+    # Log any unexpected short positions prominently so the operator can see them.
+    _short_positions = [p for p in positions if float(p.qty) < 0]
+    for _sp in _short_positions:
+        log.warning(
+            "[SHORT_POS] Unexpected short position detected: %s qty=%.0f "
+            "market_value=$%.0f — manual intervention required to cover",
+            _sp.symbol, float(_sp.qty), abs(float(_sp.market_value)),
+        )
+
     # 1b. Preflight gate
     allow_live_orders = True
     allow_new_entries = True
@@ -278,9 +287,13 @@ def run_precycle(
         )
         a1_mode = load_account_mode("A1")
         if snapshot is not None and snapshot.positions:
+            # Exclude short positions from protection divergence detection: short
+            # positions need buy-stop coverage, which divergence.py does not check.
+            # Short positions are logged above; operator must manage them manually.
+            _long_positions = [p for p in snapshot.positions if p.qty > 0]
             div_events = detect_protection_divergence(
                 account="A1",
-                positions=snapshot.positions,
+                positions=_long_positions,
                 open_orders=snapshot.open_orders,
                 vix=float(md.get("vix", 20) or 20),
             )

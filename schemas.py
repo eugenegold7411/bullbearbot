@@ -478,6 +478,11 @@ class NormalizedPosition:
     unrealized_plpc: float    # fraction, not percentage (e.g. 0.023 = 2.3%)
     is_crypto_pos:   bool
 
+    @property
+    def side(self) -> str:
+        """Position side derived from qty sign: 'long' or 'short'."""
+        return "short" if self.qty < 0 else "long"
+
     @classmethod
     def from_alpaca_position(cls, pos) -> "NormalizedPosition":
         """
@@ -594,8 +599,8 @@ class BrokerSnapshot:
 
     @property
     def held_symbols(self) -> set[str]:
-        """Set of canonical symbols with open positions (qty > 0)."""
-        return {p.symbol for p in self.positions if p.qty > 0}
+        """Set of canonical symbols with open positions (long or short, qty != 0)."""
+        return {p.symbol for p in self.positions if p.qty != 0}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

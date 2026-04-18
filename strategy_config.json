@@ -95,12 +95,14 @@
     {
       "symbol": "QQQ",
       "exit_by": "2026-04-23T19:45:00+00:00",
-      "reason": "backstop_exit: max_hold_7d"
+      "reason": "backstop_exit: max_hold_7d",
+      "deadline_et": "2026-04-23 15:45"
     },
     {
       "symbol": "MSFT",
       "exit_by": "2026-04-23T19:45:00+00:00",
-      "reason": "backstop_exit: max_hold_7d"
+      "reason": "backstop_exit: max_hold_7d",
+      "deadline_et": "2026-04-23 15:45"
     }
   ],
   "exit_management": {

@@ -384,3 +384,17 @@ def run_preflight(
         log.debug("[PREFLIGHT] verdict=go")
 
     return result
+
+
+def is_go(result) -> bool:
+    return result.verdict in ("go", "go_degraded")
+
+
+def format_preflight_for_log(result) -> str:
+    return (
+        f"[PREFLIGHT] verdict={result.verdict} "
+        f"passed={len(result.passed_checks)} "
+        f"failed={len(result.failed_checks)} "
+        f"warnings={len(result.warning_checks)} "
+        f"session={result.session_tier}"
+    )

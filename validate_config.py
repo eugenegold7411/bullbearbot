@@ -912,6 +912,19 @@ _gate(
     else "Gate 15 — data/analytics/ dir MISSING — create it before first run",
 )
 
+# Gate 17 — T-005: regime label normalization present in bot_stage1_regime.py
+_regime_src = BASE_DIR / "bot_stage1_regime.py"
+_has_normalize = (
+    _regime_src.exists() and
+    "_normalize_regime_labels" in _regime_src.read_text()
+)
+_gate(
+    _has_normalize,
+    "Gate 17 — T-005 regime label normalizer present in bot_stage1_regime.py"
+    if _has_normalize
+    else "Gate 17 — T-005 regime label normalizer MISSING from bot_stage1_regime.py",
+)
+
 # Gate 16 — strategy_config.json version=2 (Phase 6 schema hygiene)
 _cfg_version = cfg.get("version", 0) if isinstance(cfg, dict) else 0
 _gate(
@@ -923,7 +936,7 @@ _gate(
 
 _gates_passed = sum(1 for ok, _ in _gate_results if ok)
 print("─" * 65)
-print(f"  Go-live gates: {_gates_passed}/16 passing")
+print(f"  Go-live gates: {_gates_passed}/17 passing")
 print("─" * 65)
 print()
 
@@ -935,10 +948,10 @@ def _write_readiness_status() -> None:
     """Write readiness_status_latest.json for CTO weekly review injection. Non-fatal."""
     try:
         _status = {
-            "overall_status":  "ready" if _gates_passed >= 15 else "not_ready",
-            "a1_live_ready":   _gates_passed >= 15 and _clean_days >= 7,
+            "overall_status":  "ready" if _gates_passed >= 16 else "not_ready",
+            "a1_live_ready":   _gates_passed >= 16 and _clean_days >= 7,
             "gates_passed":    _gates_passed,
-            "gates_total":     16,
+            "gates_total":     17,
             "sev1_clean_days": _clean_days,
             "failures":        [label for ok, label in _gate_results if not ok],
             "generated_at":    datetime.now(timezone.utc).isoformat(),

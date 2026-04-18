@@ -32,6 +32,14 @@ _REGIME_SYS = (
 )
 
 
+def _normalize_regime_labels(result: dict) -> dict:
+    """T-005: Claude sometimes emits 'risk-on'/'risk-off' with hyphens; normalize to underscores."""
+    for _f in ("bias", "macro_regime"):
+        if isinstance(result.get(_f), str):
+            result[_f] = result[_f].replace("-", "_")
+    return result
+
+
 def classify_regime(md: dict, calendar: dict) -> dict:
     """
     Stage 1: Haiku call classifying market regime from macro data.
@@ -115,7 +123,7 @@ def classify_regime(md: dict, calendar: dict) -> dict:
         raw = resp.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        result = json.loads(raw)
+        result = _normalize_regime_labels(json.loads(raw))
         cr = getattr(resp.usage, "cache_read_input_tokens", 0) or 0
         log.debug("[REGIME] score=%d bias=%s confidence=%s cache_read=%d",
                   result.get("regime_score", 50), result.get("bias"), result.get("confidence"), cr)

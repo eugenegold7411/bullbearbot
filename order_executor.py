@@ -140,6 +140,9 @@ MAX_DTE               = 45          # maximum days-to-expiration
 # (see validate_action — uses local _tier_ceiling dict).
 
 # Symbols with liquid enough options markets for real order submission
+# T-010: per-symbol consecutive rejection counter (entry orders only; resets on success)
+_consecutive_rejections: dict[str, int] = {}
+
 LIQUID_OPTIONS_SYMBOLS = frozenset({
     "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "TSLA", "META", "GOOGL", "AMD"
 })
@@ -453,7 +456,7 @@ def _submit_buy(action: dict) -> tuple:
         )
         notional = round(float(action["qty"]) * float(entry_price), 2)
         req = MarketOrderRequest(
-            symbol=symbol,
+            symbol=alpaca_symbol(symbol),  # T-011: "BTC/USD" → "BTCUSD" for Alpaca API
             notional=notional,
             side=OrderSide.BUY,
             time_in_force=TimeInForce.GTC,
@@ -671,6 +674,30 @@ def execute_all(
         confidence = action.get("confidence", "")
         tier       = action.get("tier", "core")
 
+        # T-006: block BUY orders when session tier is unresolved
+        if act == "buy" and session_tier == "unknown":
+            log.warning("[EXECUTOR] T-006 %s: session=unknown — BUY blocked until session is identified", symbol)
+            _reason = "session=unknown: BUY order blocked (session not yet classified)"
+            results.append(ExecutionResult(symbol=symbol, action=act, status="rejected", reason=_reason))
+            log_trade({
+                "symbol": symbol, "action": act, "tier": tier,
+                "status": "rejected", "reason": _reason,
+                "catalyst": catalyst, "confidence": confidence,
+                "qty": action.get("qty"), "session": session_tier,
+            })
+            continue
+
+        # T-010: suppress entry orders after 10 consecutive rejections for a symbol
+        if act == "buy" and _consecutive_rejections.get(symbol, 0) >= 10:
+            log.warning("[EXECUTOR] T-010 %s suppressed: %d consecutive rejections — skipping new entry",
+                        symbol, _consecutive_rejections[symbol])
+            _supp_reason = f"suppressed: {_consecutive_rejections[symbol]} consecutive rejections"
+            results.append(ExecutionResult(symbol=symbol, action=act, status="rejected", reason=_supp_reason))
+            log_trade({"symbol": symbol, "action": act, "tier": tier,
+                       "status": "rejected", "reason": "suppressed_consecutive_rejections",
+                       "session": session_tier})
+            continue
+
         try:
             validate_action(action, account, positions, market_status,
                             minutes_since_open, current_prices)
@@ -688,6 +715,12 @@ def execute_all(
                 "take_profit": action.get("take_profit"),
                 "session": session_tier,
             })
+            # T-010: track consecutive rejections for entry suppression
+            if act == "buy":
+                _consecutive_rejections[symbol] = _consecutive_rejections.get(symbol, 0) + 1
+                if _consecutive_rejections[symbol] == 10:
+                    log.warning("[EXECUTOR] T-010 %s: hit 10 consecutive rejections — future entries suppressed",
+                                symbol)
             continue
 
         try:
@@ -876,6 +909,9 @@ def execute_all(
 
             log.info("SUBMITTED %s %s [%s]  qty=%s  order_id=%s  fill_price=%s",
                      act.upper(), symbol, tier, action.get("qty"), oid, _fp)
+            # T-010: successful buy resets the consecutive-rejection counter
+            if act == "buy":
+                _consecutive_rejections.pop(symbol, None)
             _req_qty   = float(action.get("qty") or 0) or None
             _req_otype = action.get("order_type", "market") or "market"
             results.append(ExecutionResult(

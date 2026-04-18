@@ -9,175 +9,48 @@ import os
 import time
 from pathlib import Path
 
-import anthropic
 from dotenv import load_dotenv
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import GetOrdersRequest
 
-import data_warehouse as dw
-import market_data
 import memory as mem
 import order_executor
-import portfolio_intelligence as pi
-import preflight as _preflight
-import reconciliation as recon
-import sonnet_gate as _gate
 import risk_kernel
-import trade_memory
 import scratchpad as _scratchpad
+import sonnet_gate as _gate
+import trade_memory
 import watchlist_manager as wm
+from bot_clients import MODEL, _get_alpaca, _get_claude  # noqa: F401 (_get_claude re-exported for callers)
+from bot_stage0_precycle import PreCycleState, run_precycle
+from bot_stage1_regime import classify_regime, format_regime_summary
+from bot_stage2_signal import format_signal_scores, score_signals
+from bot_stage2_5_scratchpad import run_scratchpad_stage
+from bot_stage3_decision import (
+    _ask_claude_overnight,  # re-exported — test_core.py accesses bot._ask_claude_overnight
+    _log_skip_cycle,
+    _write_decision_capture,
+    ask_claude,             # re-exported — test_core.py mocks bot.ask_claude
+    build_compact_prompt,
+    build_user_prompt,
+)
+from bot_stage4_execution import debate_trade, fundamental_check
 from log_setup import get_logger, log_trade
-from schemas import normalize_symbol, validate_claude_decision
-from schemas import BrokerAction as _BrokerAction, BrokerSnapshot as _BrokerSnapshot
-from schemas import NormalizedPosition as _NP
+from schemas import (
+    BrokerAction as _BrokerAction,
+    BrokerSnapshot as _BrokerSnapshot,
+    NormalizedPosition as _NP,
+    normalize_symbol,
+    validate_claude_decision,
+)
 
 # trade_publisher is optional — import failure must never break the bot
 try:
     from trade_publisher import TradePublisher
     publisher = TradePublisher()
-except Exception as _tp_exc:
-    log_import_err = None
+except Exception:
     publisher = None  # type: ignore
 
 load_dotenv()
 
 log = get_logger(__name__)
-
-# ── Prompt directory ──────────────────────────────────────────────────────────
-PROMPTS_DIR    = Path(__file__).parent / "prompts"
-_CAPTURES_DIR  = Path(__file__).parent / "data" / "captures"
-
-def _load_prompts() -> tuple[str, str]:
-    """Read prompt files fresh each cycle so edits take effect without restart."""
-    system   = (PROMPTS_DIR / "system_v1.txt").read_text().strip()
-    template = (PROMPTS_DIR / "user_template_v1.txt").read_text().strip()
-    return system, template
-
-
-def _write_decision_capture(
-    decision_id: str,
-    system_prompt: str,
-    user_prompt: str,
-    model: str,
-    raw_response: str,
-    broker_actions: list,
-) -> None:
-    """Write a decision capture artifact for the replay harness. Non-fatal."""
-    try:
-        _CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
-        from datetime import datetime, timezone
-        record = {
-            "schema_version": 1,
-            "decision_id":    decision_id,
-            "timestamp":      datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "model":          model,
-            "system_prompt":  system_prompt,
-            "user_prompt":    user_prompt,
-            "raw_response":   raw_response,
-            "broker_actions": broker_actions,
-        }
-        _path = _CAPTURES_DIR / f"{decision_id}.json"
-        _tmp  = _path.with_suffix(".tmp")
-        _tmp.write_text(json.dumps(record, indent=2))
-        os.replace(_tmp, _path)
-    except Exception as _cap_exc:
-        log.debug("[CAPTURE] non-fatal write failure: %s", _cap_exc)
-
-
-def _legacy_action_to_intent(action: dict) -> str:
-    """Map a legacy action string to new intent string for logging only."""
-    return {
-        "buy": "enter_long", "sell": "enter_short", "close": "close",
-        "hold": "hold", "reallocate": "enter_long",
-    }.get(str(action.get("action", "hold")).lower(), "hold")
-
-
-def _load_strategy_config() -> str:
-    """
-    Read strategy_config.json (written by backtest_runner and weekly_review).
-    Returns a formatted string for prompt injection, or empty string if missing.
-    """
-    path = Path(__file__).parent / "strategy_config.json"
-    try:
-        cfg  = json.loads(path.read_text())
-        strat = cfg.get("active_strategy", "hybrid")
-        notes = cfg.get("director_notes", "")[:300]
-        p     = cfg.get("parameters", {})
-        lines = [
-            f"  Active strategy : {strat}",
-            f"  Momentum weight : {p.get('momentum_weight', '?')}   "
-            f"Mean-rev weight : {p.get('mean_reversion_weight', '?')}",
-            f"  News weight     : {p.get('news_sentiment_weight', '?')}   "
-            f"Cross-sector    : {p.get('cross_sector_weight', '?')}",
-            f"  Confidence floor: {p.get('min_confidence_threshold', '?')}   "
-            f"Max positions   : {p.get('max_positions', '?')}",
-            f"  Sector bias     : {p.get('sector_rotation_bias', 'neutral')}",
-        ]
-        if notes:
-            lines.append(f"  Director notes  : {notes}")
-
-        # Time-bound actions (mandatory exits with deadlines)
-        tba = cfg.get("time_bound_actions", [])
-        if tba:
-            lines.append("")
-            lines.append("=== TIME-BOUND ACTIONS (MANDATORY) ===")
-            for item in tba:
-                lines.append(
-                    f"  ⚠ {item.get('priority','HIGH')}: "
-                    f"{item.get('action','exit').upper()} {item.get('symbol','?')} "
-                    f"by {item.get('deadline_et','?')} ET"
-                )
-                lines.append(f"    Reason: {item.get('reason','')}")
-
-        return "\n".join(lines)
-    except Exception:
-        return "  (strategy_config.json not yet generated — using system prompt defaults)"
-
-# ── Clients ───────────────────────────────────────────────────────────────────
-MODEL      = "claude-sonnet-4-6"
-MODEL_FAST = "claude-haiku-4-5-20251001"
-
-
-def _build_alpaca_client() -> TradingClient:
-    api_key = os.getenv("ALPACA_API_KEY")
-    secret  = os.getenv("ALPACA_SECRET_KEY")
-    base    = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-    if not api_key or not secret:
-        raise EnvironmentError("Missing ALPACA_API_KEY or ALPACA_SECRET_KEY in .env")
-    return TradingClient(api_key=api_key, secret_key=secret, paper=("paper" in base))
-
-
-def _build_claude_client() -> anthropic.Anthropic:
-    key = os.getenv("ANTHROPIC_API_KEY")
-    if not key:
-        raise EnvironmentError("Missing ANTHROPIC_API_KEY in .env")
-    return anthropic.Anthropic(api_key=key)
-
-
-_alpaca: TradingClient | None = None
-_claude: anthropic.Anthropic | None = None
-
-
-def _get_alpaca() -> TradingClient:
-    global _alpaca
-    if _alpaca is None:
-        _alpaca = _build_alpaca_client()
-    return _alpaca
-
-
-def _get_claude() -> anthropic.Anthropic:
-    global _claude
-    if _claude is None:
-        _claude = _build_claude_client()
-    return _claude
-
-# ── Drawdown guard ────────────────────────────────────────────────────────────
-_DRAWDOWN_THRESHOLD    = 0.20
-_last_drawdown_alert   = 0.0
-_peak_equity           = None
-_drawdown_state_loaded = False
-_DRAWDOWN_STATE_FILE   = Path("data/runtime/drawdown_state.json")
-
 
 # ── Twilio SMS ────────────────────────────────────────────────────────────────
 
@@ -199,7 +72,13 @@ def _send_sms(message: str) -> None:
         log.error("SMS failed: %s", exc)
 
 
-# ── Drawdown persistence helpers ─────────────────────────────────────────────
+# ── Drawdown guard ────────────────────────────────────────────────────────────
+_DRAWDOWN_THRESHOLD    = 0.20
+_last_drawdown_alert   = 0.0
+_peak_equity           = None
+_drawdown_state_loaded = False
+_DRAWDOWN_STATE_FILE   = Path("data/runtime/drawdown_state.json")
+
 
 def _load_drawdown_state() -> None:
     """Load persisted peak_equity and last_drawdown_alert. Non-fatal."""
@@ -234,8 +113,6 @@ def _save_drawdown_state() -> None:
         log.warning("[DRAWDOWN] Failed to save state: %s", exc)
 
 
-# ── Drawdown check ────────────────────────────────────────────────────────────
-
 def _check_drawdown(equity: float) -> bool:
     global _peak_equity, _last_drawdown_alert, _drawdown_state_loaded
 
@@ -261,994 +138,6 @@ def _check_drawdown(equity: float) -> bool:
     return False
 
 
-# ── Prompt builder ────────────────────────────────────────────────────────────
-
-def build_user_prompt(
-    account,
-    positions:            list,
-    md:                   dict,
-    session_tier:         str,
-    session_instruments:  str,
-    recent_decisions:     str,
-    ticker_lessons:       str,
-    next_cycle_time:      str = "?",
-    vector_memories:      str = "",
-    strategy_config_note: str = "",
-    crypto_signals:       str = "",
-    crypto_context:       str = "",
-    regime_summary:       str = "",
-    signal_scores:        str = "",
-    pi_data:              dict = None,
-    intraday_momentum:    str  = "",
-    exit_status:          str  = "",
-    macro_backdrop:       str  = "",
-    scratchpad_section:   str  = "",
-) -> str:
-    equity        = float(account.equity)
-    cash          = float(account.cash)
-    buying_power  = float(account.buying_power)
-    pdt_used      = int(getattr(account, "daytrade_count", 0) or 0)
-    pdt_remaining = max(0, 3 - pdt_used)
-    log.info("PDT      daytrade_count=%d  used=%d  remaining=%d",
-             pdt_used, pdt_used, pdt_remaining)
-
-    long_value   = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
-    exposure_pct = (long_value / equity * 100) if equity > 0 else 0.0
-
-    if positions:
-        rows = []
-        for p in positions:
-            unreal = float(p.unrealized_pl)
-            sign   = "+" if unreal >= 0 else ""
-            rows.append(
-                f"  {p.symbol:<9} qty={float(p.qty):>8.4f}  "
-                f"avg=${float(p.avg_entry_price):>10.2f}  "
-                f"mkt=${float(p.current_price):>10.2f}  "
-                f"P&L={sign}${unreal:.2f}"
-            )
-        positions_table = "\n".join(rows)
-    else:
-        positions_table = "  (none)"
-
-    _, user_template = _load_prompts()
-
-    # Portfolio intelligence sections
-    _pi = pi_data or {}
-    dyn_sizes_sec = "  (portfolio intelligence unavailable)"
-    pos_health_sec = "  (portfolio intelligence unavailable)"
-    corr_sec = "  (portfolio intelligence unavailable)"
-    thesis_sec = "  (portfolio intelligence unavailable)"
-    try:
-        if _pi:
-            open_syms = [p.symbol for p in positions if float(p.qty) > 0]
-            dyn_sizes_sec  = pi.format_dynamic_sizes_section(
-                _pi.get("sizes", {}), equity)
-            pos_health_sec = pi.format_positions_with_health(positions, equity)
-            corr_sec       = pi.format_correlation_section(
-                _pi.get("correlation", {}), open_syms)
-            thesis_sec     = pi.format_thesis_ranking_section(
-                _pi.get("thesis_scores", []),
-                _pi.get("weakest_symbol"))
-    except Exception as _pi_exc:
-        log.debug("PI section formatting failed (non-fatal): %s", _pi_exc)
-
-    # C4: Extended session omits market-hours-only sections to reduce prompt size.
-    # Estimated saving: ~1,000 tokens/call × 16 extended cycles/day.
-    _is_extended = (session_tier == "extended")
-
-    _sector_table     = "  (not shown — extended session)" if _is_extended else md.get("sector_table", "  (not available)")
-    _morning_brief    = "  (not shown — extended session)" if _is_extended else md.get("morning_brief_section", "  (morning brief not yet generated)")
-    _orb_section      = "  (not shown — extended session)" if _is_extended else md.get("orb_section", "  No ORB candidates identified for today.")
-    _intraday_mom     = "  (not shown — extended session)" if _is_extended else (intraday_momentum or "  (unavailable)")
-    _sector_news      = "  (not shown — extended session)" if _is_extended else md.get("sector_news", "  (none)")
-
-    # C4: Extended session: reduce core watchlist to held positions + crypto only.
-    if _is_extended:
-        _held_syms = [p.symbol for p in positions if float(p.qty) > 0]
-        _crypto_wl = ["BTC/USD", "ETH/USD"]
-        _ext_syms  = _held_syms + [s for s in _crypto_wl if s not in _held_syms]
-        _core_watchlist = "  Extended session — held positions + crypto only:\n  " + ", ".join(_ext_syms) if _ext_syms else "  (none)"
-    else:
-        _core_watchlist = md.get("core_by_sector", "  (not available)")
-
-    log.debug("[PROMPT] building prompt  session=%s  scratchpad=%s  length_estimate=%d",
-              session_tier,
-              "yes" if scratchpad_section and "unavailable" not in scratchpad_section else "no",
-              len(user_template))
-    return user_template.format(
-        session_tier=session_tier,
-        session_instruments=session_instruments,
-        next_cycle_time=next_cycle_time,
-        equity=f"{equity:,.2f}",
-        cash=f"{cash:,.2f}",
-        buying_power=f"{buying_power:,.2f}",
-        pdt_used=pdt_used,
-        pdt_remaining=pdt_remaining,
-        exposure_pct=exposure_pct,
-        vix=md["vix"],
-        vix_regime=md.get("vix_regime", str(md["vix"])),
-        regime_instruction=md.get("regime_instruction", "Standard rules apply."),
-        market_status=md["market_status"],
-        time_et=md["time_et"],
-        minutes_since_open=md["minutes_since_open"],
-        sector_table=_sector_table,
-        intermarket_signals=md.get("intermarket_signals", "  (not available)"),
-        global_handoff=md.get("global_handoff", "  (not available)"),
-        earnings_calendar=md.get("earnings_calendar", "  (not available)"),
-        core_watchlist_by_sector=_core_watchlist,
-        dynamic_watchlist=md.get("dynamic_section", "  (none)"),
-        intraday_watchlist=md.get("intraday_section", "  (none)"),
-        positions_table=positions_table,
-        recent_decisions=recent_decisions or "  (none)",
-        vector_memories=vector_memories or "  (none)",
-        ticker_lessons=ticker_lessons or "  (none)",
-        crypto_signals=md.get("crypto_signals", "  (none)"),
-        crypto_context=crypto_context or "  (crypto context unavailable)",
-        breaking_news=md.get("breaking_news", "  (none)"),
-        sector_news=_sector_news,
-        strategy_config_note=strategy_config_note or "  (using system prompt defaults)",
-        morning_brief_section=_morning_brief,
-        insider_section=md.get("insider_section",
-                               "  (insider intelligence unavailable)"),
-        reddit_section=md.get("reddit_section",
-                               "  (Reddit sentiment unavailable)"),
-        earnings_intel_section=md.get("earnings_intel_section",
-                                      "  (no symbols near earnings)"),
-        economic_calendar_section=md.get("economic_calendar_section",
-                                         "  (economic calendar unavailable)"),
-        macro_wire_section=md.get("macro_wire_section",
-                                   "  No significant macro headlines in the past 4 hours."),
-        orb_section=_orb_section,
-        regime_summary=regime_summary or "  (regime classification unavailable)",
-        signal_scores=signal_scores or "  (signal scoring unavailable)",
-        intraday_momentum=_intraday_mom,
-        exit_status=exit_status or "  (unavailable)",
-        macro_backdrop=macro_backdrop or "",
-        dynamic_sizes_section=dyn_sizes_sec,
-        positions_with_health=pos_health_sec,
-        correlation_section=corr_sec,
-        thesis_ranking_section=thesis_sec,
-        scratchpad_section=scratchpad_section or "  (scratchpad unavailable this cycle)",
-    )
-
-
-# ── Sequential Synthesis Pipeline ─────────────────────────────────────────────
-
-_REGIME_SYS = (
-    "You are a market regime classifier for a trading bot. "
-    "Output a structured JSON assessment only. No markdown, just valid JSON.\n"
-    "Output: {\n"
-    '  "regime_score": <0-100>,\n'
-    '  "bias": "risk-on"|"risk-off"|"neutral",\n'
-    '  "session_theme": "<one descriptive phrase>",\n'
-    '  "constraints": [<strings>],\n'
-    '  "high_impact_warning": null|"<event and minutes away>",\n'
-    '  "orb_context": "<one line on opening range>",\n'
-    '  "confidence": "high"|"medium"|"low",\n'
-    '  "macro_regime": "reflationary"|"disinflationary"|"stagflationary"|"goldilocks"|"risk-off",\n'
-    '  "commodity_trend": "bullish"|"bearish"|"neutral",\n'
-    '  "dollar_trend": "strong"|"weak"|"neutral",\n'
-    '  "credit_stress": "tight"|"normal"|"wide"\n'
-    "}"
-)
-
-_SIGNAL_SYS = (
-    "You are a signal scorer for a trading bot. Score symbols based on available signals. "
-    "JSON only, no markdown.\n"
-    "Output: "
-    '{"scored_symbols":{"SYMBOL":{"score":<0-100>,"signals":[<strings>],'
-    '"conflicts":[<strings>],"conviction":"high"|"medium"|"low"|"avoid",'
-    '"primary_catalyst":"<one sentence>","orb_candidate":true|false,'
-    '"pattern_watchlist":false|"<caution note>",'
-    '"direction":"bullish"|"bearish"|"neutral",'
-    '"tier":"core"|"dynamic"}},'
-    '"top_3":["SYM1","SYM2","SYM3"],"elevated_caution":["SYM4"],'
-    '"reasoning":"<2 sentences>"}'
-)
-
-
-def classify_regime(md: dict, calendar: dict) -> dict:
-    """
-    Phase 1: Haiku call classifying market regime from macro data.
-    System prompt cached. Fails to safe defaults on any error.
-    """
-    _default = {
-        "regime_score": 50, "bias": "neutral",
-        "session_theme": "regime classification unavailable",
-        "constraints": [], "high_impact_warning": None,
-        "orb_context": "", "confidence": "low",
-        "macro_regime": "unknown", "commodity_trend": "neutral",
-        "dollar_trend": "neutral", "credit_stress": "normal",
-    }
-    try:
-        vix     = md.get("vix", 0)
-        vreg    = md.get("vix_regime", "")
-        glob    = "\n".join((md.get("global_handoff", "") or "").splitlines()[:3])
-        cal_evs = calendar.get("events", [])
-        cal_str = "\n".join(
-            f"  {e.get('datetime_et','?')[:16]}  [{e.get('impact','?').upper()[:3]}]  {e.get('event','?')}"
-            for e in sorted(cal_evs, key=lambda x: abs(x.get("minutes_from_now", 9999)))[:3]
-        ) or "  (none)"
-        try:
-            from macro_wire import build_macro_wire_section  # noqa: PLC0415
-            macro_str = "\n".join(build_macro_wire_section().splitlines()[:6])
-        except Exception:
-            macro_str = "  (unavailable)"
-        sec_lines = [l for l in (md.get("sector_table","") or "").splitlines() if "▲" in l or "▼" in l]
-        sec_str   = "\n".join(sec_lines[:3] + sec_lines[-3:]) if sec_lines else ""
-        try:
-            import scheduler as _sched
-            if _sched._orb_locked and _sched._orb_high:
-                _orb_parts = [
-                    f"{s} H=${_sched._orb_high[s]:.2f}/L=${_sched._orb_low.get(s, 0):.2f}"
-                    for s in list(_sched._orb_high)[:6]
-                ]
-                orb_str = "ORB locked: " + "  ".join(_orb_parts)
-            elif not _sched._orb_locked and md.get("minutes_since_open", -1) >= 0:
-                orb_str = "ORB formation in progress (9:30-9:45 AM window)"
-            else:
-                orb_str = "Not in ORB window"
-        except Exception:
-            orb_str = "(unavailable)"
-
-        # Macro backdrop inputs for richer regime classification
-        macro_inputs_str = "  (unavailable)"
-        try:
-            import macro_intelligence as _mi  # noqa: PLC0415
-            _mi_data = _mi.get_regime_macro_inputs()
-            if _mi_data:
-                macro_inputs_str = (
-                    f"  Rates: {_mi_data.get('rates_summary','?')}\n"
-                    f"  Commodities: {_mi_data.get('commodity_trend','?')} "
-                    f"(gold 5d: {_mi_data.get('gold_5d_pct',0):+.1f}%)\n"
-                    f"  Credit spreads: {_mi_data.get('credit_stress','?')}\n"
-                    f"  Dollar: {_mi_data.get('dollar_trend','?')}"
-                )
-        except Exception:
-            pass
-
-        user_content = (
-            f"VIX: {vix}  Regime: {vreg}\n"
-            f"Time: {md.get('time_et','?')}  Status: {md.get('market_status','?')}\n"
-            f"ORB: {orb_str}\n\n"
-            f"GLOBAL SESSION:\n{glob}\n\n"
-            f"ECONOMIC CALENDAR (next 3):\n{cal_str}\n\n"
-            f"MACRO WIRE (top headlines):\n{macro_str}\n\n"
-            f"MACRO BACKDROP (rates/commodities/credit):\n{macro_inputs_str}\n\n"
-            f"SECTOR ROTATION (top+bottom 3):\n{sec_str}"
-        )
-        resp = _get_claude().messages.create(
-            model=MODEL_FAST, max_tokens=300,
-            system=[{"type":"text","text":_REGIME_SYS,"cache_control":{"type":"ephemeral"}}],
-            messages=[{"role":"user","content":user_content}],
-            extra_headers={"anthropic-beta":"prompt-caching-2024-07-31"},
-        )
-        try:
-            from cost_tracker import get_tracker
-            get_tracker().record_api_call(MODEL_FAST, resp.usage, caller="regime_classifier")
-        except Exception as _ct_exc:
-            log.warning("Cost tracker failed: %s", _ct_exc)
-        raw = resp.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n",1)[-1].rsplit("```",1)[0].strip()
-        result = json.loads(raw)
-        cr = getattr(resp.usage,"cache_read_input_tokens",0) or 0
-        log.debug("[REGIME] score=%d bias=%s confidence=%s cache_read=%d",
-                  result.get("regime_score",50), result.get("bias"), result.get("confidence"), cr)
-        log_trade({"event":"regime_classification","regime_score":result.get("regime_score"),
-                   "bias":result.get("bias"),"session_theme":result.get("session_theme"),
-                   "confidence":result.get("confidence"),"constraints":result.get("constraints",[])})
-        return result
-    except Exception as exc:
-        log.warning("[REGIME] Classifier failed (non-fatal): %s", exc)
-        return _default
-
-
-def score_signals(
-    watchlist_symbols: list,
-    regime: dict,
-    md: dict,
-    positions: list = None,
-) -> dict:
-    """
-    Phase 2: Haiku call scoring watchlist symbols against all signals.
-    Only runs during market session. Fails to empty dict on error.
-    System prompt cached.
-
-    Symbol list is capped at 15, prioritised:
-      1. Currently held positions (always included)
-      2. Morning brief conviction picks
-      3. Breaking-news mentions this cycle
-      4. Remaining watchlist symbols
-    """
-    if not watchlist_symbols:
-        return {}
-    try:
-        # ── Build prioritised 15-symbol list ─────────────────────────────────
-        _MAX_SCORED = 35
-        scored: list[str] = []
-        seen: set[str] = set()
-
-        def _add(sym: str) -> None:
-            if sym in seen or sym not in watchlist_symbols:
-                return
-            scored.append(sym)
-            seen.add(sym)
-
-        # 1. Held positions
-        for p in (positions or []):
-            if float(getattr(p, "qty", 0)) > 0:
-                _add(p.symbol)
-
-        # 2. Morning brief conviction picks
-        try:
-            _brief_path = Path(__file__).parent / "data" / "market" / "morning_brief.json"
-            if _brief_path.exists():
-                _brief = json.loads(_brief_path.read_text())
-                for pick in _brief.get("conviction_picks", []):
-                    _add(str(pick.get("symbol", "")))
-        except Exception:
-            pass
-
-        # 3. Symbols mentioned in breaking news this cycle
-        _news = md.get("breaking_news", "") or ""
-        for sym in watchlist_symbols:
-            if sym in _news:
-                _add(sym)
-
-        # 4. Fill remaining slots from original watchlist order
-        for sym in watchlist_symbols:
-            if len(scored) >= _MAX_SCORED:
-                break
-            _add(sym)
-
-        log.debug("[SIGNALS] scoring %d/%d symbols: %s",
-                  len(scored), len(watchlist_symbols), scored)
-
-        insider_lines = [l.strip() for l in (md.get("insider_section","") or "").splitlines()
-                         if any(s in l for s in scored)][:10]
-        orb_str = "(none)"
-        try:
-            orb_path = Path(__file__).parent / "data" / "scanner" / "orb_candidates.json"
-            if orb_path.exists():
-                orb_cands = json.loads(orb_path.read_text()).get("candidates", [])
-                orb_str = "\n".join(
-                    f"{c['symbol']}: gap {c['gap_pct']:+.1f}% score={c['orb_score']:.2f} {c['conviction']}"
-                    for c in orb_cands[:8]
-                ) or "(none)"
-        except Exception:
-            pass
-        reddit_lines = [l.strip() for l in (md.get("reddit_section","") or "").splitlines()
-                        if any(s in l for s in scored)][:6]
-        morning_lines= (md.get("morning_brief_section","") or "").splitlines()[:5]
-        from memory import _load_pattern_watchlist  # noqa: PLC0415
-        pwl      = _load_pattern_watchlist()
-        pwl_lines= [f"{s}: min {d.get('minimum_signals_required',2)} signals required"
-                    for s,d in pwl.items() if not d.get("graduated") and s in scored]
-
-        user_content = (
-            f"Symbols to score: {', '.join(scored)}\n\n"
-            f"REGIME: score={regime.get('regime_score',50)} bias={regime.get('bias','neutral')} "
-            f"theme={regime.get('session_theme','?')}\n"
-            f"  constraints: {regime.get('constraints',[])}\n\n"
-            f"INSIDER/CONGRESSIONAL:\n{chr(10).join(insider_lines) or '(none)'}\n\n"
-            f"ORB CANDIDATES:\n{orb_str}\n\n"
-            f"REDDIT:\n{chr(10).join(reddit_lines) or '(none)'}\n\n"
-            f"MORNING BRIEF picks:\n{chr(10).join(morning_lines) or '(none)'}\n\n"
-            f"PATTERN WATCHLIST (elevated conviction required):\n{chr(10).join(pwl_lines) or '(none)'}"
-        )
-        resp = _get_claude().messages.create(
-            model=MODEL_FAST, max_tokens=4000,
-            system=[{"type":"text","text":_SIGNAL_SYS,"cache_control":{"type":"ephemeral"}}],
-            messages=[{"role":"user","content":user_content}],
-            extra_headers={"anthropic-beta":"prompt-caching-2024-07-31"},
-        )
-        try:
-            from cost_tracker import get_tracker
-            get_tracker().record_api_call(MODEL_FAST, resp.usage, caller="signal_scorer")
-        except Exception as _ct_exc:
-            log.warning("Cost tracker failed: %s", _ct_exc)
-        raw = resp.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n",1)[-1].rsplit("```",1)[0].strip()
-        try:
-            result = json.loads(raw)
-        except json.JSONDecodeError:
-            # Repair attempt 1: truncate to last closing brace (handles token-cutoff)
-            last_brace = raw.rfind("}")
-            _repaired = False
-            if last_brace >= 0:
-                try:
-                    result = json.loads(raw[:last_brace + 1])
-                    log.debug("[SIGNALS] JSON repaired by truncation (last_brace=%d)", last_brace)
-                    _repaired = True
-                except json.JSONDecodeError:
-                    pass
-            if not _repaired:
-                # Repair attempt 2: retry API call with completeness hint
-                log.debug("[SIGNALS] JSON truncated, retrying API call with completeness hint")
-                _retry_sys = _SIGNAL_SYS + "\nReturn ONLY valid complete JSON. If you cannot fit all symbols, return fewer rather than truncating."
-                try:
-                    _retry_resp = _get_claude().messages.create(
-                        model=MODEL_FAST, max_tokens=4000,
-                        system=[{"type": "text", "text": _retry_sys}],
-                        messages=[{"role": "user", "content": user_content}],
-                        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
-                    )
-                    _retry_raw = _retry_resp.content[0].text.strip()
-                    if _retry_raw.startswith("```"):
-                        _retry_raw = _retry_raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                    result = json.loads(_retry_raw)
-                    log.debug("[SIGNALS] JSON recovered via retry")
-                except Exception as _retry_exc:
-                    log.warning("[SIGNALS] JSON parse failed after repair+retry — returning empty: %s", _retry_exc)
-                    return {}
-        log.info("[SIGNALS] top_3=%s  caution=%s", result.get("top_3",[]), result.get("elevated_caution",[]))
-        log_trade({"event":"signal_scoring","top_3":result.get("top_3",[]),
-                   "elevated_caution":result.get("elevated_caution",[]),
-                   "scored_count":len(result.get("scored_symbols",{}))})
-        try:
-            from datetime import datetime as _dt
-            conv_path = Path(__file__).parent / "data" / "market" / "daily_conviction.json"
-            existing: list = []
-            if conv_path.exists():
-                try:
-                    existing = json.loads(conv_path.read_text())
-                    if not isinstance(existing, list):
-                        existing = []
-                except Exception:
-                    existing = []
-            existing.append({"ts": _dt.now().isoformat(), "top_3": result.get("top_3",[])})
-            conv_path.write_text(json.dumps(existing[-50:], indent=2))
-        except Exception:
-            pass
-        return result
-    except Exception as exc:
-        log.warning("[SIGNALS] Scorer failed (non-fatal): %s", exc)
-        return {}
-
-
-def format_regime_summary(regime: dict) -> str:
-    if not regime or (regime.get("confidence") == "low" and not regime.get("session_theme")):
-        return "  (regime classification unavailable this cycle)"
-    lines = [
-        f"  Score: {regime.get('regime_score',50)}/100  Bias: {regime.get('bias','neutral')}  "
-        f"Confidence: {regime.get('confidence','low')}",
-        f"  Theme: {regime.get('session_theme','')}",
-    ]
-    if regime.get("high_impact_warning"):
-        lines.append(f"  WARNING: {regime['high_impact_warning']}")
-    if regime.get("orb_context"):
-        lines.append(f"  ORB: {regime['orb_context']}")
-    for c in regime.get("constraints", []):
-        lines.append(f"  Constraint: {c}")
-    return "\n".join(lines)
-
-
-def format_signal_scores(scores: dict) -> str:
-    if not scores:
-        return "  (signal scoring unavailable this cycle)"
-    lines = []
-    if scores.get("top_3"):
-        lines.append(f"  Top conviction today: {', '.join(scores['top_3'])}")
-    if scores.get("elevated_caution"):
-        lines.append(f"  Elevated caution: {', '.join(scores['elevated_caution'])}")
-    if scores.get("reasoning"):
-        lines.append(f"  Signal environment: {scores['reasoning']}")
-    for sym, d in list(scores.get("scored_symbols", {}).items())[:10]:
-        conv = d.get("conviction","?")
-        cat  = (d.get("primary_catalyst","") or "")[:60]
-        sigs = ", ".join((d.get("signals",[]) or [])[:4])
-        orb_tag = " ORB" if d.get("orb_candidate") else ""
-        pwl_tag = f"  ⚠{d['pattern_watchlist']}" if d.get("pattern_watchlist") else ""
-        lines.append(f"  {sym}: score={d.get('score',0)} [{conv}]{orb_tag}  {cat}{pwl_tag}")
-        if sigs:
-            lines.append(f"    signals: {sigs}")
-    return "\n".join(lines) if lines else "  (no signals scored)"
-
-
-# ── Bull/Bear Trade Debate ────────────────────────────────────────────────────
-
-def debate_trade(
-    action:       dict,
-    md:           dict,
-    equity:       float,
-    session_tier: str,
-) -> dict:
-    """
-    Run a 3-call bull/bear/synthesis debate for a proposed buy action.
-
-    Gate conditions (all must be true to run):
-      - action == "buy"
-      - confidence in ["medium", "high"]
-      - session_tier == "market"
-      - equity > $26,000
-
-    Returns {proceed: bool, veto_reason: str, synthesis: str,
-             conviction_adjustment: str}.
-    Fails open (proceed=True) on any error — never blocks a trade due to a bug.
-    """
-    sym        = action.get("symbol", "?")
-    catalyst   = action.get("catalyst", "")
-    confidence = action.get("confidence", "low")
-    direction  = action.get("action", "")
-
-    if direction != "buy":
-        return {"proceed": True}
-    if confidence not in ("medium", "high"):
-        return {"proceed": True}
-    if session_tier != "market":
-        return {"proceed": True}
-    if equity <= 26_000:
-        return {"proceed": True}
-
-    log.info("[DEBATE] Running bull/bear debate for %s %s (conf=%s)", direction, sym, confidence)
-
-    context = (
-        f"Symbol: {sym}\n"
-        f"Proposed action: {direction.upper()}\n"
-        f"Catalyst: {catalyst}\n"
-        f"VIX: {md.get('vix', '?')}  Regime: {md.get('vix_regime', '?')}\n"
-        f"Market status: {md.get('market_status', '?')}\n"
-        f"Breaking news: {md.get('breaking_news', '')[:300]}\n"
-        f"Inter-market signals: {md.get('intermarket_signals', '')[:200]}\n"
-    )
-
-    try:
-        bull_resp = _get_claude().messages.create(
-            model=MODEL, max_tokens=400,
-            system="You are a bullish equity trader. Make the strongest possible case FOR this trade. Be specific and data-driven. Return 3-5 bullet points.",
-            messages=[{"role": "user", "content": f"Make the bull case for this trade:\n\n{context}"}],
-        )
-        bull_case = bull_resp.content[0].text.strip()
-
-        bear_resp = _get_claude().messages.create(
-            model=MODEL, max_tokens=400,
-            system="You are a risk manager and skeptical trader. Make the strongest possible case AGAINST this trade. Focus on downside risks. Return 3-5 bullet points.",
-            messages=[{"role": "user", "content": f"Make the bear case against this trade:\n\n{context}"}],
-        )
-        bear_case = bear_resp.content[0].text.strip()
-
-        synth_prompt = (
-            f"You are a senior portfolio manager reviewing this trade debate.\n\n"
-            f"PROPOSED TRADE: {direction.upper()} {sym}\nCATALYST: {catalyst}\n\n"
-            f"BULL CASE:\n{bull_case}\n\nBEAR CASE:\n{bear_case}\n\n"
-            f"Return ONLY valid JSON:\n"
-            f'{{\"proceed\": true or false, \"veto_reason\": \"reason if vetoing or empty string\", '
-            f'\"synthesis\": \"1-2 sentence final verdict\", '
-            f'\"conviction_adjustment\": \"raise\" or \"maintain\" or \"lower\"}}'
-        )
-        synth_resp = _get_claude().messages.create(
-            model=MODEL, max_tokens=300,
-            system="You are a senior portfolio manager. Return only valid JSON.",
-            messages=[{"role": "user", "content": synth_prompt}],
-        )
-        raw = synth_resp.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        result = json.loads(raw)
-
-        proceed = bool(result.get("proceed", True))
-        veto    = result.get("veto_reason", "")
-        synth   = result.get("synthesis", "")
-        adj     = result.get("conviction_adjustment", "maintain")
-
-        log_trade({
-            "event":                 "debate",
-            "symbol":                sym,
-            "proceed":               proceed,
-            "veto_reason":           veto,
-            "synthesis":             synth,
-            "conviction_adjustment": adj,
-            "bull_case":             bull_case[:300],
-            "bear_case":             bear_case[:300],
-        })
-
-        if not proceed:
-            log.info("[DEBATE] VETOED %s — %s", sym, veto)
-        else:
-            log.info("[DEBATE] APPROVED %s — %s (adj=%s)", sym, synth[:80], adj)
-
-        return {"proceed": proceed, "veto_reason": veto, "synthesis": synth,
-                "conviction_adjustment": adj}
-
-    except Exception as exc:
-        log.warning("[DEBATE] Debate failed for %s: %s — failing open", sym, exc)
-        return {"proceed": True}
-
-
-# ── Fundamental Pre-Check ─────────────────────────────────────────────────────
-
-def fundamental_check(buy_candidates: list[dict], md: dict) -> dict:
-    """
-    Single Claude call to evaluate fundamentals for all buy-candidate symbols.
-
-    Reads cached fundamentals from data/fundamentals/{SYM}.json.
-    Returns {symbol: {ok: bool, notes: str}} for each candidate.
-    Fails open ({}) on any error — never blocks a trade due to a bug.
-    Only runs for stock/ETF symbols (skips crypto / symbols with '/').
-    """
-    stock_buys = [
-        a for a in buy_candidates
-        if a.get("symbol") and "/" not in a.get("symbol", "")
-    ]
-    if not stock_buys:
-        return {}
-
-    fund_dir  = Path(__file__).parent / "data" / "fundamentals"
-    fund_lines: list[str] = []
-
-    for a in stock_buys:
-        sym       = a.get("symbol", "")
-        fund_path = fund_dir / f"{sym}.json"
-        try:
-            if fund_path.exists():
-                f     = json.loads(fund_path.read_text())
-                pe    = f.get("pe_ratio", "N/A")
-                mktcap = f.get("market_cap_b", "N/A")
-                hi52  = f.get("52w_high", "N/A")
-                lo52  = f.get("52w_low", "N/A")
-                fund_lines.append(
-                    f"{sym}: P/E={pe}  mktcap=${mktcap}B  "
-                    f"52w_high={hi52}  52w_low={lo52}"
-                )
-            else:
-                fund_lines.append(f"{sym}: (no fundamentals cached)")
-        except Exception:
-            fund_lines.append(f"{sym}: (fundamentals unavailable)")
-
-    if not fund_lines:
-        return {}
-
-    prompt = (
-        "Review the fundamentals for these potential buy candidates. "
-        "Flag any with concerning fundamentals (extreme P/E, near 52w high with no catalyst, etc). "
-        "Return ONLY valid JSON: {\"TICKER\": {\"ok\": true or false, \"notes\": \"brief note\"}, ...}\n\n"
-        + "\n".join(fund_lines)
-    )
-
-    try:
-        resp = _get_claude().messages.create(
-            model=MODEL_FAST, max_tokens=600,
-            system=[{
-                "type": "text",
-                "text": "You are a fundamental equity analyst. Return only valid JSON.",
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{"role": "user", "content": prompt}],
-            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
-        )
-        try:
-            from cost_tracker import get_tracker
-            get_tracker().record_api_call(MODEL_FAST, resp.usage, caller="fundamental_check")
-        except Exception as _ct_exc:
-            log.warning("Cost tracker failed: %s", _ct_exc)
-        raw = resp.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        result = json.loads(raw)
-        log.info("[FUNDAMENTAL] Evaluated %d buy candidates", len(result))
-        return result
-    except Exception as exc:
-        log.warning("[FUNDAMENTAL] Check failed: %s — failing open", exc)
-        return {}
-
-
-# ── Claude ────────────────────────────────────────────────────────────────────
-
-_OVERNIGHT_SYS = (
-    "You are a crypto position manager for an overnight trading session. "
-    "Only BTC/USD and ETH/USD are tradeable. JSON only, no markdown.\n"
-    "Output: "
-    '{"reasoning":"<1 sentence>","regime":"normal"|"caution"|"halt",'
-    '"actions":[{"action":"hold"|"close","symbol":"BTC/USD"|"ETH/USD",'
-    '"qty":<float>,"order_type":"market","stop_loss":<float>,'
-    '"take_profit":<float>,"tier":"core","catalyst":"<reason>",'
-    '"confidence":"low"|"medium"|"high"}],'
-    '"notes":"<flag anything unusual>"}'
-)
-
-_OVERNIGHT_DEFAULT: dict = {
-    "reasoning": "Overnight default — hold all positions.",
-    "regime": "normal",
-    "actions": [],
-    "notes": "",
-}
-
-
-def _ask_claude_overnight(
-    positions: list,
-    crypto_context: str,
-    regime_obj: dict,
-    macro_wire: str,
-) -> dict:
-    """
-    Lightweight Haiku decision for overnight crypto-only sessions.
-    Uses a minimal prompt — no signal scores, no sector data, no watchlist.
-    Falls back to hold-all default on any error, never raises.
-
-    C3: saves ~$0.042/cycle × 24 overnight cycles/day ≈ $1.01/day vs Sonnet.
-    """
-    try:
-        from zoneinfo import ZoneInfo as _ZI
-        from datetime import datetime as _dt
-        _time_str = _dt.now(_ZI("America/New_York")).strftime("%I:%M %p ET")
-
-        pos_lines = []
-        for p in positions:
-            unreal = float(p.unrealized_pl)
-            pos_lines.append(
-                f"  {p.symbol} qty={float(p.qty):.6f}  "
-                f"avg=${float(p.avg_entry_price):.2f}  "
-                f"mkt=${float(p.current_price):.2f}  "
-                f"P&L={'+'if unreal>=0 else ''}{unreal:.2f}"
-            )
-        pos_block = "\n".join(pos_lines) or "  (none)"
-
-        regime_score = regime_obj.get("regime_score", 50)
-        bias         = regime_obj.get("bias", "neutral")
-
-        prompt = (
-            f"=== OVERNIGHT SESSION ===\n"
-            f"Time: {_time_str}\n\n"
-            f"=== OPEN POSITIONS ===\n{pos_block}\n\n"
-            f"=== REGIME ===\n"
-            f"Score: {regime_score}  Bias: {bias}\n\n"
-            f"=== CRYPTO CONTEXT ===\n{crypto_context or '  (unavailable)'}\n\n"
-            f"=== MACRO WIRE (top items) ===\n{macro_wire or '  (none)'}\n\n"
-            "=== TASK ===\n"
-            "Overnight session. Only BTC/USD and ETH/USD are tradeable.\n"
-            "For each open crypto position: hold (with updated stop/target) or close.\n"
-            "If no crypto positions exist, return empty actions list.\n"
-            "Never fabricate catalysts. If in doubt, hold."
-        )
-
-        response = _get_claude().messages.create(
-            model=MODEL_FAST,
-            max_tokens=400,
-            system=[{"type": "text", "text": _OVERNIGHT_SYS}],
-            messages=[{"role": "user", "content": prompt}],
-        )
-        try:
-            from cost_tracker import get_tracker
-            get_tracker().record_api_call(
-                MODEL_FAST, response.usage, caller="ask_claude_overnight"
-            )
-        except Exception:
-            pass
-
-        raw = response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        result = json.loads(raw)
-        log.info("[OVERNIGHT] Haiku decision: regime=%s  actions=%d",
-                 result.get("regime", "?"), len(result.get("actions", [])))
-        return result
-
-    except Exception as _exc:
-        log.warning("[OVERNIGHT] _ask_claude_overnight failed (%s) — using hold-all default", _exc)
-        return _OVERNIGHT_DEFAULT
-
-
-# ── Compact prompt builder (for gate COMPACT cycles) ──────────────────────────
-
-_compact_template_cache: str = ""
-
-
-def _load_compact_template() -> str:
-    global _compact_template_cache
-    if not _compact_template_cache:
-        p = Path(__file__).parent / "prompts" / "compact_template.txt"
-        _compact_template_cache = p.read_text() if p.exists() else ""
-    return _compact_template_cache
-
-
-def build_compact_prompt(
-    account,
-    positions:          list,
-    md:                 dict,
-    session_tier:       str,
-    regime_obj:         dict,
-    signal_scores_obj:  dict,
-    time_bound_actions: list,
-    pi_data:            dict,
-    exit_status:        str = "",
-) -> str:
-    """
-    Build the compact 6-block prompt (~1,500 tokens vs ~7,500 for full).
-    Used for low-information cycles where no material state change occurred.
-    """
-    template = _load_compact_template()
-    if not template:
-        log.warning("[GATE] compact_template.txt missing — falling back to full prompt indicator")
-        return ""
-
-    equity       = float(account.equity)
-    cash         = float(account.cash)
-    buying_power = float(account.buying_power)
-    pdt_used     = int(getattr(account, "daytrade_count", 0) or 0)
-    pdt_remaining = max(0, 3 - pdt_used)
-    long_val      = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
-    exposure_pct  = (long_val / equity * 100) if equity > 0 else 0.0
-    cash_pct      = (cash / equity * 100) if equity > 0 else 0.0
-    vix           = float(md.get("vix", 0) or 0)
-
-    # Drawdown from peak (pulled from portfolio intelligence if available)
-    _pi = pi_data or {}
-    drawdown_pct = float(_pi.get("drawdown_pct", 0) or 0)
-
-    # VIX label
-    if vix > 35:
-        vix_label = "HALT"
-    elif vix > 25:
-        vix_label = "elevated"
-    elif vix < 15:
-        vix_label = "calm"
-    else:
-        vix_label = "normal"
-
-    # Positions block
-    if positions:
-        rows = []
-        for p in positions:
-            sym    = p.symbol
-            qty    = float(p.qty)
-            entry  = float(p.avg_entry_price)
-            cur    = float(p.current_price)
-            pnl    = float(p.unrealized_pl)
-            sign   = "+" if pnl >= 0 else ""
-            rows.append(
-                f"  {sym:<8} qty={qty:.4f}  entry=${entry:.2f}  "
-                f"now=${cur:.2f}  P&L={sign}${pnl:.2f}"
-            )
-            # Append exit info if available
-            if exit_status and sym in exit_status:
-                for line in exit_status.splitlines():
-                    if sym in line and ("stop" in line.lower() or "target" in line.lower()):
-                        rows.append("    " + line.strip())
-                        break
-        positions_block = "\n".join(rows)
-    else:
-        positions_block = "  No open positions."
-
-    # Regime context
-    regime_bias  = regime_obj.get("bias", "unknown")
-    regime_score = regime_obj.get("regime_score", 50)
-    constraints  = regime_obj.get("constraints", [])
-    hi_warning   = regime_obj.get("high_impact_warning", "")
-
-    # Leading sectors (from sector_table — top 2 lines)
-    sector_lines = [
-        l.strip() for l in (md.get("sector_table", "") or "").splitlines()
-        if ("▲" in l or "▼" in l) and l.strip()
-    ]
-    top_sectors = "  ".join(sector_lines[:2]) if sector_lines else "unavailable"
-
-    # Macro constraint (first regime constraint or high-impact warning)
-    if hi_warning:
-        macro_constraint = hi_warning
-    elif constraints:
-        macro_constraint = constraints[0]
-    else:
-        macro_constraint = "No hard macro constraint"
-
-    # Top catalyst (from breaking news — first 120 chars)
-    breaking = (md.get("breaking_news", "") or "").strip()
-    top_catalyst = breaking[:120] if breaking and breaking not in ("(none)", "(extended/overnight — not fetched)") else "No fresh catalyst last 15 min"
-
-    # Top 5 signals
-    scored = signal_scores_obj.get("scored_symbols", {}) if signal_scores_obj else {}
-    n_scored = len(scored)
-    if scored:
-        top5 = sorted(scored.items(), key=lambda kv: float(kv[1].get("score", 0)) if isinstance(kv[1], dict) else 0, reverse=True)[:5]
-        sig_lines = []
-        for sym, data in top5:
-            if not isinstance(data, dict):
-                continue
-            sc   = data.get("score", 0)
-            dirn = data.get("direction", "neutral")
-            cat  = data.get("catalyst", "")[:80]
-            sigs = data.get("signals", "")[:60]
-            price = data.get("price", 0)
-            price_str = f"  ${price:.2f}" if price else ""
-            sig_lines.append(
-                f"  {sym}: score={sc:.0f} direction={dirn}{price_str}\n"
-                f"    catalyst: {cat}\n"
-                f"    signals: {sigs}"
-            )
-        top_signals_block = "\n".join(sig_lines) if sig_lines else "  No signals scored this cycle."
-    else:
-        top_signals_block = "  No signals scored this cycle."
-
-    # Constraints block (deadlines + VIX gates + PDT)
-    clines = []
-    if vix >= 35:
-        clines.append("HALT: VIX >= 35 — no new positions")
-    elif vix >= 25:
-        clines.append(f"VIX {vix:.1f} >= 25 — reduce all sizes 50%")
-    if pdt_remaining == 0:
-        clines.append("PDT: 0 day trades remaining — no new stock/ETF entries")
-    for tba in (time_bound_actions or []):
-        sym = tba.get("symbol", "")
-        reason = tba.get("reason", "time-bound exit")
-        et = tba.get("deadline_et", tba.get("exit_by", ""))
-        clines.append(f"DEADLINE EXIT: {sym} by {et} — {reason}")
-    if constraints:
-        clines.extend(constraints[:2])
-    constraints_block = "\n".join(f"  {l}" for l in clines) if clines else "  No active constraints."
-
-    try:
-        return template.format(
-            equity=f"{equity:,.2f}",
-            cash_pct=f"{cash_pct:.1f}",
-            exposure_pct=f"{exposure_pct:.1f}",
-            buying_power=f"{buying_power:,.2f}",
-            pdt_remaining=pdt_remaining,
-            drawdown_pct=f"{drawdown_pct:.1f}",
-            vix=f"{vix:.1f}",
-            vix_label=vix_label,
-            session_tier=session_tier,
-            time_et=md.get("time_et", "?"),
-            n_positions=len(positions),
-            positions_block=positions_block,
-            regime_bias=regime_bias,
-            regime_score=regime_score,
-            top_sectors=top_sectors,
-            macro_constraint=macro_constraint,
-            top_catalyst=top_catalyst,
-            n_scored=n_scored,
-            top_signals_block=top_signals_block,
-            constraints_block=constraints_block,
-        )
-    except KeyError as _ke:
-        log.warning("[GATE] compact prompt format error: %s", _ke)
-        return ""
-
-
-
-def _log_skip_cycle(state) -> None:
-    log.info(
-        "[GATE] SKIP consecutive=%d  skips_today=%d  sonnet_today=%d",
-        state.consecutive_skips,
-        state.total_skips_today,
-        state.total_calls_today,
-    )
-
-
-def ask_claude(user_prompt: str) -> dict:
-    system_prompt, _ = _load_prompts()
-    response = _get_claude().messages.create(
-        model=MODEL,
-        max_tokens=2048,
-        system=[{
-            "type": "text",
-            "text": system_prompt,
-            "cache_control": {"type": "ephemeral"},
-        }],
-        messages=[{"role": "user", "content": user_prompt}],
-        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
-    )
-    usage       = response.usage
-    cache_read  = getattr(usage, "cache_read_input_tokens",     0) or 0
-    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
-    log.debug("Cache stats: reads=%d writes=%d regular=%d",
-              cache_read, cache_write,
-              max(0, (usage.input_tokens or 0) - cache_read - cache_write))
-    try:
-        from cost_tracker import get_tracker
-        get_tracker().record_api_call(MODEL, usage, caller="ask_claude")
-    except Exception as _ct_exc:
-        log.warning("Cost tracker failed: %s", _ct_exc)
-    raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1]
-        raw = raw.rsplit("```", 1)[0].strip()
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Claude returned non-JSON:\n{raw}") from exc
-
-
 # ── Cycle ─────────────────────────────────────────────────────────────────────
 
 def run_cycle(
@@ -1260,267 +149,34 @@ def run_cycle(
     log.info("── Cycle start  session=%s ─────────────────────────────", session_tier)
 
     # Early-init regime so forced/deadline exit guards never see a NameError.
-    # The real value is overwritten at ~line 1131 once ask_claude() returns.
     regime = "unknown"
 
-    # 1. Account
-    account   = _get_alpaca().get_account()
-    positions = _get_alpaca().get_all_positions()
-    equity          = float(account.equity)
-    cash            = float(account.cash)
-    buying_power_float = float(account.buying_power)
-    long_val  = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
-    exposure  = long_val / equity * 100 if equity > 0 else 0.0
+    # Stage 0 — pre-cycle infrastructure
+    state = run_precycle(session_tier, next_cycle_time, publisher=publisher)
+    if state is None:
+        return  # preflight verdict=halt
 
-    log.info("Account  equity=$%s  cash=$%s  exposure=%.1f%%  positions=%d",
-             f"{equity:,.0f}", f"{cash:,.0f}", exposure, len(positions))
-
-    # 1b. Preflight gate
-    _allow_live_orders  = True
-    _allow_new_entries  = True
-    _pf_result = None
-    try:
-        _pf_result = _preflight.run_preflight(
-            caller="run_cycle",
-            session_tier=session_tier,
-            equity=equity,
-            account_id="a1",
-        )
-        if _pf_result.verdict == "halt":
-            log.error("[PREFLIGHT] verdict=halt — aborting cycle  blockers=%s",
-                      _pf_result.blockers)
-            return
-        elif _pf_result.verdict == "reconcile_only":
-            log.warning("[PREFLIGHT] verdict=reconcile_only — new entries blocked  blockers=%s",
-                        _pf_result.blockers)
-            _allow_new_entries = False
-        elif _pf_result.verdict == "shadow_only":
-            log.warning("[PREFLIGHT] verdict=shadow_only — live orders suppressed")
-            _allow_live_orders = False
-        elif _pf_result.verdict == "go_degraded":
-            log.warning("[PREFLIGHT] verdict=go_degraded  warnings=%s", _pf_result.warnings)
-    except Exception as _pf_exc:
-        log.error("[PREFLIGHT] unexpected exception (proceeding with caution): %s", _pf_exc)
-
-    # 2. Drawdown guard
-    if _check_drawdown(equity):
+    # Drawdown guard — owns module-level peak_equity state, stays in bot.py
+    if _check_drawdown(state.equity):
         log.error("Drawdown guard triggered — halting cycle")
         return
 
-    # 3. Watchlist + market data
-    wl = wm.get_active_watchlist()
-    symbols_stock  = wl["stocks"] + wl["etfs"]
-    symbols_crypto = wl["crypto"]
-
-    # Run watchlist feedback loop
-    wm.maybe_reset_session_tiers()
-    wm.prune_stale_intraday()
-
-    md = market_data.fetch_all(
-        symbols_stock, symbols_crypto, session_tier,
-        next_cycle_time=next_cycle_time,
-    )
-    log.info("Market   status=%s  vix=%.2f  time=%s",
-             md["market_status"], md["vix"], md["time_et"])
-
-    # Update ORB formation range (no-op outside 9:30-9:45 window)
-    try:
-        import scheduler as _sched_orb
-        _sched_orb._update_orb_range(md.get("current_prices", {}))
-    except Exception as _orb_rng_exc:
-        log.debug("ORB range update failed (non-fatal): %s", _orb_rng_exc)
-
-    # Load crypto context (sentiment + ETH/BTC ratio)
-    try:
-        _crypto_sentiment = dw.load_crypto_sentiment()
-        _eth_btc          = md.get("eth_btc", {})
-        crypto_context    = market_data.build_crypto_context_section(
-            _crypto_sentiment, _eth_btc, session_tier)
-    except Exception as _cc_exc:
-        log.debug("Crypto context build failed (non-fatal): %s", _cc_exc)
-        crypto_context = "  (crypto context unavailable)"
-
-    # 4. Memory
-    mem.update_outcomes_from_alpaca()
-    recent_decisions = mem.get_recent_decisions_str()
-    # Use pattern learning watchlist instead of simple avoid list
-    try:
-        ticker_lessons = mem.get_pattern_watchlist_summary()
-    except Exception:
-        ticker_lessons = mem.get_ticker_lessons()
-
-    # Publish exit posts for newly resolved trades
-    if publisher and publisher.enabled:
-        try:
-            resolved = mem.get_newly_resolved_trades()
-            for trade in resolved:
-                # entry_price from memory (stored when position was opened)
-                _entry_px = float(
-                    trade.get("entry_price") or
-                    trade.get("avg_entry_price") or
-                    trade.get("price") or 0
-                )
-                publisher.publish_trade_exit(
-                    symbol=trade["symbol"],
-                    entry_price=_entry_px,
-                    exit_price=0.0,        # will be overwritten by Alpaca fill data
-                    qty=float(trade.get("qty") or 1),
-                    pnl=float(trade.get("pnl") or 0),
-                    hold_time_hours=float(trade.get("hold_time_hours") or 0.0),
-                    outcome=trade["outcome"],
-                    alpaca_client=_get_alpaca(),  # verify position gone + fetch real fill
-                )
-        except Exception as _pub_exc:
-            log.debug("publisher exit posts failed (non-fatal): %s", _pub_exc)
-
-    # 4b. Vector memory — retrieve similar past scenarios (trade + scratchpad cold)
-    _two_tier         = trade_memory.get_two_tier_memory(md, session_tier,
-                                                         n_trade_results=5,
-                                                         n_scratchpad_results=3)
-    similar_scenarios = _two_tier["trade_scenarios"]
-    vector_memories   = trade_memory.format_retrieved_memories(similar_scenarios)
-    _sim_scratchpads  = _two_tier["recent_scratchpads"]
-    if _sim_scratchpads:
-        _scr_cold_lines = []
-        for _i, _s in enumerate(_sim_scratchpads, start=1):
-            _m = _s.get("metadata", {})
-            _scr_cold_lines.append(
-                f"  [SP{_i}] {str(_m.get('ts',''))[:16]}  "
-                f"vix={_m.get('vix','?')}  regime={_m.get('regime_score','?')}  "
-                f"watching={_m.get('watching','')}  \u2192 {_m.get('summary','')}"
-            )
-        vector_memories += "\n\nSimilar past scratchpads:\n" + "\n".join(_scr_cold_lines)
-    vm_stats          = trade_memory.get_collection_stats()
-    log.info("VectorMem  status=%s  stored=%d  retrieved=%d  scr_stored=%d",
-             vm_stats["status"], vm_stats.get("total", 0),
-             len(similar_scenarios), vm_stats.get("scr_total", 0))
-
-    # 4c. Strategy config
-    strategy_config_note = _load_strategy_config()
-
-    # 4d. Portfolio intelligence — compute BEFORE pipeline, then reconcile
-    pi_data = {}
-    recon_log: list[str] = []
-    recon_diff = None  # ReconciliationDiff — used by sonnet gate
-    try:
-        cfg = json.loads((Path(__file__).parent / "strategy_config.json").read_text()) \
-            if (Path(__file__).parent / "strategy_config.json").exists() else {}
-        pi_data = pi.build_portfolio_intelligence(
-            equity, positions, cfg, buying_power=buying_power_float
-        )
-
-        # ── Reconciliation: deadline exits + forced exits + stop audit ────────
-        # Build a BrokerSnapshot for the reconciliation engine
-        from schemas import BrokerSnapshot, NormalizedPosition as _NP  # noqa: PLC0415
-
-        _norm_positions = []
-        for _p in positions:
-            try:
-                _norm_positions.append(_NP.from_alpaca_position(_p))
-            except Exception:
-                pass
-
-        # Fetch open orders for stop audit (non-fatal if unavailable)
-        _open_orders = []
-        try:
-            from schemas import NormalizedOrder  # noqa: PLC0415
-            _raw_orders = _get_alpaca().get_orders(GetOrdersRequest(status="open")) or []
-            for _o in _raw_orders:
-                try:
-                    _open_orders.append(NormalizedOrder.from_alpaca_order(_o))
-                except Exception:
-                    pass
-        except Exception as _ord_exc:
-            log.debug("[RECON] Could not fetch open orders: %s", _ord_exc)
-
-        _snapshot = BrokerSnapshot(
-            equity=float(equity or 0),
-            cash=float(equity or 0),
-            buying_power=float(buying_power_float or 0),
-            open_orders=_open_orders,
-            positions=_norm_positions,
-        )
-
-        recon_log, recon_diff = recon.run_account1_reconciliation(
-            positions=_norm_positions,
-            snapshot=_snapshot,
-            config=cfg,
-            alpaca_client=_get_alpaca(),
-            regime=regime,
-            pi_data=pi_data,
-        )
-        for _rl in recon_log:
-            log.info(_rl)
-
-    except Exception as _pi_exc:
-        log.warning("Portfolio intelligence / reconciliation block failed: %s", _pi_exc)
-
-    # Divergence tracking — load mode, scan protection (non-fatal)
-    _a1_mode = None
-    _div_events: list = []
-    try:
-        from divergence import (  # noqa: PLC0415
-            load_account_mode, detect_protection_divergence,
-            respond_to_divergence, check_clean_cycle,
-            is_action_allowed, OperatingMode,
-        )
-        _a1_mode = load_account_mode("A1")
-        if "_snapshot" in dir() and _snapshot.positions:
-            _div_events = detect_protection_divergence(
-                account="A1",
-                positions=_snapshot.positions,
-                open_orders=_snapshot.open_orders,
-                vix=float(md.get("vix", 20) or 20),
-            )
-        if _div_events:
-            _a1_mode = respond_to_divergence(_div_events, "A1", _a1_mode)
-        _a1_mode = check_clean_cycle("A1", _a1_mode, _div_events)
-        # Desync tripwire: preflight passed as "go" but live mode is non-NORMAL
-        if (
-            _pf_result is not None
-            and _pf_result.verdict == "go"
-            and _a1_mode.mode != OperatingMode.NORMAL
-        ):
-            log.error(
-                "[PREFLIGHT] DESYNC: preflight verdict=go but _a1_mode=%s — "
-                "preflight operating-mode check may have read stale state",
-                _a1_mode.mode.value,
-            )
-        if _a1_mode.mode != OperatingMode.NORMAL:
-            log.warning("[DIV] A1 mode=%s scope=%s/%s",
-                        _a1_mode.mode.value,
-                        _a1_mode.scope.value,
-                        _a1_mode.scope_id)
-    except Exception as _div_init_exc:
-        log.warning("[DIV] divergence init failed (non-fatal): %s", _div_init_exc)
-
-    # 4e. Exit management — refresh stale stops, trail profitable positions
-    exit_manager_results = []
-    exit_status_str = "  (unavailable)"
-    try:
-        import exit_manager as _em  # noqa: PLC0415
-        exit_manager_results = _em.run_exit_manager(positions, _get_alpaca(), cfg)
-        exit_status_str = _em.format_exit_status_section(positions, _get_alpaca(), cfg)
-    except Exception as _em_exc:
-        log.debug("Exit manager failed (non-fatal): %s", _em_exc)
-
-    # 5. Sequential synthesis pipeline (Haiku pre-classification)
-    regime_obj = {}
+    # Stage 1 + 2 — regime classifier + signal scorer (market session only)
+    regime_obj        = {}
     signal_scores_obj = {}
     if session_tier == "market":
         try:
+            import data_warehouse as dw
             calendar = dw.load_economic_calendar()
         except Exception:
             calendar = {}
-        regime_obj = classify_regime(md, calendar)
-        signal_scores_obj = score_signals(symbols_stock, regime_obj, md, positions=positions)
+        regime_obj        = classify_regime(state.md, calendar)
+        signal_scores_obj = score_signals(state.symbols_stock, regime_obj, state.md,
+                                          positions=state.positions)
 
-        # Write signal scores to disk for Account 2 to read (BUG-004)
-        # B1: inject current price into each symbol's dict so Account 2 can generate candidates.
-        # Try both slash-format (BTC/USD) and no-slash (BTCUSD) — same defensive pattern as
-        # market_data._crypto_bars_lookup().
+        # B1: inject current price into scored symbols for Account 2 handoff
         try:
-            _prices = md.get("current_prices", {})
+            _prices = state.md.get("current_prices", {})
             _scored = signal_scores_obj.get("scored_symbols", {})
             for _sym, _sig in _scored.items():
                 if isinstance(_sig, dict):
@@ -1528,48 +184,41 @@ def run_cycle(
                     if _price:
                         _sig["price"] = float(_price)
                     else:
-                        log.debug("[SIGNALS] %s: no price in current_prices — price field omitted", _sym)
+                        log.debug("[SIGNALS] %s: no price in current_prices — omitted", _sym)
         except Exception as _pinj_exc:
             log.warning("[SIGNALS] price injection failed (non-fatal): %s", _pinj_exc)
 
+        # Write signal scores to disk for Account 2 handoff (BUG-004)
         try:
             _ss_path = Path(__file__).parent / "data" / "market" / "signal_scores.json"
             _ss_path.parent.mkdir(parents=True, exist_ok=True)
             _ss_path.write_text(json.dumps(signal_scores_obj))
-            log.debug("[SIGNALS] wrote %d scores to signal_scores.json", len(signal_scores_obj))
+            log.debug("[SIGNALS] wrote %d scores to signal_scores.json",
+                      len(signal_scores_obj))
         except Exception as _ss_exc:
             log.warning("[SIGNALS] could not write signal_scores.json (non-fatal): %s", _ss_exc)
 
-    # 5a. Stage 2.5 — Haiku scratchpad pre-analysis (market session only)
+    # Stage 2.5 — Haiku scratchpad pre-analysis (market session only)
     scratchpad_result = {}
     if session_tier == "market" and signal_scores_obj:
-        try:
-            scratchpad_result = _scratchpad.run_scratchpad(
-                signal_scores     = signal_scores_obj,
-                regime            = regime_obj,
-                market_conditions = md,
-                positions         = positions,
-            )
-            if scratchpad_result:
-                _scratchpad.save_hot_scratchpad(scratchpad_result)
-                trade_memory.save_scratchpad_memory(scratchpad_result)
-        except Exception as _sp_exc:
-            log.warning("[SCRATCHPAD] Stage 2.5 failed (non-fatal): %s", _sp_exc)
+        scratchpad_result = run_scratchpad_stage(
+            signal_scores_obj, regime_obj, state.md, state.positions
+        )
 
     regime_summary_str = format_regime_summary(regime_obj)
     signal_scores_str  = format_signal_scores(signal_scores_obj)
 
-    # Build intraday momentum section from 5-min bar cache
+    # Intraday momentum section (non-fatal)
     intraday_momentum_str = "  (unavailable)"
     try:
         import intraday_cache as _ic
         intraday_momentum_str = _ic.build_intraday_momentum_section(
-            symbols_stock, md.get("current_prices", {})
+            state.symbols_stock, state.md.get("current_prices", {})
         )
     except Exception as _im_exc:
         log.debug("Intraday momentum section failed (non-fatal): %s", _im_exc)
 
-    # Build persistent macro backdrop section (cache-first, non-fatal)
+    # Persistent macro backdrop (cache-first, non-fatal)
     macro_backdrop_str = ""
     try:
         import macro_intelligence as _macro  # noqa: PLC0415
@@ -1577,20 +226,18 @@ def run_cycle(
     except Exception as _macro_exc:
         log.debug("Macro backdrop failed (non-fatal): %s", _macro_exc)
 
-    # 5b. Build prompt & call Claude
-    # C3: overnight session uses a lightweight Haiku call instead of Sonnet.
-    # Saves ~$0.042/cycle × 24 cycles/day ≈ $1.01/day.
-    _cap_sys = _cap_user = _cap_raw = None   # set only when Sonnet fires
+    # Stage 3 — build prompt and call Claude
+    _cap_sys = _cap_user = _cap_raw = None  # set only when Sonnet fires
     if session_tier == "overnight":
         decision = _ask_claude_overnight(
-            positions=positions,
-            crypto_context=crypto_context,
+            positions=state.positions,
+            crypto_context=state.crypto_context,
             regime_obj=regime_obj,
-            macro_wire=md.get("macro_wire_section", ""),
+            macro_wire=state.md.get("macro_wire_section", ""),
         )
     else:
-        # Issue C: derive regime_str â classify_regime() returns bias, not "halt"/"caution"
-        _vix = float(md.get("vix", 0) or 0)
+        # Derive regime_str from VIX + bias (classify_regime returns bias, not halt/caution)
+        _vix  = float(state.md.get("vix", 0) or 0)
         _bias = regime_obj.get("bias", "neutral")
         if _vix >= 35:
             regime_str = "halt"
@@ -1599,85 +246,86 @@ def run_cycle(
         else:
             regime_str = _bias
 
-        # [GATE] Sonnet gate â skip if no material state change since last call
+        # Sonnet gate — skip if no material state change since last call
         from datetime import datetime as _dt       # noqa: PLC0415
         from zoneinfo import ZoneInfo as _ZI       # noqa: PLC0415
-        _use_compact = False  # initialised before gate so attribution can read it unconditionally
-        _gate_state = _gate.load_gate_state()
-        _gate_full_cfg = cfg if isinstance(cfg, dict) else {}
-        _tba_list   = cfg.get("time_bound_actions", []) if isinstance(cfg, dict) else []
+        _use_compact = False
+        _gate_state  = _gate.load_gate_state()
+        _gate_full_cfg = state.cfg if isinstance(state.cfg, dict) else {}
+        _tba_list      = state.cfg.get("time_bound_actions", []) if isinstance(state.cfg, dict) else []
         _run_sonnet, _gate_reasons, _gate_state = _gate.should_run_sonnet(
             session_tier=session_tier,
             regime=regime_str,
             vix=_vix,
             signal_scores=signal_scores_obj,
-            positions=positions,
-            recon_diff=recon_diff,
-            breaking_news=md.get("breaking_news", ""),
+            positions=state.positions,
+            recon_diff=state.recon_diff,
+            breaking_news=state.md.get("breaking_news", ""),
             time_bound_actions=_tba_list,
             current_time_et=_dt.now(_ZI("America/New_York")),
             gate_state=_gate_state,
             config=_gate_full_cfg,
-            equity=equity,
+            equity=state.equity,
         )
         _gate.save_gate_state(_gate_state)
 
         if not _run_sonnet:
             _log_skip_cycle(_gate_state)
             decision = {
-                "reasoning": "gate skipped â no material state change",
+                "reasoning": "gate skipped — no material state change",
                 "regime_view": regime_str,
                 "ideas": [],
-                "holds": [normalize_symbol(p.symbol) for p in positions],
+                "holds": [normalize_symbol(p.symbol) for p in state.positions],
                 "notes": "",
                 "concerns": "",
             }
         else:
             _use_compact = _gate.should_use_compact_prompt(
-                _gate_reasons, positions, signal_scores_obj, recon_diff
+                _gate_reasons, state.positions, signal_scores_obj, state.recon_diff
             )
             if _use_compact:
-                log.info("[GATE] SONNET triggered (%s) â COMPACT",
+                log.info("[GATE] SONNET triggered (%s) — COMPACT",
                          ", ".join(r.value for r in _gate_reasons))
                 user_prompt = build_compact_prompt(
-                    account=account,
-                    positions=positions,
-                    md=md,
+                    account=state.account,
+                    positions=state.positions,
+                    md=state.md,
                     session_tier=session_tier,
                     regime_obj=regime_obj,
                     signal_scores_obj=signal_scores_obj,
                     time_bound_actions=_tba_list,
-                    pi_data=pi_data,
-                    exit_status=exit_status_str,
+                    pi_data=state.pi_data,
+                    exit_status=state.exit_status_str,
                 )
             else:
-                log.info("[GATE] SONNET triggered (%s) â FULL",
+                log.info("[GATE] SONNET triggered (%s) — FULL",
                          ", ".join(r.value for r in _gate_reasons))
                 user_prompt = build_user_prompt(
-                    account=account,
-                    positions=positions,
-                    md=md,
+                    account=state.account,
+                    positions=state.positions,
+                    md=state.md,
                     session_tier=session_tier,
                     session_instruments=session_instruments,
-                    recent_decisions=recent_decisions,
-                    ticker_lessons=ticker_lessons,
+                    recent_decisions=state.recent_decisions,
+                    ticker_lessons=state.ticker_lessons,
                     next_cycle_time=next_cycle_time,
-                    vector_memories=vector_memories,
-                    strategy_config_note=strategy_config_note,
-                    crypto_signals=md.get("crypto_signals", "  (none)"),
-                    crypto_context=crypto_context,
+                    vector_memories=state.vector_memories,
+                    strategy_config_note=state.strategy_config_note,
+                    crypto_signals=state.md.get("crypto_signals", "  (none)"),
+                    crypto_context=state.crypto_context,
                     regime_summary=regime_summary_str,
                     signal_scores=signal_scores_str,
-                    pi_data=pi_data,
+                    pi_data=state.pi_data,
                     intraday_momentum=intraday_momentum_str,
-                    exit_status=exit_status_str,
+                    exit_status=state.exit_status_str,
                     macro_backdrop=macro_backdrop_str,
                     scratchpad_section=_scratchpad.format_scratchpad_section(scratchpad_result),
                 )
-            _cap_sys, _ = _load_prompts()
+            _cap_sys, _ = __import__("bot_stage3_decision")._load_prompts()
             _cap_user    = user_prompt
             decision     = ask_claude(user_prompt)
             _cap_raw     = json.dumps(decision)
+
     # Parse Claude's response — supports both new intent-based and legacy formats
     try:
         claude_decision = validate_claude_decision(decision)
@@ -1689,9 +337,9 @@ def run_cycle(
     reasoning = claude_decision.reasoning   if claude_decision else decision.get("reasoning", "")
     notes     = claude_decision.notes       if claude_decision else decision.get("notes", "")
 
-    # Attribution — build tags, generate decision ID, log event
-    _decision_id = ""
-    _module_tags: dict = {}
+    # Attribution
+    _decision_id    = ""
+    _module_tags:   dict = {}
     _trigger_flags: dict = {}
     try:
         from attribution import (  # noqa: PLC0415
@@ -1706,16 +354,16 @@ def run_cycle(
             gate_reasons=_gate_reasons if "_gate_reasons" in dir() else [],
             used_compact=_use_compact if "_use_compact" in dir() else False,
             gate_skipped=not _run_sonnet if "_run_sonnet" in dir() else True,
-            scratchpad_result=scratchpad_result if "scratchpad_result" in dir() else {},
-            retrieved_memories=similar_scenarios if "similar_scenarios" in dir() else [],
-            macro_backdrop_str=macro_backdrop_str if "macro_backdrop_str" in dir() else "",
-            macro_wire_str=md.get("macro_wire_section", ""),
-            morning_brief=md.get("morning_brief_section", ""),
-            insider_section=md.get("insider_section", ""),
-            reddit_section=md.get("reddit_section", ""),
-            earnings_intel=md.get("earnings_intel_section", ""),
-            recon_diff=recon_diff if "recon_diff" in dir() else None,
-            positions=positions,
+            scratchpad_result=scratchpad_result,
+            retrieved_memories=state.similar_scenarios,
+            macro_backdrop_str=macro_backdrop_str,
+            macro_wire_str=state.md.get("macro_wire_section", ""),
+            morning_brief=state.md.get("morning_brief_section", ""),
+            insider_section=state.md.get("insider_section", ""),
+            reddit_section=state.md.get("reddit_section", ""),
+            earnings_intel=state.md.get("earnings_intel_section", ""),
+            recon_diff=state.recon_diff,
+            positions=state.positions,
         )
         _trigger_flags = build_trigger_flags(
             _gate_reasons if "_gate_reasons" in dir() else []
@@ -1731,21 +379,20 @@ def run_cycle(
     except Exception as _attr_exc:
         log.debug("Attribution block failed (non-fatal): %s", _attr_exc)
 
-    # Process ideas through risk kernel → broker-ready action dicts
+    # Risk kernel loop — process ideas → broker-ready actions
     broker_actions: list = []
-    if claude_decision and claude_decision.ideas and regime != "halt" and _allow_new_entries:
-        _prices = md.get("current_prices", {})
-        # Build snapshot for risk kernel (reuse normalized positions built above)
+    if claude_decision and claude_decision.ideas and regime != "halt" and state.allow_new_entries:
+        _prices = state.md.get("current_prices", {})
         _rk_positions = []
-        for _p in positions:
+        for _p in state.positions:
             try:
                 _rk_positions.append(_NP.from_alpaca_position(_p))
             except Exception:
                 pass
         _rk_snapshot = _BrokerSnapshot(
-            equity=float(equity or 0),
-            cash=float(equity or 0),
-            buying_power=float(buying_power_float or 0),
+            equity=float(state.equity or 0),
+            cash=float(state.equity or 0),
+            buying_power=float(state.buying_power_float or 0),
             open_orders=[],
             positions=_rk_positions,
         )
@@ -1757,37 +404,34 @@ def run_cycle(
             pass
 
         for _idea in claude_decision.ideas:
-            _sym = normalize_symbol(_idea.symbol)
+            _sym   = normalize_symbol(_idea.symbol)
             _price = _prices.get(_sym) or _prices.get(_idea.symbol)
             _price = float(_price) if _price else None
             _result = risk_kernel.process_idea(
                 _idea, _rk_snapshot, None, _rk_cfg,
-                _price, session_tier, float(md.get("vix", 20.0))
+                _price, session_tier, float(state.md.get("vix", 20.0))
             )
             if isinstance(_result, _BrokerAction):
                 broker_actions.append(_result)
-                log.info(
-                    "[KERNEL] APPROVED %s %s → action=%s qty=%s stop=$%s",
-                    _idea.intent, _idea.symbol, _result.action.value,
-                    _result.qty, _result.stop_loss,
-                )
+                log.info("[KERNEL] APPROVED %s %s → action=%s qty=%s stop=$%s",
+                         _idea.intent, _idea.symbol, _result.action.value,
+                         _result.qty, _result.stop_loss)
             else:
                 log.info("[KERNEL] REJECTED %s %s — %s", _idea.intent, _idea.symbol, _result)
                 try:
                     from shadow_lane import log_shadow_event as _log_shadow  # noqa: PLC0415
                     _log_shadow(
-                        "rejected_by_risk_kernel",
-                        _sym,
+                        "rejected_by_risk_kernel", _sym,
                         {
                             "intent":           _idea.intent,
                             "intended_action":  str(_idea.action.value) if hasattr(_idea.action, "value") else str(_idea.action),
                             "rejection_reason": str(_result),
                             "signal_score":     getattr(_idea, "signal_score", 0),
-                            "conviction":       getattr(_idea, "conviction",   0.0),
+                            "conviction":       getattr(_idea, "conviction", 0.0),
                             "direction":        str(_idea.direction.value) if hasattr(_idea.direction, "value") else str(getattr(_idea, "direction", "")),
                             "thesis_summary":   getattr(_idea, "catalyst", ""),
                             "regime":           regime,
-                            "vix":              float(md.get("vix", 0) or 0),
+                            "vix":              float(state.md.get("vix", 0) or 0),
                             "module_tags":      _module_tags,
                         },
                         decision_id=_decision_id,
@@ -1795,54 +439,47 @@ def run_cycle(
                     )
                 except Exception:
                     pass
-                # Decision outcomes — kernel rejection
                 try:
                     from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
                     from datetime import datetime as _d, timezone as _tz
-                    _outcome_rej = DecisionOutcomeRecord(
-                        decision_id=_decision_id,
-                        account="A1",
-                        symbol=_sym,
+                    log_outcome_event(DecisionOutcomeRecord(
+                        decision_id=_decision_id, account="A1", symbol=_sym,
                         timestamp=_d.now(_tz.utc).isoformat().replace("+00:00", "Z"),
                         action=str(_idea.action.value) if hasattr(_idea.action, "value") else str(_idea.action),
                         tier=str(_idea.tier.value) if hasattr(_idea.tier, "value") else str(getattr(_idea, "tier", "")),
                         confidence=str(getattr(_idea, "conviction", "")),
                         catalyst=getattr(_idea, "catalyst", None),
-                        session=session_tier,
-                        status="rejected_by_kernel",
-                        reject_reason=str(_result),
-                        module_tags=_module_tags,
+                        session=session_tier, status="rejected_by_kernel",
+                        reject_reason=str(_result), module_tags=_module_tags,
                         trigger_flags=_trigger_flags,
-                    )
-                    log_outcome_event(_outcome_rej)
+                    ))
                 except Exception:
                     pass
 
     actions = [ba.to_dict() for ba in broker_actions]
 
-    # Decision capture — written after broker_actions are resolved; non-fatal
+    # Decision capture
     if _decision_id and _cap_user is not None:
         _write_decision_capture(_decision_id, _cap_sys, _cap_user, MODEL, _cap_raw, actions)
 
-    # Mode gate — filter new entries if operating mode is not NORMAL
-    if _a1_mode is not None:
+    # Mode gate — filter new entries if A1 operating mode is not NORMAL
+    if state.a1_mode is not None:
         try:
             from divergence import is_action_allowed, OperatingMode  # noqa: PLC0415
-            if _a1_mode.mode != OperatingMode.NORMAL:
-                _filtered_actions: list = []
+            if state.a1_mode.mode != OperatingMode.NORMAL:
+                _filtered: list = []
                 for _ba_dict in actions:
                     _allowed, _reason = is_action_allowed(
-                        _a1_mode,
+                        state.a1_mode,
                         _ba_dict.get("action", "hold"),
                         _ba_dict.get("symbol", ""),
                     )
                     if _allowed:
-                        _filtered_actions.append(_ba_dict)
+                        _filtered.append(_ba_dict)
                     else:
                         log.warning("[DIV] BLOCKED %s %s — %s",
-                                    _ba_dict.get("action"), _ba_dict.get("symbol"),
-                                    _reason)
-                actions = _filtered_actions
+                                    _ba_dict.get("action"), _ba_dict.get("symbol"), _reason)
+                actions = _filtered
         except Exception as _div_gate_exc:
             log.warning("[DIV] mode gate failed (non-fatal): %s", _div_gate_exc)
 
@@ -1861,74 +498,61 @@ def run_cycle(
         broker_actions = []
         _send_sms(f"TRADING BOT: Claude called HALT. Reasoning: {reasoning[:160]}")
 
-    # Persist decision — JSON rolling memory + ChromaDB vector store
-    vector_id = trade_memory.save_trade_memory(decision, md, session_tier)
-    mem.save_decision(decision, session_tier, vector_id=vector_id,
-                      decision_id=_decision_id)
+    # Persist decision
+    vector_id = trade_memory.save_trade_memory(decision, state.md, session_tier)
+    mem.save_decision(decision, session_tier, vector_id=vector_id, decision_id=_decision_id)
 
-    # Log pattern learning observations for watchlisted symbols
+    # Pattern learning observations
     try:
         from memory import _load_pattern_watchlist, add_watchlist_observation  # noqa: PLC0415
-        pwl = _load_pattern_watchlist()
-        current_prices = md.get("current_prices", {})
+        pwl            = _load_pattern_watchlist()
+        current_prices = state.md.get("current_prices", {})
         for sym in list(pwl.keys()):
             if pwl[sym].get("graduated"):
                 continue
             price = current_prices.get(sym)
             if price is None:
                 continue
-            # Extract any mention of this symbol in Claude's notes/reasoning
             claude_mention = ""
             full_text = reasoning + " " + (notes or "")
             if sym in full_text:
-                # Find the sentence containing the symbol
                 for sent in full_text.split("."):
                     if sym in sent:
                         claude_mention = sent.strip()[:120]
                         break
-            lesson_text = claude_mention or f"{sym} observed at ${price:.2f}"
+            lesson_text       = claude_mention or f"{sym} observed at ${price:.2f}"
             conditions_active = []
-            if sym in md.get("watchlist_signals",""):
-                for line in md["watchlist_signals"].splitlines():
+            if sym in state.md.get("watchlist_signals", ""):
+                for line in state.md["watchlist_signals"].splitlines():
                     if sym in line:
                         conditions_active.append(line.strip()[:80])
                         break
             add_watchlist_observation(
-                symbol=sym,
-                price_action=f"${price:.2f} today",
-                conditions=conditions_active[:3],
-                lesson=lesson_text,
+                symbol=sym, price_action=f"${price:.2f} today",
+                conditions=conditions_active[:3], lesson=lesson_text,
                 source="auto_observation",
             )
     except Exception as _pwl_exc:
         log.debug("Pattern watchlist observation failed (non-fatal): %s", _pwl_exc)
 
-    # Auto-enroll skipped symbols into the pattern learning watchlist
+    # Auto-enroll skipped symbols into pattern watchlist
     try:
         for action in actions:
             if action.get("action", "").lower() == "skip":
                 sym = action.get("symbol", "")
                 if not sym:
                     continue
-                rationale = (
-                    action.get("catalyst")
-                    or action.get("rationale")
-                    or reasoning
-                )[:300]
+                rationale = (action.get("catalyst") or action.get("rationale") or reasoning)[:300]
                 mem.add_symbol_to_pattern_watchlist(
-                    symbol=sym,
-                    reason=rationale,
-                    market_context=f"VIX={md['vix']:.1f} regime={regime}",
+                    symbol=sym, reason=rationale,
+                    market_context=f"VIX={state.md['vix']:.1f} regime={regime}",
                 )
-                log.info("[PATTERN_WL] Auto-enrolled %s — skip rationale: %s",
-                         sym, rationale[:80])
-    except Exception as _skip_enroll_exc:
-        log.debug("Skip auto-enroll failed (non-fatal): %s", _skip_enroll_exc)
+                log.info("[PATTERN_WL] Auto-enrolled %s — skip rationale: %s", sym, rationale[:80])
+    except Exception as _skip_exc:
+        log.debug("Skip auto-enroll failed (non-fatal): %s", _skip_exc)
 
-    # Auto-promote tickers from breaking news only (not Claude's reasoning text)
-    wm.run_feedback_loop(
-        breaking_news_text=md.get("breaking_news", ""),
-    )
+    # Watchlist feedback loop (breaking news only)
+    wm.run_feedback_loop(breaking_news_text=state.md.get("breaking_news", ""))
 
     # Log cycle decision
     log_trade({
@@ -1937,9 +561,9 @@ def run_cycle(
         "regime_view": regime,
         "reasoning":   reasoning,
         "notes":       notes,
-        "vix":         md["vix"],
-        "equity":      equity,
-        "exposure":    round(exposure, 2),
+        "vix":         state.md["vix"],
+        "equity":      state.equity,
+        "exposure":    round(state.exposure, 2),
         "n_ideas":     len(claude_decision.ideas) if claude_decision else 0,
         "n_actions":   len(actions),
     })
@@ -1982,33 +606,28 @@ def run_cycle(
         print(f"  Concerns  : {claude_decision.concerns}")
     print("=" * 62)
 
-    # 6. Pre-execution filters: fundamental check + bull/bear debate
+    # Stage 4 — pre-execution filters: fundamental check + bull/bear debate
     debate_results: dict = {}
     if actions and regime != "halt":
         buy_candidates = [a for a in actions if a.get("action") == "buy"]
 
-        # Fundamental check — flag concerns but don't auto-veto (Claude already saw the data)
-        fund_results = fundamental_check(buy_candidates, md)
+        fund_results = fundamental_check(buy_candidates, state.md)
         for sym, fr in fund_results.items():
             if not fr.get("ok", True):
                 log.warning("[FUNDAMENTAL] Concern for %s: %s", sym, fr.get("notes", ""))
 
-        # Bull/Bear debate — may veto individual buys
         vetoed_syms: set[str] = set()
-        debate_results: dict = {}
+        debate_results = {}
         for a in buy_candidates:
-            debate = debate_trade(a, md, equity, session_tier)
+            debate = debate_trade(a, state.md, state.equity, session_tier)
             debate_results[a.get("symbol", "")] = debate
             if not debate.get("proceed", True):
                 vetoed_syms.add(a.get("symbol", ""))
                 log.info("[DEBATE] Removing vetoed action: %s %s",
                          a.get("action"), a.get("symbol"))
-                # Publish interesting skip for debate vetoes
                 if publisher and publisher.enabled:
                     try:
-                        publisher.publish_interesting_skip(
-                            a, "debate_veto", debate
-                        )
+                        publisher.publish_interesting_skip(a, "debate_veto", debate)
                     except Exception:
                         pass
 
@@ -2018,15 +637,15 @@ def run_cycle(
             log.info("[DEBATE] %d action(s) vetoed, %d remaining",
                      len(vetoed_syms), len(actions))
 
-    # 7. Execute
-    if actions and regime != "halt" and _allow_live_orders:
+    # Stage 4 — execute
+    if actions and regime != "halt" and state.allow_live_orders:
         results = order_executor.execute_all(
             actions=actions,
-            account=account,
-            positions=positions,
-            market_status=md["market_status"],
-            minutes_since_open=md["minutes_since_open"],
-            current_prices=md.get("current_prices", {}),
+            account=state.account,
+            positions=state.positions,
+            market_status=state.md["market_status"],
+            minutes_since_open=state.md["minutes_since_open"],
+            current_prices=state.md.get("current_prices", {}),
             session_tier=session_tier,
             decision_id=_decision_id,
         )
@@ -2040,7 +659,6 @@ def run_cycle(
                     f"BOT ORDER: {r.action.upper()} {r.symbol}  "
                     f"order_id={r.order_id}"
                 )
-                # Attribution — log order submitted event
                 try:
                     from attribution import log_attribution_event as _log_attr  # noqa: PLC0415
                     _log_attr(
@@ -2051,24 +669,18 @@ def run_cycle(
                         module_tags=_module_tags,
                         trigger_flags=_trigger_flags,
                         trade_id=str(r.order_id) if r.order_id else None,
-                        extra={
-                            "fill_price": r.fill_price,
-                            "filled_qty": r.filled_qty,
-                        },
+                        extra={"fill_price": r.fill_price, "filled_qty": r.filled_qty},
                     )
                 except Exception as _oa_exc:
                     log.debug("Attribution order_submitted failed (non-fatal): %s", _oa_exc)
-                # Decision outcomes — approved trade
                 try:
                     from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
                     from datetime import datetime as _d, timezone as _tz
                     _matching_action = next(
                         (a for a in actions if a.get("symbol") == r.symbol), {}
                     )
-                    _outcome_sub = DecisionOutcomeRecord(
-                        decision_id=_decision_id,
-                        account="A1",
-                        symbol=r.symbol,
+                    log_outcome_event(DecisionOutcomeRecord(
+                        decision_id=_decision_id, account="A1", symbol=r.symbol,
                         timestamp=_d.now(_tz.utc).isoformat().replace("+00:00", "Z"),
                         action=r.action,
                         tier=_matching_action.get("tier"),
@@ -2082,20 +694,16 @@ def run_cycle(
                         status="submitted",
                         module_tags=_module_tags,
                         trigger_flags=_trigger_flags,
-                    )
-                    log_outcome_event(_outcome_sub)
+                    ))
                 except Exception:
                     pass
             else:
-                # Non-submitted result — log rejected_by_executor outcome
                 try:
                     from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
                     from datetime import datetime as _d, timezone as _tz
                     _rej_action = next((a for a in actions if a.get("symbol") == r.symbol), {})
-                    _outcome_rej_ex = DecisionOutcomeRecord(
-                        decision_id=_decision_id,
-                        account="A1",
-                        symbol=r.symbol,
+                    log_outcome_event(DecisionOutcomeRecord(
+                        decision_id=_decision_id, account="A1", symbol=r.symbol,
                         timestamp=_d.now(_tz.utc).isoformat().replace("+00:00", "Z"),
                         action=getattr(r, "action", _rej_action.get("action", "")),
                         tier=_rej_action.get("tier"),
@@ -2106,72 +714,63 @@ def run_cycle(
                         reject_reason=getattr(r, "reason", None) or str(r.status),
                         module_tags=_module_tags,
                         trigger_flags=_trigger_flags,
-                    )
-                    log_outcome_event(_outcome_rej_ex)
+                    ))
                 except Exception as _rej_ex_exc:
                     log.warning("[OUTCOMES] rejected_by_executor log failed: %s", _rej_ex_exc)
-                # Shadow lane — approved_trade (decision_id is set by attribution block above)
                 try:
                     from shadow_lane import log_shadow_event as _log_shadow  # noqa: PLC0415
                     _log_shadow(
-                        "approved_trade",
-                        r.symbol,
-                        {
-                            "action":   r.action,
-                            "order_id": str(r.order_id) if r.order_id else "",
-                        },
-                        decision_id=_decision_id,
-                        session=session_tier,
+                        "approved_trade", r.symbol,
+                        {"action": r.action, "order_id": str(r.order_id) if r.order_id else ""},
+                        decision_id=_decision_id, session=session_tier,
                     )
                 except Exception:
                     pass
-                # Publish trade entry to Twitter
                 if publisher and publisher.enabled:
                     try:
                         matching_action = next(
                             (a for a in actions if a.get("symbol") == r.symbol
-                             and a.get("action") == r.action),
-                            None,
+                             and a.get("action") == r.action), None,
                         )
                         if matching_action:
                             publisher.publish_trade_entry(
                                 action=matching_action,
                                 debate_result=debate_results.get(r.symbol),
-                                market_context=f"VIX={md['vix']:.1f} regime={regime}",
-                                alpaca_client=_get_alpaca(),  # verify fill + use real entry price
+                                market_context=f"VIX={state.md['vix']:.1f} regime={regime}",
+                                alpaca_client=_get_alpaca(),
                             )
                     except Exception as _pub_exc:
                         log.debug("publisher trade_entry failed (non-fatal): %s", _pub_exc)
-                # Thesis checksum + catalyst normalizer (T2.1/T2.2)
                 if r.action == "buy":
                     try:
                         from feature_flags import is_enabled as _ff_enabled  # noqa: PLC0415
                         if _ff_enabled("enable_thesis_checksum"):
                             from thesis_checksum import build_checksum_from_decision, log_checksum  # noqa: PLC0415
                             from catalyst_normalizer import normalize_catalyst, log_catalyst  # noqa: PLC0415
+                            _matching_action = next(
+                                (a for a in actions if a.get("symbol") == r.symbol), {}
+                            )
                             _cs = build_checksum_from_decision(
-                                decision_id=_decision_id,
-                                symbol=r.symbol,
-                                idea=_matching_action,
-                                regime_obj=regime_obj,
+                                decision_id=_decision_id, symbol=r.symbol,
+                                idea=_matching_action, regime_obj=regime_obj,
                                 signal_scores=signal_scores_obj,
                             )
                             if _cs:
                                 log_checksum(_cs)
                             _cat = normalize_catalyst(
                                 raw_text=_matching_action.get("catalyst", ""),
-                                decision_id=_decision_id,
-                                symbol=r.symbol,
+                                decision_id=_decision_id, symbol=r.symbol,
                             )
                             log_catalyst(_cat)
                     except Exception as _tc_exc:
                         log.debug("[CHECKSUM] thesis/catalyst capture failed (non-fatal): %s", _tc_exc)
-                # Fill divergence detection
                 try:
                     from divergence import detect_fill_divergence  # noqa: PLC0415
+                    _matching_action = next(
+                        (a for a in actions if a.get("symbol") == r.symbol), {}
+                    )
                     detect_fill_divergence(
-                        symbol=r.symbol,
-                        account="A1",
+                        symbol=r.symbol, account="A1",
                         intended_price=float(_matching_action.get("limit_price") or 0),
                         actual_fill_price=float(r.fill_price or 0),
                         intended_qty=float(r.qty or 0),
@@ -2192,16 +791,13 @@ def run_cycle(
                 from feature_flags import is_enabled as _ff_fr  # noqa: PLC0415
                 if _ff_fr("enable_thesis_checksum"):
                     from forensic_reviewer import review_closed_trade  # noqa: PLC0415
-                    _fr_action = next((a for a in actions if a.get("symbol") == _fr.symbol), {})
-                    _entry_price: float = float(_fr.fill_price or 0) or 0.0
-                    _exit_price: float = float(_fr.fill_price or 0) or 0.0
+                    _fr_action    = next((a for a in actions if a.get("symbol") == _fr.symbol), {})
+                    _entry_price  = float(_fr.fill_price or 0) or 0.0
+                    _exit_price   = float(_fr.fill_price or 0) or 0.0
                     review_closed_trade(
-                        decision_id=_decision_id,
-                        symbol=_fr.symbol,
-                        entry_price=_entry_price,
-                        exit_price=_exit_price,
-                        realized_pnl=0.0,
-                        hold_duration_hours=0.0,
+                        decision_id=_decision_id, symbol=_fr.symbol,
+                        entry_price=_entry_price, exit_price=_exit_price,
+                        realized_pnl=0.0, hold_duration_hours=0.0,
                         entry_decision=_fr_action,
                         exit_reason=_fr_action.get("catalyst", ""),
                         regime_at_entry=regime_obj,
@@ -2209,54 +805,46 @@ def run_cycle(
             except Exception as _frev_exc:
                 log.debug("[FORENSIC] review_closed_trade failed (non-fatal): %s", _frev_exc)
 
-        # Seed backstop for each new buy executed (via reconciliation module)
+        # Seed backstop for each new buy executed
         try:
-            _cfg_path = Path(__file__).parent / 'strategy_config.json'
-            _sc = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
-            _backstop_days = int(
-                _sc.get('exit_management', {}).get('backstop_days', 7)
-            )
+            _cfg_path     = Path(__file__).parent / "strategy_config.json"
+            _sc           = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
+            _backstop_days = int(_sc.get("exit_management", {}).get("backstop_days", 7))
             for _r in results:
-                if _r.status != 'submitted' or _r.action != 'buy':
+                if _r.status != "submitted" or _r.action != "buy":
                     continue
+                import reconciliation as recon  # noqa: PLC0415
                 recon.seed_backstop(
                     symbol=normalize_symbol(_r.symbol),
                     config_path=_cfg_path,
                     max_hold_days=_backstop_days,
                 )
         except Exception as _tba_exc:
-            log.warning('Backstop seeding failed: %s', _tba_exc)
+            log.warning("Backstop seeding failed: %s", _tba_exc)
 
     else:
-        if actions and not _allow_live_orders and regime != "halt":
-            # shadow_only preflight verdict: actions exist but live submission suppressed
+        if actions and not state.allow_live_orders and regime != "halt":
             log.warning("[PREFLIGHT] shadow_only — %d action(s) blocked; logging blocked_by_mode",
                         len(actions))
             try:
                 from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
                 from datetime import datetime as _d, timezone as _tz
                 _pf_reason = (
-                    f"preflight verdict={_pf_result.verdict}"
-                    if "_pf_result" in dir() and _pf_result is not None
+                    f"preflight verdict={state.pf_result.verdict}"
+                    if state.pf_result is not None
                     else "shadow_only mode — live orders suppressed"
                 )
                 for _ba in actions:
-                    _outcome_blocked = DecisionOutcomeRecord(
-                        decision_id=_decision_id,
-                        account="A1",
+                    log_outcome_event(DecisionOutcomeRecord(
+                        decision_id=_decision_id, account="A1",
                         symbol=_ba.get("symbol", ""),
                         timestamp=_d.now(_tz.utc).isoformat().replace("+00:00", "Z"),
                         action=_ba.get("action", ""),
-                        tier=_ba.get("tier"),
-                        confidence=_ba.get("confidence"),
-                        catalyst=_ba.get("catalyst"),
-                        session=session_tier,
-                        status="blocked_by_mode",
-                        reject_reason=_pf_reason,
-                        module_tags=_module_tags,
-                        trigger_flags=_trigger_flags,
-                    )
-                    log_outcome_event(_outcome_blocked)
+                        tier=_ba.get("tier"), confidence=_ba.get("confidence"),
+                        catalyst=_ba.get("catalyst"), session=session_tier,
+                        status="blocked_by_mode", reject_reason=_pf_reason,
+                        module_tags=_module_tags, trigger_flags=_trigger_flags,
+                    ))
             except Exception as _bm_exc:
                 log.warning("[OUTCOMES] blocked_by_mode log failed: %s", _bm_exc)
         else:

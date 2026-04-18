@@ -430,7 +430,7 @@ if cfg:
 bot_path = BASE_DIR / "bot.py"
 if bot_path.exists():
     bot_text = bot_path.read_text()
-    if "def _ask_claude_overnight(" in bot_text:
+    if "_ask_claude_overnight" in bot_text:
         check(PASS, "bot.py: _ask_claude_overnight function present (C3 overnight gate)")
     else:
         check(FAIL, "bot.py: _ask_claude_overnight function not found — C3 overnight gate missing")

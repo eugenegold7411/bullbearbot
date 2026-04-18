@@ -2309,6 +2309,13 @@ Please include pattern watchlist analysis in your report section.
         journal_by_status[rec.get("status", rec.get("event", "unknown"))] += 1
         journal_by_session[rec.get("session", "unknown")] += 1
 
+    _experience_library_section_a2 = ""
+    try:
+        import experience_library as _exp_lib_a2  # noqa: PLC0415
+        _experience_library_section_a2 = _exp_lib_a2.format_experience_summary_for_review(days_back=30)
+    except Exception as _exp_a2_err:
+        log.warning("[REVIEW] experience_library agent2 failed: %s", _exp_a2_err)
+
     agent2_input = f"""## WEEKLY RISK MANAGER REVIEW INPUT
 
 ### Recent Log — REJECTED / DRAWDOWN Events
@@ -2336,13 +2343,7 @@ Please include pattern watchlist analysis in your report section.
 
 Please audit risk controls, position sizing, drawdown exposure, stop-loss effectiveness, and PDT usage. Provide your findings as a markdown section with 3-5 specific parameter adjustments (include numeric values)."""
 
-    _experience_library_section_a2 = ""
-    try:
-        import experience_library as _exp_lib_a2  # noqa: PLC0415
-        _experience_library_section_a2 = _exp_lib_a2.format_experience_summary_for_review(days_back=30)
-    except Exception as _exp_a2_err:
-        log.warning("[REVIEW] experience_library agent2 failed: %s", _exp_a2_err)
-    agent2_input = agent2_input.replace("{_experience_library_section_a2}", _experience_library_section_a2)
+
 
     exec_keywords = ("REJECTED", "SUBMITTED", "ERROR", "Cycle done in",
                      "submitted", "rejected", "error", "exception", "Exception")

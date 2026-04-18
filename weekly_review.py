@@ -2332,7 +2332,7 @@ Please include pattern watchlist analysis in your report section.
 ```
 
 ### Experience Library (last 30 days)
-{_experience_library_section_placeholder}
+{_experience_library_section_a2}
 
 Please audit risk controls, position sizing, drawdown exposure, stop-loss effectiveness, and PDT usage. Provide your findings as a markdown section with 3-5 specific parameter adjustments (include numeric values)."""
 
@@ -2342,7 +2342,7 @@ Please audit risk controls, position sizing, drawdown exposure, stop-loss effect
         _experience_library_section_a2 = _exp_lib_a2.format_experience_summary_for_review(days_back=30)
     except Exception as _exp_a2_err:
         log.warning("[REVIEW] experience_library agent2 failed: %s", _exp_a2_err)
-    agent2_input = agent2_input.replace("{_experience_library_section_placeholder}", _experience_library_section_a2)
+    agent2_input = agent2_input.replace("{_experience_library_section_a2}", _experience_library_section_a2)
 
     exec_keywords = ("REJECTED", "SUBMITTED", "ERROR", "Cycle done in",
                      "submitted", "rejected", "error", "exception", "Exception")

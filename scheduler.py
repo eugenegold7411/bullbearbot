@@ -20,10 +20,14 @@ Usage:
 """
 
 import argparse
+import atexit
+import os
 import queue
+import signal
 import time
 import traceback
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import bot
@@ -56,6 +60,71 @@ _EXTENDED_START =  4 * 60         # 4:00 AM ET
 _EXTENDED_END   = 23 * 60         # 11:00 PM ET
 
 REPORT_HOUR_ET  = 12   # noon ET = 9 AM PST
+
+# ── PID lockfile — prevent duplicate scheduler instances ─────────────────────
+
+_PID_FILE = Path("data/runtime/scheduler.pid")
+
+
+def _check_pid_lock(pid_path: Path = _PID_FILE) -> None:
+    """
+    Inspect an existing PID lockfile.
+    - No file         → return (no prior instance).
+    - Live PID found  → log CRITICAL and raise SystemExit(1).
+    - Dead PID (stale)→ log WARNING, remove file, return.
+    Never raises other than SystemExit.
+    """
+    if not pid_path.exists():
+        return
+    try:
+        existing_pid = int(pid_path.read_text().strip())
+    except (ValueError, OSError) as exc:
+        log.warning("[PID] Unreadable lockfile at %s (%s) — treating as stale", pid_path, exc)
+        pid_path.unlink(missing_ok=True)
+        return
+    try:
+        os.kill(existing_pid, 0)   # signal 0 = liveness probe; no signal sent
+        log.critical(
+            "[PID] CRITICAL: scheduler already running as PID %d. "
+            "Refusing to start a second instance (lockfile: %s). "
+            "Stop the existing process or delete the file if it is stale.",
+            existing_pid, pid_path,
+        )
+        raise SystemExit(1)
+    except OSError:
+        # os.kill raised → process is not running; stale lock
+        log.warning(
+            "[PID] Stale lockfile found (PID %d no longer running) — "
+            "removing and continuing.",
+            existing_pid,
+        )
+        pid_path.unlink(missing_ok=True)
+
+
+def _acquire_pid_lock(pid_path: Path = _PID_FILE) -> None:
+    """Check for live instance, then write our PID to the lockfile.
+    Registers atexit cleanup so the lock is released on any normal exit."""
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    _check_pid_lock(pid_path)
+    pid_path.write_text(str(os.getpid()))
+    atexit.register(_release_pid_lock, pid_path)
+    log.info("[PID] Lockfile written: %s (PID %d)", pid_path, os.getpid())
+
+
+def _release_pid_lock(pid_path: Path = _PID_FILE) -> None:
+    """Remove the lockfile on clean shutdown — only if it belongs to this process."""
+    try:
+        if pid_path.exists() and int(pid_path.read_text().strip()) == os.getpid():
+            pid_path.unlink()
+            log.info("[PID] Lockfile released: %s", pid_path)
+    except Exception as exc:
+        log.warning("[PID] Could not release lockfile: %s", exc)
+
+
+def _handle_sigterm(signum, frame) -> None:
+    """Convert SIGTERM to KeyboardInterrupt so the scheduler shuts down cleanly."""
+    raise KeyboardInterrupt
+
 
 # ── ORB formation tracking ────────────────────────────────────────────────────
 _orb_high:   dict[str, float] = {}   # symbol → formation-window high
@@ -986,6 +1055,14 @@ def _sleep_watching_triggers(seconds: int) -> list[str]:
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def run(dry_run: bool = False) -> None:
+    _acquire_pid_lock()
+
+    # Convert SIGTERM → KeyboardInterrupt so the finally block always runs.
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except (ValueError, OSError):
+        pass  # not in main thread; SIGTERM handler not registered
+
     global _last_cycle_end_time
     cycle_num = 0
     trigger_cycle_num = 0

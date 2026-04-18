@@ -287,17 +287,19 @@ def run_precycle(
         if div_events:
             a1_mode = respond_to_divergence(div_events, "A1", a1_mode)
         a1_mode = check_clean_cycle("A1", a1_mode, div_events)
-        # Desync tripwire
+        # T-003 Desync tripwire — abort (not just log) when state sources disagree
         if (
             pf_result is not None
-            and pf_result.verdict == "go"
+            and pf_result.verdict in ("go", "go_degraded")
             and a1_mode.mode != OperatingMode.NORMAL
         ):
             log.error(
-                "[PREFLIGHT] DESYNC: preflight verdict=go but a1_mode=%s — "
-                "preflight operating-mode check may have read stale state",
+                "[PREFLIGHT] SAFETY OVERRIDE: preflight=%s but a1_mode=%s — "
+                "aborting cycle to prevent DESYNC",
+                pf_result.verdict,
                 a1_mode.mode.value,
             )
+            return None
         if a1_mode.mode != OperatingMode.NORMAL:
             log.warning("[DIV] A1 mode=%s scope=%s/%s",
                         a1_mode.mode.value,
@@ -314,6 +316,14 @@ def run_precycle(
         exit_status_str = _em.format_exit_status_section(positions, _get_alpaca(), cfg)
     except Exception as _em_exc:
         log.debug("Exit manager failed (non-fatal): %s", _em_exc)
+
+    # T-003 final DESYNC gate — synchronous fresh file read at the last possible
+    # moment before the cycle commits to executing orders.  Catches any mode
+    # transition that occurred after preflight's _check_operating_mode() call.
+    if not _preflight.run_preflight_desync_check(
+        preflight_verdict=pf_result.verdict if pf_result else "unknown",
+    ):
+        return None
 
     return PreCycleState(
         account=account,

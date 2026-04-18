@@ -386,6 +386,41 @@ def run_preflight(
     return result
 
 
+def run_preflight_desync_check(
+    mode_path: Path = _A1_MODE,
+    preflight_verdict: str = "go",
+) -> bool:
+    """
+    T-003 DESYNC final safety gate.
+
+    Performs a synchronous fresh read of the divergence mode file at the last
+    possible moment before a cycle proceeds. Catches mode changes that occur
+    in the window between preflight's _check_operating_mode() call and actual
+    cycle execution.
+
+    Returns True  → mode is NORMAL (or file absent); cycle may proceed.
+    Returns False → mode is non-NORMAL; caller must abort the cycle.
+    Never raises.
+    """
+    try:
+        if not mode_path.exists():
+            return True
+        data = json.loads(mode_path.read_text())
+        mode = data.get("mode", "NORMAL").upper()
+        if mode != "NORMAL":
+            log.error(
+                "[PREFLIGHT] SAFETY OVERRIDE: preflight=%s but a1_mode=%s — "
+                "aborting cycle to prevent DESYNC",
+                preflight_verdict,
+                mode,
+            )
+            return False
+        return True
+    except Exception as exc:
+        log.warning("[PREFLIGHT] DESYNC check failed (%s) — proceeding with caution", exc)
+        return True
+
+
 def is_go(result) -> bool:
     return result.verdict in ("go", "go_degraded")
 

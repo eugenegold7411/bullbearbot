@@ -53,6 +53,18 @@ def _configure() -> None:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
 
+    # Belt-and-suspenders: if our RotatingFileHandler is already registered
+    # (e.g., log_setup imported via two different sys.path entries), sync the
+    # _configured flag and return without adding a second set of handlers.
+    _resolved = str(APP_LOG.resolve())
+    for _h in root.handlers:
+        if (
+            isinstance(_h, logging.handlers.RotatingFileHandler)
+            and getattr(_h, "baseFilename", None) == _resolved
+        ):
+            _configured = True
+            return
+
     # Remove any pre-existing handlers before adding ours.
     # Third-party libraries (e.g. alpaca-py) call logging.basicConfig() on
     # import, which silently adds a StreamHandler to the root logger before

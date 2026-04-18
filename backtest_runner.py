@@ -1,9 +1,19 @@
 """
 backtest_runner.py — strategy backtesting harness.
 
-Replays 90 days of cached daily bars through 5 strategy variants, lets Claude
-make trading decisions on historical snapshots, simulates fills, and uses a
-Strategy Director Claude call to pick the winner and update strategy_config.json.
+LLM-IN-THE-LOOP SIMULATION (not a deterministic historical replay):
+When the backtest_llm_enabled feature flag is True, Claude makes live API
+calls for every simulated trade date.  This means results are non-deterministic
+and model-version-dependent — two runs on identical historical data may produce
+different Sharpe/win-rate/return figures.
+
+When the flag is False (default), a deterministic rule-based decision path is
+used instead.  The rule-based path produces bit-identical output for identical
+inputs and incurs no API cost.
+
+The Strategy Director (run_backtest) returns parameter recommendations but
+does NOT write strategy_config.json.  The weekly review's Strategy Director
+agent (weekly_review.py Agent 6) is the sole authorised writer to that file.
 
 Usage:
     python backtest_runner.py                        # all 5 strategies, 30 days
@@ -531,6 +541,89 @@ def _compute_stats(equity_curve: list[float], trades: list[dict], strategy: str)
 
 # ── Strategy simulation loop ──────────────────────────────────────────────────
 
+def _rule_based_actions(
+    snapshot: dict,
+    strategy_name: str,
+    sim_equity: float,
+) -> list[dict]:
+    """
+    Deterministic fallback when backtest_llm_enabled is False.
+
+    Decision rules per strategy:
+    - momentum:      buy when price > MA20 AND RSI 50-70 AND vol_ratio >= 3.0
+    - mean_reversion: buy when RSI < 30 AND pct_vs_ma20 < -5.0
+    - news_sentiment: hold (no live news in backtest context)
+    - cross_sector:  buy when any intermarket signal is bullish (gold/bonds/energy/EM up)
+    - hybrid:        buy when at least 2 of: momentum, mean-reversion, or cross-sector signal
+
+    Returns actions list (may be empty = hold day).
+    """
+    sym_indicators = snapshot.get("sym_indicators", {})
+    intermarket    = snapshot.get("intermarket_signals", [])
+    has_bull_intermarket = any(
+        ("rising" in s.lower() or "strong" in s.lower() or "supported" in s.lower())
+        for s in intermarket
+    )
+
+    actions: list[dict] = []
+
+    for sym, ind in sym_indicators.items():
+        if "/" in sym:
+            continue  # skip crypto
+
+        close   = ind.get("close")
+        ma20    = ind.get("ma20")
+        rsi     = ind.get("rsi", 50.0)
+        vol_r   = ind.get("vol_ratio", 1.0)
+        vs_ma20 = ind.get("pct_vs_ma20")
+
+        if not close or close <= 0:
+            continue
+
+        momentum_signal = (
+            ma20 is not None and close > ma20
+            and 50.0 <= rsi <= 70.0
+            and vol_r >= 3.0
+        )
+        mean_rev_signal = (
+            rsi < 30.0
+            and vs_ma20 is not None and vs_ma20 < -5.0
+        )
+        cross_signal = has_bull_intermarket
+
+        buy = False
+        if strategy_name == "momentum":
+            buy = momentum_signal
+        elif strategy_name == "mean_reversion":
+            buy = mean_rev_signal
+        elif strategy_name == "news_sentiment":
+            buy = False
+        elif strategy_name == "cross_sector":
+            buy = cross_signal
+        elif strategy_name == "hybrid":
+            buy = sum([momentum_signal, mean_rev_signal, cross_signal]) >= 2
+
+        if buy:
+            tier      = ind.get("tier", "core")
+            tier_pct  = TIER_MAX_PCT.get(tier, TIER_MAX_PCT["core"])
+            qty       = max(1, int(sim_equity * tier_pct / close))
+            stop_loss   = round(close * (1.0 - 0.035), 4)
+            take_profit = round(close * (1.0 + 0.035 * 2.5), 4)
+            actions.append({
+                "action":      "buy",
+                "symbol":      sym,
+                "qty":         qty,
+                "stop_loss":   stop_loss,
+                "take_profit": take_profit,
+                "tier":        tier,
+                "rationale":   f"rule_based:{strategy_name}",
+            })
+            if len(actions) >= 3:
+                break
+
+    return actions
+
+
 def _parse_claude_actions(text: str) -> Optional[list[dict]]:
     """Extract the actions list from Claude's JSON response. Returns None on failure."""
     # Strip markdown code fences if present
@@ -601,46 +694,57 @@ def _run_strategy(
 
         prompt = _build_backtest_prompt(snapshot, date_str, sim_equity)
 
-        # Call Claude (strategy system prompt is static per run — cache it)
+        # Gate: use deterministic rule-based path unless backtest_llm_enabled is True
         try:
-            response = claude.messages.create(
-                model="claude-sonnet-4-6",
-                system=[{
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }],
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=1024,
-                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
-            )
-            usage    = response.usage
-            cr       = getattr(usage, "cache_read_input_tokens",     0) or 0
-            cw       = getattr(usage, "cache_creation_input_tokens", 0) or 0
-            log.debug("[BACKTEST] Cache: reads=%d writes=%d", cr, cw)
+            from feature_flags import is_enabled as _ff_is_enabled
+            _llm_enabled = _ff_is_enabled("backtest_llm_enabled", default=False)
+        except Exception:
+            _llm_enabled = False
+
+        if _llm_enabled:
+            # LLM-in-the-loop path (non-deterministic; incurs API cost)
             try:
-                from cost_tracker import get_tracker
-                get_tracker().record_api_call(
-                    "claude-sonnet-4-6", usage,
-                    caller=f"backtest_{strategy_name[:20]}",
+                response = claude.messages.create(
+                    model="claude-sonnet-4-6",
+                    system=[{
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }],
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=1024,
+                    extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
                 )
-            except Exception:
-                pass
-            raw_text = response.content[0].text if response.content else ""
-        except Exception as exc:
-            log.warning("Claude API error for %s on %s: %s", strategy_name, date_str, exc)
-            equity_curve.append(sim_equity)
-            time.sleep(0.5)
-            continue
+                usage    = response.usage
+                cr       = getattr(usage, "cache_read_input_tokens",     0) or 0
+                cw       = getattr(usage, "cache_creation_input_tokens", 0) or 0
+                log.debug("[BACKTEST] Cache: reads=%d writes=%d", cr, cw)
+                try:
+                    from cost_tracker import get_tracker
+                    get_tracker().record_api_call(
+                        "claude-sonnet-4-6", usage,
+                        caller=f"backtest_{strategy_name[:20]}",
+                    )
+                except Exception:
+                    pass
+                raw_text = response.content[0].text if response.content else ""
+            except Exception as exc:
+                log.warning("Claude API error for %s on %s: %s", strategy_name, date_str, exc)
+                equity_curve.append(sim_equity)
+                time.sleep(0.5)
+                continue
 
-        time.sleep(0.5)  # Rate limit buffer
+            time.sleep(0.5)  # Rate limit buffer
 
-        # Parse actions
-        actions = _parse_claude_actions(raw_text)
-        if actions is None:
-            log.debug("JSON parse failed for %s on %s — treating as hold", strategy_name, date_str)
-            equity_curve.append(sim_equity)
-            continue
+            actions = _parse_claude_actions(raw_text)
+            if actions is None:
+                log.debug("JSON parse failed for %s on %s — treating as hold", strategy_name, date_str)
+                equity_curve.append(sim_equity)
+                continue
+        else:
+            # Deterministic rule-based path (default; zero API cost; reproducible)
+            log.debug("[BACKTEST] rule-based path for %s on %s", strategy_name, date_str)
+            actions = _rule_based_actions(snapshot, strategy_name, sim_equity)
 
         # Execute each action
         day_pnl = 0.0
@@ -733,8 +837,52 @@ def _run_strategy(
 def _run_strategy_director(results: dict[str, dict]) -> dict:
     """
     Call Claude as Strategy Director to compare results and recommend the winner.
+
     Returns dict with: winner, rationale, parameter_adjustments.
+    If fewer than backtest_minimum_sample_before_recalibration confirmed fills
+    exist in memory/performance.json, returns immediately with
+    {"insufficient_sample": True, ...} and makes no LLM call.
+
+    NOTE: this function does NOT write strategy_config.json.  The weekly
+    review's Strategy Director agent (weekly_review.py Agent 6) is the only
+    authorised writer to that file.
     """
+    # ── Fix 3: minimum sample gate ──────────────────────────────────────────
+    try:
+        _perf_path = BASE_DIR / "memory" / "performance.json"
+        _perf      = json.loads(_perf_path.read_text()) if _perf_path.exists() else {}
+        _n_closed  = _perf.get("totals", {}).get("trades", 0)
+    except Exception:
+        _n_closed = 0
+
+    try:
+        _cfg     = json.loads(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else {}
+        _min_n   = _cfg.get("parameters", {}).get(
+            "backtest_minimum_sample_before_recalibration", 30
+        )
+    except Exception:
+        _min_n = 30
+
+    if _n_closed < _min_n:
+        log.warning(
+            "Strategy Director skipped — insufficient live sample "
+            "(%d confirmed fills, need %d). "
+            "No parameter recommendations will be produced.",
+            _n_closed, _min_n,
+        )
+        return {
+            "insufficient_sample": True,
+            "n_closed_trades":     _n_closed,
+            "min_required":        _min_n,
+            "winner":              "",
+            "rationale":           (
+                f"Insufficient live sample ({_n_closed}/{_min_n} confirmed fills). "
+                "Director call deferred until minimum threshold is met."
+            ),
+            "parameter_adjustments": {},
+        }
+    # ── end Fix 3 ────────────────────────────────────────────────────────────
+
     log.info("Running Strategy Director vote...")
 
     # Build results table
@@ -845,41 +993,18 @@ Respond with ONLY valid JSON (no markdown, no explanation outside JSON):
 # ── Config writer ─────────────────────────────────────────────────────────────
 
 def _write_strategy_config(director: dict, results: dict[str, dict]) -> None:
-    """Update strategy_config.json with Director's verdict and backtest results."""
-    try:
-        existing = json.loads(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else {}
-    except Exception:
-        existing = {}
+    """
+    DEPRECATED — do not call.
 
-    params      = director.get("parameter_adjustments", {})
-    director_notes = params.pop("director_notes", director.get("rationale", ""))
-
-    # Merge with existing parameters (keep keys not touched by Director)
-    existing_params = existing.get("parameters", {})
-    merged_params   = {**existing_params, **params}
-
-    config = {
-        "version":          existing.get("version", 1),
-        "generated_at":     datetime.now(timezone.utc).isoformat(),
-        "generated_by":     "backtest",
-        "active_strategy":  director.get("winner", existing.get("active_strategy", "hybrid")),
-        "backtest_results": {
-            name: {
-                "return_pct":    r.get("return_pct"),
-                "win_rate":      r.get("win_rate"),
-                "sharpe":        r.get("sharpe"),
-                "max_drawdown":  r.get("max_drawdown"),
-                "profit_factor": r.get("profit_factor") if not math.isinf(r.get("profit_factor", 0)) else 99.9,
-                "total_trades":  r.get("total_trades"),
-            }
-            for name, r in results.items()
-        },
-        "parameters":       merged_params,
-        "director_notes":   director_notes,
-    }
-
-    CONFIG_FILE.write_text(json.dumps(config, indent=2))
-    log.info("strategy_config.json updated — active_strategy=%s", config["active_strategy"])
+    strategy_config.json is owned exclusively by the weekly review's Strategy
+    Director agent (weekly_review.py Agent 6).  backtest_runner is not an
+    authorised writer.  This function is retained only so existing call sites
+    surface a log.warning rather than an AttributeError.
+    """
+    log.warning(
+        "_write_strategy_config called from backtest_runner — this is a no-op. "
+        "strategy_config.json may only be written by weekly_review.py Agent 6."
+    )
 
 
 # ── Terminal output ───────────────────────────────────────────────────────────
@@ -988,7 +1113,8 @@ def run_backtest(strategy: Optional[str] = None, days: int = 30) -> dict:
         winner   = director.get("winner", "")
         print(f"\n  Director's verdict: {winner.upper()}")
         print(f"  Rationale: {director.get('rationale', '')}")
-        _write_strategy_config(director, results)
+        # Parameter recommendations are logged to the report but NOT written to
+        # strategy_config.json — weekly_review.py Agent 6 is the sole authorised writer.
 
     # Print terminal table
     _print_results_table(results, winner=winner)

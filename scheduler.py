@@ -636,7 +636,7 @@ def _maybe_publish_flat_day() -> None:
         open_positions: list = []
         try:
             import bot as _bot  # noqa: PLC0415
-            open_positions = list(_bot.alpaca.get_all_positions())
+            open_positions = list(_bot._get_alpaca().get_all_positions())
         except Exception:
             pass
 
@@ -871,13 +871,13 @@ def _check_stop_fills(prev_open_order_ids: set) -> set:
         from alpaca.trading.requests import GetOrdersRequest        # noqa: PLC0415
         from alpaca.trading.enums import QueryOrderStatus           # noqa: PLC0415
 
-        open_orders  = bot.alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
+        open_orders  = bot._get_alpaca().get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
         current_ids  = {str(o.id) for o in open_orders}
         filled_ids   = prev_open_order_ids - current_ids
 
         if filled_ids:
             # Look up what those orders were
-            closed = bot.alpaca.get_orders(
+            closed = bot._get_alpaca().get_orders(
                 GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=50)
             )
             for o in closed:

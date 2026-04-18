@@ -202,6 +202,27 @@ def format_morning_brief_section() -> str:
     if not brief or not brief.get("brief_summary"):
         return "  (morning brief not yet generated — runs at 4:15 AM ET)"
 
+    # Staleness gate: reject briefs older than 24 hours
+    _gen = brief.get("generated_at", "")
+    if _gen:
+        try:
+            _gen_dt = datetime.fromisoformat(_gen)
+            if _gen_dt.tzinfo is None:
+                _gen_dt = _gen_dt.replace(tzinfo=timezone.utc)
+            _age_h = (datetime.now(timezone.utc) - _gen_dt.astimezone(timezone.utc)).total_seconds() / 3600
+            if _age_h > 24:
+                log.warning(
+                    "[MORNING] morning_brief.json is stale (%.1fh old) — injecting placeholder",
+                    _age_h,
+                )
+                _gen_date = _gen[:10]
+                return (
+                    f"  (morning brief unavailable — last generated {_gen_date}, "
+                    f"{_age_h:.0f}h ago)"
+                )
+        except Exception:
+            pass
+
     tone   = brief.get("market_tone", "?").upper()
     themes = ", ".join(brief.get("key_themes", []))
     lines  = [

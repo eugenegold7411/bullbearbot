@@ -920,7 +920,7 @@ def _build_earnings_calendar() -> str:
         return ""
 
 
-def _build_global_session_handoff() -> str:
+def _build_global_session_handoff(session_tier: str = "unknown") -> str:
     """
     Read global_indices.json and produce a formatted session handoff table.
     Groups by Asia / Europe / US Futures / FX with live session status.
@@ -936,6 +936,27 @@ def _build_global_session_handoff() -> str:
 
     indices    = data["indices"]
     fetched_at = data.get("fetched_at", "?")[:16]
+
+    # Freshness check: warn if > 6h old during overnight sessions
+    staleness_warning = ""
+    _fetched_at_str = data.get("fetched_at", "")
+    if _fetched_at_str:
+        try:
+            _fetched_dt = datetime.fromisoformat(_fetched_at_str)
+            if _fetched_dt.tzinfo is None:
+                _fetched_dt = _fetched_dt.replace(tzinfo=ET)
+            _age_h = (datetime.now(timezone.utc) - _fetched_dt.astimezone(timezone.utc)).total_seconds() / 3600
+            if _age_h > 6 and session_tier == "overnight":
+                log.warning(
+                    "[MARKET_DATA] global_indices.json is stale (%.1fh old) — overnight regime may use outdated data",
+                    _age_h,
+                )
+                staleness_warning = (
+                    f"\n  [WARNING: global indices data is {_age_h:.1f}h old — "
+                    f"overnight regime context may be outdated]"
+                )
+        except Exception:
+            pass
 
     # Compute live session status from current UTC time
     now_utc = datetime.now(timezone.utc)
@@ -984,7 +1005,7 @@ def _build_global_session_handoff() -> str:
             "Shanghai/Hang Seng = risk-on/off proxy."
         )
 
-    return "\n".join(lines)
+    return "\n".join(lines) + staleness_warning
 
 
 # ── Watchlist prompt sections ─────────────────────────────────────────────────
@@ -1184,7 +1205,7 @@ def fetch_all(symbols_stock: list, symbols_crypto: list, session_tier: str,
         "sector_news":             sector_news,
         "sector_table":            _build_sector_table(),
         "intermarket_signals":     _build_intermarket_signals(),
-        "global_handoff":          _build_global_session_handoff(),
+        "global_handoff":          _build_global_session_handoff(session_tier),
         "earnings_calendar":       _build_earnings_calendar(),
         "core_by_sector":          _build_core_by_sector(signals_by_sym),
         "dynamic_section":         _build_dynamic_section(current_prices),

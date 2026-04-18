@@ -565,10 +565,14 @@ def _maybe_run_morning_brief(dry_run: bool = False) -> None:
         try:
             from morning_brief import generate_morning_brief  # noqa: PLC0415
             brief = generate_morning_brief()
-            log.info("Morning brief complete — tone=%s  picks=%d",
-                     brief.get("market_tone"), len(brief.get("conviction_picks", [])))
-        except Exception:
-            log.error("Morning brief generation failed", exc_info=True)
+            _brief_summary = brief.get("brief_summary", "")
+            if "failed" in _brief_summary.lower():
+                log.warning("[MORNING] Brief saved with failure content: %s", _brief_summary[:120])
+            else:
+                log.info("Morning brief complete — tone=%s  picks=%d",
+                         brief.get("market_tone"), len(brief.get("conviction_picks", [])))
+        except Exception as exc:
+            log.error("[MORNING] Morning brief generation failed — %s", exc, exc_info=True)
 
         # Publish premarket brief to Twitter
         try:

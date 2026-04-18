@@ -143,6 +143,10 @@ MAX_DTE               = 45          # maximum days-to-expiration
 # T-010: per-symbol consecutive rejection counter (entry orders only; resets on success)
 _consecutive_rejections: dict[str, int] = {}
 
+# T-021: pending fill confirmation checks — order_id → {symbol, action, qty}
+# Populated after submission; polled at the start of the next execute_all() call.
+_pending_fill_checks: dict[str, dict] = {}
+
 LIQUID_OPTIONS_SYMBOLS = frozenset({
     "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "TSLA", "META", "GOOGL", "AMD"
 })
@@ -640,6 +644,59 @@ def _submit_options(action: dict) -> str:
         raise
 
 
+# ── Fill confirmation ─────────────────────────────────────────────────────────
+
+def _check_pending_fills() -> None:
+    """
+    Poll Alpaca for fill/cancel status of orders submitted in the previous cycle.
+    Non-fatal — logs WARNING on any per-order error and continues.
+    Appends "filled" or "cancelled" events to logs/trades.jsonl.
+    """
+    if not _pending_fill_checks:
+        return
+
+    for oid in list(_pending_fill_checks.keys()):
+        info = _pending_fill_checks[oid]
+        try:
+            order  = _get_alpaca().get_order_by_id(oid)
+            status = str(getattr(order, "status", "")).lower()
+
+            if status == "filled":
+                fp = float(getattr(order, "filled_avg_price", 0) or 0)
+                fq = float(getattr(order, "filled_qty",       0) or 0)
+                ft = str(getattr(order, "filled_at",          "") or "")
+                log.info("[EXECUTOR] FILLED %s %s @ %s  order_id=%s",
+                         info["symbol"], fq, fp, oid)
+                log_trade({
+                    "event_type": "filled",
+                    "order_id":   oid,
+                    "symbol":     info["symbol"],
+                    "action":     info.get("action", ""),
+                    "fill_price": fp,
+                    "fill_qty":   fq,
+                    "timestamp":  ft,
+                })
+                del _pending_fill_checks[oid]
+
+            elif status in ("canceled", "cancelled", "expired", "replaced"):
+                log.info("[EXECUTOR] CANCELLED %s  order_id=%s  reason=%s",
+                         info["symbol"], oid, status)
+                log_trade({
+                    "event_type": "cancelled",
+                    "order_id":   oid,
+                    "symbol":     info["symbol"],
+                    "action":     info.get("action", ""),
+                    "reason":     status,
+                    "timestamp":  datetime.utcnow().isoformat(),
+                })
+                del _pending_fill_checks[oid]
+            # Still pending (accepted, partially_filled, etc.) — leave for next cycle
+
+        except Exception as exc:
+            log.warning("[EXECUTOR] Fill check failed for order %s (%s): %s",
+                        oid, info.get("symbol", "?"), exc)
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def execute_all(
@@ -652,6 +709,9 @@ def execute_all(
     session_tier:       str  = "unknown",
     decision_id:        str  = "",
 ) -> list[ExecutionResult]:
+    # T-021: check fills from previous cycle before processing new actions
+    _check_pending_fills()
+
     results = []
 
     # Normalise: BrokerAction objects → dict; warn on unknown types; pass dicts through.
@@ -912,6 +972,13 @@ def execute_all(
             # T-010: successful buy resets the consecutive-rejection counter
             if act == "buy":
                 _consecutive_rejections.pop(symbol, None)
+            # T-021: register non-immediate fills for confirmation polling next cycle
+            if act in ("buy", "sell", "close") and oid and not oid.startswith("OPTIONS_"):
+                _pending_fill_checks[oid] = {
+                    "symbol": symbol,
+                    "action": act,
+                    "qty":    action.get("qty"),
+                }
             _req_qty   = float(action.get("qty") or 0) or None
             _req_otype = action.get("order_type", "market") or "market"
             results.append(ExecutionResult(

@@ -16,6 +16,7 @@ Public API:
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 import portfolio_intelligence as pi
@@ -101,7 +102,27 @@ def _load_strategy_config() -> str:
     """
     path = Path(__file__).parent / "strategy_config.json"
     try:
-        cfg   = json.loads(path.read_text())
+        cfg = json.loads(path.read_text())
+
+        # T-017: sector_rotation_bias_expiry — auto-revert to neutral in memory if past.
+        # Non-destructive: does not write back to strategy_config.json.
+        # The weekly review Strategy Director is the correct agent to formally reset.
+        _params = cfg.get("parameters", {})
+        _bias_expiry = _params.get("sector_rotation_bias_expiry")
+        if _bias_expiry:
+            try:
+                if datetime.now().date() > datetime.fromisoformat(_bias_expiry).date():
+                    log.warning(
+                        "[CONFIG] sector_rotation_bias_expiry %s has passed — "
+                        "treating bias as neutral for this cycle",
+                        _bias_expiry,
+                    )
+                    cfg = dict(cfg)
+                    cfg["parameters"] = dict(_params)
+                    cfg["parameters"]["sector_rotation_bias"] = "neutral"
+            except Exception as _exp_exc:
+                log.debug("[CONFIG] sector_rotation_bias_expiry parse failed (non-fatal): %s", _exp_exc)
+
         strat = cfg.get("active_strategy", "hybrid")
         notes = cfg.get("director_notes", "")[:300]
         p     = cfg.get("parameters", {})

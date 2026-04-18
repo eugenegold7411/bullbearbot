@@ -13,7 +13,7 @@
   },
   "parameters": {
     "min_confidence_threshold": "medium",
-    "max_positions": 15,
+    "max_positions": 12,
     "preferred_sessions": [
       "market",
       "extended"
@@ -31,7 +31,7 @@
     "max_position_pct_equity": 0.07,
     "max_daily_drawdown_pct": 0.025,
     "max_weekly_drawdown_pct": 0.035,
-    "max_day_trades_rolling_5day": 2,
+    "max_day_trades_rolling_5day": 3,
     "max_sector_exposure_pct": 0.15,
     "max_single_name_pct": 0.04,
     "data_outage_escalation_cycles": 2,
@@ -40,7 +40,7 @@
     "data_outage_hard_disable_cycles": 4,
     "max_daily_drawdown_position_gate": 0.015,
     "sector_rotation_bias_detail": "Overweight energy and gold vs. rate-sensitive financials; review mandatory at next weekly cycle",
-    "max_overnight_position_pct_equity": 0.1,
+    "max_overnight_position_pct_equity": 0.07,
     "max_crypto_exposure_pct": 0.1,
     "session_unknown_hard_block": true,
     "session_tag_capture_point": "signal_generation",

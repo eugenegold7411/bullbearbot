@@ -120,6 +120,56 @@ if cfg:
     else:
         check(FAIL, f"strategy_config.json: max_positions={mp} out of range (5–25)")
 
+    # T-014: gross exposure consistency — max_positions × max_position_pct_equity must not exceed 100%
+    _mp  = cfg.get("parameters", {}).get("max_positions")
+    _mpe = cfg.get("parameters", {}).get("max_position_pct_equity")
+    if _mp is not None and _mpe is not None:
+        _gross = int(_mp) * float(_mpe)
+        if _gross > 1.0:
+            check(FAIL, (f"strategy_config.json: T-014 gross exposure inconsistency — "
+                         f"max_positions ({_mp}) × max_position_pct_equity ({_mpe}) "
+                         f"= {_gross:.0%}, which implies potential over-allocation (must be ≤ 100%)"))
+        else:
+            check(PASS, (f"strategy_config.json: T-014 gross exposure OK — "
+                         f"max_positions ({_mp}) × max_position_pct_equity ({_mpe}) "
+                         f"= {_gross:.0%} (≤ 100%)"))
+
+    # T-016: PDT day-trade limit gate (regulatory ceiling for any account; 3 is the PDT threshold)
+    # ENFORCEMENT DISCREPANCY: max_day_trades_rolling_5day from config is NOT enforced in code.
+    # bot_stage3_decision.py hardcodes `pdt_remaining = max(0, 3 - pdt_used)` and never reads
+    # this config key. This caused 3 day trades to execute when the config said 2 — the config
+    # value was informational-only. Enforcement must be added to bot_stage3_decision.py
+    # (compute pdt_remaining using config value) and risk_kernel.py/order_executor.py.
+    _mdt = cfg.get("parameters", {}).get("max_day_trades_rolling_5day")
+    if _mdt is not None:
+        if int(_mdt) <= 3:
+            check(PASS, (f"strategy_config.json: T-016 max_day_trades_rolling_5day={_mdt} "
+                         f"(≤ 3 regulatory ceiling)"))
+        else:
+            check(FAIL, (f"strategy_config.json: T-016 max_day_trades_rolling_5day={_mdt} "
+                         f"exceeds 3 — regulatory ceiling for standard PDT accounts"))
+    else:
+        check(FAIL, "strategy_config.json: T-016 max_day_trades_rolling_5day missing")
+
+    # T-017: sector_rotation_bias_expiry — warn if expiry date is in the past
+    _bias_expiry_str = cfg.get("parameters", {}).get("sector_rotation_bias_expiry")
+    if _bias_expiry_str:
+        try:
+            _bias_expiry = datetime.fromisoformat(_bias_expiry_str).date()
+            _today_date  = datetime.now().date()
+            if _today_date > _bias_expiry:
+                _days_past = (_today_date - _bias_expiry).days
+                check(WARN, (f"strategy_config.json: T-017 sector_rotation_bias_expiry "
+                             f"{_bias_expiry_str} has passed ({_days_past} day(s) ago) — "
+                             f"bias will auto-revert to neutral at runtime; "
+                             f"Strategy Director should formally reset"))
+            else:
+                _days_left = (_bias_expiry - _today_date).days
+                check(PASS, (f"strategy_config.json: T-017 sector_rotation_bias_expiry "
+                             f"{_bias_expiry_str} still active ({_days_left} day(s) remaining)"))
+        except Exception as _be:
+            check(WARN, f"strategy_config.json: T-017 sector_rotation_bias_expiry could not be parsed — {_be}")
+
     # stop_loss_pct_core
     slp = cfg.get("parameters", {}).get("stop_loss_pct_core")
     if slp is None:

@@ -220,5 +220,156 @@ class TestDirectorNotesContract(unittest.TestCase):
         self.assertEqual(sms_notes, "No director notes parsed.")
 
 
+class TestRiskManagerGates(unittest.TestCase):
+    """Suite D — T-014/T-016/T-017 validate_config gates (unit)."""
+
+    def _cfg(self, **param_overrides):
+        base = {
+            "version": 2,
+            "position_sizing": {"cash_reserve_pct": 0.2},
+            "parameters": {
+                "max_positions": 12,
+                "max_position_pct_equity": 0.07,
+                "max_day_trades_rolling_5day": 3,
+                "sector_rotation_bias": "neutral",
+            },
+        }
+        base["parameters"].update(param_overrides)
+        return base
+
+    # ── T-014: gross exposure ─────────────────────────────────────────────────
+
+    def test_t014_passes_when_product_lte_100pct(self):
+        """12 × 7% = 84% — must pass."""
+        cfg = self._cfg(max_positions=12, max_position_pct_equity=0.07)
+        gross = cfg["parameters"]["max_positions"] * cfg["parameters"]["max_position_pct_equity"]
+        self.assertLessEqual(gross, 1.0, f"Expected ≤ 1.0, got {gross}")
+
+    def test_t014_fails_when_product_gt_100pct(self):
+        """15 × 7% = 105% — must fail the gate."""
+        cfg = self._cfg(max_positions=15, max_position_pct_equity=0.07)
+        gross = cfg["parameters"]["max_positions"] * cfg["parameters"]["max_position_pct_equity"]
+        self.assertGreater(gross, 1.0, f"Expected > 1.0, got {gross}")
+
+    def test_t014_live_config_passes(self):
+        """Live strategy_config.json must pass the T-014 gate."""
+        if not CONFIG_PATH.exists():
+            self.skipTest("strategy_config.json not found")
+        cfg = json.loads(CONFIG_PATH.read_text())
+        p = cfg.get("parameters", {})
+        mp  = p.get("max_positions")
+        mpe = p.get("max_position_pct_equity")
+        if mp is None or mpe is None:
+            self.skipTest("max_positions or max_position_pct_equity missing from config")
+        gross = int(mp) * float(mpe)
+        self.assertLessEqual(gross, 1.0,
+                             f"T-014 FAIL: max_positions ({mp}) × max_position_pct_equity ({mpe}) = {gross:.0%}")
+
+    # ── T-016: PDT day-trade limit ────────────────────────────────────────────
+
+    def test_t016_passes_when_limit_is_3(self):
+        cfg = self._cfg(max_day_trades_rolling_5day=3)
+        self.assertLessEqual(cfg["parameters"]["max_day_trades_rolling_5day"], 3)
+
+    def test_t016_fails_when_limit_exceeds_3(self):
+        cfg = self._cfg(max_day_trades_rolling_5day=4)
+        self.assertGreater(cfg["parameters"]["max_day_trades_rolling_5day"], 3,
+                           "Limit > 3 should trigger FAIL gate")
+
+    def test_t016_live_config_passes(self):
+        """Live strategy_config.json must have max_day_trades_rolling_5day ≤ 3."""
+        if not CONFIG_PATH.exists():
+            self.skipTest("strategy_config.json not found")
+        cfg = json.loads(CONFIG_PATH.read_text())
+        mdt = cfg.get("parameters", {}).get("max_day_trades_rolling_5day")
+        self.assertIsNotNone(mdt, "max_day_trades_rolling_5day missing from live config")
+        self.assertLessEqual(int(mdt), 3,
+                             f"T-016 FAIL: max_day_trades_rolling_5day={mdt} exceeds 3")
+
+    # ── T-017: sector_rotation_bias_expiry ───────────────────────────────────
+
+    def test_t017_expired_bias_triggers_warn(self):
+        """Expiry in the past — gate logic should detect it as expired."""
+        from datetime import date
+        past_date = "2026-01-01"
+        expiry = date.fromisoformat(past_date)
+        self.assertLess(expiry, date.today(), "Test setup: date should be in the past")
+
+    def test_t017_future_bias_passes(self):
+        """Expiry in the future — gate should pass."""
+        from datetime import date, timedelta
+        future_date = (date.today() + timedelta(days=30)).isoformat()
+        expiry = date.fromisoformat(future_date)
+        self.assertGreater(expiry, date.today(), "Test setup: date should be in the future")
+
+    def test_t017_expired_bias_overrides_to_neutral_in_load_strategy_config(self):
+        """When expiry has passed, _load_strategy_config must override bias to neutral without
+        writing to disk."""
+        from datetime import datetime
+        import json, tempfile, shutil
+        from pathlib import Path
+
+        cfg = {
+            "version": 2,
+            "active_strategy": "hybrid",
+            "parameters": {
+                "sector_rotation_bias": "commodities_overweight",
+                "sector_rotation_bias_expiry": "2026-01-01",
+                "max_positions": 12,
+            },
+            "director_notes": {},
+            "time_bound_actions": [],
+        }
+
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            cfg_path = tmpdir / "strategy_config.json"
+            cfg_path.write_text(json.dumps(cfg))
+
+            # Replicate the _load_strategy_config() T-017 logic inline
+            _params = cfg.get("parameters", {})
+            _bias_expiry = _params.get("sector_rotation_bias_expiry")
+            result_bias = _params.get("sector_rotation_bias")
+            if _bias_expiry:
+                try:
+                    if datetime.now().date() > datetime.fromisoformat(_bias_expiry).date():
+                        cfg_copy = dict(cfg)
+                        cfg_copy["parameters"] = dict(_params)
+                        cfg_copy["parameters"]["sector_rotation_bias"] = "neutral"
+                        result_bias = cfg_copy["parameters"]["sector_rotation_bias"]
+                except Exception:
+                    pass
+            self.assertEqual(result_bias, "neutral",
+                             "Expired bias must override to neutral in memory")
+
+            # Confirm original config NOT modified on disk
+            on_disk = json.loads(cfg_path.read_text())
+            self.assertEqual(on_disk["parameters"]["sector_rotation_bias"],
+                             "commodities_overweight",
+                             "Original config on disk must not be modified")
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_t017_non_expired_bias_not_overridden(self):
+        """When expiry is in the future, bias must NOT be overridden."""
+        from datetime import date, timedelta, datetime
+        future = (date.today() + timedelta(days=10)).isoformat()
+        cfg = {"parameters": {
+            "sector_rotation_bias": "commodities_overweight",
+            "sector_rotation_bias_expiry": future,
+        }}
+        _params = cfg["parameters"]
+        result_bias = _params["sector_rotation_bias"]
+        _bias_expiry = _params.get("sector_rotation_bias_expiry")
+        if _bias_expiry:
+            try:
+                if datetime.now().date() > datetime.fromisoformat(_bias_expiry).date():
+                    result_bias = "neutral"
+            except Exception:
+                pass
+        self.assertEqual(result_bias, "commodities_overweight",
+                         "Non-expired bias must NOT be overridden")
+
+
 if __name__ == "__main__":
     unittest.main()

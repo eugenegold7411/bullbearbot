@@ -134,19 +134,42 @@ def _load_strategy_config() -> str:
         return "  (strategy_config.json not yet generated — using system prompt defaults)"
 
 # ── Clients ───────────────────────────────────────────────────────────────────
-_alpaca_key    = os.getenv("ALPACA_API_KEY")
-_alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
-_anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-
-if not _alpaca_key or not _alpaca_secret:
-    raise EnvironmentError("Missing ALPACA_API_KEY or ALPACA_SECRET_KEY in .env")
-if not _anthropic_key:
-    raise EnvironmentError("Missing ANTHROPIC_API_KEY in .env")
-
-alpaca     = TradingClient(_alpaca_key, _alpaca_secret, paper=True)
-claude     = anthropic.Anthropic(api_key=_anthropic_key)
 MODEL      = "claude-sonnet-4-6"
 MODEL_FAST = "claude-haiku-4-5-20251001"
+
+
+def _build_alpaca_client() -> TradingClient:
+    api_key = os.getenv("ALPACA_API_KEY")
+    secret  = os.getenv("ALPACA_SECRET_KEY")
+    base    = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    if not api_key or not secret:
+        raise EnvironmentError("Missing ALPACA_API_KEY or ALPACA_SECRET_KEY in .env")
+    return TradingClient(api_key=api_key, secret_key=secret, paper=("paper" in base))
+
+
+def _build_claude_client() -> anthropic.Anthropic:
+    key = os.getenv("ANTHROPIC_API_KEY")
+    if not key:
+        raise EnvironmentError("Missing ANTHROPIC_API_KEY in .env")
+    return anthropic.Anthropic(api_key=key)
+
+
+_alpaca: TradingClient | None = None
+_claude: anthropic.Anthropic | None = None
+
+
+def _get_alpaca() -> TradingClient:
+    global _alpaca
+    if _alpaca is None:
+        _alpaca = _build_alpaca_client()
+    return _alpaca
+
+
+def _get_claude() -> anthropic.Anthropic:
+    global _claude
+    if _claude is None:
+        _claude = _build_claude_client()
+    return _claude
 
 # ── Drawdown guard ────────────────────────────────────────────────────────────
 _DRAWDOWN_THRESHOLD    = 0.20
@@ -494,7 +517,7 @@ def classify_regime(md: dict, calendar: dict) -> dict:
             f"MACRO BACKDROP (rates/commodities/credit):\n{macro_inputs_str}\n\n"
             f"SECTOR ROTATION (top+bottom 3):\n{sec_str}"
         )
-        resp = claude.messages.create(
+        resp = _get_claude().messages.create(
             model=MODEL_FAST, max_tokens=300,
             system=[{"type":"text","text":_REGIME_SYS,"cache_control":{"type":"ephemeral"}}],
             messages=[{"role":"user","content":user_content}],
@@ -614,7 +637,7 @@ def score_signals(
             f"MORNING BRIEF picks:\n{chr(10).join(morning_lines) or '(none)'}\n\n"
             f"PATTERN WATCHLIST (elevated conviction required):\n{chr(10).join(pwl_lines) or '(none)'}"
         )
-        resp = claude.messages.create(
+        resp = _get_claude().messages.create(
             model=MODEL_FAST, max_tokens=4000,
             system=[{"type":"text","text":_SIGNAL_SYS,"cache_control":{"type":"ephemeral"}}],
             messages=[{"role":"user","content":user_content}],
@@ -646,7 +669,7 @@ def score_signals(
                 log.debug("[SIGNALS] JSON truncated, retrying API call with completeness hint")
                 _retry_sys = _SIGNAL_SYS + "\nReturn ONLY valid complete JSON. If you cannot fit all symbols, return fewer rather than truncating."
                 try:
-                    _retry_resp = claude.messages.create(
+                    _retry_resp = _get_claude().messages.create(
                         model=MODEL_FAST, max_tokens=4000,
                         system=[{"type": "text", "text": _retry_sys}],
                         messages=[{"role": "user", "content": user_content}],
@@ -772,14 +795,14 @@ def debate_trade(
     )
 
     try:
-        bull_resp = claude.messages.create(
+        bull_resp = _get_claude().messages.create(
             model=MODEL, max_tokens=400,
             system="You are a bullish equity trader. Make the strongest possible case FOR this trade. Be specific and data-driven. Return 3-5 bullet points.",
             messages=[{"role": "user", "content": f"Make the bull case for this trade:\n\n{context}"}],
         )
         bull_case = bull_resp.content[0].text.strip()
 
-        bear_resp = claude.messages.create(
+        bear_resp = _get_claude().messages.create(
             model=MODEL, max_tokens=400,
             system="You are a risk manager and skeptical trader. Make the strongest possible case AGAINST this trade. Focus on downside risks. Return 3-5 bullet points.",
             messages=[{"role": "user", "content": f"Make the bear case against this trade:\n\n{context}"}],
@@ -795,7 +818,7 @@ def debate_trade(
             f'\"synthesis\": \"1-2 sentence final verdict\", '
             f'\"conviction_adjustment\": \"raise\" or \"maintain\" or \"lower\"}}'
         )
-        synth_resp = claude.messages.create(
+        synth_resp = _get_claude().messages.create(
             model=MODEL, max_tokens=300,
             system="You are a senior portfolio manager. Return only valid JSON.",
             messages=[{"role": "user", "content": synth_prompt}],
@@ -885,7 +908,7 @@ def fundamental_check(buy_candidates: list[dict], md: dict) -> dict:
     )
 
     try:
-        resp = claude.messages.create(
+        resp = _get_claude().messages.create(
             model=MODEL_FAST, max_tokens=600,
             system=[{
                 "type": "text",
@@ -980,7 +1003,7 @@ def _ask_claude_overnight(
             "Never fabricate catalysts. If in doubt, hold."
         )
 
-        response = claude.messages.create(
+        response = _get_claude().messages.create(
             model=MODEL_FAST,
             max_tokens=400,
             system=[{"type": "text", "text": _OVERNIGHT_SYS}],
@@ -1194,7 +1217,7 @@ def _log_skip_cycle(state) -> None:
 
 def ask_claude(user_prompt: str) -> dict:
     system_prompt, _ = _load_prompts()
-    response = claude.messages.create(
+    response = _get_claude().messages.create(
         model=MODEL,
         max_tokens=2048,
         system=[{
@@ -1241,8 +1264,8 @@ def run_cycle(
     regime = "unknown"
 
     # 1. Account
-    account   = alpaca.get_account()
-    positions = alpaca.get_all_positions()
+    account   = _get_alpaca().get_account()
+    positions = _get_alpaca().get_all_positions()
     equity          = float(account.equity)
     cash            = float(account.cash)
     buying_power_float = float(account.buying_power)
@@ -1345,7 +1368,7 @@ def run_cycle(
                     pnl=float(trade.get("pnl") or 0),
                     hold_time_hours=float(trade.get("hold_time_hours") or 0.0),
                     outcome=trade["outcome"],
-                    alpaca_client=alpaca,  # verify position gone + fetch real fill
+                    alpaca_client=_get_alpaca(),  # verify position gone + fetch real fill
                 )
         except Exception as _pub_exc:
             log.debug("publisher exit posts failed (non-fatal): %s", _pub_exc)
@@ -1401,7 +1424,7 @@ def run_cycle(
         _open_orders = []
         try:
             from schemas import NormalizedOrder  # noqa: PLC0415
-            _raw_orders = alpaca.get_orders(GetOrdersRequest(status="open")) or []
+            _raw_orders = _get_alpaca().get_orders(GetOrdersRequest(status="open")) or []
             for _o in _raw_orders:
                 try:
                     _open_orders.append(NormalizedOrder.from_alpaca_order(_o))
@@ -1422,7 +1445,7 @@ def run_cycle(
             positions=_norm_positions,
             snapshot=_snapshot,
             config=cfg,
-            alpaca_client=alpaca,
+            alpaca_client=_get_alpaca(),
             regime=regime,
             pi_data=pi_data,
         )
@@ -1476,8 +1499,8 @@ def run_cycle(
     exit_status_str = "  (unavailable)"
     try:
         import exit_manager as _em  # noqa: PLC0415
-        exit_manager_results = _em.run_exit_manager(positions, alpaca, cfg)
-        exit_status_str = _em.format_exit_status_section(positions, alpaca, cfg)
+        exit_manager_results = _em.run_exit_manager(positions, _get_alpaca(), cfg)
+        exit_status_str = _em.format_exit_status_section(positions, _get_alpaca(), cfg)
     except Exception as _em_exc:
         log.debug("Exit manager failed (non-fatal): %s", _em_exc)
 
@@ -2115,7 +2138,7 @@ def run_cycle(
                                 action=matching_action,
                                 debate_result=debate_results.get(r.symbol),
                                 market_context=f"VIX={md['vix']:.1f} regime={regime}",
-                                alpaca_client=alpaca,  # verify fill + use real entry price
+                                alpaca_client=_get_alpaca(),  # verify fill + use real entry price
                             )
                     except Exception as _pub_exc:
                         log.debug("publisher trade_entry failed (non-fatal): %s", _pub_exc)

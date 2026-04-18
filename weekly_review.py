@@ -60,8 +60,24 @@ _ARCHIVE_DIR         = _BASE_DIR / "data" / "archive"
 _DIRECTOR_MEMO_FILE  = _BASE_DIR / "data" / "reports" / "director_memo_history.json"
 
 # ── Claude client ─────────────────────────────────────────────────────────────
-_claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-_MODEL  = "claude-sonnet-4-6"
+_MODEL = "claude-sonnet-4-6"
+
+
+def _build_claude_client() -> anthropic.Anthropic:
+    key = os.getenv("ANTHROPIC_API_KEY")
+    if not key:
+        raise EnvironmentError("ANTHROPIC_API_KEY not set in .env")
+    return anthropic.Anthropic(api_key=key)
+
+
+_claude: anthropic.Anthropic | None = None
+
+
+def _get_claude() -> anthropic.Anthropic:
+    global _claude
+    if _claude is None:
+        _claude = _build_claude_client()
+    return _claude
 
 
 # ── SMS helper ────────────────────────────────────────────────────────────────
@@ -246,7 +262,7 @@ def _call_claude(
     t_start = time.monotonic()
     log.info("Agent %s: calling Claude (%s)...", agent_name, model)
     try:
-        response = _claude.messages.create(
+        response = _get_claude().messages.create(
             model=model,
             max_tokens=3000,
             system=[{
@@ -287,7 +303,7 @@ def _run_agents_via_batch(
     """
     log.info("Batch API: submitting %d agents", len(agent_inputs))
     try:
-        batch = _claude.beta.messages.batches.create(
+        batch = _get_claude().beta.messages.batches.create(
             requests=[
                 {
                     "custom_id": f"agent-{i + 1}",
@@ -313,7 +329,7 @@ def _run_agents_via_batch(
     for attempt in range(48):
         time.sleep(15)
         try:
-            batch = _claude.beta.messages.batches.retrieve(batch.id)
+            batch = _get_claude().beta.messages.batches.retrieve(batch.id)
         except Exception as exc:
             log.warning("Batch retrieve failed (attempt %d): %s", attempt + 1, exc)
             continue
@@ -332,7 +348,7 @@ def _run_agents_via_batch(
     # Collect results
     try:
         results_map: dict[str, str] = {}
-        for result in _claude.beta.messages.batches.results(batch.id):
+        for result in _get_claude().beta.messages.batches.results(batch.id):
             cid = result.custom_id
             if result.result.type == "succeeded":
                 text = result.result.message.content[0].text.strip()
@@ -889,7 +905,7 @@ Craft this week's Twitter/X content package. Be honest about the zero-trade week
 def _run_agent7_researcher(ctx: dict) -> str:
     """Run Agent 7 with web search. Uses Sonnet (reasoning needed for search)."""
     try:
-        response = _claude.messages.create(
+        response = _get_claude().messages.create(
             model="claude-sonnet-4-6",
             max_tokens=3000,
             system=[{
@@ -983,13 +999,13 @@ def _run_phase2_agents(ctx: dict, phase1_outputs: dict) -> dict:
         ]
 
         print("[Phase 2] Submitting agents 8-10 via Batch API...")
-        batch = _claude.beta.messages.batches.create(requests=batch_requests)
+        batch = _get_claude().beta.messages.batches.create(requests=batch_requests)
         log.info("Phase 2 batch submitted: %s", batch.id)
 
         # Poll until done (timeout 2h = 120 polls × 60s)
         for poll_i in range(120):
             time.sleep(60)
-            status = _claude.beta.messages.batches.retrieve(batch.id)
+            status = _get_claude().beta.messages.batches.retrieve(batch.id)
             log.info("Phase 2 batch poll %d: %s  processing=%s",
                      poll_i + 1, status.processing_status,
                      getattr(status.request_counts, "processing", "?"))
@@ -997,7 +1013,7 @@ def _run_phase2_agents(ctx: dict, phase1_outputs: dict) -> dict:
                 break
 
         # Collect results
-        for result in _claude.beta.messages.batches.results(batch.id):
+        for result in _get_claude().beta.messages.batches.results(batch.id):
             cid = result.custom_id
             if result.result.type == "succeeded":
                 text = result.result.message.content[0].text
@@ -1055,7 +1071,7 @@ def _run_phase2_agents(ctx: dict, phase1_outputs: dict) -> dict:
 def _run_agent11_narrative(ctx: dict, all_outputs: dict) -> str:
     """Run Agent 11 synchronously after all others complete. Sonnet for quality."""
     try:
-        response = _claude.messages.create(
+        response = _get_claude().messages.create(
             model="claude-sonnet-4-6",
             max_tokens=3000,
             system=[{

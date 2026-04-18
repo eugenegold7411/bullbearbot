@@ -99,9 +99,23 @@ def _load_stop_limits() -> dict:
         return defaults
 
 
-_api_key    = os.getenv("ALPACA_API_KEY")
-_secret_key = os.getenv("ALPACA_SECRET_KEY")
-alpaca      = TradingClient(_api_key, _secret_key, paper=True)
+def _build_alpaca_client() -> TradingClient:
+    api_key = os.getenv("ALPACA_API_KEY")
+    secret  = os.getenv("ALPACA_SECRET_KEY")
+    base    = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    if not api_key or not secret:
+        raise EnvironmentError("ALPACA_API_KEY / ALPACA_SECRET_KEY not set in .env")
+    return TradingClient(api_key=api_key, secret_key=secret, paper=("paper" in base))
+
+
+_alpaca: TradingClient | None = None
+
+
+def _get_alpaca() -> TradingClient:
+    global _alpaca
+    if _alpaca is None:
+        _alpaca = _build_alpaca_client()
+    return _alpaca
 
 # ── Executor backstop constants ───────────────────────────────────────────────
 # risk_kernel.py is the PRIMARY authority for all policy.
@@ -135,7 +149,7 @@ LIQUID_OPTIONS_SYMBOLS = frozenset({
 
 def check_options_enabled() -> bool:
     try:
-        acct = alpaca.get_account()
+        acct = _get_alpaca().get_account()
         # Alpaca paper accounts have options_approved_level attribute
         level = getattr(acct, "options_approved_level", None)
         if level is not None and int(level) >= 1:
@@ -176,7 +190,7 @@ def _get_current_price(symbol: str) -> float:
     from alpaca.data.requests import StockLatestTradeRequest
     from alpaca.data.enums import DataFeed
 
-    data = StockHistoricalDataClient(_api_key, _secret_key)
+    data = StockHistoricalDataClient(os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY"))
     resp = data.get_stock_latest_trade(
         StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
     )
@@ -444,7 +458,7 @@ def _submit_buy(action: dict) -> tuple:
             side=OrderSide.BUY,
             time_in_force=TimeInForce.GTC,
         )
-        order = alpaca.submit_order(req)
+        order = _get_alpaca().submit_order(req)
         log.info(
             "Crypto order submitted as simple market (bracket not supported) "
             "— stop/target managed by cycle monitoring  symbol=%s  notional=$%s",
@@ -471,13 +485,13 @@ def _submit_buy(action: dict) -> tuple:
             time_in_force=TimeInForce.DAY, order_class=OrderClass.BRACKET,
             take_profit=tp, stop_loss=sl,
         )
-    order = alpaca.submit_order(req)
+    order = _get_alpaca().submit_order(req)
     fp, fq, ft = _extract_fill(order)
     return str(order.id), fp, fq, ft
 
 
 def _submit_close(symbol: str) -> str:
-    order = alpaca.close_position(symbol)
+    order = _get_alpaca().close_position(symbol)
     return str(order.id)
 
 
@@ -487,7 +501,7 @@ def _submit_sell(action: dict) -> tuple:
         symbol=action["symbol"], qty=int(float(action["qty"])),
         side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
     )
-    order = alpaca.submit_order(req)
+    order = _get_alpaca().submit_order(req)
     fp, fq, ft = _extract_fill(order)
     return str(order.id), fp, fq, ft
 
@@ -517,7 +531,7 @@ def _find_option_contract(
             type=ct,
             status=AssetStatus.ACTIVE,
         )
-        contracts = alpaca.get_option_contracts(req)
+        contracts = _get_alpaca().get_option_contracts(req)
         items = getattr(contracts, "option_contracts", contracts) if not isinstance(contracts, list) else contracts
         if not items:
             log.warning("[OPTIONS] No contract found for %s %s %s %s",
@@ -560,7 +574,7 @@ def _submit_options(action: dict) -> str:
     if act == "close_option":
         # Closing option: close all positions in the symbol's options
         try:
-            positions = alpaca.get_all_positions()
+            positions = _get_alpaca().get_all_positions()
             closed = []
             for pos in positions:
                 pos_sym = getattr(pos, "symbol", "")
@@ -571,7 +585,7 @@ def _submit_options(action: dict) -> str:
                         side=OrderSide.SELL,
                         time_in_force=TimeInForce.DAY,
                     )
-                    order = alpaca.submit_order(close_req)
+                    order = _get_alpaca().submit_order(close_req)
                     closed.append(str(order.id))
                     log.info("[OPTIONS] Closed option position %s  order_id=%s", pos_sym, order.id)
             if closed:
@@ -614,7 +628,7 @@ def _submit_options(action: dict) -> str:
             log.warning("[OPTIONS] Unrecognised options action '%s' — stub", act)
             return f"OPTIONS_STUB_{symbol}_{expiration}"
 
-        order = alpaca.submit_order(req)
+        order = _get_alpaca().submit_order(req)
         log.info("[OPTIONS] Submitted %s %s  order_id=%s", act, occ, order.id)
         return str(order.id)
 
@@ -690,7 +704,7 @@ def execute_all(
             elif act == "reallocate":
                 try:
                     from portfolio_intelligence import execute_reallocate  # noqa: PLC0415
-                    realloc_result = execute_reallocate(action, alpaca)
+                    realloc_result = execute_reallocate(action, _get_alpaca())
                     results.append(ExecutionResult(
                         symbol=f"{action.get('exit_symbol','?')}→{action.get('entry_symbol','?')}",
                         action="reallocate",
@@ -775,7 +789,7 @@ def execute_all(
                         existing = {}
                         if pos_obj:
                             existing = _em_hold.get_active_exits(
-                                [pos_obj], alpaca
+                                [pos_obj], _get_alpaca()
                             ).get(symbol, {})
 
                         pos_qty = (
@@ -808,7 +822,7 @@ def execute_all(
                                     time_in_force=TimeInForce.GTC,
                                     stop_price=_sl,
                                 )
-                            _ord = alpaca.submit_order(_req)
+                            _ord = _get_alpaca().submit_order(_req)
                             submitted_parts.append(f"stop@${_sl:.2f}")
                             log.info("[EXECUTOR] %s: hold — stop @ $%.2f  order_id=%s",
                                      symbol, _sl, _ord.id)
@@ -827,7 +841,7 @@ def execute_all(
                                 time_in_force=TimeInForce.GTC,
                                 limit_price=_tp,
                             )
-                            _ord = alpaca.submit_order(_req)
+                            _ord = _get_alpaca().submit_order(_req)
                             submitted_parts.append(f"target@${_tp:.2f}")
                             log.info("[EXECUTOR] %s: hold — take_profit @ $%.2f  order_id=%s",
                                      symbol, _tp, _ord.id)

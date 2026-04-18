@@ -60,10 +60,11 @@ MODEL_FAST = "claude-haiku-4-5-20251001"
 _A2_DIR         = Path(__file__).parent / "data" / "account2"
 _DECISION_LOG   = _A2_DIR / "trade_memory" / "decisions_account2.json"
 _COST_LOG       = _A2_DIR / "costs" / "cost_log.jsonl"
-_A2_DIR.mkdir(parents=True, exist_ok=True)
-(_A2_DIR / "trade_memory").mkdir(exist_ok=True)
-(_A2_DIR / "costs").mkdir(exist_ok=True)
-(_A2_DIR / "positions").mkdir(exist_ok=True)
+def _ensure_dirs() -> None:
+    _A2_DIR.mkdir(parents=True, exist_ok=True)
+    (_A2_DIR / "trade_memory").mkdir(exist_ok=True)
+    (_A2_DIR / "costs").mkdir(exist_ok=True)
+    (_A2_DIR / "positions").mkdir(exist_ok=True)
 
 # Observation mode: first 20 trading days while IV history builds
 _OBS_MODE_DAYS        = 20
@@ -795,6 +796,7 @@ def run_options_cycle(
     6. Execute approved trades via order_executor_options
     7. Log decisions and costs
     """
+    _ensure_dirs()
     t_start = time.monotonic()
     log.info("── [OPTS] Cycle start  session=%s ─────────────────────────", session_tier)
 

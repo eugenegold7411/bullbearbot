@@ -101,6 +101,33 @@ def _send_sms(message: str) -> None:
         log.error("SMS failed: %s", exc)
 
 
+def _send_email_alert(subject: str, body: str) -> None:
+    """Send an alert email via SendGrid. No-op if not configured. Non-fatal."""
+    api_key    = os.getenv("SENDGRID_API_KEY")
+    from_email = os.getenv("SENDGRID_FROM_EMAIL", "eugene.gold@gmail.com")
+    to_email   = "eugene.gold@gmail.com"
+    if not api_key or api_key.startswith("your_"):
+        log.warning("SENDGRID_API_KEY not configured — email alert skipped: %s", subject)
+        return
+    if body.lstrip().startswith("<"):
+        html = body
+    else:
+        html = (
+            "<html><body style='font-family:Arial,sans-serif;max-width:700px'>"
+            f"<pre style='white-space:pre-wrap'>{body}</pre></body></html>"
+        )
+    try:
+        from sendgrid import SendGridAPIClient          # noqa: PLC0415
+        from sendgrid.helpers.mail import Mail          # noqa: PLC0415
+        resp = SendGridAPIClient(api_key).send(
+            Mail(from_email=from_email, to_emails=to_email,
+                 subject=subject, html_content=html)
+        )
+        log.info("Alert email sent — status=%d  subject=%s", resp.status_code, subject)
+    except Exception as exc:
+        log.error("Alert email failed: %s", exc)
+
+
 # ── Data helpers ──────────────────────────────────────────────────────────────
 
 def _read_log_tail(n_lines: int = 500) -> str:
@@ -243,6 +270,7 @@ def _call_claude(
     user_content: str,
     agent_name: str,
     module_name: str = "",
+    max_tokens: int = 3000,
 ) -> str:
     """
     Make one Claude API call with prompt caching on the system prompt.
@@ -264,7 +292,7 @@ def _call_claude(
     try:
         response = _get_claude().messages.create(
             model=model,
-            max_tokens=3000,
+            max_tokens=max_tokens,
             system=[{
                 "type": "text",
                 "text": system_prompt,
@@ -403,8 +431,14 @@ def _extract_json_block(text: str) -> dict | None:
     """
     Extract a JSON object from a ```json...``` fenced block or bare JSON object.
     Returns None if nothing parseable is found.
+
+    Tries three strategies in order:
+    1. ```json ... ``` fenced block (most specific)
+    2. Any ``` ... ``` fenced block
+    3. ALL { ... } balanced pairs in the text — not just the first — so prose text
+       that contains a stray { before the real JSON block does not short-circuit.
     """
-    # Try fenced block first
+    # Strategy 1: ```json...``` fenced block
     fenced = re.search(r"```json\s*([\s\S]+?)```", text, re.IGNORECASE)
     if fenced:
         candidate = fenced.group(1).strip()
@@ -413,7 +447,7 @@ def _extract_json_block(text: str) -> dict | None:
         except json.JSONDecodeError:
             pass
 
-    # Try any fenced block
+    # Strategy 2: any fenced block
     any_fence = re.search(r"```\s*([\s\S]+?)```", text)
     if any_fence:
         candidate = any_fence.group(1).strip()
@@ -422,10 +456,13 @@ def _extract_json_block(text: str) -> dict | None:
         except json.JSONDecodeError:
             pass
 
-    # Try bare JSON object: find first { ... } spanning the text
-    brace_start = text.find("{")
-    if brace_start != -1:
-        # Walk forward counting braces
+    # Strategy 3: walk ALL { occurrences (not just the first) to handle prose
+    # that contains { characters before the real JSON object.
+    search_start = 0
+    while True:
+        brace_start = text.find("{", search_start)
+        if brace_start == -1:
+            break
         depth   = 0
         in_str  = False
         escape  = False
@@ -455,8 +492,177 @@ def _extract_json_block(text: str) -> dict | None:
                 return json.loads(candidate)
             except json.JSONDecodeError:
                 pass
+        search_start = brace_start + 1
 
     return None
+
+
+# Numeric fields in parameter_adjustments — values MUST be int or float.
+# String coercion is attempted; non-coercible values are dropped.
+_NUMERIC_PARAM_FIELDS: frozenset = frozenset({
+    "stop_loss_pct_core", "stop_loss_pct_intraday", "stop_loss_pct_overnight",
+    "take_profit_multiple", "vix_threshold_caution",
+    "max_position_pct_equity", "max_daily_drawdown_pct", "max_weekly_drawdown_pct",
+    "max_sector_exposure_pct", "max_single_name_pct", "max_overnight_position_pct_equity",
+    "max_crypto_exposure_pct", "max_daily_drawdown_position_gate",
+    "min_dollar_risk_per_trade", "backtest_minimum_sample_before_recalibration",
+    "max_positions", "max_day_trades_rolling_5day",
+    "data_outage_escalation_cycles", "data_outage_hard_disable_cycles",
+    "momentum_weight", "mean_reversion_weight", "news_sentiment_weight", "cross_sector_weight",
+})
+
+
+def _extract_all_json_blocks(text: str) -> list[dict]:
+    """
+    Return every parseable JSON object found in text (fenced or bare), in order.
+    Used by Agent 6 extractor to pick the right block when multiple are present.
+    """
+    found: list[dict] = []
+    seen_starts: set[int] = set()
+
+    # Fenced ```json ... ``` blocks
+    for m in re.finditer(r"```json\s*([\s\S]+?)```", text, re.IGNORECASE):
+        try:
+            parsed = json.loads(m.group(1).strip())
+            if isinstance(parsed, dict):
+                found.append(parsed)
+                seen_starts.add(m.start())
+        except json.JSONDecodeError:
+            pass
+
+    # Any other fenced ``` ... ``` blocks
+    for m in re.finditer(r"```\s*([\s\S]+?)```", text):
+        if m.start() in seen_starts:
+            continue
+        try:
+            parsed = json.loads(m.group(1).strip())
+            if isinstance(parsed, dict):
+                found.append(parsed)
+        except json.JSONDecodeError:
+            pass
+
+    # Bare JSON objects: walk all { positions
+    search_start = 0
+    while True:
+        brace_start = text.find("{", search_start)
+        if brace_start == -1:
+            break
+        depth, in_str, escape, end_idx = 0, False, False, None
+        for i, ch in enumerate(text[brace_start:], start=brace_start):
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_str:
+                escape = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end_idx = i + 1
+                    break
+        if end_idx is not None:
+            candidate = text[brace_start:end_idx]
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict) and parsed not in found:
+                    found.append(parsed)
+            except json.JSONDecodeError:
+                pass
+        search_start = brace_start + 1
+
+    return found
+
+
+def _extract_and_validate_agent6_json(text: str, caller: str = "Agent6") -> dict | None:
+    """
+    Extract + validate Agent 6's JSON parameter block.
+
+    Agent 6 responses contain multiple JSON blocks (parameter update AND
+    recommendation_updates verdicts). This function picks the block that
+    looks like a parameter update (contains 'active_strategy' or
+    'parameter_adjustments'), not just the first JSON block.
+
+    On extraction failure: logs WARNING with the first 500 chars of the raw
+    response so the exact failure mode can be diagnosed.
+
+    On success: coerces string-typed numeric fields to float, drops values that
+    cannot be coerced, and logs which parameter_adjustments keys were accepted
+    and which were rejected so the operator can see what was applied.
+    """
+    candidates = _extract_all_json_blocks(text)
+
+    # Prefer a block with the Agent 6 parameter structure
+    parsed = None
+    for c in candidates:
+        if "active_strategy" in c or "parameter_adjustments" in c:
+            parsed = c
+            break
+
+    # Fallback: use first candidate if none matched (log at warning)
+    if parsed is None and candidates:
+        first = candidates[0]
+        top_keys = list(first.keys())
+        log.warning(
+            "[REVIEW] %s found %d JSON block(s) but none contain 'active_strategy' or "
+            "'parameter_adjustments' — first block keys: %s",
+            caller, len(candidates), top_keys,
+        )
+        return None
+
+    if parsed is None:
+        log.warning(
+            "[REVIEW] %s JSON parse failed — raw response excerpt (500 chars): %s",
+            caller, text[:500],
+        )
+        return None
+
+    log.info("[REVIEW] %s JSON extracted successfully (top-level keys: %s)",
+             caller, list(parsed.keys()))
+
+    # Validate and coerce parameter_adjustments
+    param_adj = parsed.get("parameter_adjustments", {})
+    if isinstance(param_adj, dict) and param_adj:
+        accepted: list[str] = []
+        type_rejected: list[str] = []
+        keys_to_remove: list[str] = []
+
+        for k, v in param_adj.items():
+            if k in _NUMERIC_PARAM_FIELDS:
+                if isinstance(v, (int, float)):
+                    accepted.append(k)
+                elif isinstance(v, str):
+                    try:
+                        param_adj[k] = float(v)
+                        accepted.append(k)
+                    except (ValueError, TypeError):
+                        type_rejected.append(k)
+                        keys_to_remove.append(k)
+                else:
+                    type_rejected.append(k)
+                    keys_to_remove.append(k)
+            else:
+                accepted.append(k)
+
+        for k in keys_to_remove:
+            del param_adj[k]
+
+        if accepted:
+            log.info("[REVIEW] %s accepted parameter_adjustments keys: %s", caller, accepted)
+        if type_rejected:
+            log.warning(
+                "[REVIEW] %s rejected parameter_adjustments keys (wrong type, not merged): %s",
+                caller, type_rejected,
+            )
+        parsed["parameter_adjustments"] = param_adj
+
+    return parsed
 
 
 # ── Agent system prompts ──────────────────────────────────────────────────────
@@ -1444,27 +1650,57 @@ Key:
 - Agent 10 (Compliance): Any systematic rule violations to fix in parameters?
 - Agent 9 (PM): What roadmap priority should inform parameter changes?
 
-## OUTPUT FORMAT (same as Agent 6 first pass)
-Provide: (1) strategy memo starting with `## STRATEGY DIRECTOR FINAL MEMO` and (2) a JSON block with the final parameter configuration.
+## OUTPUT FORMAT
+Provide two things:
+
+1. A strategy memo starting with the heading `## STRATEGY DIRECTOR FINAL MEMO`
+
+2. A JSON code block (in ```json ... ``` fences) with this exact structure — fill in every field with a concrete value, no placeholders:
 
 ```json
 {{
   "active_strategy": "<strategy_name>",
-  "parameter_adjustments": {{ ... }},
-  "watchlist_updates": {{ ... }},
-  "signal_weights_recommended": {{ ... }},
+  "parameter_adjustments": {{
+    "momentum_weight": <0.0 to 1.0>,
+    "mean_reversion_weight": <0.0 to 1.0>,
+    "news_sentiment_weight": <0.0 to 1.0>,
+    "cross_sector_weight": <0.0 to 1.0>,
+    "min_confidence_threshold": "low|medium|high",
+    "max_positions": <integer>,
+    "sector_rotation_bias": "<sector name or neutral>",
+    "stop_loss_pct_core": <float, e.g. 0.035>,
+    "take_profit_multiple": <float, e.g. 2.5>
+  }},
+  "watchlist_updates": {{
+    "SYMBOL": {{
+      "emerging_pattern": "<description or empty string>",
+      "re_entry_conditions": ["<condition 1>", "<condition 2>"],
+      "graduate": true,
+      "notes": "<why graduating or not>"
+    }}
+  }},
+  "signal_weights_recommended": {{
+    "congressional": "high|medium|low|ignore",
+    "form4_insider": "high|medium|low|ignore",
+    "reddit_sentiment": "high|medium|low|ignore",
+    "orb_breakout": "high|medium|low|ignore",
+    "macro_wire": "high|medium|low|ignore",
+    "earnings_intel": "high|medium|low|ignore"
+  }},
   "director_notes": {{
     "active_context": "<3-4 paragraph final memo>",
     "expiry": "<ISO date YYYY-MM-DD — typically next Sunday>",
     "priority": "normal|elevated|critical"
   }},
   "recommendations": [
+    {{"text": "<concrete action>", "target_metric": "<metric name>", "priority": "high|medium|low"}},
     {{"text": "<concrete action>", "target_metric": "<metric name>", "priority": "high|medium|low"}}
   ]
 }}
 ```
 
-Be specific. Every value must be concrete.
+Be specific. Every parameter value must be a concrete number or string, not a placeholder.
+For watchlist_updates: only include symbols currently in the pattern learning watchlist. If none, use {{}}.
 For recommendations: up to 3 items, each with a measurable target_metric."""
 
 
@@ -2662,7 +2898,8 @@ If no updates needed, set watchlist_updates to {{}}.
 For signal_weights_recommended: based on this week's accuracy data, suggest weight levels.
 For recommendations: list up to 3 concrete, actionable recommendations with measurable targets."""
 
-    agent6_output = _call_claude(_SYSTEM_AGENT6, agent6_input, "6-StrategyDirector", module_name="weekly_review_agent_6_director")
+    agent6_output = _call_claude(_SYSTEM_AGENT6, agent6_input, "6-StrategyDirector",
+                                module_name="weekly_review_agent_6_director", max_tokens=4500)
 
     # ── Save director memo to rolling history ─────────────────────────────────
     try:
@@ -2703,11 +2940,11 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
         log.warning("[REVIEW] recommendation update failed: %s", _ru_err)
 
     # ── Parse Agent 6 JSON ────────────────────────────────────────────────────
-    params_update = _extract_json_block(agent6_output)
+    params_update = _extract_and_validate_agent6_json(agent6_output, "Agent6-draft")
     if params_update:
-        log.info("Agent 6 JSON parsed successfully")
+        log.info("[REVIEW] Agent 6 draft JSON parsed and validated — strategy_config.json will be updated")
     else:
-        log.warning("Agent 6 JSON parse failed — strategy_config.json will not be updated")
+        log.warning("[REVIEW] Agent 6 draft JSON parse failed — strategy_config.json will not be updated from draft")
 
     # ── Update strategy_config.json ───────────────────────────────────────────
     active_strategy  = None
@@ -2831,8 +3068,9 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
             _build_agent6_final_input(review_context, all_outputs),
             "6-StrategyDirector-Final",
             module_name="weekly_review_agent_6_director",
+            max_tokens=4500,
         )
-        final_params = _extract_json_block(agent6_final)
+        final_params = _extract_and_validate_agent6_json(agent6_final, "Agent6-final")
         if final_params:
             config = _load_strategy_config()
             if "parameters" not in config or not isinstance(config.get("parameters"), dict):
@@ -2873,12 +3111,31 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
             _save_strategy_config(config)
             log.info("Strategy config updated from Agent 6 final synthesis")
         else:
-            log.warning("Agent 6 final JSON parse failed — using draft config")
+            log.warning("[REVIEW] Agent 6 final JSON parse failed — strategy_config.json NOT updated (see excerpt above)")
     except Exception as _a6f_exc:
         log.critical("[REVIEW] Phase 3b failed — strategy_config NOT updated: %s", _a6f_exc)
         _send_sms(
             f"[BullBearBot] CRITICAL: Phase 3b weekly review failed — "
             f"strategy_config unchanged. {_a6f_exc}"
+        )
+        _a6f_exc_str = str(_a6f_exc)
+        _critical_html = (
+            "<html><body style='font-family:Arial,sans-serif;max-width:700px'>"
+            f"<h2 style='color:#cc0000'>Weekly Review Phase 3b Failed</h2>"
+            f"<p><strong>Date:</strong> {today_str}</p>"
+            f"<p><strong>Error:</strong> <code>{_a6f_exc_str}</code></p>"
+            "<p><strong>Impact:</strong> strategy_config.json was NOT updated this cycle.</p>"
+            "<h3>Recommended Actions</h3>"
+            "<ol>"
+            "<li>Check <code>logs/bot.log</code> for the full traceback</li>"
+            "<li>Run <code>python3 weekly_review.py</code> manually after fixing the issue</li>"
+            "<li>Verify strategy_config.json is current before next market open</li>"
+            "</ol>"
+            "</body></html>"
+        )
+        _send_email_alert(
+            f"BullBearBot CRITICAL: Weekly Review Phase 3b Failed ({today_str})",
+            _critical_html,
         )
         agent6_final = "(unavailable)"
     all_outputs["agent6_final"] = agent6_final
@@ -2973,6 +3230,30 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
     sms_notes    = (_dn_text or "No director notes parsed.")[:140]
     sms_message  = f"WEEKLY REVIEW COMPLETE: winner={sms_strategy} notes={sms_notes}"
     _send_sms(sms_message)
+    _dn_priority     = director_notes.get("priority", "normal") if isinstance(director_notes, dict) else "normal"
+    _dn_expiry       = director_notes.get("expiry", "") if isinstance(director_notes, dict) else ""
+    _cfg_updated_str = "Yes" if params_update else "Metadata only (parse failed)"
+    _report_preview  = report_md[:3000].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    _completion_html = (
+        "<html><body style='font-family:Arial,sans-serif;max-width:700px'>"
+        f"<h2>Weekly Review Complete — {today_str}</h2>"
+        "<table style='border-collapse:collapse;width:100%;margin-bottom:16px'>"
+        f"<tr><td style='padding:4px 8px'><strong>Strategy</strong></td><td>{sms_strategy}</td></tr>"
+        f"<tr><td style='padding:4px 8px'><strong>Config updated</strong></td><td>{_cfg_updated_str}</td></tr>"
+        f"<tr><td style='padding:4px 8px'><strong>Director priority</strong></td><td>{_dn_priority}</td></tr>"
+        f"<tr><td style='padding:4px 8px'><strong>Memo expiry</strong></td><td>{_dn_expiry}</td></tr>"
+        f"<tr><td style='padding:4px 8px'><strong>Report path</strong></td><td>{report_path}</td></tr>"
+        "</table>"
+        "<h3>Director Notes</h3>"
+        f"<p style='max-width:700px'>{_dn_text or 'No director notes.'}</p>"
+        "<h3>Report Preview</h3>"
+        f"<pre style='white-space:pre-wrap;font-size:12px;background:#f5f5f5;padding:12px'>{_report_preview}</pre>"
+        "</body></html>"
+    )
+    _send_email_alert(
+        f"BullBearBot Weekly Review Complete — {sms_strategy} ({today_str})",
+        _completion_html,
+    )
 
     # ── Console summary ───────────────────────────────────────────────────────
     print(f"\n{'=' * 60}")

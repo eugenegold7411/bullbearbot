@@ -5362,8 +5362,9 @@ class TestSuite25MarketDataAndOptionsAudit(unittest.TestCase):
     def test_market_data_required_section_has_fallback(self):
         """T01: get_market_clock() returns fallback dict when Alpaca raises."""
         import market_data as _md_mod
-        with mock.patch.object(_md_mod._trading, "get_clock",
-                               side_effect=Exception("network error")):
+        _mock_client = mock.MagicMock()
+        _mock_client.get_clock.side_effect = Exception("network error")
+        with mock.patch("market_data._get_trading_client", return_value=_mock_client):
             result = _md_mod.get_market_clock()
         self.assertIsInstance(result, dict,
                               "get_market_clock must return a dict on error, not raise")

@@ -75,13 +75,78 @@ load_dotenv()
 log = get_logger(__name__)
 ET  = ZoneInfo("America/New_York")
 
-_api_key    = os.getenv("ALPACA_API_KEY")
-_secret_key = os.getenv("ALPACA_SECRET_KEY")
+_trading: TradingClient | None = None
+_data:    StockHistoricalDataClient | None = None
+_crypto:  CryptoHistoricalDataClient | None = None
+_news:    NewsClient | None = None
 
-_trading = TradingClient(_api_key, _secret_key, paper=True)
-_data    = StockHistoricalDataClient(_api_key, _secret_key)
-_crypto  = CryptoHistoricalDataClient(_api_key, _secret_key)
-_news    = NewsClient(_api_key, _secret_key)
+
+def _build_trading_client() -> TradingClient:
+    key    = os.getenv("ALPACA_API_KEY")
+    secret = os.getenv("ALPACA_SECRET_KEY")
+    if not key or not secret:
+        raise EnvironmentError(
+            "ALPACA_API_KEY and ALPACA_SECRET_KEY must be set to use market_data"
+        )
+    return TradingClient(key, secret, paper=True)
+
+
+def _get_trading_client() -> TradingClient:
+    global _trading
+    if _trading is None:
+        _trading = _build_trading_client()
+    return _trading
+
+
+def _build_data_client() -> StockHistoricalDataClient:
+    key    = os.getenv("ALPACA_API_KEY")
+    secret = os.getenv("ALPACA_SECRET_KEY")
+    if not key or not secret:
+        raise EnvironmentError(
+            "ALPACA_API_KEY and ALPACA_SECRET_KEY must be set to use market_data"
+        )
+    return StockHistoricalDataClient(key, secret)
+
+
+def _get_data_client() -> StockHistoricalDataClient:
+    global _data
+    if _data is None:
+        _data = _build_data_client()
+    return _data
+
+
+def _build_crypto_client() -> CryptoHistoricalDataClient:
+    key    = os.getenv("ALPACA_API_KEY")
+    secret = os.getenv("ALPACA_SECRET_KEY")
+    if not key or not secret:
+        raise EnvironmentError(
+            "ALPACA_API_KEY and ALPACA_SECRET_KEY must be set to use market_data"
+        )
+    return CryptoHistoricalDataClient(key, secret)
+
+
+def _get_crypto_client() -> CryptoHistoricalDataClient:
+    global _crypto
+    if _crypto is None:
+        _crypto = _build_crypto_client()
+    return _crypto
+
+
+def _build_news_client() -> NewsClient:
+    key    = os.getenv("ALPACA_API_KEY")
+    secret = os.getenv("ALPACA_SECRET_KEY")
+    if not key or not secret:
+        raise EnvironmentError(
+            "ALPACA_API_KEY and ALPACA_SECRET_KEY must be set to use market_data"
+        )
+    return NewsClient(key, secret)
+
+
+def _get_news_client() -> NewsClient:
+    global _news
+    if _news is None:
+        _news = _build_news_client()
+    return _news
 
 
 # ── Market clock ─────────────────────────────────────────────────────────────
@@ -96,7 +161,7 @@ def get_market_clock() -> dict:
                "session_tier": "unknown", "minutes_since_open": -1}
     """
     try:
-        clock  = _trading.get_clock()
+        clock  = _get_trading_client().get_clock()
         now_et = datetime.now(ET)
         if clock.is_open:
             today_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
@@ -263,7 +328,7 @@ def _compute_indicators(bars_list) -> dict:
 def _compute_vwap_intraday(symbols: list, session_start_utc: datetime) -> dict:
     now_utc = datetime.now(timezone.utc)
     try:
-        bars = _data.get_stock_bars(StockBarsRequest(
+        bars = _get_data_client().get_stock_bars(StockBarsRequest(
             symbol_or_symbols=symbols,
             timeframe=TimeFrame.Hour,
             start=session_start_utc,
@@ -291,7 +356,7 @@ def _compute_vwap_intraday(symbols: list, session_start_utc: datetime) -> dict:
 def _compute_crypto_vwap_24h(symbols: list) -> dict:
     start = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
-        bars = _crypto.get_crypto_bars(CryptoBarsRequest(
+        bars = _get_crypto_client().get_crypto_bars(CryptoBarsRequest(
             symbol_or_symbols=symbols,
             timeframe=TimeFrame.Hour,
             start=start,
@@ -344,7 +409,7 @@ def get_stock_signals(symbols: list, use_cache: bool = True) -> tuple[str, dict]
     live_bars: dict[str, list] = {}
     if live_needed:
         try:
-            resp = _data.get_stock_bars(StockBarsRequest(
+            resp = _get_data_client().get_stock_bars(StockBarsRequest(
                 symbol_or_symbols=live_needed,
                 timeframe=TimeFrame.Day,
                 start=start, end=end,
@@ -360,7 +425,7 @@ def get_stock_signals(symbols: list, use_cache: bool = True) -> tuple[str, dict]
 
     # Latest live prices
     try:
-        latest_resp = _data.get_stock_latest_trade(
+        latest_resp = _get_data_client().get_stock_latest_trade(
             StockLatestTradeRequest(symbol_or_symbols=symbols, feed=DataFeed.IEX)
         )
     except Exception:
@@ -640,7 +705,7 @@ def get_crypto_signals(symbols: list) -> tuple[str, dict, dict]:
     start = end - timedelta(days=90)
 
     try:
-        bars_resp = _crypto.get_crypto_bars(CryptoBarsRequest(
+        bars_resp = _get_crypto_client().get_crypto_bars(CryptoBarsRequest(
             symbol_or_symbols=symbols, timeframe=TimeFrame.Day,
             start=start, end=end,
         ))
@@ -649,7 +714,7 @@ def get_crypto_signals(symbols: list) -> tuple[str, dict, dict]:
         return f"  (error fetching crypto bars: {exc})", {}
 
     try:
-        latest_resp = _crypto.get_crypto_latest_trade(
+        latest_resp = _get_crypto_client().get_crypto_latest_trade(
             CryptoLatestTradeRequest(symbol_or_symbols=symbols)
         )
     except Exception as exc:
@@ -738,7 +803,7 @@ def get_news(symbols: list, limit: int = 10,
     """
     try:
         kwargs = dict(symbols=",".join(symbols), limit=limit, sort="desc")
-        result   = _news.get_news(NewsRequest(**kwargs))
+        result   = _get_news_client().get_news(NewsRequest(**kwargs))
         articles = []
         for item in result:
             if isinstance(item, tuple) and len(item) == 2:

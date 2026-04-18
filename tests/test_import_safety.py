@@ -54,32 +54,11 @@ def _try_import(module_name: str) -> None:
             ) from exc
 
 
-_BOT_TRANSITIVE_GAP = (
-    "bot.py imports data_warehouse which instantiates StockHistoricalDataClient at module "
-    "level (data_warehouse.py:50). This is a known transitive import-safety gap outside the "
-    "scope of Prompt 2 — data_warehouse.py was not modified. "
-    "The bot.py code itself no longer raises EnvironmentError at import time."
-)
-
-
 class TestImportSafety(unittest.TestCase):
 
     def test_bot_imports_without_env(self):
-        """
-        bot.py is blocked by a transitive issue in data_warehouse.py (out of scope).
-        Test verifies the failure is NOT an EnvironmentError from bot.py's own code.
-        """
-        _evict("bot")
-        with patch.dict(os.environ, _EMPTY_CREDS, clear=False):
-            try:
-                importlib.import_module("bot")
-            except EnvironmentError as exc:
-                raise AssertionError(
-                    f"bot.py raised EnvironmentError at import time — lazy-init not working: {exc}"
-                ) from exc
-            except (ValueError, ImportError, Exception):
-                # Transitive failure from data_warehouse.py or a missing package — skip.
-                raise unittest.SkipTest(_BOT_TRANSITIVE_GAP)
+        """bot.py and its full import chain must not raise at import with empty credentials."""
+        _try_import("bot")
 
     def test_order_executor_imports_without_env(self):
         _try_import("order_executor")
@@ -91,32 +70,16 @@ class TestImportSafety(unittest.TestCase):
         _try_import("bot_options")
 
     def test_bot_no_module_level_alpaca_raise(self):
-        """Confirm bot.py's lazy-init block: _alpaca starts as None (not constructed at import)."""
-        _evict("bot")
-        with patch.dict(os.environ, _EMPTY_CREDS, clear=False):
-            try:
-                mod = importlib.import_module("bot")
-                self.assertIsNone(mod._alpaca)
-            except EnvironmentError as exc:
-                raise AssertionError(
-                    f"bot.py raised EnvironmentError at import — _alpaca not lazy: {exc}"
-                ) from exc
-            except (ValueError, ImportError, Exception):
-                raise unittest.SkipTest(_BOT_TRANSITIVE_GAP)
+        """bot_clients._alpaca must be None at import — lazy-init not yet triggered."""
+        _try_import("bot_clients")
+        import bot_clients  # noqa: PLC0415
+        self.assertIsNone(bot_clients._alpaca)
 
     def test_bot_no_module_level_claude_raise(self):
-        """Confirm bot.py's lazy-init block: _claude starts as None (not constructed at import)."""
-        _evict("bot")
-        with patch.dict(os.environ, _EMPTY_CREDS, clear=False):
-            try:
-                mod = importlib.import_module("bot")
-                self.assertIsNone(mod._claude)
-            except EnvironmentError as exc:
-                raise AssertionError(
-                    f"bot.py raised EnvironmentError at import — _claude not lazy: {exc}"
-                ) from exc
-            except (ValueError, ImportError, Exception):
-                raise unittest.SkipTest(_BOT_TRANSITIVE_GAP)
+        """bot_clients._claude must be None at import — lazy-init not yet triggered."""
+        _try_import("bot_clients")
+        import bot_clients  # noqa: PLC0415
+        self.assertIsNone(bot_clients._claude)
 
     def test_order_executor_no_module_level_client(self):
         """Confirm order_executor._alpaca is None after import (lazy-init)."""

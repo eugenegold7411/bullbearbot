@@ -45,11 +45,60 @@ MARKET_DIR       = DATA / "market"
 ARCHIVE_DIR      = DATA / "archive"
 CRYPTO_DIR       = DATA / "crypto" 
 
-_api_key    = os.getenv("ALPACA_API_KEY")
-_secret_key = os.getenv("ALPACA_SECRET_KEY")
-_data    = StockHistoricalDataClient(_api_key, _secret_key)
-_crypto  = CryptoHistoricalDataClient(_api_key, _secret_key)
-_news_cl = NewsClient(_api_key, _secret_key)
+_data:    StockHistoricalDataClient | None = None
+_crypto:  CryptoHistoricalDataClient | None = None
+_news_cl: NewsClient | None = None
+
+
+def _build_data_client() -> StockHistoricalDataClient:
+    key    = os.getenv("ALPACA_API_KEY")
+    secret = os.getenv("ALPACA_SECRET_KEY")
+    if not key or not secret:
+        raise EnvironmentError(
+            "ALPACA_API_KEY and ALPACA_SECRET_KEY must be set to use data_warehouse"
+        )
+    return StockHistoricalDataClient(key, secret)
+
+
+def _get_data_client() -> StockHistoricalDataClient:
+    global _data
+    if _data is None:
+        _data = _build_data_client()
+    return _data
+
+
+def _build_crypto_client() -> CryptoHistoricalDataClient:
+    key    = os.getenv("ALPACA_API_KEY")
+    secret = os.getenv("ALPACA_SECRET_KEY")
+    if not key or not secret:
+        raise EnvironmentError(
+            "ALPACA_API_KEY and ALPACA_SECRET_KEY must be set to use data_warehouse"
+        )
+    return CryptoHistoricalDataClient(key, secret)
+
+
+def _get_crypto_client() -> CryptoHistoricalDataClient:
+    global _crypto
+    if _crypto is None:
+        _crypto = _build_crypto_client()
+    return _crypto
+
+
+def _build_news_client() -> NewsClient:
+    key    = os.getenv("ALPACA_API_KEY")
+    secret = os.getenv("ALPACA_SECRET_KEY")
+    if not key or not secret:
+        raise EnvironmentError(
+            "ALPACA_API_KEY and ALPACA_SECRET_KEY must be set to use data_warehouse"
+        )
+    return NewsClient(key, secret)
+
+
+def _get_news_client() -> NewsClient:
+    global _news_cl
+    if _news_cl is None:
+        _news_cl = _build_news_client()
+    return _news_cl
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -88,7 +137,7 @@ def refresh_bars(symbols: list[str]) -> None:
     for i in range(0, len(symbols), 50):
         batch = symbols[i:i+50]
         try:
-            resp = _data.get_stock_bars(StockBarsRequest(
+            resp = _get_data_client().get_stock_bars(StockBarsRequest(
                 symbol_or_symbols=batch,
                 timeframe=TimeFrame.Day,
                 start=start, end=now,
@@ -164,7 +213,7 @@ def refresh_news(symbols: list[str]) -> None:
         if not batch:
             continue
         try:
-            resp     = _news_cl.get_news(NewsRequest(
+            resp     = _get_news_client().get_news(NewsRequest(
                 symbols=",".join(batch), limit=50, sort="desc"
             ))
             articles_by_sym: dict[str, list] = {s: [] for s in batch}

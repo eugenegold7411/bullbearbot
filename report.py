@@ -3,7 +3,7 @@ report.py — trading bot performance dashboard.
 
 Terminal:  python report.py --print
 Email now: python report.py
-Scheduler calls send_report_email() daily at 9 AM PST.
+Scheduler calls send_report_email() daily at 4:30 PM ET.
 
 Dashboard sections:
   1. Account Overview  — equity, cash, day P&L, all-time P&L vs starting $100K
@@ -11,7 +11,14 @@ Dashboard sections:
   3. Trade History     — every filled order from Alpaca with P&L per trade
   4. Per-Symbol Stats  — win rate, total P&L, trade count per symbol
   5. Bot Activity      — cycles today, regime/session distribution
-  6. Memory Snapshot   — ticker stats and any active lessons
+  6. Today's Decisions — decision narrative from memory/decisions.json
+  7. Macro Events      — significant macro wire events from today
+  8. Tomorrow Watch    — time-bound actions + stop proximity warnings
+  9. Memory Snapshot   — ticker stats and any active lessons
+
+Public API:
+  send_report_email()          — full daily report email
+  send_alert_email(subj, html) — generic alert email (shared with bot.py / weekly_review.py)
 """
 
 import argparse
@@ -34,9 +41,13 @@ load_dotenv()
 
 log        = get_logger(__name__)
 TRADE_LOG  = Path(__file__).parent / "logs" / "trades.jsonl"
-TO_EMAIL   = "eugene.gold@gmail.com"
+TO_EMAIL   = os.getenv("SENDGRID_TO_EMAIL", os.getenv("ADMIN_EMAIL", "eugene.gold@gmail.com"))
 FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL", "eugene.gold@gmail.com")
 STARTING_EQUITY = 100_000.0
+
+_BASE_DIR   = Path(__file__).parent
+_MEMORY_DIR = _BASE_DIR / "memory"
+_DATA_DIR   = _BASE_DIR / "data"
 
 
 # ── Alpaca helpers ────────────────────────────────────────────────────────────
@@ -93,6 +104,247 @@ def _get_positions() -> list:
         return _alpaca_client().get_all_positions()
     except Exception:
         return []
+
+
+# ── Shared alert email (canonical implementation — bot.py and weekly_review.py delegate here) ──
+
+def send_alert_email(subject: str, body_html: str) -> None:
+    """Send an alert email via SendGrid. No-op if SENDGRID_API_KEY is missing. Non-fatal."""
+    api_key = os.getenv("SENDGRID_API_KEY")
+    if not api_key or api_key.startswith("your_"):
+        log.warning("SENDGRID_API_KEY not configured — email alert skipped: %s", subject)
+        return
+    html = body_html if body_html.lstrip().startswith("<") else (
+        "<html><body style='font-family:Arial,sans-serif;max-width:700px'>"
+        f"<pre style='white-space:pre-wrap'>{body_html}</pre></body></html>"
+    )
+    try:
+        from sendgrid import SendGridAPIClient          # noqa: PLC0415
+        from sendgrid.helpers.mail import Mail          # noqa: PLC0415
+        resp = SendGridAPIClient(api_key).send(
+            Mail(from_email=FROM_EMAIL, to_emails=TO_EMAIL,
+                 subject=subject, html_content=html)
+        )
+        log.info("Alert email sent — status=%d  subject=%s", resp.status_code, subject)
+    except Exception as exc:
+        log.error("Alert email failed: %s", exc)
+
+
+# ── New report data helpers ────────────────────────────────────────────────────
+
+def _load_today_decisions(today: date) -> dict:
+    """Read memory/decisions.json and summarize today's decision cycles."""
+    today_str = today.isoformat()
+    try:
+        dfile = _MEMORY_DIR / "decisions.json"
+        if not dfile.exists():
+            return {}
+        decisions = json.loads(dfile.read_text())
+        today_decs = [d for d in decisions if d.get("ts", "").startswith(today_str)]
+        if not today_decs:
+            return {}
+        regime_counts: dict[str, int] = {}
+        entries, exits, passed_on = [], [], []
+        for d in today_decs:
+            r = d.get("regime", "unknown") or "unknown"
+            regime_counts[r] = regime_counts.get(r, 0) + 1
+            for a in d.get("actions", []):
+                act = a.get("action", "").lower()
+                sym = a.get("symbol", "")
+                if act == "buy" and sym:
+                    entries.append({"symbol": sym,
+                                    "catalyst": (a.get("catalyst") or "")[:80]})
+                elif act in ("sell", "close") and sym:
+                    exits.append(sym)
+                elif act == "skip" and sym:
+                    passed_on.append(sym)
+        # Pull shadow lane near-miss for passed-on context
+        near_miss_file = _DATA_DIR / "analytics" / "near_miss_log.jsonl"
+        shadow_skips: list[str] = []
+        if near_miss_file.exists():
+            try:
+                for line in near_miss_file.read_text().splitlines():
+                    if not line.strip():
+                        continue
+                    rec = json.loads(line)
+                    if rec.get("ts", "").startswith(today_str):
+                        sym = rec.get("symbol", "")
+                        if sym and sym not in shadow_skips:
+                            shadow_skips.append(sym)
+            except Exception:
+                pass
+        last_reasoning = today_decs[-1].get("reasoning", "") if today_decs else ""
+        return {
+            "cycles":        len(today_decs),
+            "regime_dist":   regime_counts,
+            "entries":       entries,
+            "exits":         exits,
+            "passed_on":     list(dict.fromkeys(passed_on)),
+            "shadow_skips":  shadow_skips[:10],
+            "last_reasoning": last_reasoning[:300],
+        }
+    except Exception as exc:
+        log.warning("_load_today_decisions failed: %s", exc)
+        return {}
+
+
+def _load_macro_events(today: date) -> list[dict]:
+    """Return up to 5 significant macro wire events from today."""
+    today_str = today.isoformat()
+    sig_file  = _DATA_DIR / "macro_wire" / "significant_events.jsonl"
+    events: list[dict] = []
+    if not sig_file.exists():
+        return events
+    try:
+        for line in sig_file.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+                ts  = rec.get("ts") or rec.get("saved_at") or rec.get("published") or ""
+                if ts.startswith(today_str):
+                    events.append({
+                        "headline":     rec.get("headline") or rec.get("title") or "?",
+                        "impact_score": rec.get("impact_score", 0),
+                        "source":       rec.get("source", ""),
+                    })
+            except Exception:
+                continue
+        events.sort(key=lambda e: e["impact_score"], reverse=True)
+    except Exception as exc:
+        log.warning("_load_macro_events failed: %s", exc)
+    return events[:5]
+
+
+def _load_watch_items(positions: list) -> list[dict]:
+    """Time-bound actions due within 48 h + stop proximity warnings for open positions."""
+    items: list[dict] = []
+    try:
+        cfg_file = _BASE_DIR / "strategy_config.json"
+        if cfg_file.exists():
+            cfg = json.loads(cfg_file.read_text())
+            now = datetime.now(timezone.utc)
+            for tba in cfg.get("time_bound_actions", []):
+                deadline_str = tba.get("deadline") or tba.get("exit_by") or ""
+                try:
+                    deadline = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+                    hours_left = (deadline - now).total_seconds() / 3600
+                    if hours_left <= 48:
+                        items.append({
+                            "symbol":  tba.get("symbol", "?"),
+                            "reason":  tba.get("reason") or tba.get("action", "exit"),
+                            "deadline": deadline_str[:16],
+                            "urgency":  "HIGH" if hours_left <= 4 else "MEDIUM",
+                        })
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # Stop proximity warnings: position within 3% of its stop
+    for pos in positions:
+        try:
+            current_price = float(pos.current_price or 0)
+            cost_basis    = float(pos.avg_entry_price or 0)
+            if not current_price or not cost_basis:
+                continue
+            pnl_pct = (current_price - cost_basis) / cost_basis
+            if pnl_pct < -0.03:
+                items.append({
+                    "symbol":  pos.symbol,
+                    "reason":  f"position down {pnl_pct:.1%} from entry — near stop territory",
+                    "deadline": "",
+                    "urgency":  "HIGH",
+                })
+        except Exception:
+            continue
+    return items
+
+
+# ── New HTML section renderers ─────────────────────────────────────────────────
+
+def _today_decisions_html(data: dict) -> str:
+    if not data:
+        return "<p style='color:#666'>(no decisions recorded today)</p>"
+    regime_str = "  ".join(
+        f"{k}={v}" for k, v in
+        sorted(data["regime_dist"].items(), key=lambda x: -x[1])[:4]
+    )
+    entries_str = ", ".join(
+        f"{e['symbol']}" + (f" ({e['catalyst'][:40]})" if e['catalyst'] else "")
+        for e in data["entries"]
+    ) or "—"
+    exits_str   = ", ".join(data["exits"]) or "—"
+    passed_str  = ", ".join(data["passed_on"][:10]) or "—"
+    shadow_str  = ", ".join(data["shadow_skips"][:8]) or "—"
+    rows = (
+        f"<tr><td style='padding:4px 8px'>Cycles run</td>"
+        f"<td><b>{data['cycles']}</b></td></tr>"
+        f"<tr style='background:#f5f5f5'><td style='padding:4px 8px'>Regime dist</td>"
+        f"<td>{regime_str or '—'}</td></tr>"
+        f"<tr><td style='padding:4px 8px'>Entries</td><td>{entries_str}</td></tr>"
+        f"<tr style='background:#f5f5f5'><td style='padding:4px 8px'>Exits</td>"
+        f"<td>{exits_str}</td></tr>"
+        f"<tr><td style='padding:4px 8px'>Passed on (ideas)</td><td>{passed_str}</td></tr>"
+        f"<tr style='background:#f5f5f5'><td style='padding:4px 8px'>Shadow skips</td>"
+        f"<td>{shadow_str}</td></tr>"
+    )
+    reasoning_html = ""
+    if data.get("last_reasoning"):
+        safe = data["last_reasoning"].replace("&", "&amp;").replace("<", "&lt;")
+        reasoning_html = (
+            f"<p style='font-size:12px;color:#555;margin-top:8px'>"
+            f"<b>Last reasoning:</b> {safe}...</p>"
+        )
+    return (
+        f"<table style='width:100%;border-collapse:collapse;font-size:13px'>{rows}</table>"
+        + reasoning_html
+    )
+
+
+def _macro_events_html(events: list[dict]) -> str:
+    if not events:
+        return "<p style='color:#666'>(no significant macro events today)</p>"
+    rows = ""
+    for e in events:
+        score = e["impact_score"]
+        bg    = "#fff8e1" if score >= 8 else "#fff"
+        safe  = e["headline"].replace("&", "&amp;").replace("<", "&lt;")
+        rows += (
+            f"<tr style='background:{bg}'>"
+            f"<td style='padding:4px 8px'>{safe}</td>"
+            f"<td style='padding:4px 8px;text-align:right'><b>{score}/10</b></td>"
+            f"<td style='padding:4px 8px;color:#777;font-size:11px'>{e['source']}</td></tr>"
+        )
+    return (
+        "<table style='width:100%;border-collapse:collapse;font-size:13px'>"
+        "<tr style='background:#cfd8dc'><th style='padding:4px 8px;text-align:left'>Headline</th>"
+        "<th style='padding:4px 8px'>Score</th><th style='padding:4px 8px'>Source</th></tr>"
+        + rows + "</table>"
+    )
+
+
+def _watch_items_html(items: list[dict]) -> str:
+    if not items:
+        return "<p style='color:#2e7d32'>No time-bound exits or stop proximity warnings.</p>"
+    rows = ""
+    for it in items:
+        bg = "#ffebee" if it["urgency"] == "HIGH" else "#fff8e1"
+        safe = it["reason"].replace("&", "&amp;").replace("<", "&lt;")
+        rows += (
+            f"<tr style='background:{bg}'>"
+            f"<td style='padding:4px 8px'><b>{it['symbol']}</b></td>"
+            f"<td style='padding:4px 8px'>{safe}</td>"
+            f"<td style='padding:4px 8px'>{it['deadline']}</td>"
+            f"<td style='padding:4px 8px;font-weight:bold'>{it['urgency']}</td></tr>"
+        )
+    return (
+        "<table style='width:100%;border-collapse:collapse;font-size:13px'>"
+        "<tr style='background:#cfd8dc'><th style='padding:4px 8px;text-align:left'>Symbol</th>"
+        "<th style='padding:4px 8px;text-align:left'>Reason</th>"
+        "<th style='padding:4px 8px'>Deadline</th>"
+        "<th style='padding:4px 8px'>Urgency</th></tr>"
+        + rows + "</table>"
+    )
 
 
 # ── Trade journal helpers ─────────────────────────────────────────────────────
@@ -286,7 +538,7 @@ def generate_report(target_date: date | None = None) -> dict:
     pi_config     = {}
     try:
         pi_config = json.loads(
-            (Path(__file__).parent / "strategy_config.json").read_text()
+            (_BASE_DIR / "strategy_config.json").read_text()
         )
     except Exception:
         pass
@@ -295,6 +547,11 @@ def generate_report(target_date: date | None = None) -> dict:
         portfolio_intel = pi.build_portfolio_intelligence(equity, positions, pi_config)
     except Exception as exc:
         log.warning("Portfolio intelligence failed: %s", exc)
+
+    # New sections — all degrade gracefully
+    today_decisions = _load_today_decisions(today)
+    macro_events    = _load_macro_events(today)
+    watch_items     = _load_watch_items(positions)
 
     return {
         "date":          today.isoformat(),
@@ -318,6 +575,9 @@ def generate_report(target_date: date | None = None) -> dict:
         "ticker_stats":       ticker_stats,
         "lessons":            lessons,
         "portfolio_intel":    portfolio_intel,
+        "today_decisions":    today_decisions,
+        "macro_events":       macro_events,
+        "watch_items":        watch_items,
     }
 
 
@@ -638,6 +898,15 @@ def format_html(r: dict) -> str:
 <p>Cycles: <b>{r['cycles_today']}</b> &nbsp;|&nbsp;
    Submitted: <b>{r['submitted_today']}</b> &nbsp;|&nbsp;
    Rejected: <b>{r['rejected_today']}</b></p>
+
+<h3 style="color:#37474f">Today's Decision Narrative</h3>
+{_today_decisions_html(r.get('today_decisions', {}))}
+
+<h3 style="color:#37474f">Macro Events Considered Today</h3>
+{_macro_events_html(r.get('macro_events', []))}
+
+<h3 style="color:#37474f">Tomorrow's Watch Items</h3>
+{_watch_items_html(r.get('watch_items', []))}
 
 {lessons_html}
 

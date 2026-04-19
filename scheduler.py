@@ -21,6 +21,7 @@ Usage:
 
 import argparse
 import atexit
+import json
 import os
 import queue
 import signal
@@ -59,7 +60,10 @@ _MARKET_END     = 20 * 60         # 8:00 PM ET
 _EXTENDED_START =  4 * 60         # 4:00 AM ET
 _EXTENDED_END   = 23 * 60         # 11:00 PM ET
 
-REPORT_HOUR_ET  = 12   # noon ET = 9 AM PST
+REPORT_HOUR_ET   = 16   # 4 PM ET
+REPORT_MINUTE_ET = 30   # 4:30 PM ET — after market close, before extended session
+
+_STATUS_DIR = Path("data/status")   # flag files for once-per-day jobs
 
 # ── PID lockfile — prevent duplicate scheduler instances ─────────────────────
 
@@ -241,6 +245,7 @@ _daily_digest_written_date:    str = ""   # "YYYY-MM-DD" of last daily digest
 _market_impact_backfill_date:  str = ""   # "YYYY-MM-DD" of last backfill
 _outcomes_backfill_date:       str = ""   # "YYYY-MM-DD" of last outcomes backfill
 _econ_calendar_refresh_key:    str = ""   # "YYYY-MM-DD-HHMM" slot key
+_zero_fill_alert_date:         str = ""   # "YYYY-MM-DD" of last zero-fill alert
 
 
 # ── Event-driven cycle trigger queue ─────────────────────────────────────────
@@ -291,19 +296,147 @@ def _maybe_check_api_costs() -> None:
 
 
 def _maybe_send_daily_report() -> None:
+    """Send the daily report once at 4:30 PM ET on market days.
+
+    Uses a flag file at data/status/daily_report_sent_YYYY-MM-DD.flag so the
+    report is not re-sent if the scheduler restarts after market close.
+    """
     global _report_sent_date
-    now_et = datetime.now(ET)
-    today  = _today()
+    now_et  = datetime.now(ET)
+    today   = _today()
+    weekday = now_et.weekday()
+
+    if weekday >= 5:   # skip weekends
+        return
+
+    # In-process guard (fast path)
     if _report_sent_date == today:
         return
-    report_time = now_et.replace(hour=REPORT_HOUR_ET, minute=0, second=0, microsecond=0)
-    if now_et >= report_time:
-        log.info("Sending daily report for %s", today)
+
+    # Persistent guard — survives scheduler restarts
+    flag_file = _STATUS_DIR / f"daily_report_sent_{today}.flag"
+    if flag_file.exists():
+        _report_sent_date = today
+        return
+
+    now_min = now_et.hour * 60 + now_et.minute
+    if now_min < REPORT_HOUR_ET * 60 + REPORT_MINUTE_ET:
+        return
+
+    log.info("Sending daily report for %s", today)
+    try:
+        report_module.send_report_email()
+        _report_sent_date = today
+        _STATUS_DIR.mkdir(parents=True, exist_ok=True)
+        flag_file.touch()
+    except Exception:
+        log.error("Daily report failed", exc_info=True)
+
+
+def _maybe_send_zero_fill_alert(dry_run: bool = False) -> None:
+    """At 11:00 AM ET on market days, alert if no order fills have occurred since open.
+
+    Fires at most once per day. Uses a flag file to survive restarts.
+    Market must have been open 90+ minutes before this can trigger.
+    """
+    global _zero_fill_alert_date
+    now_et  = datetime.now(ET)
+    today   = _today()
+    weekday = now_et.weekday()
+    now_min = now_et.hour * 60 + now_et.minute
+
+    if weekday >= 5:   # no alert on weekends
+        return
+    # Only fire between 11:00 AM and 12:00 PM ET
+    if now_min < 11 * 60 or now_min >= 12 * 60:
+        return
+    # Market must have been open 90+ min (9:30 + 90 = 11:00 AM exactly)
+    if now_min < _MARKET_START + 90:
+        return
+
+    if _zero_fill_alert_date == today:
+        return
+
+    flag_file = _STATUS_DIR / f"zero_fill_alert_sent_{today}.flag"
+    if flag_file.exists():
+        _zero_fill_alert_date = today
+        return
+
+    if dry_run:
+        log.info("[dry-run] Skipping zero-fill alert check")
+        return
+
+    try:
+        trade_log = Path("logs/trades.jsonl")
+        fills_today = 0
+        if trade_log.exists():
+            for line in trade_log.read_text().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("status") == "submitted" and rec.get("ts", "").startswith(today):
+                        fills_today += 1
+                except Exception:
+                    continue
+
+        if fills_today > 0:
+            return   # fills recorded — no alert needed
+
+        log.warning("[ZERO_FILL] No fills by 11 AM ET on %s — sending alert", today)
+        _zero_fill_alert_date = today
+        _STATUS_DIR.mkdir(parents=True, exist_ok=True)
+        flag_file.touch()
+
+        # Build alert body
+        equity_str = "(unavailable)"
+        pos_html   = "<li>(unavailable)</li>"
         try:
-            report_module.send_report_email()
-            _report_sent_date = today
+            acct = report_module._get_account()
+            if acct:
+                equity_str = f"${float(acct.equity):,.0f}"
+            positions  = report_module._get_positions()
+            pos_html   = "".join(
+                f"<li>{p.symbol}: {p.qty} shares, value ${float(p.market_value):,.0f}</li>"
+                for p in positions
+            ) or "<li>(no open positions)</li>"
         except Exception:
-            log.error("Daily report failed", exc_info=True)
+            pass
+
+        last5_html = "(unavailable)"
+        try:
+            log_path = Path("logs/bot.log")
+            if log_path.exists():
+                lines = log_path.read_text().splitlines()
+                last5_html = "<br>".join(
+                    ln.replace("&", "&amp;").replace("<", "&lt;") for ln in lines[-5:]
+                )
+        except Exception:
+            pass
+
+        body = (
+            "<html><body style='font-family:Arial,sans-serif;max-width:700px'>"
+            "<h2 style='color:#cc6600'>[BullBearBot] Zero Fills by 11 AM ET</h2>"
+            "<p>No order submissions recorded today by 11:00 AM ET. "
+            "The market has been open for 90+ minutes with no fills.</p>"
+            "<table style='border-collapse:collapse;width:100%'>"
+            f"<tr><td style='padding:4px 8px'><b>Date</b></td><td>{today}</td></tr>"
+            f"<tr><td style='padding:4px 8px'><b>Account Equity</b></td>"
+            f"<td>{equity_str}</td></tr>"
+            "</table>"
+            f"<h3>Open Positions</h3><ul>{pos_html}</ul>"
+            "<h3>Last 5 Bot Log Lines</h3>"
+            f"<pre style='background:#f5f5f5;padding:12px;font-size:11px'>{last5_html}</pre>"
+            "<p>Review <code>logs/bot.log</code> to confirm signal scoring and "
+            "Stage 3 decisions are running normally.</p>"
+            "</body></html>"
+        )
+        report_module.send_alert_email(
+            f"[BullBearBot] ALERT: Zero fills by 11 AM — {today}",
+            body,
+        )
+    except Exception as exc:
+        log.warning("[ZERO_FILL] Alert check failed (non-fatal): %s", exc)
 
 
 def _maybe_refresh_macro_intelligence(dry_run: bool = False) -> None:
@@ -1153,6 +1286,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_refresh_macro_wire(dry_run)
         _maybe_run_preopen_cycle(dry_run)
         _maybe_send_daily_report()
+        _maybe_send_zero_fill_alert(dry_run)
         _maybe_reset_session_watchlist()
         _maybe_write_daily_digest(dry_run)
         _maybe_backfill_market_impact(dry_run)

@@ -161,6 +161,62 @@ ALPHA_CLASSIFICATIONS: list[str] = [
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Catalyst classifier
+# ─────────────────────────────────────────────────────────────────────────────
+
+def classify_catalyst(catalyst_str: str) -> CatalystType:
+    """
+    Keyword-matching classifier for free-text catalyst strings.
+
+    Returns CatalystType.UNKNOWN for empty or unrecognized strings.
+    Never raises — safe to call at record-write time.
+    """
+    if not catalyst_str or not catalyst_str.strip():
+        return CatalystType.UNKNOWN
+
+    s = catalyst_str.lower()
+
+    if any(k in s for k in ("insider buy", "form 4", "insider purchase")):
+        return CatalystType.INSIDER_BUY
+    if any(k in s for k in ("congressional buy", "congress buy", "congressional purchase")):
+        return CatalystType.CONGRESSIONAL_BUY
+    if any(k in s for k in ("earnings beat", "beat earnings", "eps beat")):
+        return CatalystType.EARNINGS_BEAT
+    if any(k in s for k in ("earnings miss", "missed earnings", "eps miss")):
+        return CatalystType.EARNINGS_MISS
+    if any(k in s for k in ("guidance raise", "raised guidance", "raised outlook", "raise guidance")):
+        return CatalystType.GUIDANCE_RAISE
+    if any(k in s for k in ("guidance cut", "lowered guidance", "cut guidance", "lower guidance")):
+        return CatalystType.GUIDANCE_CUT
+    if any(k in s for k in ("fed signal", "fed pivot", "fomc", "powell", "rate cut", "rate hike", "federal reserve")):
+        return CatalystType.FED_SIGNAL
+    if any(k in s for k in ("macro", "cpi", "ppi", "gdp", "nfp", "jobs report", "inflation data")):
+        return CatalystType.MACRO_PRINT
+    if any(k in s for k in ("geopolit", "iran", "russia", "ukraine", "china tension", "taiwan")):
+        return CatalystType.GEOPOLITICAL
+    if any(k in s for k in ("policy", "tariff", "regulation", "sec ruling", "executive order")):
+        return CatalystType.POLICY_CHANGE
+    if any(k in s for k in ("analyst upgrade", "price target raise", "analyst revision", "downgrade", "analyst cut")):
+        return CatalystType.ANALYST_REVISION
+    if any(k in s for k in ("merger", "acquisition", "acquired", "buyout", "takeover", "spin-off", "dividend")):
+        return CatalystType.CORPORATE_ACTION
+    if any(k in s for k in ("technical break", "breakout", "resistance break", "orb")):
+        return CatalystType.TECHNICAL_BREAKOUT
+    if any(k in s for k in ("sector rotation", "rotation out of", "rotation into")):
+        return CatalystType.SECTOR_ROTATION
+    if any(k in s for k in ("reddit", "wsb", "wallstreetbets", "retail sentiment")):
+        return CatalystType.SOCIAL_SENTIMENT
+    if any(k in s for k in ("mean reversion", "oversold", "bounce", "reversal", "rsi")):
+        return CatalystType.MEAN_REVERSION
+    if any(k in s for k in ("momentum", "trend following", "relative strength")):
+        return CatalystType.MOMENTUM_CONTINUATION
+    if any(k in s for k in ("citrini", "citrini thesis")):
+        return CatalystType.CITRINI_THESIS
+
+    return CatalystType.UNKNOWN
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Validation helper
 # ─────────────────────────────────────────────────────────────────────────────
 

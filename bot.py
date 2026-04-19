@@ -72,6 +72,33 @@ def _send_sms(message: str) -> None:
         log.error("SMS failed: %s", exc)
 
 
+def _send_email_alert(subject: str, body: str) -> None:
+    """Send an alert email via SendGrid. No-op if not configured. Non-fatal."""
+    api_key    = os.getenv("SENDGRID_API_KEY")
+    from_email = os.getenv("SENDGRID_FROM_EMAIL", "eugene.gold@gmail.com")
+    to_email   = "eugene.gold@gmail.com"
+    if not api_key or api_key.startswith("your_"):
+        log.warning("SENDGRID_API_KEY not configured — email alert skipped: %s", subject)
+        return
+    if body.lstrip().startswith("<"):
+        html = body
+    else:
+        html = (
+            "<html><body style='font-family:Arial,sans-serif;max-width:700px'>"
+            f"<pre style='white-space:pre-wrap'>{body}</pre></body></html>"
+        )
+    try:
+        from sendgrid import SendGridAPIClient          # noqa: PLC0415
+        from sendgrid.helpers.mail import Mail          # noqa: PLC0415
+        resp = SendGridAPIClient(api_key).send(
+            Mail(from_email=from_email, to_emails=to_email,
+                 subject=subject, html_content=html)
+        )
+        log.info("Alert email sent — status=%d  subject=%s", resp.status_code, subject)
+    except Exception as exc:
+        log.error("Alert email failed: %s", exc)
+
+
 # ── Drawdown guard ────────────────────────────────────────────────────────────
 _DRAWDOWN_THRESHOLD    = 0.20
 _last_drawdown_alert   = 0.0
@@ -133,6 +160,18 @@ def _check_drawdown(equity: float) -> bool:
                f"({drawdown:.1%} drawdown). Bot halting — review required.")
         log.error(msg)
         _send_sms(msg)
+        _drawdown_html = (
+            "<html><body style='font-family:Arial,sans-serif;max-width:700px'>"
+            "<h2 style='color:#cc0000'>20% Drawdown Alert — Bot Halting</h2>"
+            "<table style='border-collapse:collapse;width:100%'>"
+            f"<tr><td style='padding:4px 8px'><strong>Peak equity</strong></td><td>${_peak_equity:,.0f}</td></tr>"
+            f"<tr><td style='padding:4px 8px'><strong>Current equity</strong></td><td>${equity:,.0f}</td></tr>"
+            f"<tr><td style='padding:4px 8px'><strong>Drawdown</strong></td><td>{drawdown:.1%}</td></tr>"
+            "</table>"
+            "<p>The bot has halted. Manual review required before resuming.</p>"
+            "</body></html>"
+        )
+        _send_email_alert("BullBearBot ALERT: 20% Drawdown Triggered — Bot Halting", _drawdown_html)
         return True
 
     return False
@@ -497,6 +536,18 @@ def run_cycle(
         log.warning("Claude returned regime=halt — skipping execution this cycle")
         broker_actions = []
         _send_sms(f"TRADING BOT: Claude called HALT. Reasoning: {reasoning[:160]}")
+        _halt_html = (
+            "<html><body style='font-family:Arial,sans-serif;max-width:700px'>"
+            "<h2 style='color:#cc6600'>Claude Returned regime=halt</h2>"
+            "<p>Execution skipped this cycle. No new orders until regime clears.</p>"
+            "<h3>Full Reasoning</h3>"
+            f"<pre style='white-space:pre-wrap;background:#f5f5f5;padding:12px'>{reasoning}</pre>"
+            "</body></html>"
+        )
+        _send_email_alert("BullBearBot: Claude Called HALT", _halt_html)
+
+    # T-007: inject regime_score from Stage 1 so memory.py can persist it
+    decision["regime_score"] = regime_obj.get("regime_score")
 
     # Persist decision
     vector_id = trade_memory.save_trade_memory(decision, state.md, session_tier)
@@ -659,6 +710,18 @@ def run_cycle(
                     f"BOT ORDER: {r.action.upper()} {r.symbol}  "
                     f"order_id={r.order_id}"
                 )
+                _order_html = (
+                    "<html><body style='font-family:Arial,sans-serif;max-width:700px'>"
+                    f"<h2>Order Submitted: {r.action.upper()} {r.symbol}</h2>"
+                    "<table style='border-collapse:collapse;width:100%'>"
+                    f"<tr><td style='padding:4px 8px'><strong>Action</strong></td><td>{r.action.upper()}</td></tr>"
+                    f"<tr><td style='padding:4px 8px'><strong>Symbol</strong></td><td>{r.symbol}</td></tr>"
+                    f"<tr><td style='padding:4px 8px'><strong>Order ID</strong></td><td>{r.order_id}</td></tr>"
+                    f"<tr><td style='padding:4px 8px'><strong>Fill price</strong></td><td>{r.fill_price}</td></tr>"
+                    "</table>"
+                    "</body></html>"
+                )
+                _send_email_alert(f"BullBearBot Order: {r.action.upper()} {r.symbol}", _order_html)
                 try:
                     from attribution import log_attribution_event as _log_attr  # noqa: PLC0415
                     _log_attr(

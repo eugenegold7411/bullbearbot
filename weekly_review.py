@@ -1636,10 +1636,10 @@ Key:
 - unknown_session_label_pct: fraction of outcome records missing session tag
 - resolver_pending_count: unresolved recommendations in store
 - promotion_contracts_count: modules authorized to use PREMIUM tier (null=registry missing)
-- taxonomy_drift: per-field {unknown_count, total_count} for catalyst/session/exit_type/reject_reason
-- abstention_per_module: {module_name: rate} for modules seen in hindsight records (7d)
+- taxonomy_drift: per-field {{unknown_count, total_count}} for catalyst/session/exit_type/reject_reason
+- abstention_per_module: {{module_name: rate}} for modules seen in hindsight records (7d)
 - lazy_abstainer_candidates: modules flagged >0.80 in two consecutive weekly windows (advisory)
-- shadow_counterfactual: {right, wrong, neutral, cumulative_accuracy, advisory, note} — advisory until n>=50
+- shadow_counterfactual: {{right, wrong, neutral, cumulative_accuracy, advisory, note}} — advisory until n>=50
 
 ---
 

@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 import logging
 import trade_memory
+from semantic_labels import classify_catalyst
 
 log = logging.getLogger(__name__)
 
@@ -29,8 +30,53 @@ MEMORY_DIR      = Path(__file__).parent / "memory"
 DECISIONS_FILE  = MEMORY_DIR / "decisions.json"
 PERF_FILE       = MEMORY_DIR / "performance.json"
 REPORTS_DIR     = Path(__file__).parent / "data" / "reports"
-MAX_DECISIONS   = 20
+_MAX_DECISIONS  = 500   # T-004: rolling window — stores full trade history
 PROMPT_WINDOW   = 10
+
+# T-008: symbol → sector mapping (used at record-write time for performance buckets)
+_SECTOR_MAP: dict[str, str] = {
+    # Technology
+    "NVDA": "Technology", "TSM": "Technology", "MSFT": "Technology",
+    "CRWV": "Technology", "PLTR": "Technology", "ASML": "Technology",
+    # Energy
+    "XLE": "Energy", "XOM": "Energy", "CVX": "Energy", "USO": "Energy",
+    # Commodities
+    "GLD": "Commodities", "SLV": "Commodities", "COPX": "Commodities",
+    # Financials
+    "JPM": "Financials", "GS": "Financials", "XLF": "Financials",
+    # Consumer
+    "AMZN": "Consumer", "WMT": "Consumer", "XRT": "Consumer",
+    # Defense
+    "LMT": "Defense", "RTX": "Defense", "ITA": "Defense",
+    # Biotech
+    "XBI": "Biotech",
+    # Health
+    "JNJ": "Health", "LLY": "Health",
+    # International
+    "EWJ": "International", "FXI": "International", "EEM": "International",
+    "EWM": "International", "ECH": "International",
+    # Macro
+    "SPY": "Macro", "QQQ": "Macro", "IWM": "Macro", "TLT": "Macro", "VXX": "Macro",
+    # Crypto (both canonical slash and Alpaca format)
+    "BTC/USD": "Crypto", "ETH/USD": "Crypto", "BTCUSD": "Crypto", "ETHUSD": "Crypto",
+    # Shipping
+    "FRO": "Shipping", "STNG": "Shipping",
+    # Housing
+    "RKT": "Housing",
+    # Utilities
+    "BE": "Utilities",
+}
+
+
+def _get_active_strategy() -> str:
+    """Read active_strategy from strategy_config.json. Returns 'unknown' on any error."""
+    try:
+        cfg_path = Path(__file__).parent / "strategy_config.json"
+        if cfg_path.exists():
+            return json.loads(cfg_path.read_text()).get("active_strategy", "unknown") or "unknown"
+    except Exception:
+        pass
+    return "unknown"
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
@@ -103,10 +149,12 @@ def save_decision(claude_decision: dict, session_tier: str,
     decisions = _load_decisions()
 
     actions = claude_decision.get("actions", [])
+    _strategy = _get_active_strategy()
     record = {
         "ts":          datetime.now(timezone.utc).isoformat(),
         "session":     session_tier,
         "regime":      claude_decision.get("regime_view") or claude_decision.get("regime", "unknown"),
+        "regime_score": claude_decision.get("regime_score"),  # T-007: from Stage 1 via bot.py injection
         "reasoning":   claude_decision.get("reasoning", ""),
         "n_actions":   len(actions),
         "vector_id":   vector_id,       # links to ChromaDB record for outcome updates
@@ -120,8 +168,11 @@ def save_decision(claude_decision: dict, session_tier: str,
                 "take_profit":   a.get("take_profit"),
                 "tier":          a.get("tier", "core"),
                 "catalyst":      a.get("catalyst"),
+                "catalyst_type": classify_catalyst(a.get("catalyst") or "").value,  # T-022
                 "sector_signal": a.get("sector_signal"),
                 "confidence":    a.get("confidence"),
+                "strategy":      _strategy,                                   # T-008
+                "sector":        _SECTOR_MAP.get(a.get("symbol", ""), "unknown"),  # T-008
                 # options fields
                 "option_strategy": a.get("option_strategy"),
                 "expiration":    a.get("expiration"),
@@ -135,7 +186,7 @@ def save_decision(claude_decision: dict, session_tier: str,
         ],
     }
     decisions.append(record)
-    _save_decisions(decisions[-MAX_DECISIONS:])
+    _save_decisions(decisions[-_MAX_DECISIONS:])
 
 
 def update_outcomes_from_alpaca() -> None:
@@ -153,17 +204,22 @@ def update_outcomes_from_alpaca() -> None:
     except Exception:
         return
 
-    fills: dict[str, list] = defaultdict(list)
+    # T-025: collect SELL fills (exit fills) and BUY fills (entry fills) separately.
+    # Outcome is determined by comparing the exit price to stop_loss/take_profit thresholds.
+    sell_fills: dict[str, list] = defaultdict(list)
+    buy_fills:  dict[str, list] = defaultdict(list)
     for o in filled:
-        if (o.side == OrderSide.BUY
-                and o.filled_avg_price is not None
-                and o.filled_qty is not None):
-            fills[o.symbol].append({
-                "order_id":   str(o.id),
-                "fill_price": float(o.filled_avg_price),
-                "qty":        float(o.filled_qty),
-                "status":     str(o.status),
-            })
+        if o.filled_avg_price is None or o.filled_qty is None:
+            continue
+        info = {
+            "order_id":   str(o.id),
+            "fill_price": float(o.filled_avg_price),
+            "qty":        float(o.filled_qty),
+        }
+        if o.side == OrderSide.SELL:
+            sell_fills[o.symbol].append(info)
+        elif o.side == OrderSide.BUY:
+            buy_fills[o.symbol].append(info)
 
     decisions = _load_decisions()
     perf      = _load_perf()
@@ -179,22 +235,30 @@ def update_outcomes_from_alpaca() -> None:
                                              "sell_option_spread", "buy_straddle"):
                 continue
             sym = action.get("symbol")
-            if not sym or sym not in fills:
+            if not sym or sym not in sell_fills:
                 continue
 
-            for fill in fills[sym]:
-                entry = float(action.get("stop_loss", 0) or 0)
+            for fill in sell_fills[sym]:
+                stop  = float(action.get("stop_loss", 0) or 0)
                 tp    = float(action.get("take_profit", 0) or 0)
-                price = fill["fill_price"]
+                exit_price = fill["fill_price"]
 
-                if tp > 0 and price >= tp * 0.99:
+                if tp > 0 and exit_price >= tp * 0.99:
                     outcome = "win"
-                    pnl     = round((price - entry) * fill["qty"], 2)
-                elif entry > 0 and price <= entry * 1.01:
+                elif stop > 0 and exit_price <= stop * 1.01:
                     outcome = "loss"
-                    pnl     = round((price - entry) * fill["qty"], 2)
                 else:
                     continue
+
+                # Use BUY fill price as entry for PnL; fall back to stop_loss approximation
+                entry_fills = buy_fills.get(sym)
+                if entry_fills:
+                    entry_price = entry_fills[0]["fill_price"]
+                elif stop > 0:
+                    entry_price = stop
+                else:
+                    entry_price = exit_price
+                pnl = round((exit_price - entry_price) * fill["qty"], 2)
 
                 action["outcome"] = outcome
                 action["pnl"]     = pnl
@@ -216,8 +280,13 @@ def update_outcomes_from_alpaca() -> None:
                 _bucket_inc(perf, "by_type",     trade_type, outcome)
                 _bucket_inc(perf, "by_session",  session,    outcome)
                 _bucket_inc(perf, "by_tier",     tier,       outcome)
+                sector = action.get("sector") or _SECTOR_MAP.get(sym, "unknown")
+                _bucket_inc(perf, "by_sector", sector, outcome)
                 if opt_strat:
                     _bucket_inc(perf, "by_strategy", opt_strat, outcome)
+                else:
+                    strategy = action.get("strategy") or "unknown"
+                    _bucket_inc(perf, "by_strategy", strategy, outcome)
                 if catalyst:
                     cat_key = catalyst.split()[0].lower() if catalyst else "unknown"
                     _bucket_inc(perf, "by_catalyst", cat_key, outcome)

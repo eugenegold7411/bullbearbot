@@ -278,6 +278,17 @@ def backfill_forward_returns(days_back: int = 30) -> int:
         bt_index: dict[tuple[str, str], dict] = {}
         try:
             bt_data = json.loads(BACKTEST_CACHE.read_text())
+            # T-025: backtest may have status=insufficient_data (< MIN_SIGNALS=5) with no results key
+            bt_status = bt_data.get("status", "")
+            if bt_status == "insufficient_data":
+                n   = bt_data.get("n_signals", 0)
+                req = bt_data.get("min_required", 5)
+                log.info(
+                    "[OUTCOMES] backfill: backtest insufficient_data "
+                    "(%d signals < %d required) — no forward returns available",
+                    n, req,
+                )
+                return 0
             for r in bt_data.get("results", []):
                 sym  = r.get("symbol", "")
                 dstr = r.get("decision_date", "")[:10]   # "YYYY-MM-DD"

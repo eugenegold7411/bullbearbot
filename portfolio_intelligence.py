@@ -750,9 +750,21 @@ def score_position_thesis(
 
     weakest_factor = weaknesses[0] if weaknesses else "none"
 
+    # T-023: thesis_status derived from score and override_flag
+    if override_flag or score < 4:
+        thesis_status = "invalidated"
+    elif score <= 6:
+        thesis_status = "weakening"
+    else:
+        thesis_status = "valid"
+
+    if thesis_status == "invalidated":
+        log.warning("[PI] THESIS INVALIDATED: %s — %s", symbol, override_flag or weakest_factor)
+
     return {
         "symbol":              symbol,
         "thesis_score":        score,
+        "thesis_status":       thesis_status,
         "catalyst_age_days":   days_held,
         "technical_intact":    technical_intact,
         "above_ma20":          above_ma20,
@@ -788,7 +800,9 @@ def format_thesis_ranking_section(
         action = ts["recommended_action"]
         label  = "STRONG" if score >= 7 else ("MODERATE" if score >= 5 else "WEAK — consider exit")
 
-        lines.append(f"{i}. {sym}  score: {score}/10  [{label}]")
+        thesis_status = ts.get("thesis_status", "valid")
+        status_tag = {"valid": "✓ VALID", "weakening": "⚠ WEAKENING", "invalidated": "✗ INVALIDATED"}.get(thesis_status, thesis_status)
+        lines.append(f"{i}. {sym}  score: {score}/10  [{label}]  thesis: {status_tag}")
         if ts.get("override_flag"):
             lines.append(
                 f"   *** {ts['override_flag']} — original thesis no longer valid ***")

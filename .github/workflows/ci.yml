@@ -26,3 +26,6 @@ jobs:
 
       - name: Import check
         run: make import-check
+
+      - name: Test
+        run: make test

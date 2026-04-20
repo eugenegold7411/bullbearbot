@@ -1,6 +1,6 @@
 .PHONY: install lint format test test-ci ci-local import-check clean
 
-PYTHON ?= .venv/bin/python3
+PYTHON ?= $(shell [ -f .venv/bin/python3 ] && echo .venv/bin/python3 || echo python3)
 
 install:
 	pip install -e . -r requirements-dev.txt

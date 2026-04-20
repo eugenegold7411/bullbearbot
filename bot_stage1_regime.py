@@ -111,9 +111,8 @@ def classify_regime(md: dict, calendar: dict) -> dict:
         )
         resp = _get_claude().messages.create(
             model=MODEL_FAST, max_tokens=300,
-            system=[{"type": "text", "text": _REGIME_SYS, "cache_control": {"type": "ephemeral"}}],
+            system=[{"type": "text", "text": _REGIME_SYS}],
             messages=[{"role": "user", "content": user_content}],
-            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
         try:
             from cost_tracker import get_tracker

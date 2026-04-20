@@ -48,13 +48,25 @@ _OVERNIGHT_DEFAULT: dict = {
 }
 
 _compact_template_cache: str = ""
+_system_prompt_cache:    str = ""  # loaded once; identical bytes every call = cache hits
 
 
 def _load_prompts() -> tuple[str, str]:
-    """Read prompt files fresh each cycle so edits take effect without restart."""
-    system   = (PROMPTS_DIR / "system_v1.txt").read_text().strip()
+    """
+    Return (system_prompt, user_template).
+
+    system_v1.txt is cached at module level after the first read — the bytes must be
+    byte-for-byte identical on every call for Anthropic prompt caching to activate.
+    user_template_v1.txt is read fresh each call so hot-edits take effect without restart.
+
+    IMPORTANT: never inject dynamic content (timestamps, equity values, prices) into the
+    system prompt.  All cycle-specific data belongs in the user message only.
+    """
+    global _system_prompt_cache
+    if not _system_prompt_cache:
+        _system_prompt_cache = (PROMPTS_DIR / "system_v1.txt").read_text().strip()
     template = (PROMPTS_DIR / "user_template_v1.txt").read_text().strip()
-    return system, template
+    return _system_prompt_cache, template
 
 
 def _write_decision_capture(

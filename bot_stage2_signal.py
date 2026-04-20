@@ -36,9 +36,8 @@ def _call_single_batch(user_content: str) -> dict:
     """Make one scored-symbols API call with repair+retry. Returns parsed result dict."""
     resp = _get_claude().messages.create(
         model=MODEL_FAST, max_tokens=4000,
-        system=[{"type": "text", "text": _SIGNAL_SYS, "cache_control": {"type": "ephemeral"}}],
+        system=[{"type": "text", "text": _SIGNAL_SYS}],
         messages=[{"role": "user", "content": user_content}],
-        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
     )
     try:
         from cost_tracker import get_tracker
@@ -65,7 +64,6 @@ def _call_single_batch(user_content: str) -> dict:
             model=MODEL_FAST, max_tokens=4000,
             system=[{"type": "text", "text": _retry_sys}],
             messages=[{"role": "user", "content": user_content}],
-            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
         _retry_raw = _retry_resp.content[0].text.strip()
         if _retry_raw.startswith("```"):

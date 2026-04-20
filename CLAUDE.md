@@ -63,6 +63,7 @@ rsync -avz -e 'ssh -i ~/.ssh/trading_bot' \
   --exclude .venv --exclude __pycache__ --exclude '*.pyc' \
   --exclude .env --exclude 'logs/*.log' --exclude 'logs/*.jsonl' \
   --exclude nohup.out --exclude 'data/runtime/' \
+  --exclude 'data/trade_memory/' \
   /Users/eugene.gold/trading-bot/ tradingbot:/home/trading-bot/  # push
 ```
 

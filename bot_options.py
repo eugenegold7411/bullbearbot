@@ -625,6 +625,81 @@ def _route_strategy(pack: A2FeaturePack) -> list[str]:
     return []
 
 
+_STRATEGY_FROM_STRUCTURE: dict[str, "OptionStrategy"] = {
+    "long_call":          None,  # filled below after OptionStrategy import resolves
+    "long_put":           None,
+    "debit_call_spread":  None,
+    "debit_put_spread":   None,
+    "credit_call_spread": None,
+    "credit_put_spread":  None,
+}
+
+# Populate the map using the already-imported OptionStrategy via schemas
+from schemas import OptionStrategy as _OS  # noqa: E402 (already imported above via star via A2FeaturePack)
+_STRATEGY_FROM_STRUCTURE = {
+    "long_call":          _OS.SINGLE_CALL,
+    "long_put":           _OS.SINGLE_PUT,
+    "debit_call_spread":  _OS.CALL_DEBIT_SPREAD,
+    "debit_put_spread":   _OS.PUT_DEBIT_SPREAD,
+    "credit_call_spread": _OS.CALL_CREDIT_SPREAD,
+    "credit_put_spread":  _OS.PUT_CREDIT_SPREAD,
+}
+
+
+def _parse_bounded_debate_response(raw: str) -> dict:
+    """
+    Extract and parse bounded debate JSON from a Claude response.
+    Handles markdown fences (```json / ``` wrappers).
+    On any parse failure returns a reject_all sentinel dict.
+    """
+    _REJECT_ALL: dict = {
+        "selected_candidate_id": None,
+        "confidence": 0.0,
+        "reject": True,
+        "key_risks": [],
+        "reasons": "json_parse_failed",
+        "recommended_size_modifier": 1.0,
+    }
+
+    if not raw:
+        return _REJECT_ALL
+
+    text = raw.strip()
+
+    # Strip markdown code fences
+    if text.startswith("```"):
+        lines = text.splitlines()
+        inner: list[str] = []
+        in_fence = False
+        for line in lines:
+            if line.startswith("```") and not in_fence:
+                in_fence = True
+                continue
+            if line.startswith("```") and in_fence:
+                break
+            if in_fence:
+                inner.append(line)
+        text = "\n".join(inner).strip()
+
+    # Direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Extract first {...} block
+    start = text.find("{")
+    end   = text.rfind("}")
+    if 0 <= start < end:
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    log.warning("[OPTS] _parse_bounded_debate_response: parse failed  raw=%s", raw[:200])
+    return _REJECT_ALL
+
+
 def _apply_veto_rules(candidate: dict, pack: A2FeaturePack, equity: float) -> Optional[str]:
     """
     Apply deterministic veto rules to a fully-specified candidate structure.
@@ -675,17 +750,19 @@ def _build_options_candidates(
     vix: float,
     equity: float,
     config: dict | None = None,
-) -> tuple[list[StructureProposal], dict[str, list[str]]]:
+) -> tuple[list[StructureProposal], dict[str, list[str]], list[dict]]:
     """
     For each watchlist symbol with a signal score, run options_intelligence
-    to get a candidate trade. Returns (candidates, allowed_structures_by_symbol).
+    to get a candidate trade.
+    Returns (proposals, allowed_structures_by_symbol, surviving_candidate_dicts).
     None returns (hold/skip) are filtered out.
 
     Pipeline per symbol:
       1. Universe tradeable gate (options_universe_manager.is_tradeable)
       2. Build A2FeaturePack and run deterministic strategy router
-      3. Pre-debate liquidity pre-screen (loose thresholds = 50% of full gate)
-      4. options_intelligence.select_options_strategy → StructureProposal
+      3. Generate fully-specified candidate structures + apply veto rules (A2-2)
+      4. Pre-debate liquidity pre-screen (loose thresholds = 50% of full gate)
+      5. options_intelligence.select_options_strategy → StructureProposal
     """
     import options_universe_manager as _oum  # noqa: PLC0415
     from options_data import get_options_regime  # noqa: PLC0415
@@ -696,6 +773,7 @@ def _build_options_candidates(
     options_regime         = get_options_regime(vix)
     candidates: list[StructureProposal]  = []
     allowed_by_sym: dict[str, list[str]] = {}
+    all_candidate_structs:  list[dict]   = []
 
     # Filter to symbols that have a meaningful signal.
     # score_signals() uses "conviction" field ("high"/"medium"/"low").
@@ -773,6 +851,7 @@ def _build_options_candidates(
                             else:
                                 log.info("[OPTS] %s: no structures generated — skipping", sym)
                             continue
+                        all_candidate_structs.extend(_surviving)
                 except Exception as _veto_exc:
                     log.debug("[OPTS] %s: veto pass failed (non-fatal): %s", sym, _veto_exc)
 
@@ -802,7 +881,7 @@ def _build_options_candidates(
 
         candidates.append(proposal)
 
-    return candidates, allowed_by_sym
+    return candidates, allowed_by_sym, all_candidate_structs
 
 
 # ── Claude four-way debate ─────────────────────────────────────────────────────
@@ -827,29 +906,29 @@ def run_options_debate(
     obs_mode: bool,
     equity: float,
     allowed_structures_by_symbol: dict | None = None,
+    candidate_structures: list[dict] | None = None,
 ) -> dict:
     """
-    Submit candidates to Claude for the four-way options debate.
-    Claude conducts Bull/Bear/IV Analyst/Synthesis internally and returns
-    the final approved actions.
+    A2-3b bounded adjudication debate.
 
-    Returns parsed JSON response dict.
+    When candidate_structures is provided (A2-3b path):
+      Prompt includes pre-built candidate dicts; AI picks ONE or rejects all.
+      Returns {"selected_candidate_id": ..., "confidence": ..., "reject": ..., ...}
+
+    When candidate_structures is absent/empty (legacy fallback):
+      Falls back to old free-form debate returning {"actions": [...], ...}
     """
     system_prompt = _load_opts_system()
     claude = _get_claude()
 
-    # Format candidates for prompt
-    cands_text = json.dumps([asdict(c) for c in candidates], indent=2, default=str) if candidates else "[]"
-
-    # Format IV environment summary
+    # Format IV environment summary (used by both paths)
     iv_lines = []
     for sym, iv in iv_summaries.items():
-        env = iv.get("iv_environment", "unknown")
-        rank = iv.get("iv_rank")
-        days = iv.get("history_days", 0)
-        obs = " [OBS]" if iv.get("observation_mode") else ""
-        rank_str = f"{rank:.0f}" if rank is not None else "N/A"
-        iv_lines.append(f"  {sym}: env={env} rank={rank_str} history={days}d{obs}")
+        env   = iv.get("iv_environment", "unknown")
+        rank  = iv.get("iv_rank")
+        obs   = " [OBS]" if iv.get("observation_mode") else ""
+        rank_s = f"{rank:.0f}" if rank is not None else "N/A"
+        iv_lines.append(f"  {sym}: env={env} rank={rank_s}{obs}")
     iv_section = "\n".join(iv_lines) if iv_lines else "  (no IV data)"
 
     obs_notice = (
@@ -858,13 +937,113 @@ def run_options_debate(
         if obs_mode else ""
     )
 
-    # Format pre-approved structure types per symbol (from deterministic routing gate)
+    # ── A2-3b bounded path ──────────────────────────────────────────────────
+    if candidate_structures:
+        candidate_blocks = []
+        allowed_actions_parts = []
+        for c in candidate_structures:
+            cid   = c.get("candidate_id", "?")
+            stype = c.get("structure_type", "?")
+            sym   = c.get("symbol", "?")
+            exp   = c.get("expiry", "?")
+            ls    = c.get("long_strike", 0)
+            ss    = c.get("short_strike")
+            strike_str = f"{ls:.0f}/{ss:.0f}" if ss else f"{ls:.0f}"
+            debit    = c.get("debit", 0) or 0
+            max_loss = c.get("max_loss", 0) or 0
+            max_gain = c.get("max_gain")
+            gain_str = f"${max_gain:.0f}" if max_gain is not None else "unlimited"
+            beven    = c.get("breakeven", 0) or 0
+            delta    = c.get("delta")
+            theta    = c.get("theta")
+            ev       = c.get("expected_value")
+            dte      = c.get("dte", 0) or 0
+            oi       = c.get("open_interest")
+            delta_s  = f"{delta:.2f}" if delta is not None else "N/A"
+            theta_s  = f"${theta:.3f}/day" if theta is not None else "N/A"
+            ev_s     = f"${ev:.2f}" if ev is not None else "N/A"
+            oi_s     = str(oi) if oi is not None else "N/A"
+            candidate_blocks.append(
+                f"[Candidate {cid} — {stype} {sym} {exp} {strike_str}\n"
+                f" Debit: ${debit:.2f}/share | Max loss: ${max_loss:.0f} | "
+                f"Max gain: {gain_str} | Breakeven: {beven:.2f}\n"
+                f" Delta: {delta_s} | Theta: {theta_s} | EV: {ev_s} | "
+                f"DTE: {dte} | OI: {oi_s}]"
+            )
+            allowed_actions_parts.append(f"prefer {cid}")
+        allowed_actions_parts.append("reject_all")
+        allowed_actions_str = ", ".join(allowed_actions_parts)
+        candidate_blocks_text = "\n\n".join(candidate_blocks)
+        risk_budget = equity * 0.05
+
+        user_content = f"""{obs_notice}
+=== MARKET CONTEXT ===
+VIX: {vix:.2f}
+Regime: {regime}
+Account 2 Equity: ${equity:,.0f}
+
+=== ACCOUNT 1 AWARENESS ===
+{account1_summary}
+
+=== IV ENVIRONMENT ===
+{iv_section}
+
+=== CANDIDATE STRUCTURES ===
+{candidate_blocks_text}
+
+RISK BUDGET: ${risk_budget:,.0f}
+ALLOWED ACTIONS: {allowed_actions_str}
+
+=== DEBATE ROLES ===
+- DIRECTIONAL ADVOCATE: Is the underlying thesis real and is now the right time?
+- VOL/STRUCTURE ANALYST: Which candidate has better premium geometry for this thesis?
+- TAPE/FLOW SKEPTIC: Does flow imbalance and positioning support or challenge this?
+- RISK OFFICER: Which candidate best fits risk budget, theta horizon, and expiry?
+
+Synthesize the debate and respond ONLY with this JSON — no other text:
+{{
+  "selected_candidate_id": "<candidate_id or null>",
+  "confidence": <float 0.0-1.0>,
+  "key_risks": ["<risk1>", "<risk2>"],
+  "reasons": "<one paragraph max>",
+  "recommended_size_modifier": 1.0,
+  "reject": <true|false>
+}}
+Confidence >= 0.85 required for PROCEED. If rejecting all: selected_candidate_id=null, reject=true.
+"""
+        try:
+            resp = claude.messages.create(
+                model=MODEL,
+                max_tokens=1000,
+                system=[{
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=[{"role": "user", "content": user_content}],
+                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+            )
+            raw = resp.content[0].text.strip() if resp.content else ""
+            _log_claude_cost(resp, "bounded_debate")
+        except Exception as exc:
+            log.error("[OPTS] Bounded debate Claude call failed: %s", exc)
+            return _parse_bounded_debate_response("")
+
+        result = _parse_bounded_debate_response(raw)
+        if result.get("reject") or not result.get("selected_candidate_id"):
+            log.info("[OPTS] Bounded debate: reject=True  reasons=%s",
+                     result.get("reasons", "")[:120])
+        else:
+            log.info("[OPTS] Bounded debate: selected=%s  confidence=%.2f",
+                     result.get("selected_candidate_id"), result.get("confidence", 0))
+        return result
+
+    # ── Legacy free-form path (no pre-built candidates) ──────────────────────
+    cands_text = json.dumps([asdict(c) for c in candidates], indent=2, default=str) if candidates else "[]"
+
     allowed_section = ""
     if allowed_structures_by_symbol:
-        allowed_lines = [
-            f"  {sym}: {allowed}"
-            for sym, allowed in allowed_structures_by_symbol.items()
-        ]
+        allowed_lines = [f"  {sym}: {al}" for sym, al in allowed_structures_by_symbol.items()]
         allowed_section = (
             "\n=== ALLOWED STRUCTURES (pre-approved by routing gate) ===\n"
             + "\n".join(allowed_lines)
@@ -887,7 +1066,7 @@ Account 2 Equity: ${equity:,.0f}
 {cands_text}
 {allowed_section}
 === YOUR TASK ===
-For each candidate, conduct the four-way debate:
+Conduct the four-way debate for each candidate:
 1. BULL AGENT: strongest bull case with specific catalyst
 2. BEAR AGENT: strongest bear case and key risks
 3. IV ANALYST: IV rank assessment and recommended strategy
@@ -897,7 +1076,6 @@ Output your top 1-3 approved trades (or all HOLDs if no setup qualifies).
 Minimum confidence 0.85 for any PROCEED. Apply all hard rules from system prompt.
 Respond ONLY with valid JSON. No markdown. No explanation outside JSON fields.
 """
-
     try:
         resp = claude.messages.create(
             model=MODEL,
@@ -910,7 +1088,6 @@ Respond ONLY with valid JSON. No markdown. No explanation outside JSON fields.
             messages=[{"role": "user", "content": user_content}],
             extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
-
         raw = resp.content[0].text.strip() if resp.content else ""
         _log_claude_cost(resp, "debate")
 
@@ -918,7 +1095,6 @@ Respond ONLY with valid JSON. No markdown. No explanation outside JSON fields.
             log.warning("[OPTS] Claude returned empty response")
             return {"regime": regime, "actions": [], "reasoning": "empty response"}
 
-        # JSON parse with repair
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
@@ -1309,7 +1485,7 @@ def run_options_cycle(
 
     # 8. Build candidate trades
     options_regime = options_data.get_options_regime(vix)
-    candidates, allowed_by_sym = _build_options_candidates(
+    candidates, allowed_by_sym, candidate_structures = _build_options_candidates(
         watchlist_symbols=equity_symbols,
         iv_summaries=iv_summaries,
         signal_scores=signal_scores,
@@ -1318,8 +1494,8 @@ def run_options_cycle(
         config=_load_strategy_config(),
     )
 
-    log.info("[OPTS] Candidates: %d  VIX=%.1f  regime=%s  options_regime=%s",
-             len(candidates), vix, regime, options_regime.get("regime", "?"))
+    log.info("[OPTS] Candidates: %d  candidate_structures: %d  VIX=%.1f  regime=%s",
+             len(candidates), len(candidate_structures), vix, regime)
 
     if not candidates and not obs_mode:
         log.info("[OPTS] No candidates after filtering — holding")
@@ -1331,7 +1507,7 @@ def run_options_cycle(
         })
         return
 
-    # 9. Claude four-way debate
+    # 9. Claude bounded adjudication debate (A2-3b)
     debate_result = run_options_debate(
         candidates=candidates,
         iv_summaries=iv_summaries,
@@ -1341,97 +1517,206 @@ def run_options_cycle(
         obs_mode=obs_mode,
         equity=equity,
         allowed_structures_by_symbol=allowed_by_sym or None,
+        candidate_structures=candidate_structures or None,
     )
 
-    log.info("[OPTS] Debate complete: regime=%s  actions=%d",
-             debate_result.get("regime", "?"),
-             len(debate_result.get("actions", [])))
+    log.info("[OPTS] Debate complete: bounded=%s  selected=%s  confidence=%s  reject=%s",
+             bool(candidate_structures),
+             debate_result.get("selected_candidate_id", "—"),
+             debate_result.get("confidence", debate_result.get("regime", "?")),
+             debate_result.get("reject", "—"),
+    )
 
-    # 10. Execute approved trades
+    # 10. Execute approved trade
     execution_results = []
     if not _pf_allow_new_entries:
         log.warning("[PREFLIGHT] New A2 entries suppressed by preflight (reconcile_only)")
-    for action in debate_result.get("actions", []) if _pf_allow_new_entries else []:
-        if action.get("action") == "hold":
-            log.info("[OPTS] HOLD %s — %s",
-                     action.get("symbol", "?"), action.get("reason", ""))
-            # B6: record hold decisions so obs-mode cycles are traceable
-            execution_results.append({
-                "action": "hold",
-                "symbol": action.get("symbol", ""),
-                "status": "hold",
-                "reason": action.get("reason", ""),
+
+    # ── A2-3b bounded execution path ────────────────────────────────────────
+    if candidate_structures and "selected_candidate_id" in debate_result:
+        _reject    = debate_result.get("reject", True)
+        _sel_id    = debate_result.get("selected_candidate_id")
+        _conf      = float(debate_result.get("confidence", 0.0))
+        _size_mod  = float(debate_result.get("recommended_size_modifier", 1.0))
+
+        if _reject or not _sel_id:
+            log.info("[OPTS] Bounded debate: reject — %s",
+                     debate_result.get("reasons", "")[:100])
+            _save_decision({
+                "reasoning": debate_result.get("reasons", "debate_rejected"),
+                "regime": regime,
+                "actions": [],
                 "observation_mode": obs_mode,
+                "bounded_debate": debate_result,
             })
-            continue
+            return
 
-        sym = action.get("symbol", "")
-        if not sym:
-            continue
+        if _conf < 0.85:
+            log.info("[OPTS] Bounded debate: confidence=%.2f < 0.85 — holding", _conf)
+            _save_decision({
+                "reasoning": f"confidence_too_low:{_conf:.2f}",
+                "regime": regime,
+                "actions": [],
+                "observation_mode": obs_mode,
+                "bounded_debate": debate_result,
+            })
+            return
 
-        # Look up original proposal so build_structure gets real chain-resolution params
-        proposal = next((c for c in candidates if c.symbol == sym), None)
-        if proposal is None:
-            log.warning("[OPTS] %s: no matching proposal found in candidates", sym)
-            continue
+        selected_cand = next(
+            (c for c in candidate_structures if c.get("candidate_id") == _sel_id), None
+        )
+        if selected_cand is None:
+            log.warning("[OPTS] Bounded debate selected_candidate_id=%s not found — holding", _sel_id)
+            _save_decision({
+                "reasoning": f"selected_id_not_found:{_sel_id}",
+                "regime": regime, "actions": [], "observation_mode": obs_mode,
+            })
+            return
 
-        # Mode gate — block new entries if A2 mode is not NORMAL
-        if _a2_mode is not None:
+        sym = selected_cand["symbol"]
+        log.info("[OPTS] Bounded selection: %s  %s  conf=%.2f  size_mod=%.1f",
+                 sym, selected_cand.get("structure_type", "?"), _conf, _size_mod)
+
+        if _pf_allow_new_entries:
+            # Mode gate
+            if _a2_mode is not None:
+                try:
+                    from divergence import is_action_allowed  # noqa: PLC0415
+                    _a2_allowed, _a2_reason = is_action_allowed(_a2_mode, "enter_long", sym)
+                    if not _a2_allowed:
+                        log.warning("[DIV] A2 BLOCKED %s — %s", sym, _a2_reason)
+                        _save_decision({
+                            "reasoning": f"div_blocked:{_a2_reason}",
+                            "regime": regime, "actions": [], "observation_mode": obs_mode,
+                        })
+                        return
+                except Exception as _dge:
+                    log.debug("[DIV] A2 mode gate failed (non-fatal): %s", _dge)
+
+            strategy_enum = _STRATEGY_FROM_STRUCTURE.get(selected_cand.get("structure_type", ""))
+            if strategy_enum is None:
+                log.warning("[OPTS] Unknown structure_type=%s — holding",
+                            selected_cand.get("structure_type"))
+                return
+
+            proposal = next((c for c in candidates if c.symbol == sym), None)
+            direction_val = proposal.direction if proposal else selected_cand.get("a1_direction", "bullish")
+            iv_rank_val   = iv_summaries.get(sym, {}).get("iv_rank", 50.0) or 50.0
+            max_loss_usd  = selected_cand.get("max_loss", equity * 0.03) * _size_mod
+
             try:
-                from divergence import is_action_allowed  # noqa: PLC0415
-                _a2_allowed, _a2_reason = is_action_allowed(
-                    _a2_mode, "enter_long", action.get("symbol", "")
+                _chain = options_data.fetch_options_chain(sym)
+                structure, build_err = options_builder.build_structure(
+                    symbol=sym,
+                    strategy=strategy_enum,
+                    direction=direction_val,
+                    conviction=_conf,
+                    iv_rank=iv_rank_val,
+                    max_cost_usd=max_loss_usd,
+                    chain=_chain,
+                    equity=equity,
+                    config={},
                 )
-                if not _a2_allowed:
-                    log.warning("[DIV] A2 BLOCKED %s — %s",
-                                action.get("symbol", ""), _a2_reason)
-                    continue
-            except Exception as _div_gate_exc:
-                log.debug("[DIV] A2 mode gate failed (non-fatal): %s", _div_gate_exc)
+            except Exception as _be:
+                log.error("[OPTS] %s: chain/build failed: %s", sym, _be)
+                execution_results.append({
+                    "action": "error", "symbol": sym, "status": "error", "reason": str(_be),
+                })
+                structure = None
+                build_err = str(_be)
 
-        # Build fully-specified OptionsStructure from live chain data
-        try:
-            chain = options_data.fetch_options_chain(sym)
-            structure, build_err = options_builder.build_structure(
-                symbol=proposal.symbol,
-                strategy=proposal.strategy,
-                direction=proposal.direction,
-                conviction=proposal.conviction,
-                iv_rank=proposal.iv_rank,
-                max_cost_usd=action.get("max_cost_usd", proposal.max_cost_usd),
-                chain=chain,
-                equity=equity,
-                config={},
-            )
-        except Exception as exc:
-            log.error("[OPTS] %s: chain/build failed: %s", sym, exc)
-            execution_results.append({
-                "action": "error", "symbol": sym,
-                "status": "error", "reason": str(exc),
-            })
-            continue
+            if structure is None:
+                log.warning("[OPTS] %s: build_structure rejected — %s", sym, build_err)
+                execution_results.append({
+                    "action": "rejected", "symbol": sym,
+                    "status": "rejected", "reason": build_err or "build_failed",
+                })
+            else:
+                options_state.save_structure(structure)
+                _effective_obs = obs_mode or (not _pf_allow_live_orders)
+                if not _pf_allow_live_orders:
+                    log.warning("[PREFLIGHT] shadow_only — suppressing live A2 submission for %s", sym)
+                result = oe_opts.submit_options_order(structure, equity, _effective_obs)
+                execution_results.append(result.to_dict())
+                log.info("[OPTS] %s %s  status=%s%s",
+                         sym, structure.strategy.value, result.status,
+                         f"  structure_id={result.structure_id}" if result.structure_id else "")
 
-        if structure is None:
-            log.warning("[OPTS] %s: build_structure rejected — %s", sym, build_err)
-            execution_results.append({
-                "action": "rejected", "symbol": sym,
-                "status": "rejected", "reason": build_err or "build_failed",
-            })
-            continue
+    # ── Legacy free-form execution path ─────────────────────────────────────
+    else:
+        for action in debate_result.get("actions", []) if _pf_allow_new_entries else []:
+            if action.get("action") == "hold":
+                log.info("[OPTS] HOLD %s — %s",
+                         action.get("symbol", "?"), action.get("reason", ""))
+                execution_results.append({
+                    "action": "hold",
+                    "symbol": action.get("symbol", ""),
+                    "status": "hold",
+                    "reason": action.get("reason", ""),
+                    "observation_mode": obs_mode,
+                })
+                continue
 
-        # Persist proposed structure before submission (lifecycle=PROPOSED)
-        options_state.save_structure(structure)
+            sym = action.get("symbol", "")
+            if not sym:
+                continue
 
-        # Submit — options_executor updates lifecycle and re-persists
-        # shadow_only: treat as observation regardless of obs_mode flag
-        _effective_obs = obs_mode or (not _pf_allow_live_orders)
-        if not _pf_allow_live_orders:
-            log.warning("[PREFLIGHT] shadow_only — suppressing live A2 submission for %s", sym)
-        result = oe_opts.submit_options_order(structure, equity, _effective_obs)
-        execution_results.append(result.to_dict())
-        log.info("[OPTS] %s %s  status=%s%s",
-                 sym, structure.strategy.value, result.status,
-                 f"  structure_id={result.structure_id}" if result.structure_id else "")
+            proposal = next((c for c in candidates if c.symbol == sym), None)
+            if proposal is None:
+                log.warning("[OPTS] %s: no matching proposal found in candidates", sym)
+                continue
+
+            if _a2_mode is not None:
+                try:
+                    from divergence import is_action_allowed  # noqa: PLC0415
+                    _a2_allowed, _a2_reason = is_action_allowed(
+                        _a2_mode, "enter_long", action.get("symbol", "")
+                    )
+                    if not _a2_allowed:
+                        log.warning("[DIV] A2 BLOCKED %s — %s",
+                                    action.get("symbol", ""), _a2_reason)
+                        continue
+                except Exception as _div_gate_exc:
+                    log.debug("[DIV] A2 mode gate failed (non-fatal): %s", _div_gate_exc)
+
+            try:
+                chain = options_data.fetch_options_chain(sym)
+                structure, build_err = options_builder.build_structure(
+                    symbol=proposal.symbol,
+                    strategy=proposal.strategy,
+                    direction=proposal.direction,
+                    conviction=proposal.conviction,
+                    iv_rank=proposal.iv_rank,
+                    max_cost_usd=action.get("max_cost_usd", proposal.max_cost_usd),
+                    chain=chain,
+                    equity=equity,
+                    config={},
+                )
+            except Exception as exc:
+                log.error("[OPTS] %s: chain/build failed: %s", sym, exc)
+                execution_results.append({
+                    "action": "error", "symbol": sym,
+                    "status": "error", "reason": str(exc),
+                })
+                continue
+
+            if structure is None:
+                log.warning("[OPTS] %s: build_structure rejected — %s", sym, build_err)
+                execution_results.append({
+                    "action": "rejected", "symbol": sym,
+                    "status": "rejected", "reason": build_err or "build_failed",
+                })
+                continue
+
+            options_state.save_structure(structure)
+            _effective_obs = obs_mode or (not _pf_allow_live_orders)
+            if not _pf_allow_live_orders:
+                log.warning("[PREFLIGHT] shadow_only — suppressing live A2 submission for %s", sym)
+            result = oe_opts.submit_options_order(structure, equity, _effective_obs)
+            execution_results.append(result.to_dict())
+            log.info("[OPTS] %s %s  status=%s%s",
+                     sym, structure.strategy.value, result.status,
+                     f"  structure_id={result.structure_id}" if result.structure_id else "")
 
     # 11. Save decision
     _decision_id_a2 = ""
@@ -1443,18 +1728,21 @@ def run_options_cycle(
     except Exception as _did_exc:
         log.debug("[OPTS] generate_decision_id failed (non-fatal): %s", _did_exc)
 
+    _is_bounded = bool(candidate_structures and "selected_candidate_id" in debate_result)
     cycle_record = {
         "decision_id": _decision_id_a2,
-        "reasoning": debate_result.get("reasoning", ""),
+        "reasoning": debate_result.get("reasons" if _is_bounded else "reasoning", ""),
         "regime": debate_result.get("regime", regime),
         "observation_mode": obs_mode,
         "account1_awareness": debate_result.get("account1_awareness", ""),
         "actions": debate_result.get("actions", []),
+        "bounded_debate": debate_result if _is_bounded else None,
         "execution_results": execution_results,
         "notes": debate_result.get("notes", ""),
         "vix": vix,
         "equity": equity,
         "candidates_evaluated": len(candidates),
+        "candidate_structures_evaluated": len(candidate_structures),
     }
     _save_decision(cycle_record)
 

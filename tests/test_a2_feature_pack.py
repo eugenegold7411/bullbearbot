@@ -696,5 +696,118 @@ class TestFlowImbalance(unittest.TestCase):
             self.assertIn("flow_signals", pack.data_sources)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# SUITE 29g — bounded debate response parsing
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestBoundedDebateParsing(unittest.TestCase):
+
+    def _valid_payload(self, **kw):
+        base = {
+            "selected_candidate_id": "abc123",
+            "confidence": 0.91,
+            "key_risks": ["market fragile"],
+            "reasons": "Solid thesis, cheap IV, directional alignment.",
+            "recommended_size_modifier": 1.0,
+            "reject": False,
+        }
+        base.update(kw)
+        return json.dumps(base)
+
+    def test_valid_json_parsed_correctly(self):
+        from bot_options import _parse_bounded_debate_response
+        result = _parse_bounded_debate_response(self._valid_payload())
+        self.assertFalse(result["reject"])
+        self.assertEqual(result["selected_candidate_id"], "abc123")
+        self.assertAlmostEqual(result["confidence"], 0.91)
+
+    def test_markdown_json_fences_stripped(self):
+        from bot_options import _parse_bounded_debate_response
+        raw = (
+            "```json\n"
+            + self._valid_payload(selected_candidate_id="xyz99", confidence=0.88)
+            + "\n```"
+        )
+        result = _parse_bounded_debate_response(raw)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["selected_candidate_id"], "xyz99")
+        self.assertAlmostEqual(result["confidence"], 0.88)
+
+    def test_plain_code_fences_stripped(self):
+        from bot_options import _parse_bounded_debate_response
+        raw = (
+            "```\n"
+            + self._valid_payload(reject=True, selected_candidate_id=None,
+                                  confidence=0.3)
+            + "\n```"
+        )
+        result = _parse_bounded_debate_response(raw)
+        self.assertTrue(result["reject"])
+
+    def test_json_parse_failure_returns_reject_all(self):
+        from bot_options import _parse_bounded_debate_response
+        result = _parse_bounded_debate_response("I cannot select any candidate at this time.")
+        self.assertTrue(result["reject"])
+        self.assertIsNone(result["selected_candidate_id"])
+        self.assertEqual(result["confidence"], 0.0)
+
+    def test_empty_response_returns_reject_all(self):
+        from bot_options import _parse_bounded_debate_response
+        result = _parse_bounded_debate_response("")
+        self.assertTrue(result["reject"])
+        self.assertIsNone(result["selected_candidate_id"])
+
+    def test_confidence_below_threshold_not_modified_by_parser(self):
+        """Parser returns confidence as-is; gate logic is in run_options_cycle."""
+        from bot_options import _parse_bounded_debate_response
+        result = _parse_bounded_debate_response(
+            self._valid_payload(confidence=0.72, reject=False)
+        )
+        self.assertFalse(result["reject"])
+        self.assertAlmostEqual(result["confidence"], 0.72)
+
+    def test_reject_true_payload_parsed(self):
+        from bot_options import _parse_bounded_debate_response
+        raw = json.dumps({
+            "selected_candidate_id": None,
+            "confidence": 0.40,
+            "key_risks": ["bear case dominates"],
+            "reasons": "IV too expensive for direction.",
+            "recommended_size_modifier": 1.0,
+            "reject": True,
+        })
+        result = _parse_bounded_debate_response(raw)
+        self.assertTrue(result["reject"])
+        self.assertIsNone(result["selected_candidate_id"])
+
+    def test_json_embedded_in_prose_extracted(self):
+        """JSON object embedded in surrounding text is extracted."""
+        from bot_options import _parse_bounded_debate_response
+        raw = ('After careful analysis, here is my decision:\n'
+               + self._valid_payload(selected_candidate_id="deep1", confidence=0.87)
+               + '\nEnd of response.')
+        result = _parse_bounded_debate_response(raw)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.get("selected_candidate_id"), "deep1")
+
+    def test_selected_candidate_structure_type_maps_to_option_strategy(self):
+        """_STRATEGY_FROM_STRUCTURE maps all expected structure_type strings."""
+        from bot_options import _STRATEGY_FROM_STRUCTURE
+        from schemas import OptionStrategy
+        expected = {
+            "long_call":          OptionStrategy.SINGLE_CALL,
+            "long_put":           OptionStrategy.SINGLE_PUT,
+            "debit_call_spread":  OptionStrategy.CALL_DEBIT_SPREAD,
+            "debit_put_spread":   OptionStrategy.PUT_DEBIT_SPREAD,
+            "credit_call_spread": OptionStrategy.CALL_CREDIT_SPREAD,
+            "credit_put_spread":  OptionStrategy.PUT_CREDIT_SPREAD,
+        }
+        for struct_name, expected_strategy in expected.items():
+            self.assertEqual(
+                _STRATEGY_FROM_STRUCTURE[struct_name], expected_strategy,
+                f"Wrong mapping for {struct_name}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

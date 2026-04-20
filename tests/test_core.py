@@ -87,7 +87,9 @@ class TestOrderExecutorValidation(unittest.TestCase):
         }
         account = self._mock_account()
         # Should not raise — market-closed is demoted to log.warning() in Session 1
-        self.validate_action(action, account, [], "closed", 0)
+        # current_prices avoids a live Alpaca price fetch in test context
+        self.validate_action(action, account, [], "closed", 0,
+                             current_prices={"GLD": 435.0})
 
     # ── Exposure cap tests ────────────────────────────────────────────────────
 
@@ -202,10 +204,10 @@ class TestMemoryOutcomeRecording(unittest.TestCase):
             }],
         }]
 
-    def _mock_fill(self, fill_price=440.0, symbol="GLD"):
+    def _mock_fill(self, fill_price=440.0, symbol="GLD", side=None):
         from alpaca.trading.enums import OrderSide
         return SimpleNamespace(
-            side=OrderSide.BUY,
+            side=OrderSide.BUY if side is None else side,
             filled_avg_price=str(fill_price),
             filled_qty="5.0",
             symbol=symbol,
@@ -259,9 +261,10 @@ class TestMemoryOutcomeRecording(unittest.TestCase):
 
     def test_buy_loss_recorded(self):
         """Fill at or below stop_loss * 1.01 → outcome='loss'."""
+        from alpaca.trading.enums import OrderSide
         decisions = self._base_decision("buy", stop_loss=430.0, take_profit=450.0)
-        # 425 <= 430 * 1.01 = 434.3 → loss
-        fill = self._mock_fill(fill_price=425.0)
+        # 425 <= 430 * 1.01 = 434.3 → loss; must be a SELL fill (exit) for outcome matching
+        fill = self._mock_fill(fill_price=425.0, side=OrderSide.SELL)
 
         with (mock.patch("memory.TradingClient") as MockTC,
               mock.patch("memory._load_decisions", return_value=decisions),
@@ -4310,7 +4313,7 @@ class TestSuite22PhaseA(unittest.TestCase):
             raise ValueError("test-reject")  # stop before Alpaca submission
 
         with mock.patch.object(oe, "validate_action", side_effect=_capture):
-            oe.execute_all([ba], account, [], "open", 30)
+            oe.execute_all([ba], account, [], "open", 30, session_tier="market")
 
         self.assertEqual(len(captured), 1,
                          "validate_action should be called exactly once")

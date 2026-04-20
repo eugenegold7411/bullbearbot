@@ -24,6 +24,7 @@ from bot_stage1_regime import classify_regime, format_regime_summary
 from bot_stage2_signal import format_signal_scores, score_signals
 from bot_stage2_5_scratchpad import run_scratchpad_stage
 from bot_stage3_decision import (
+    _OVERNIGHT_DEFAULT,     # re-exported — test_core.py accesses bot._OVERNIGHT_DEFAULT
     _ask_claude_overnight,  # re-exported — test_core.py accesses bot._ask_claude_overnight
     _log_skip_cycle,
     _write_decision_capture,

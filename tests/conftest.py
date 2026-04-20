@@ -16,6 +16,14 @@ import types
 
 import pytest
 
+# Load .env early so test_t012's module-level load_dotenv stub (a no-op) doesn't
+# prevent API keys from reaching os.environ when memory.py is imported later.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv()
+except ImportError:
+    pass
+
 
 # ── Optional-dependency stubs ─────────────────────────────────────────────────
 
@@ -100,21 +108,35 @@ def _stub_alpaca_tree() -> None:
         "GetOrderByIdRequest", "GetAssetsRequest", "GetPortfolioHistoryRequest",
         "LimitOrderRequest", "MarketOrderRequest",
         "StopLossRequest", "StopOrderRequest", "TakeProfitRequest",
-        "TrailingStopOrderRequest", "ReplaceOrderRequest",
+        "TrailingStopOrderRequest",
     ):
         setattr(_rq_mod, _name, _cls(_name))
+
+    class _KwargsRequest:
+        def __init__(self, **kw):
+            for k, v in kw.items():
+                setattr(self, k, v)
+    setattr(_rq_mod, "ReplaceOrderRequest", _KwargsRequest)
     for _name in (
         "AssetClass", "AssetStatus", "ContractType", "ExerciseStyle",
-        "OrderClass", "OrderSide", "OrderStatus", "OrderType",
-        "PositionSide", "QueryOrderStatus", "TimeInForce",
+        "OrderClass", "OrderStatus", "OrderType",
+        "PositionSide", "TimeInForce",
     ):
         setattr(_en_mod, _name, _cls(_name))
+    setattr(_en_mod, "OrderSide", types.SimpleNamespace(BUY="buy", SELL="sell"))
+    setattr(_en_mod, "QueryOrderStatus", types.SimpleNamespace(OPEN="open", CLOSED="closed"))
     for _name in ("TradeAccount", "Position", "Order", "Asset"):
         setattr(_mo_mod, _name, _cls(_name))
 
     _dh_mod = sys.modules["alpaca.data.historical"]
-    for _name in ("StockHistoricalDataClient", "CryptoHistoricalDataClient"):
-        setattr(_dh_mod, _name, _cls(_name))
+    setattr(_dh_mod, "CryptoHistoricalDataClient", _cls("CryptoHistoricalDataClient"))
+
+    class _StockHistoricalDataClient:
+        def __init__(self, *a, **kw): pass
+        def get_stock_latest_trade(self, req):
+            sym = getattr(req, "symbol_or_symbols", "UNKNOWN")
+            return {sym: types.SimpleNamespace(price="100.0")}
+    setattr(_dh_mod, "StockHistoricalDataClient", _StockHistoricalDataClient)
 
     _news_mod = sys.modules["alpaca.data.historical.news"]
     for _name in ("NewsRequest", "NewsClient"):
@@ -131,13 +153,17 @@ def _stub_alpaca_tree() -> None:
     _dr_mod = sys.modules["alpaca.data.requests"]
     for _name in ("CryptoBarsRequest", "CryptoLatestTradeRequest",
                   "CryptoLatestQuoteRequest", "NewsRequest",
-                  "StockBarsRequest", "StockLatestTradeRequest",
-                  "StockLatestQuoteRequest"):
+                  "StockBarsRequest", "StockLatestQuoteRequest"):
         setattr(_dr_mod, _name, _cls(_name))
 
+    class _StockLatestTradeRequest:
+        def __init__(self, **kw):
+            for k, v in kw.items():
+                setattr(self, k, v)
+    setattr(_dr_mod, "StockLatestTradeRequest", _StockLatestTradeRequest)
+
     _de_mod = sys.modules["alpaca.data.enums"]
-    for _name in ("DataFeed",):
-        setattr(_de_mod, _name, _cls(_name))
+    setattr(_de_mod, "DataFeed", types.SimpleNamespace(IEX="iex", SIP="sip"))
 
     _tf_mod = sys.modules["alpaca.data.timeframe"]
     for _name in ("TimeFrame", "TimeFrameUnit"):
@@ -156,11 +182,25 @@ _stub_if_absent("requests")
 _stub_if_absent("pydantic")
 _stub_if_absent("sendgrid", ["helpers", "helpers.mail"])
 
-# Ensure anthropic.Anthropic exists even if the stub is bare
+# Ensure anthropic.Anthropic exists with a .messages attribute even if the stub is bare
 try:
     import anthropic as _ant
     if not hasattr(_ant, "Anthropic"):
-        _ant.Anthropic = type("Anthropic", (), {"__init__": lambda self, *a, **kw: None})
+        _messages_stub = types.SimpleNamespace(create=lambda *a, **kw: None)
+        _ant.Anthropic = type("Anthropic", (), {
+            "__init__": lambda self, *a, **kw: None,
+            "messages": _messages_stub,
+        })
+    elif not hasattr(_ant.Anthropic, "messages"):
+        _ant.Anthropic.messages = types.SimpleNamespace(create=lambda *a, **kw: None)
+except Exception:
+    pass
+
+
+# Pre-import trade_memory so the real module is in sys.modules before any test
+# file's module-level _stub("trade_memory", ...) can replace it with an incomplete stub.
+try:
+    import trade_memory as _tm  # noqa: F401
 except Exception:
     pass
 

@@ -64,30 +64,56 @@ _stub("trade_memory",
       save_trade_memory=lambda *a, **kw: "",
       retrieve_similar_scenarios=lambda *a, **kw: [])
 
-# Import the REAL report.py now (stubs are in place for its deps)
+# Save a reference to the real report module BEFORE any stubs replace it.
+# The real module needs to be importable for AlertEmailTests.
 import report as real_report  # noqa: E402
 
-# ── Stubs for scheduler.py's remaining top-level imports ─────────────────────
-# Replace the real report with a mock for scheduler so we can track calls.
-
+# Build the mock report module once; inject/remove it in _import_scheduler().
 _sched_report_mock = types.ModuleType("report")
 _sched_report_mock.send_report_email  = mock.MagicMock()
 _sched_report_mock.send_alert_email   = mock.MagicMock()
 _sched_report_mock._get_account       = lambda: None
 _sched_report_mock._get_positions     = lambda: []
-sys.modules["report"] = _sched_report_mock   # scheduler sees this mock
 
-_stub("bot", run_cycle=lambda *a, **kw: None)
-_stub("weekly_review", run_review=lambda *a, **kw: "")
-_stub("cost_tracker", get_tracker=lambda: None)
+_MISSING = object()  # sentinel for "key was absent"
 
 
 # ── Helper: clean-slate scheduler import ─────────────────────────────────────
 
 def _import_scheduler(status_dir: Path):
-    """Re-import scheduler with _STATUS_DIR and state trackers reset."""
+    """Re-import scheduler with _STATUS_DIR and state trackers reset.
+
+    Stubs for bot/weekly_review/cost_tracker/report are injected only for the
+    duration of `import scheduler` (scheduler holds module-level references, so
+    the stubs can be removed from sys.modules afterward without affecting it).
+    """
+    _bot_stub = types.ModuleType("bot")
+    _bot_stub.run_cycle = lambda *a, **kw: None
+    _wr_stub = types.ModuleType("weekly_review")
+    _wr_stub.run_review = lambda *a, **kw: ""
+    _ct_stub = types.ModuleType("cost_tracker")
+    _ct_stub.get_tracker = lambda: None
+
+    _scoped_stubs = {
+        "report":        _sched_report_mock,
+        "bot":           _bot_stub,
+        "weekly_review": _wr_stub,
+        "cost_tracker":  _ct_stub,
+    }
+    _saved = {k: sys.modules.get(k, _MISSING) for k in _scoped_stubs}
+
     sys.modules.pop("scheduler", None)
-    import scheduler as sched
+    for k, v in _scoped_stubs.items():
+        sys.modules[k] = v
+    try:
+        import scheduler as sched
+    finally:
+        for k, saved in _saved.items():
+            if saved is _MISSING:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = saved
+
     sched._STATUS_DIR           = status_dir
     sched._report_sent_date     = ""
     sched._zero_fill_alert_date = ""

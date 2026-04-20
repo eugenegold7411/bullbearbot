@@ -104,6 +104,13 @@ class TestStrategyConfigOnDisk(unittest.TestCase):
         self.assertEqual(missing, [],
                          f"signal_weights missing keys: {missing}")
 
+    def test_signal_source_weights_exists(self):
+        self.assertIn("signal_source_weights", self.cfg,
+                      "signal_source_weights top-level block is missing")
+        ssw = self.cfg["signal_source_weights"]
+        self.assertIsInstance(ssw, dict,
+                              f"signal_source_weights must be dict, got {type(ssw).__name__}")
+
     def test_director_notes_is_dict(self):
         dn = self.cfg.get("director_notes")
         self.assertIsInstance(dn, dict,

@@ -177,6 +177,13 @@
     ]
   },
   "signal_weights": {
+    "momentum_weight": 0.35,
+    "mean_reversion_weight": 0.20,
+    "news_sentiment_weight": 0.30,
+    "cross_sector_weight": 0.15,
+    "recalibration_trigger": "n>=30 closed trades"
+  },
+  "signal_source_weights": {
     "congressional": "low",
     "form4_insider": "medium",
     "reddit_sentiment": "low",

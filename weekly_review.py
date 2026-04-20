@@ -2989,10 +2989,10 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
                 "(not merged): %s", _unknown,
             )
 
-        # Save signal weights if provided
+        # Save signal source weights if provided (categorical: congressional, form4_insider, etc.)
         signal_weights = params_update.get("signal_weights_recommended", {})
         if signal_weights:
-            config["signal_weights"] = signal_weights
+            config["signal_source_weights"] = signal_weights
 
         # Phase 3a draft — intentionally NOT written to disk here.
         # The single authoritative write happens after Phase 3b succeeds.
@@ -3107,7 +3107,7 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
                 )
             _sw_final = final_params.get("signal_weights_recommended", {})
             if _sw_final:
-                config["signal_weights"] = _sw_final
+                config["signal_source_weights"] = _sw_final
             _save_strategy_config(config)
             log.info("Strategy config updated from Agent 6 final synthesis")
         else:

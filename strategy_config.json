@@ -1,7 +1,7 @@
 {
   "version": 2,
-  "generated_at": "2026-04-15T19:56:11.651406",
-  "generated_by": "weekly_review",
+  "generated_at": "2026-04-19T10:10:19.603493",
+  "generated_by": "weekly_review_final",
   "active_strategy": "hybrid",
   "backtest_results": {},
   "position_sizing": {
@@ -18,9 +18,9 @@
       "market",
       "extended"
     ],
-    "sector_rotation_bias": "commodities_overweight",
+    "sector_rotation_bias": "neutral",
     "vix_threshold_caution": 22,
-    "stop_loss_pct_core": 0.035,
+    "stop_loss_pct_core": 0.03,
     "stop_loss_pct_intraday": 0.018,
     "take_profit_multiple": 2.5,
     "preferred_tiers": [
@@ -73,10 +73,9 @@
     ]
   },
   "director_notes": {
-    "active_context": "FINAL CONFIG 2026-04-15: System is in diagnostic/pre-operational state. The session classifier bug (all orders tagged 'unknown' and rejected) is the single highest-priority fix \u2014 no strategy change will improve fill rate until this is resolved. Session gate remains enforced; the fix is to capture session at signal generation time and assert non-unknown before routing, not to disable the gate. Three conflicting position-size parameters have been unified: max_single_name_pct=0.04 is the operative single-name ceiling; max_position_pct_equity=0.07 governs tier slot sizing; the redundant max_single_position_pct fields in both config blocks are deprecated. Margin authorization is removed from director notes \u2014 no margin is approved until compliance is formally confirmed. Catalyst tag is now a hard entry gate: any entry without a named, non-null catalyst is blocked. Sector rotation bias is temporarily set to commodities_overweight (energy, gold) reflecting geopolitical context; this expires 2026-04-22 and must be reviewed. No signal weight changes are authorized this cycle \u2014 n=2 closed trades provides zero statistical basis for recalibration. Recalibration gate set at n=30 confirmed fills. Vector memory must be restored before any confidence-based signal calibration is meaningful.",
-    "expiry": "2026-04-22",
-    "priority": "elevated",
-    "memo_path": "data/reports/director_memos/director_memo_2026-04-15.md"
+    "active_context": "MEMO 2026-04-20: The system remains in a non-operational, halted state for the fourth consecutive review cycle. Governance signals confirm 19 halt verdicts, 0 reconcile-only cycles, 0 closed trades, and an unknown_session_label_pct of 1.0 \u2014 meaning no decision is successfully completing the preflight pipeline. The A1 divergence halt, which has been firing continuously for a minimum of 10 hours per the Execution Engineer and Risk Manager reports, has not been manually cleared and no escalation pathway exists after repeated halt cycles. This is a P0 infrastructure failure and the only priority that matters this week.\n\nThree parameter changes are applied this cycle, all with strong multi-analyst evidence bases. First, stop_loss_pct_core is reduced from 3.5% to 3.0% to eliminate the compliance violation that has been causing systematic order rejections \u2014 the Compliance Auditor documented 6 explicit rejection events where stops exceeded the 3.0% enforcement ceiling, creating an internal contradiction between the config value and the enforcement rule. Second, max_overnight_position_pct_equity is re-asserted at 0.04 (down from 0.07) for the third consecutive cycle \u2014 this directed value has not been confirmed deployed, and if it is not deployed this cycle, the config write pipeline itself must be audited as a governance failure. Third, max_crypto_exposure_pct is re-asserted at 0.07 (down from 0.10) for the second consecutive cycle, aligning crypto exposure with the general single-name ceiling while sector tagging remains non-functional. The sector_rotation_bias is rolled to neutral as its expiry date (2026-04-22) passes within this memo window and no live performance data supports the prior commodities overweight thesis.\n\nAll signal weights and the recalibration gate remain frozen at n=30. With 0 closed trades post-BUG-003 correction, any signal weight change would be entirely arbitrary. The Market Intelligence Researcher's findings on multi-agent LLM frameworks and RL-fine-tuned models are architecturally interesting and filed as medium-term roadmap items \u2014 they are not actionable while the system cannot execute a single trade. The CFO's identification of 0% prompt cache utilization (representing a 40-60% potential API cost reduction) is a genuine structural waste issue, but at $4.45/week total spend it is a P2 item behind P0 halt resolution and P1 escalation pathway implementation.\n\nThe pattern of directed config values not being deployed (max_overnight_position_pct_equity for three cycles, max_crypto_exposure_pct for two cycles) is itself a governance concern independent of the halt. If the config write pipeline cannot reliably apply directed changes, the strategy director's output has no operational effect and the review process is performative. Next cycle's memo will require explicit confirmation that these values are live in the deployed config before any further parameter adjustments are considered.",
+    "expiry": "2026-04-26",
+    "priority": "critical"
   },
   "launch_date": "2026-04-13",
   "time_bound_actions": [
@@ -178,11 +177,12 @@
     ]
   },
   "signal_weights": {
-    "momentum_weight": 0.35,
-    "mean_reversion_weight": 0.2,
-    "news_sentiment_weight": 0.3,
-    "cross_sector_weight": 0.15,
-    "recalibration_trigger": "n >= 30 closed trades with confirmed fills and non-unknown session tags"
+    "congressional": "low",
+    "form4_insider": "medium",
+    "reddit_sentiment": "low",
+    "orb_breakout": "medium",
+    "macro_wire": "high",
+    "earnings_intel": "medium"
   },
   "sonnet_gate": {
     "cooldown_minutes": 15,

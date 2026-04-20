@@ -59,11 +59,6 @@ _stub("alpaca.trading.requests",
       GetOptionContractsRequest=object)
 _stub("alpaca", trading=types.SimpleNamespace())
 _stub("alpaca.trading", client=object, requests=object, enums=object)
-_stub("memory",
-      get_ticker_stats=lambda: {},
-      get_ticker_lessons=lambda: "",
-      get_performance_summary=lambda: {})
-_stub("portfolio_intelligence", build_portfolio_intelligence=lambda *a, **kw: {})
 _stub("trade_memory",
       get_collection_stats=lambda: {},
       save_trade_memory=lambda *a, **kw: "",

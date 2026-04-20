@@ -1553,6 +1553,11 @@ def _build_agent6_final_input(ctx: dict, all_outputs: dict) -> str:
     Agent 11 (Narrative Director — post-synthesis, not a strategic input).
     """
     cfg = ctx.get("strategy_cfg", {})
+    _thesis_packet_a6 = _get_thesis_packet()
+    _thesis_section_a6 = (
+        f"\n---\n\n## Active Thesis Context\n{_thesis_packet_a6}\n"
+        if _thesis_packet_a6 else ""
+    )
 
     def _snip(key: str, n: int = 1500) -> str:
         val = all_outputs.get(key, "(unavailable)")
@@ -1620,7 +1625,7 @@ You have received reports from 10 specialist agents (11 total including this sec
 {_format_director_history_for_prompt(_load_director_memo_history())}
 
 ---
-
+{_thesis_section_a6}
 ## GOVERNANCE SIGNALS
 ```json
 {_build_governance_signals_block()}
@@ -2202,6 +2207,25 @@ def _build_governance_signals_block() -> str:
         return '{"error": "governance_signals_unavailable"}'
 
 
+def _get_thesis_packet() -> str:
+    """
+    Non-fatal wrapper: return the weekly thesis packet markdown string.
+    Returns "" when flag is disabled or on any error.
+    """
+    try:
+        from feature_flags import is_enabled  # noqa: PLC0415
+        if not is_enabled("enable_thesis_weekly_packet", default=False):
+            return ""
+    except Exception:
+        return ""
+    try:
+        import thesis_review_packet as _trp  # noqa: PLC0415
+        return _trp.build_weekly_thesis_packet()
+    except Exception as exc:
+        log.warning("[REVIEW] thesis packet unavailable (non-fatal): %s", exc)
+        return ""
+
+
 def _build_agent5_cto_input(ctx: dict, phase1_outputs: dict) -> str:
     """Build CTO (Agent 5) technical audit input using Phase 1 analyst reports."""
     costs = ctx.get("costs_data", {})
@@ -2209,6 +2233,11 @@ def _build_agent5_cto_input(ctx: dict, phase1_outputs: dict) -> str:
     cost_lines = "\n".join(
         f"  {caller}: ${data.get('cost', 0):.4f}  calls={data.get('calls', 0)}"
         for caller, data in by_caller.items()
+    )
+    _thesis_packet = _get_thesis_packet()
+    _thesis_section = (
+        f"\n\n---\n\n### Thesis Lab Status\n{_thesis_packet}"
+        if _thesis_packet else ""
     )
 
     # Load readiness status snapshot (E15)
@@ -2290,7 +2319,7 @@ Scheduler: 24/7 loop, 5-min market / 15-min extended / 30-min overnight cycles
 ### Divergence Incident Summary (last 7 days)
 {_get_divergence_summary_section()}
 
-Produce your technical audit in markdown. Be specific: name modules, cite costs, propose exact changes."""
+Produce your technical audit in markdown. Be specific: name modules, cite costs, propose exact changes.{_thesis_section}"""
 
 
 # ── Main review orchestrator ──────────────────────────────────────────────────

@@ -280,6 +280,7 @@ def _maybe_check_api_costs() -> None:
             log.warning("API cost alert: %s", alert)
             try:
                 import os
+
                 from twilio.rest import Client
                 sid   = os.getenv("TWILIO_ACCOUNT_SID")
                 token = os.getenv("TWILIO_AUTH_TOKEN")
@@ -489,8 +490,8 @@ def _maybe_refresh_iv_history(dry_run: bool = False) -> None:
 
     if not dry_run:
         try:
-            import options_data as _od        # noqa: PLC0415
-            import watchlist_manager as _wm   # noqa: PLC0415
+            import options_data as _od  # noqa: PLC0415
+            import watchlist_manager as _wm  # noqa: PLC0415
             wl = _wm.get_active_watchlist()
             equity_symbols = wl.get("stocks", []) + wl.get("etfs", [])
             if equity_symbols:
@@ -551,9 +552,10 @@ def _maybe_refresh_economic_calendar(dry_run: bool = False) -> None:
         return
 
     try:
-        import json as _json                               # noqa: PLC0415
-        from pathlib import Path as _Path                  # noqa: PLC0415
-        import data_warehouse as _dw                       # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        import data_warehouse as _dw  # noqa: PLC0415
 
         # Snapshot previous actuals before refreshing
         prev_actuals: dict[str, object] = {}
@@ -754,7 +756,7 @@ def _maybe_refresh_form4_trades(dry_run: bool = False) -> None:
     """Refresh SEC Form 4 insider trades every 4 hours during weekdays."""
     global _form4_refresh_key
     now_et  = datetime.now(ET)
-    now_min = now_et.hour * 60 + now_et.minute
+    now_et.hour * 60 + now_et.minute
     weekday = now_et.weekday()
 
     if weekday >= 5:
@@ -824,8 +826,8 @@ def _maybe_publish_flat_day() -> None:
             return
 
         # Check closed trades in log for today
-        from pathlib import Path  # noqa: PLC0415
         import json as _json  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
         trades_log = Path(__file__).parent / "logs" / "trades.jsonl"
         closed_trades_today: list = []
         if trades_log.exists():
@@ -887,8 +889,8 @@ def _maybe_publish_lookback() -> None:
             return
 
         # Find a trade from 3-14 days ago in trades.jsonl
-        from pathlib import Path as _Path  # noqa: PLC0415
         import json as _json  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
         trades_log = _Path(__file__).parent / "logs" / "trades.jsonl"
         if not trades_log.exists():
             return
@@ -950,8 +952,8 @@ def _maybe_publish_monthly_milestone() -> None:
     # Guard: require at least 28 days live before posting
     try:
         import json as _json  # noqa: PLC0415
-        from pathlib import Path as _Path  # noqa: PLC0415
         from datetime import date as _date  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
         _cfg = _json.loads(_Path("strategy_config.json").read_text())
         _launch = _date.fromisoformat(_cfg.get("launch_date", "2026-04-13"))
         _days_live = (now_et.date() - _launch).days
@@ -963,8 +965,8 @@ def _maybe_publish_monthly_milestone() -> None:
         log.debug("Milestone guard check failed (non-fatal): %s", _mg_exc)
 
     try:
-        from trade_publisher import TradePublisher  # noqa: PLC0415
         import memory as _mem  # noqa: PLC0415
+        from trade_publisher import TradePublisher  # noqa: PLC0415
         publisher = TradePublisher()
         if not publisher.enabled:
             return
@@ -1023,8 +1025,8 @@ def _maybe_generate_weekly_summary() -> None:
 
     # Citrini Research availability check
     try:
-        import json as _json                                               # noqa: PLC0415
-        from pathlib import Path as _Path                                  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
         _cit_path = _Path(__file__).parent / "data" / "macro_intelligence" / "citrini_positions.json"
         if _cit_path.exists():
             _cit = _json.loads(_cit_path.read_text())
@@ -1046,8 +1048,8 @@ def _maybe_generate_weekly_summary() -> None:
 
     # Publish weekly recap to Twitter
     try:
-        from trade_publisher import TradePublisher  # noqa: PLC0415
         import memory as _mem  # noqa: PLC0415
+        from trade_publisher import TradePublisher  # noqa: PLC0415
         _publisher = TradePublisher()
         if _publisher.enabled:
             _publisher.publish_weekly_recap(
@@ -1074,8 +1076,8 @@ def _check_stop_fills(prev_open_order_ids: set) -> set:
     Non-fatal — returns prev_open_order_ids unchanged on any error.
     """
     try:
-        from alpaca.trading.requests import GetOrdersRequest        # noqa: PLC0415
-        from alpaca.trading.enums import QueryOrderStatus           # noqa: PLC0415
+        from alpaca.trading.enums import QueryOrderStatus  # noqa: PLC0415
+        from alpaca.trading.requests import GetOrdersRequest  # noqa: PLC0415
 
         open_orders  = bot._get_alpaca().get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
         current_ids  = {str(o.id) for o in open_orders}
@@ -1120,8 +1122,8 @@ def _check_deadline_proximity() -> None:
     Non-fatal.
     """
     try:
-        import json as _json                               # noqa: PLC0415
-        from pathlib import Path as _Path                  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
 
         cfg_path = _Path(__file__).parent / "strategy_config.json"
         if not cfg_path.exists():
@@ -1223,7 +1225,7 @@ def run(dry_run: bool = False) -> None:
         print(f"{'━'*62}")
 
         if not dry_run:
-            t_start = time.monotonic()
+            time.monotonic()
             try:
                 now_min = now_et.hour * 60 + now_et.minute
                 if _MARKET_START <= now_min < _MARKET_START + 15 and not _orb_locked:
@@ -1380,8 +1382,8 @@ def _maybe_refresh_macro_wire(dry_run: bool = False) -> None:
     """
     global _macro_wire_refresh_key
     now_et  = datetime.now(ET)
-    now_min = now_et.hour * 60 + now_et.minute
-    weekday = now_et.weekday()
+    now_et.hour * 60 + now_et.minute
+    now_et.weekday()
 
     _, interval_sec = get_session_and_interval(now_et)
 

@@ -17,10 +17,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import (
+    AssetStatus,
+    ContractType,
+    OrderClass,
+    OrderSide,
+    TimeInForce,
+)
 from alpaca.trading.requests import (
-    ClosePositionRequest,
     GetOptionContractsRequest,
     LimitOrderRequest,
     MarketOrderRequest,
@@ -28,17 +33,10 @@ from alpaca.trading.requests import (
     StopOrderRequest,
     TakeProfitRequest,
 )
-from alpaca.trading.enums import (
-    AssetStatus,
-    ContractType,
-    ExerciseStyle,
-    OrderClass,
-    OrderSide,
-    TimeInForce,
-)
+from dotenv import load_dotenv
 
 from log_setup import get_logger, log_trade
-from schemas import normalize_symbol, is_crypto as schema_is_crypto, alpaca_symbol
+from schemas import alpaca_symbol
 
 load_dotenv()
 log = get_logger(__name__)
@@ -193,9 +191,9 @@ class ExecutionResult:
 # ── Price lookup ──────────────────────────────────────────────────────────────
 
 def _get_current_price(symbol: str) -> float:
+    from alpaca.data.enums import DataFeed
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockLatestTradeRequest
-    from alpaca.data.enums import DataFeed
 
     data = StockHistoricalDataClient(os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY"))
     resp = data.get_stock_latest_trade(
@@ -214,8 +212,6 @@ def _check(condition: bool, reason: str) -> None:
 def _in_orb_formation_window() -> bool:
     """Returns True if we are in the 9:30-9:45 AM ET ORB formation window."""
     try:
-        from zoneinfo import ZoneInfo
-        from datetime import datetime as _dt
         from scheduler import _orb_locked  # noqa: PLC0415
         return not _orb_locked
     except Exception:
@@ -796,7 +792,9 @@ def execute_all(
                 oid = _submit_options(action)
             elif act == "reallocate":
                 try:
-                    from portfolio_intelligence import execute_reallocate  # noqa: PLC0415
+                    from portfolio_intelligence import (
+                        execute_reallocate,  # noqa: PLC0415
+                    )
                     realloc_result = execute_reallocate(action, _get_alpaca())
                     results.append(ExecutionResult(
                         symbol=f"{action.get('exit_symbol','?')}→{action.get('entry_symbol','?')}",

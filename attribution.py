@@ -276,7 +276,9 @@ def get_attribution_summary(days_back: int = 7) -> dict:
 def _emit_spine_record(event: dict, extra: dict) -> None:
     """Best-effort spine adapter. Non-fatal. Called from log_attribution_event()."""
     try:
-        from cost_attribution import log_spine_record  # lazy import, avoids circular risk
+        from cost_attribution import (
+            log_spine_record,  # lazy import, avoids circular risk
+        )
         module_tags = event.get("module_tags") or {}
         log_spine_record(
             module_name=module_tags.get("module") or event.get("caller") or "unknown",

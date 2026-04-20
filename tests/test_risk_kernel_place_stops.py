@@ -11,11 +11,9 @@ Covers:
 All tests are offline-safe.
 """
 
-import pytest
 
+from risk_kernel import MIN_RR_RATIO, place_stops
 from schemas import AccountAction, Direction, Tier, TradeIdea
-from risk_kernel import place_stops, MIN_RR_RATIO
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -69,7 +69,7 @@ class TestNormalizedPositionSide(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from schemas import NormalizedPosition, BrokerSnapshot
+            from schemas import BrokerSnapshot, NormalizedPosition
             cls.NP = NormalizedPosition
             cls.BS = BrokerSnapshot
         except ImportError as exc:
@@ -165,11 +165,13 @@ class TestReconciliationShortGuards(unittest.TestCase):
     def setUpClass(cls):
         _ensure_dotenv_stub()
         try:
-            from schemas import NormalizedPosition, NormalizedOrder, BrokerSnapshot
             from reconciliation import (
-                diff_state, build_desired_state,
-                execute_reconciliation_plan, ReconciliationAction,
+                ReconciliationAction,
+                build_desired_state,
+                diff_state,
+                execute_reconciliation_plan,
             )
+            from schemas import BrokerSnapshot, NormalizedOrder, NormalizedPosition
             cls.NP = NormalizedPosition
             cls.NO = NormalizedOrder
             cls.BS = BrokerSnapshot

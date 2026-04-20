@@ -150,7 +150,6 @@ def mine_anti_patterns(
             last_seen = max(timestamps).isoformat().replace("+00:00", "Z") if timestamps else ""
             sample_ids = [r.get("decision_id", "") for r in records[:3]]
 
-            abstention = None
             if n < min_occurrences:
                 try:
                     from abstention import abstain as _abstain  # noqa: PLC0415
@@ -159,9 +158,8 @@ def mine_anti_patterns(
                         module_name="anti_pattern_miner",
                         evidence_present=True,
                     )
-                    abstention = {"abstain": True, "reason": _ab.abstention_reason}
                 except Exception:
-                    abstention = {"abstain": True, "reason": f"insufficient sample: {n}"}
+                    pass
                 # Sub-threshold patterns not surfaced as findings
                 continue
 

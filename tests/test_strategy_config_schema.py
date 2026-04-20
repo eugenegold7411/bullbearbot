@@ -312,8 +312,10 @@ class TestRiskManagerGates(unittest.TestCase):
     def test_t017_expired_bias_overrides_to_neutral_in_load_strategy_config(self):
         """When expiry has passed, _load_strategy_config must override bias to neutral without
         writing to disk."""
+        import json
+        import shutil
+        import tempfile
         from datetime import datetime
-        import json, tempfile, shutil
         from pathlib import Path
 
         cfg = {
@@ -359,7 +361,7 @@ class TestRiskManagerGates(unittest.TestCase):
 
     def test_t017_non_expired_bias_not_overridden(self):
         """When expiry is in the future, bias must NOT be overridden."""
-        from datetime import date, timedelta, datetime
+        from datetime import date, datetime, timedelta
         future = (date.today() + timedelta(days=10)).isoformat()
         cfg = {"parameters": {
             "sector_rotation_bias": "commodities_overweight",

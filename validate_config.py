@@ -89,8 +89,8 @@ if cfg:
     _params_block = cfg.get("parameters", {})
     _dup_present = [k for k, _ in _DUP_CHECKS if k in _params_block]
     if _dup_present:
-        check(FAIL, (f"strategy_config.json: duplicate keys in parameters "
-                     f"(canonical location in parentheses): "
+        check(FAIL, ("strategy_config.json: duplicate keys in parameters "
+                     "(canonical location in parentheses): "
                      + ", ".join(f"{k} ({next(c for kk,c in _DUP_CHECKS if kk==k)})" for k in _dup_present)))
     else:
         check(PASS, "strategy_config.json: no duplicate keys in parameters block")
@@ -653,6 +653,68 @@ if cfg:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# a2_router section (S3-C)
+# ─────────────────────────────────────────────────────────────────────────────
+if cfg:
+    _a2r = cfg.get("a2_router")
+    if _a2r is None:
+        check(FAIL, "strategy_config.json: a2_router section missing")
+    else:
+        _edb = _a2r.get("earnings_dte_blackout")
+        if _edb is None:
+            check(FAIL, "strategy_config.json: a2_router.earnings_dte_blackout missing")
+        elif 0 <= int(_edb) <= 21:
+            check(PASS, f"strategy_config.json: a2_router.earnings_dte_blackout={_edb} (valid 0–21)")
+        else:
+            check(FAIL, f"strategy_config.json: a2_router.earnings_dte_blackout={_edb} out of range (0–21)")
+
+        _mls = _a2r.get("min_liquidity_score")
+        if _mls is None:
+            check(FAIL, "strategy_config.json: a2_router.min_liquidity_score missing")
+        elif 0.0 <= float(_mls) <= 1.0:
+            check(PASS, f"strategy_config.json: a2_router.min_liquidity_score={_mls} (valid 0.0–1.0)")
+        else:
+            check(FAIL, f"strategy_config.json: a2_router.min_liquidity_score={_mls} out of range (0.0–1.0)")
+
+        _migr = _a2r.get("macro_iv_gate_rank")
+        if _migr is None:
+            check(FAIL, "strategy_config.json: a2_router.macro_iv_gate_rank missing")
+        elif 0 <= float(_migr) <= 100:
+            check(PASS, f"strategy_config.json: a2_router.macro_iv_gate_rank={_migr} (valid 0–100)")
+        else:
+            check(FAIL, f"strategy_config.json: a2_router.macro_iv_gate_rank={_migr} out of range (0–100)")
+
+        _ieb = _a2r.get("iv_env_blackout")
+        if _ieb is None:
+            check(FAIL, "strategy_config.json: a2_router.iv_env_blackout missing")
+        elif isinstance(_ieb, list) and len(_ieb) >= 1:
+            check(PASS, f"strategy_config.json: a2_router.iv_env_blackout={_ieb} (non-empty list)")
+        else:
+            check(FAIL, f"strategy_config.json: a2_router.iv_env_blackout={_ieb!r} must be a non-empty list")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# a2_rollback section (S3-C) — emergency flags, must all default false
+# ─────────────────────────────────────────────────────────────────────────────
+if cfg:
+    _a2rb = cfg.get("a2_rollback")
+    if _a2rb is None:
+        check(FAIL, "strategy_config.json: a2_rollback section missing")
+    else:
+        _rb_fields = ["disable_candidate_generation", "disable_bounded_debate", "force_no_trade"]
+        _rb_missing = [f for f in _rb_fields if f not in _a2rb]
+        if _rb_missing:
+            check(FAIL, f"strategy_config.json: a2_rollback missing keys: {_rb_missing}")
+        else:
+            _rb_active = [f for f in _rb_fields if _a2rb.get(f)]
+            if _rb_active:
+                check(WARN, (f"strategy_config.json: a2_rollback flags ACTIVE: {_rb_active} "
+                             f"— these are emergency switches; disable before normal operation"))
+            else:
+                check(PASS, "strategy_config.json: a2_rollback all flags false (normal operation)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # reddit_sentiment_public.py importable (Phase 3 — public JSON fallback)
 # ─────────────────────────────────────────────────────────────────────────────
 rsp_path = BASE_DIR / "reddit_sentiment_public.py"
@@ -777,6 +839,7 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 try:
     import inspect as _inspect
+
     import order_executor as _oe
     _oe_src = _inspect.getsource(_oe)
     if "TIER_MAX_PCT" in _oe_src:
@@ -809,6 +872,7 @@ import importlib.util as _ilu_g  # noqa: E402
 # Gate 01 — schemas.py present and compiles cleanly
 # (exec_module skipped: schemas.py has deep cross-imports that require full venv context)
 import py_compile as _pyc_g
+
 try:
     _schemas_path = BASE_DIR / "schemas.py"
     if not _schemas_path.exists():

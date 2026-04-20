@@ -72,6 +72,7 @@ def _cluster_incidents(incidents: list[dict]) -> dict:
 def _call_haiku(clusters: dict, model: str) -> dict:
     """Single Haiku call for root-cause narrative. Raises on failure."""
     import anthropic  # noqa: PLC0415
+
     import cost_attribution as _ca  # noqa: PLC0415
 
     cluster_list = list(clusters.values())

@@ -14,7 +14,7 @@ import json
 import logging
 import random
 import string
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional

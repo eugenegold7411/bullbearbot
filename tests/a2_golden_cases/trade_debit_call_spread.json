@@ -1,0 +1,112 @@
+{
+  "_fixture": "golden_005 — NVDA cheap IV + bullish signal (RULE5); debate approved at confidence=0.92",
+  "decision_id": "golden_005_trade_debit_call_spread",
+  "session_tier": "market",
+  "candidate_sets": [
+    {
+      "symbol": "NVDA",
+      "pack": {
+        "symbol": "NVDA",
+        "a1_signal_score": 88.0,
+        "a1_direction": "bullish",
+        "trend_score": null,
+        "momentum_score": null,
+        "sector_alignment": "technology",
+        "iv_rank": 22.0,
+        "iv_environment": "cheap",
+        "term_structure_slope": null,
+        "skew": null,
+        "expected_move_pct": 6.2,
+        "flow_imbalance_30m": 0.28,
+        "sweep_count": null,
+        "gex_regime": null,
+        "oi_concentration": null,
+        "earnings_days_away": null,
+        "macro_event_flag": false,
+        "premium_budget_usd": 5000.0,
+        "liquidity_score": 0.88,
+        "built_at": "2026-04-21T11:00:00+00:00",
+        "data_sources": ["signal_scores", "iv_history", "options_chain", "flow_signals"]
+      },
+      "allowed_structures": ["long_call", "long_put", "debit_call_spread", "debit_put_spread"],
+      "router_rule_fired": "RULE5",
+      "generated_candidates": [
+        {
+          "candidate_id": "NVDA_dcs_001",
+          "structure_type": "debit_call_spread",
+          "symbol": "NVDA",
+          "expiry": "2026-05-16",
+          "long_strike": 850.0,
+          "short_strike": 870.0,
+          "debit": 5.50,
+          "max_loss": 550.0,
+          "max_gain": 1450.0,
+          "breakeven": 855.50,
+          "delta": 0.42,
+          "theta": -0.18,
+          "expected_value": 85.0,
+          "dte": 25,
+          "open_interest": 1200,
+          "bid_ask_spread_pct": 0.03
+        }
+      ],
+      "vetoed_candidates": [],
+      "surviving_candidates": [
+        {
+          "candidate_id": "NVDA_dcs_001",
+          "structure_type": "debit_call_spread",
+          "symbol": "NVDA",
+          "expiry": "2026-05-16",
+          "long_strike": 850.0,
+          "short_strike": 870.0,
+          "debit": 5.50,
+          "max_loss": 550.0,
+          "max_gain": 1450.0,
+          "breakeven": 855.50,
+          "delta": 0.42,
+          "theta": -0.18,
+          "expected_value": 85.0,
+          "dte": 25,
+          "open_interest": 1200,
+          "bid_ask_spread_pct": 0.03
+        }
+      ],
+      "generation_errors": [],
+      "built_at": "2026-04-21T11:00:00+00:00"
+    }
+  ],
+  "debate_input": "=== MARKET CONTEXT ===\nVIX: 17.80\nRegime: normal\nAccount 2 Equity: $100,000\n\n=== CANDIDATE STRUCTURES ===\n[Candidate NVDA_dcs_001 — debit_call_spread NVDA 2026-05-16 850/870\n Debit: $5.50/share | Max loss: $550 | Max gain: $1450 | Breakeven: 855.50\n Delta: 0.42 | Theta: $-0.180/day | EV: $85.00 | DTE: 25 | OI: 1200]",
+  "debate_output_raw": "{\"selected_candidate_id\": \"NVDA_dcs_001\", \"confidence\": 0.92, \"reject\": false, \"key_risks\": [\"broad market selloff\"], \"reasons\": \"Strong AI infrastructure catalyst with momentum. Cheap IV environment (rank=22) favors debit structure. Flow imbalance bullish. Risk/reward attractive at 2.6:1. Confidence above threshold.\", \"recommended_size_modifier\": 1.0}",
+  "debate_parsed": {
+    "selected_candidate_id": "NVDA_dcs_001",
+    "confidence": 0.92,
+    "reject": false,
+    "key_risks": ["broad market selloff"],
+    "reasons": "Strong AI infrastructure catalyst with momentum. Cheap IV environment (rank=22) favors debit structure. Flow imbalance bullish. Risk/reward attractive at 2.6:1. Confidence above threshold.",
+    "recommended_size_modifier": 1.0
+  },
+  "selected_candidate": {
+    "candidate_id": "NVDA_dcs_001",
+    "structure_type": "debit_call_spread",
+    "symbol": "NVDA",
+    "expiry": "2026-05-16",
+    "long_strike": 850.0,
+    "short_strike": 870.0,
+    "debit": 5.50,
+    "max_loss": 550.0,
+    "max_gain": 1450.0,
+    "breakeven": 855.50,
+    "delta": 0.42,
+    "theta": -0.18,
+    "expected_value": 85.0,
+    "dte": 25,
+    "open_interest": 1200,
+    "bid_ask_spread_pct": 0.03
+  },
+  "execution_result": "submitted",
+  "no_trade_reason": null,
+  "elapsed_seconds": 4.1,
+  "schema_version": 1,
+  "code_version": null,
+  "built_at": "2026-04-21T11:00:00+00:00"
+}

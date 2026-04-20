@@ -1,0 +1,357 @@
+"""
+bot_options_stage0_preflight.py — A2 Stage 0: preflight, eligibility, reconciliation.
+
+Public API:
+  run_a2_preflight(session_tier, alpaca_client) -> A2PreflightResult
+  _get_obs_mode_state() -> dict
+  _update_obs_mode_state(state) -> bool
+  is_observation_mode() -> bool
+  _check_and_update_iv_ready(state) -> dict
+
+Responsibilities:
+  - Session gate (market/pre_market only)
+  - Account eligibility check (equity floor)
+  - Preflight verdict
+  - A2 operating mode check
+  - Options structure reconciliation
+  - Observation mode tracking
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from log_setup import get_logger
+
+log = get_logger(__name__)
+
+_EQUITY_FLOOR = 25_000.0
+
+_A2_DIR = Path(__file__).parent / "data" / "account2"
+
+# Observation mode: first 20 trading days while IV history builds
+_OBS_MODE_DAYS      = 20
+_OBS_MODE_FILE      = _A2_DIR / "obs_mode_state.json"
+_OBS_SCHEMA_VERSION = 2
+# Core A2 symbols required for IV history before obs mode is fully meaningful
+_OBS_IV_SYMBOLS = [
+    "SPY", "QQQ", "NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL",
+    "TSM", "AMD", "XLE", "GLD", "TLT", "IWM", "XLF", "XBI",
+]
+
+
+# ── Observation mode tracking ─────────────────────────────────────────────────
+
+def _get_obs_mode_state() -> dict:
+    """Load or initialize observation mode tracking state."""
+    if _OBS_MODE_FILE.exists():
+        try:
+            return json.loads(_OBS_MODE_FILE.read_text())
+        except Exception:
+            pass
+    return {
+        "version": _OBS_SCHEMA_VERSION,
+        "trading_days_observed": 0,
+        "first_seen_date": None,
+        "observation_complete": False,
+        "iv_history_ready": False,
+        "iv_ready_symbols": {},
+    }
+
+
+def _is_trading_day(iso_date: str) -> bool:
+    """
+    Return True if iso_date (YYYY-MM-DD) is a NYSE trading day.
+    Excludes weekends. Excludes a fixed set of US market holidays.
+    """
+    from datetime import date  # noqa: PLC0415
+    d = date.fromisoformat(iso_date)
+    if d.weekday() >= 5:
+        return False
+    _fixed = {(1, 1), (7, 4), (12, 25)}
+    if (d.month, d.day) in _fixed:
+        return False
+    import calendar as _cal  # noqa: PLC0415
+    def _nth_weekday(year, month, weekday, n):
+        """n-th occurrence (1-based) of weekday in month."""
+        first = date(year, month, 1)
+        delta = (weekday - first.weekday()) % 7
+        return date(year, month, 1 + delta + (n - 1) * 7)
+    def _last_monday(year, month):
+        last = date(year, month, _cal.monthrange(year, month)[1])
+        return last - __import__("datetime").timedelta(days=(last.weekday()) % 7)
+    floating = {
+        _nth_weekday(d.year, 1, 0, 3),
+        _nth_weekday(d.year, 2, 0, 3),
+        _last_monday(d.year, 5),
+        _nth_weekday(d.year, 9, 0, 1),
+        _nth_weekday(d.year, 11, 3, 4),
+    }
+    return d not in floating
+
+
+def _update_obs_mode_state(state: dict) -> bool:
+    """
+    Update observation mode counter. Increment trading_days_observed only on
+    NYSE trading days (no weekends, no US market holidays).
+    Returns True if still in observation mode.
+    """
+    from datetime import date  # noqa: PLC0415
+    today = date.today().isoformat()
+
+    if state.get("observation_complete"):
+        if state.get("version", 1) < _OBS_SCHEMA_VERSION:
+            state = _check_and_update_iv_ready(state)
+            state["version"] = _OBS_SCHEMA_VERSION
+            try:
+                _OBS_MODE_FILE.write_text(json.dumps(state, indent=2))
+                log.info("[OPTS] obs_mode_state.json migrated to v%d", _OBS_SCHEMA_VERSION)
+            except Exception:
+                pass
+        return False
+
+    if state.get("first_seen_date") is None:
+        state["first_seen_date"] = today
+
+    if state.get("last_counted_date") != today and _is_trading_day(today):
+        state["trading_days_observed"] = state.get("trading_days_observed", 0) + 1
+        state["last_counted_date"] = today
+    elif not _is_trading_day(today):
+        log.debug("[OPTS] Observation mode: %s is not a trading day — not counting", today)
+
+    days = state["trading_days_observed"]
+    log.info("[OPTS] Observation mode: %d/%d trading days", days, _OBS_MODE_DAYS)
+
+    if days >= _OBS_MODE_DAYS:
+        state["observation_complete"] = True
+        state["version"] = _OBS_SCHEMA_VERSION
+        state = _check_and_update_iv_ready(state)
+        log.info("[OPTS] Observation mode COMPLETE — Account 2 now live trading")
+
+    try:
+        _OBS_MODE_FILE.write_text(json.dumps(state, indent=2))
+    except Exception:
+        pass
+
+    return not state.get("observation_complete", False)
+
+
+def is_observation_mode() -> bool:
+    """Quick check: is Account 2 still in observation mode?"""
+    state = _get_obs_mode_state()
+    return not state.get("observation_complete", False)
+
+
+def _check_and_update_iv_ready(state: dict) -> dict:
+    """
+    Check IV history readiness for all core A2 symbols via options_data.
+    Writes iv_history_ready + iv_ready_symbols into state dict (in-place).
+    Never modifies observation_complete. Non-fatal.
+    Returns the mutated state dict.
+    """
+    try:
+        import options_data  # noqa: PLC0415
+        result = options_data.check_iv_history_ready(_OBS_IV_SYMBOLS)
+        state["iv_history_ready"] = result["all_ready"]
+        state["iv_ready_symbols"] = result["symbol_ready"]
+        log.info("[OPTS] IV history check: %d/%d symbols ready",
+                 result["ready_count"], result["total_count"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[OPTS] _check_and_update_iv_ready failed (non-fatal): %s", exc)
+        state.setdefault("iv_history_ready", False)
+        state.setdefault("iv_ready_symbols", {})
+    return state
+
+
+@dataclass
+class A2PreflightResult:
+    """Result from run_a2_preflight. halt=True means the cycle must abort."""
+    halt: bool = False
+    halt_reason: str = ""
+    equity: float = 0.0
+    cash: float = 0.0
+    pf_allow_live_orders: bool = True
+    pf_allow_new_entries: bool = True
+    a2_mode: Any = None
+
+
+def _build_a2_broker_snapshot(alpaca_client):
+    """
+    Build a BrokerSnapshot from Account 2's current live state.
+
+    Fetches positions and open orders from the A2 Alpaca account.
+    Returns a BrokerSnapshot with normalised positions and orders.
+    Non-fatal — returns an empty snapshot on any error so reconciliation
+    can degrade gracefully rather than blocking the cycle.
+    """
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+
+    from schemas import BrokerSnapshot, NormalizedOrder, NormalizedPosition
+
+    norm_positions: list = []
+    norm_orders: list = []
+    equity = buying_power = cash = 0.0
+
+    try:
+        account = alpaca_client.get_account()
+        equity       = float(account.equity)
+        cash         = float(account.cash)
+        buying_power = float(account.buying_power)
+    except Exception as exc:
+        log.warning("[OPTS_RECON] snapshot: failed to fetch account: %s", exc)
+
+    try:
+        positions = alpaca_client.get_all_positions()
+        norm_positions = [NormalizedPosition.from_alpaca_position(p) for p in positions]
+    except Exception as exc:
+        log.warning("[OPTS_RECON] snapshot: failed to fetch positions: %s", exc)
+
+    try:
+        orders = alpaca_client.get_orders(
+            GetOrdersRequest(status=QueryOrderStatus.OPEN)
+        )
+        norm_orders = [NormalizedOrder.from_alpaca_order(o) for o in orders]
+    except Exception as exc:
+        log.warning("[OPTS_RECON] snapshot: failed to fetch orders: %s", exc)
+
+    return BrokerSnapshot(
+        positions=norm_positions,
+        open_orders=norm_orders,
+        equity=equity,
+        cash=cash,
+        buying_power=buying_power,
+    )
+
+
+def run_a2_preflight(
+    session_tier: str,
+    alpaca_client,
+) -> A2PreflightResult:
+    """
+    Run A2 preflight checks. Returns A2PreflightResult with halt=True if cycle
+    should abort. Handles: session gate, equity floor, preflight verdict,
+    A2 operating mode, and options structure reconciliation.
+
+    Note: observation mode tracking (_update_obs_mode_state) is handled by
+    the orchestrator in bot_options.py — those helpers are tested with
+    mock.patch("bot_options.*") so they must stay there.
+    """
+    result = A2PreflightResult()
+
+    # Session gate — options only trade during market hours
+    if session_tier not in ("market", "pre_market"):
+        log.info("[OPTS] Session=%s — options cycle skipped (market hours only)", session_tier)
+        return A2PreflightResult(halt=True, halt_reason="session_not_market")
+
+    # Account equity check
+    try:
+        account = alpaca_client.get_account()
+        result.equity = float(account.equity)
+        result.cash   = float(account.cash)
+        log.info("[OPTS] Account 2: equity=$%s  cash=$%s",
+                 f"{result.equity:,.0f}", f"{result.cash:,.0f}")
+    except Exception as exc:
+        log.error("[OPTS] Cannot fetch Account 2 status: %s — skipping cycle", exc)
+        return A2PreflightResult(halt=True, halt_reason="account_fetch_failed")
+
+    if result.equity < _EQUITY_FLOOR:
+        log.warning("[OPTS] Account 2 equity $%.0f below floor $%.0f — halting",
+                    result.equity, _EQUITY_FLOOR)
+        return A2PreflightResult(halt=True, halt_reason="equity_below_floor",
+                                 equity=result.equity, cash=result.cash)
+
+    # Preflight gate
+    try:
+        import preflight as _preflight  # noqa: PLC0415
+        _pf_result = _preflight.run_preflight(
+            caller="run_options_cycle",
+            session_tier=session_tier,
+            equity=result.equity,
+            account_id="a2",
+        )
+        if _pf_result.verdict == "halt":
+            log.error("[PREFLIGHT] verdict=halt — aborting options cycle  blockers=%s",
+                      _pf_result.blockers)
+            return A2PreflightResult(halt=True, halt_reason="preflight_halt",
+                                     equity=result.equity, cash=result.cash)
+        elif _pf_result.verdict == "reconcile_only":
+            log.warning("[PREFLIGHT] verdict=reconcile_only — new A2 entries blocked  blockers=%s",
+                        _pf_result.blockers)
+            result.pf_allow_new_entries = False
+        elif _pf_result.verdict == "shadow_only":
+            log.warning("[PREFLIGHT] verdict=shadow_only — A2 live orders suppressed")
+            result.pf_allow_live_orders = False
+        elif _pf_result.verdict == "go_degraded":
+            log.warning("[PREFLIGHT] verdict=go_degraded  warnings=%s", _pf_result.warnings)
+    except Exception as _pf_exc:
+        log.error("[PREFLIGHT] unexpected exception (proceeding with caution): %s", _pf_exc)
+
+    # A2 operating mode (non-fatal)
+    try:
+        from divergence import OperatingMode, load_account_mode  # noqa: PLC0415
+        result.a2_mode = load_account_mode("A2")
+        if result.a2_mode.mode != OperatingMode.NORMAL:
+            log.warning("[DIV] A2 mode=%s scope=%s/%s",
+                        result.a2_mode.mode.value,
+                        result.a2_mode.scope.value,
+                        result.a2_mode.scope_id)
+    except Exception as _div_exc:
+        log.warning("[DIV] A2 mode load failed (non-fatal): %s", _div_exc)
+
+    # Options structure reconciliation (before new proposals)
+    try:
+        import options_state  # noqa: PLC0415
+        from reconciliation import (  # noqa: PLC0415
+            execute_reconciliation_plan,
+            plan_structure_repair,
+            reconcile_options_structures,
+        )
+        _open_structs = options_state.get_open_structures()
+        if _open_structs:
+            _recon_snapshot = _build_a2_broker_snapshot(alpaca_client)
+            _struct_diff = reconcile_options_structures(
+                structures=_open_structs,
+                snapshot=_recon_snapshot,
+                current_time=datetime.now(timezone.utc).isoformat(),
+                config={},
+            )
+            if any([
+                _struct_diff.broken,
+                _struct_diff.expiring_soon,
+                _struct_diff.needs_close,
+                _struct_diff.orphaned_legs,
+            ]):
+                _repair_plan = plan_structure_repair(
+                    diff=_struct_diff,
+                    structures=_open_structs,
+                    snapshot=_recon_snapshot,
+                    config={},
+                )
+                log.info(
+                    "[OPTS_RECON] %d broken, %d expiring, "
+                    "%d needs_close, %d orphaned — %d repair action(s)",
+                    len(_struct_diff.broken),
+                    len(_struct_diff.expiring_soon),
+                    len(_struct_diff.needs_close),
+                    len(_struct_diff.orphaned_legs),
+                    len(_repair_plan),
+                )
+                execute_reconciliation_plan(
+                    plan=_repair_plan,
+                    trading_client=alpaca_client,
+                    account_id="account2",
+                    dry_run=False,
+                )
+            else:
+                log.debug("[OPTS_RECON] %d open structures — all intact", len(_open_structs))
+        else:
+            log.debug("[OPTS_RECON] No open structures — skipping reconciliation")
+    except Exception as _recon_err:
+        log.warning("[OPTS_RECON] Failed (non-fatal): %s", _recon_err)
+
+    return result

@@ -25,4 +25,4 @@ markers = [
 
 [tool.ruff.lint]
 # Phase 1: syntax errors only. Tighten (add E, F, W, I) as code cleanup proceeds.
-select = ["E9"]
+select = ["E9", "F", "I"]

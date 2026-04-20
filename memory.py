@@ -7,18 +7,17 @@ Weekly summary generated every Sunday at 6 AM ET.
 """
 
 import json
+import logging
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import OrderSide, QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest
-from alpaca.trading.enums import QueryOrderStatus, OrderSide
 from dotenv import load_dotenv
 
-import logging
 import trade_memory
 from semantic_labels import classify_catalyst
 

@@ -338,8 +338,8 @@ class TradePublisher:
                     ts_str=ts_str,
                     approval_id=approval_id,
                 )
-                from sendgrid import SendGridAPIClient         # noqa: PLC0415
-                from sendgrid.helpers.mail import Mail         # noqa: PLC0415
+                from sendgrid import SendGridAPIClient  # noqa: PLC0415
+                from sendgrid.helpers.mail import Mail  # noqa: PLC0415
                 resp = SendGridAPIClient(sg_key).send(
                     Mail(from_email=from_em, to_emails=_APPROVAL_TO_EMAIL,
                          subject=subj, html_content=html)
@@ -746,8 +746,8 @@ Rules:
 
             # Position is confirmed gone — look for the closing fill
             try:
-                from alpaca.trading.requests import GetOrdersRequest   # noqa: PLC0415
-                from alpaca.trading.enums import QueryOrderStatus       # noqa: PLC0415
+                from alpaca.trading.enums import QueryOrderStatus  # noqa: PLC0415
+                from alpaca.trading.requests import GetOrdersRequest  # noqa: PLC0415
                 orders = alpaca_client.get_orders(
                     GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=20)
                 )
@@ -1181,7 +1181,6 @@ Rules:
             return None
 
         from datetime import date
-        from zoneinfo import ZoneInfo
         today_et = date.today().isoformat()  # YYYY-MM-DD; ET assumed (scheduler runs in ET)
 
         # Once-per-day guard — primary defense against repeated firing
@@ -1286,7 +1285,7 @@ Rules:
             sendgrid_ok = bool(os.getenv("SENDGRID_API_KEY"))
             claude_ok   = self._claude is not None
 
-            print(f"Mode        : APPROVAL (SMS+email delivery)")
+            print("Mode        : APPROVAL (SMS+email delivery)")
             print(f"Claude      : {'OK' if claude_ok else 'MISSING'}")
             print(f"Twilio SMS  : {'configured' if twilio_ok else 'not configured'}")
             print(f"SendGrid    : {'configured' if sendgrid_ok else 'not configured'}")
@@ -1298,7 +1297,7 @@ Rules:
                 return False
             try:
                 me = self._client.get_me()
-                print(f"Mode        : DIRECT POST")
+                print("Mode        : DIRECT POST")
                 print(f"Connected as: @{me.data.username}")
                 # Dry-run test
                 was_dry = self.dry_run

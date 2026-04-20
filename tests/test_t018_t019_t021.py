@@ -2,13 +2,9 @@
 Tests for T-018, T-019, T-021 data freshness and fill confirmation fixes.
 """
 
-import json
 import logging
-import types
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-
 
 # ─── T-018: global_indices.json staleness WARNING ───────────────────────────
 
@@ -68,7 +64,7 @@ def test_stale_global_indices_market_session_no_warning(caplog):
 
     with patch.object(market_data.dw, "load_global_indices", return_value=stale_data):
         with caplog.at_level(logging.WARNING, logger="market_data"):
-            result = market_data._build_global_session_handoff(session_tier="market")
+            market_data._build_global_session_handoff(session_tier="market")
 
     stale_warnings = [r for r in caplog.records if "stale" in r.message.lower()]
     assert not stale_warnings, "Staleness warning should not fire for market session"

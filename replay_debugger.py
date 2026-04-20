@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone, timedelta
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -369,6 +369,7 @@ def _run_fork_call(
     """
     try:
         import os  # noqa: PLC0415
+
         from anthropic import Anthropic  # noqa: PLC0415
 
         api_key = os.getenv("ANTHROPIC_API_KEY")

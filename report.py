@@ -28,14 +28,14 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import OrderSide, QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest, GetPortfolioHistoryRequest
-from alpaca.trading.enums import QueryOrderStatus, OrderSide
+from dotenv import load_dotenv
 
-from log_setup import get_logger
 import memory as mem
 import portfolio_intelligence as pi
+from log_setup import get_logger
 
 load_dotenv()
 
@@ -119,8 +119,8 @@ def send_alert_email(subject: str, body_html: str) -> None:
         f"<pre style='white-space:pre-wrap'>{body_html}</pre></body></html>"
     )
     try:
-        from sendgrid import SendGridAPIClient          # noqa: PLC0415
-        from sendgrid.helpers.mail import Mail          # noqa: PLC0415
+        from sendgrid import SendGridAPIClient  # noqa: PLC0415
+        from sendgrid.helpers.mail import Mail  # noqa: PLC0415
         resp = SendGridAPIClient(api_key).send(
             Mail(from_email=FROM_EMAIL, to_emails=TO_EMAIL,
                  subject=subject, html_content=html)
@@ -214,6 +214,16 @@ def _load_macro_events(today: date) -> list[dict]:
     except Exception as exc:
         log.warning("_load_macro_events failed: %s", exc)
     return events[:5]
+
+
+def _load_a2_daily_summary(today: date) -> dict:
+    """Load Account 2 daily health summary. Non-fatal — returns {} on any failure."""
+    try:
+        import a2_decision_store  # noqa: PLC0415
+        return a2_decision_store.get_daily_summary(date=today.isoformat())
+    except Exception as exc:
+        log.debug("_load_a2_daily_summary failed (non-fatal): %s", exc)
+        return {}
 
 
 def _load_watch_items(positions: list) -> list[dict]:
@@ -323,6 +333,52 @@ def _macro_events_html(events: list[dict]) -> str:
     )
 
 
+def _a2_health_html(summary: dict) -> str:
+    """Render Account 2 daily activity section. Returns unavailable notice if empty."""
+    if not summary or not summary.get("cycles_run"):
+        return "<p style='color:#666'>(A2 data unavailable)</p>"
+
+    veto_parts = " &nbsp;|&nbsp; ".join(
+        f"{k}: <b>{v}</b>"
+        for k, v in sorted(summary["veto_reasons"].items(), key=lambda x: -x[1])[:6]
+    ) or "—"
+
+    ntr_parts = " &nbsp;|&nbsp; ".join(
+        f"{k}: <b>{v}</b>"
+        for k, v in sorted(summary["no_trade_reasons"].items(), key=lambda x: -x[1])[:6]
+    ) or "—"
+
+    rows = (
+        f"<tr>"
+        f"<td style='padding:4px 8px'>Cycles</td>"
+        f"<td><b>{summary['cycles_run']}</b></td>"
+        f"<td style='padding:4px 8px'>Symbols evaluated</td>"
+        f"<td><b>{summary['symbols_evaluated']}</b></td></tr>"
+        f"<tr style='background:#f5f5f5'>"
+        f"<td style='padding:4px 8px'>Candidates generated</td>"
+        f"<td><b>{summary['candidates_generated']}</b></td>"
+        f"<td style='padding:4px 8px'>Candidates vetoed</td>"
+        f"<td><b>{summary['candidates_vetoed']}</b></td></tr>"
+        f"<tr>"
+        f"<td style='padding:4px 8px'>Debate runs</td>"
+        f"<td><b>{summary['debate_runs']}</b></td>"
+        f"<td style='padding:4px 8px'>Debate rejects</td>"
+        f"<td><b>{summary['debate_rejects']}</b></td></tr>"
+        f"<tr style='background:#f5f5f5'>"
+        f"<td style='padding:4px 8px'>Low confidence</td>"
+        f"<td><b>{summary['debate_low_confidence']}</b></td>"
+        f"<td style='padding:4px 8px'>Executed</td>"
+        f"<td><b>{summary['executions_filled']}</b></td></tr>"
+    )
+
+    return (
+        f"<table style='width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px'>"
+        f"{rows}</table>"
+        f"<p style='font-size:12px;margin:4px 0'><b>Veto breakdown:</b> {veto_parts}</p>"
+        f"<p style='font-size:12px;margin:4px 0'><b>No-trade reasons:</b> {ntr_parts}</p>"
+    )
+
+
 def _watch_items_html(items: list[dict]) -> str:
     if not items:
         return "<p style='color:#2e7d32'>No time-bound exits or stop proximity warnings.</p>"
@@ -392,8 +448,8 @@ def _ascii_chart(history: list[dict], width: int = 50, height: int = 8) -> str:
     grid = [[" "] * width for _ in range(height)]
 
     # Plot points
-    step = max(1, len(equities) / width)
-    prev_col, prev_row = None, None
+    max(1, len(equities) / width)
+    prev_col, _prev_row, prev_eq = None, None, None
     for i, eq in enumerate(equities):
         col = min(width - 1, int(i / len(equities) * width))
         row = height - 1 - _y(eq)
@@ -404,7 +460,7 @@ def _ascii_chart(history: list[dict], width: int = 50, height: int = 8) -> str:
                 r = height - 1 - _y(prev_eq + (eq - prev_eq) * (c - prev_col) / (col - prev_col))
                 r = max(0, min(height - 1, r))
                 grid[r][c] = "─"
-        prev_col, prev_row, prev_eq = col, row, eq
+        prev_col, _prev_row, prev_eq = col, row, eq
 
     # Y-axis labels
     lines = []
@@ -552,6 +608,7 @@ def generate_report(target_date: date | None = None) -> dict:
     today_decisions = _load_today_decisions(today)
     macro_events    = _load_macro_events(today)
     watch_items     = _load_watch_items(positions)
+    a2_activity     = _load_a2_daily_summary(today)
 
     return {
         "date":          today.isoformat(),
@@ -578,6 +635,7 @@ def generate_report(target_date: date | None = None) -> dict:
         "today_decisions":    today_decisions,
         "macro_events":       macro_events,
         "watch_items":        watch_items,
+        "a2_activity":        a2_activity,
     }
 
 
@@ -586,7 +644,6 @@ def generate_report(target_date: date | None = None) -> dict:
 def format_terminal(r: dict) -> str:
     day_sign = "+" if r["day_pl"] >= 0 else ""
     atm_sign = "+" if r["all_time_pl"] >= 0 else ""
-    day_col  = ""   # no ANSI in terminal for broad compat
 
     lines = [
         "",
@@ -898,6 +955,9 @@ def format_html(r: dict) -> str:
 <p>Cycles: <b>{r['cycles_today']}</b> &nbsp;|&nbsp;
    Submitted: <b>{r['submitted_today']}</b> &nbsp;|&nbsp;
    Rejected: <b>{r['rejected_today']}</b></p>
+
+<h3 style="color:#37474f">Account 2 Activity</h3>
+{_a2_health_html(r.get('a2_activity', {}))}
 
 <h3 style="color:#37474f">Today's Decision Narrative</h3>
 {_today_decisions_html(r.get('today_decisions', {}))}

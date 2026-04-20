@@ -11,8 +11,8 @@ import json
 import logging
 import os
 import tempfile
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone, timedelta
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -105,7 +105,7 @@ class SystemStateSnapshot:
 def _safe(fn, default=None):
     try:
         return fn()
-    except Exception as exc:
+    except Exception:
         return default
 
 

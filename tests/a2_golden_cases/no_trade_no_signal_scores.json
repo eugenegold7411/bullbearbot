@@ -1,0 +1,16 @@
+{
+  "_fixture": "golden_001 — no A1 signal scores available; cycle exits before candidate stage",
+  "decision_id": "golden_001_no_signal_scores",
+  "session_tier": "market",
+  "candidate_sets": [],
+  "debate_input": null,
+  "debate_output_raw": null,
+  "debate_parsed": null,
+  "selected_candidate": null,
+  "execution_result": "no_trade",
+  "no_trade_reason": "no_signal_scores",
+  "elapsed_seconds": 0.3,
+  "schema_version": 1,
+  "code_version": null,
+  "built_at": "2026-04-21T10:00:00+00:00"
+}

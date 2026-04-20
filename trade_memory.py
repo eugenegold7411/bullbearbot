@@ -39,7 +39,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 from log_setup import get_logger
 
@@ -568,7 +567,7 @@ def format_retrieved_memories(scenarios: list[dict]) -> str:
     for i, s in enumerate(scenarios, start=1):
         meta     = s.get("metadata", {})
         doc      = s.get("document", "")
-        distance = s.get("distance", 0.0)
+        s.get("distance", 0.0)
         tier     = meta.get("tier", "short")
 
         ts      = str(meta.get("ts", ""))
@@ -750,7 +749,6 @@ def _get_scratchpad_collections() -> tuple:
         return None, None, None
 
     try:
-        import chromadb  # noqa: PLC0415
         from chromadb.utils.embedding_functions import (  # noqa: PLC0415
             DefaultEmbeddingFunction,
         )

@@ -227,7 +227,7 @@ def fetch_earnings_transcript(symbol: str, quarters_back: int = 1) -> str:
 
             # Try to extract CIK from the entity URL or accession number
             if not cik:
-                links = src.get("file_date", "")
+                src.get("file_date", "")
                 # Try inline id
                 entity_id = str(src.get("id", ""))
                 if "/" in entity_id:

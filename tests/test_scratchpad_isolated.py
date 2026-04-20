@@ -14,7 +14,6 @@ Tests:
  10. run_scratchpad() handles empty signal_scores gracefully
 """
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -27,7 +26,6 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
 import scratchpad as sp
-
 
 # ── shared fixtures ───────────────────────────────────────────────────────────
 _SIGNAL_SCORES = {

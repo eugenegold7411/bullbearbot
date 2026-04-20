@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -534,7 +533,7 @@ def format_correlation_section(corr: dict, open_symbols: list[str]) -> str:
 # UPGRADE 4 — Portfolio thesis ranking
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_bars(symbol: str) -> "Optional[pd.DataFrame]":
+def _load_bars(symbol: str) -> "Optional[pd.DataFrame]":  # noqa: F821
     """Load cached daily bars for a symbol. Returns None if unavailable."""
     try:
         import pandas as pd
@@ -645,7 +644,7 @@ def score_position_thesis(
     if stop_loss_raw is not None and take_profit_raw is not None:
         stop_price   = float(stop_loss_raw)
         target_price = float(take_profit_raw)
-        total_range  = target_price - stop_price if target_price > stop_price else 1.0
+        target_price - stop_price if target_price > stop_price else 1.0
         pct_to_target = (current_price - entry_price) / (target_price - entry_price) if target_price != entry_price else 0
         if pct_to_target > 0.1:
             trending_toward = "target"
@@ -891,8 +890,8 @@ def execute_reallocate(
       bot.py. If activated, must route through risk_kernel.py first.
       Never call directly from run_cycle().
     """
+    from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import MarketOrderRequest
-    from alpaca.trading.enums   import OrderSide, TimeInForce
 
     log.info("[PI] REALLOCATE: exit %s → enter %s", exit_symbol, entry_action.get("symbol"))
 
@@ -913,11 +912,12 @@ def execute_reallocate(
 
     # Step 2 — submit entry (only if exit succeeded)
     try:
-        from alpaca.trading.requests import (
-            MarketOrderRequest, LimitOrderRequest,
-            TakeProfitRequest, StopLossRequest,
-        )
         from alpaca.trading.enums import OrderClass
+        from alpaca.trading.requests import (
+            MarketOrderRequest,
+            StopLossRequest,
+            TakeProfitRequest,
+        )
 
         entry_sym = entry_action["symbol"]
         qty       = int(float(entry_action["qty"]))

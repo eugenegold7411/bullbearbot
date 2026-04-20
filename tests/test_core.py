@@ -19,14 +19,14 @@ Suites:
  25. Phase C8/D13   — market_data section fallbacks + options close/roll audit trail
 """
 
-import sys
-import os
 import json
+import os
+import sys
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
-from pathlib import Path
 
 # Ensure /home/trading-bot is on the path regardless of where tests/ lives
 _BOT_DIR = Path(__file__).resolve().parent.parent
@@ -160,7 +160,6 @@ class TestOrderExecutorValidation(unittest.TestCase):
     def test_crypto_stop_real_price_not_flagged(self):
         """BUG-008: a real crypto stop price (e.g. 68000) must NOT be flagged."""
         actions        = [{"symbol": "BTC/USD", "stop_loss": 68000.0, "action": "hold"}]
-        current_prices = {"BTC/USD": 74000.0}
 
         detected = []
         for a in actions:
@@ -290,7 +289,7 @@ class TestExitManagerTrailStop(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from exit_manager import maybe_trail_stop, get_active_exits
+        from exit_manager import get_active_exits, maybe_trail_stop
         cls.maybe_trail_stop  = staticmethod(maybe_trail_stop)
         cls.get_active_exits  = staticmethod(get_active_exits)
 
@@ -669,7 +668,10 @@ class TestSchemaSymbolNormalization(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from schemas import (
-            normalize_symbol, is_crypto, alpaca_symbol, yfinance_symbol,
+            alpaca_symbol,
+            is_crypto,
+            normalize_symbol,
+            yfinance_symbol,
         )
         cls.normalize  = staticmethod(normalize_symbol)
         cls.is_crypto  = staticmethod(is_crypto)
@@ -761,8 +763,12 @@ class TestSchemaBrokerAction(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from schemas import (
-            BrokerAction, AccountAction, Tier, Conviction, TradeIdea,
+            AccountAction,
+            BrokerAction,
+            Conviction,
             Direction,
+            Tier,
+            TradeIdea,
         )
         cls.BrokerAction  = BrokerAction
         cls.AccountAction = AccountAction
@@ -859,8 +865,14 @@ class TestSchemaValidation(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from schemas import (
-            TradeIdea, BrokerAction, AccountAction, Tier, Conviction, Direction,
-            validate_trade_idea, validate_broker_action,
+            AccountAction,
+            BrokerAction,
+            Conviction,
+            Direction,
+            Tier,
+            TradeIdea,
+            validate_broker_action,
+            validate_trade_idea,
         )
         cls.TradeIdea            = TradeIdea
         cls.BrokerAction         = BrokerAction
@@ -998,7 +1010,7 @@ class TestSchemaSignalScore(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from schemas import SignalScore, Conviction, Direction, Tier
+        from schemas import Conviction, Direction, SignalScore, Tier
         cls.SignalScore = SignalScore
         cls.Conviction  = Conviction
         cls.Direction   = Direction
@@ -1053,8 +1065,11 @@ class TestSchemaOptionsStructure(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from schemas import (
-            OptionsStructure, OptionsLeg, OptionStrategy,
-            StructureLifecycle, Tier,
+            OptionsLeg,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
         )
         cls.OptionsStructure    = OptionsStructure
         cls.OptionsLeg          = OptionsLeg
@@ -1149,11 +1164,16 @@ class TestRiskKernelEligibility(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        from risk_kernel import PDT_FLOOR, VIX_HALT, eligibility_check
         from schemas import (
-            AccountAction, BrokerSnapshot, Conviction, Direction,
-            NormalizedPosition, Tier, TradeIdea,
+            AccountAction,
+            BrokerSnapshot,
+            Conviction,
+            Direction,
+            NormalizedPosition,
+            Tier,
+            TradeIdea,
         )
-        from risk_kernel import eligibility_check, PDT_FLOOR, VIX_HALT
         cls.AccountAction = AccountAction
         cls.BrokerSnapshot = BrokerSnapshot
         cls.Conviction = Conviction
@@ -1283,6 +1303,7 @@ class TestRiskKernelEligibility(unittest.TestCase):
         Reproduces the TSM 10→52 bug (2026-04-15).
         """
         from datetime import date as _date
+
         import risk_kernel as rk
 
         today_str = _date.today().strftime("%Y-%m-%d")
@@ -1324,6 +1345,7 @@ class TestRiskKernelEligibility(unittest.TestCase):
     def test_kernel_allows_entry_symbol_no_deadline(self):
         """Symbols NOT in time_bound_actions must still be allowed through."""
         from datetime import date as _date
+
         import risk_kernel as rk
 
         today_str = _date.today().strftime("%Y-%m-%d")
@@ -1354,11 +1376,16 @@ class TestRiskKernelSizing(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        from risk_kernel import _CORE_HIGH_CONVICTION_PCT, VIX_CAUTION, size_position
         from schemas import (
-            AccountAction, BrokerSnapshot, Conviction, Direction,
-            NormalizedPosition, Tier, TradeIdea,
+            AccountAction,
+            BrokerSnapshot,
+            Conviction,
+            Direction,
+            NormalizedPosition,
+            Tier,
+            TradeIdea,
         )
-        from risk_kernel import size_position, VIX_CAUTION, _CORE_HIGH_CONVICTION_PCT
         cls.AccountAction = AccountAction
         cls.BrokerSnapshot = BrokerSnapshot
         cls.Conviction = Conviction
@@ -1370,7 +1397,7 @@ class TestRiskKernelSizing(unittest.TestCase):
         cls.VIX_CAUTION = VIX_CAUTION
         cls._CORE_HIGH_CONVICTION_PCT = _CORE_HIGH_CONVICTION_PCT
 
-    def _make_position(self, market_value: float) -> "NormalizedPosition":
+    def _make_position(self, market_value: float) -> "NormalizedPosition":  # noqa: F821
         return self.NormalizedPosition(
             symbol="__DUMMY__",
             alpaca_sym="__DUMMY__",
@@ -1500,8 +1527,8 @@ class TestRiskKernelStops(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        from risk_kernel import MIN_RR_RATIO, place_stops
         from schemas import AccountAction, Conviction, Direction, Tier, TradeIdea
-        from risk_kernel import place_stops, MIN_RR_RATIO
         cls.AccountAction = AccountAction
         cls.Conviction = Conviction
         cls.Direction = Direction
@@ -1588,11 +1615,17 @@ class TestRiskKernelProcessIdea(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        from risk_kernel import VIX_HALT, process_idea
         from schemas import (
-            AccountAction, BrokerAction, BrokerSnapshot, Conviction,
-            Direction, NormalizedPosition, Tier, TradeIdea,
+            AccountAction,
+            BrokerAction,
+            BrokerSnapshot,
+            Conviction,
+            Direction,
+            NormalizedPosition,
+            Tier,
+            TradeIdea,
         )
-        from risk_kernel import process_idea, VIX_HALT
         cls.AccountAction = AccountAction
         cls.BrokerAction = BrokerAction
         cls.BrokerSnapshot = BrokerSnapshot
@@ -1717,8 +1750,8 @@ class TestRiskKernelOptionsSelection(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        from risk_kernel import liquidity_gate, select_structure
         from schemas import Direction, OptionStrategy, Tier
-        from risk_kernel import select_structure, liquidity_gate
         cls.Direction = Direction
         cls.OptionStrategy = OptionStrategy
         cls.Tier = Tier
@@ -1816,7 +1849,7 @@ class TestReconciliationDesiredState(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from reconciliation import build_desired_state, DesiredState, DesiredPosition
+        from reconciliation import DesiredPosition, DesiredState, build_desired_state
         cls.build_desired_state = staticmethod(build_desired_state)
         cls.DesiredState = DesiredState
         cls.DesiredPosition = DesiredPosition
@@ -1876,10 +1909,14 @@ class TestReconciliationDiff(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from reconciliation import (
-            build_desired_state, diff_state, ReconciliationDiff,
-            PRIORITY_CRITICAL, PRIORITY_HIGH, PRIORITY_NORMAL,
+            PRIORITY_CRITICAL,
+            PRIORITY_HIGH,
+            PRIORITY_NORMAL,
+            ReconciliationDiff,
+            build_desired_state,
+            diff_state,
         )
-        from schemas import BrokerSnapshot, NormalizedPosition, NormalizedOrder
+        from schemas import BrokerSnapshot, NormalizedOrder, NormalizedPosition
         cls.build_desired_state = staticmethod(build_desired_state)
         cls.diff_state = staticmethod(diff_state)
         cls.ReconciliationDiff = ReconciliationDiff
@@ -1922,8 +1959,9 @@ class TestReconciliationDiff(unittest.TestCase):
         self.assertIsInstance(result, self.ReconciliationDiff)
 
     def test_expired_deadline_is_critical(self):
-        from datetime import datetime, timezone, timedelta
-        from reconciliation import DesiredState, DesiredPosition
+        from datetime import datetime, timedelta, timezone
+
+        from reconciliation import DesiredPosition, DesiredState
 
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         desired = DesiredState(positions={
@@ -1936,8 +1974,9 @@ class TestReconciliationDiff(unittest.TestCase):
         self.assertTrue(any(a.priority == self.PRIORITY_CRITICAL for a in diff.actions))
 
     def test_future_deadline_not_expired(self):
-        from datetime import datetime, timezone, timedelta
-        from reconciliation import DesiredState, DesiredPosition
+        from datetime import datetime, timedelta, timezone
+
+        from reconciliation import DesiredPosition, DesiredState
 
         future = (datetime.now(timezone.utc) + timedelta(days=10)).isoformat()
         desired = DesiredState(positions={
@@ -1948,7 +1987,7 @@ class TestReconciliationDiff(unittest.TestCase):
         self.assertNotIn("TSM", diff.expired_symbols)
 
     def test_forced_exit_is_high_priority(self):
-        from reconciliation import DesiredState, DesiredPosition
+        from reconciliation import DesiredPosition, DesiredState
 
         desired = DesiredState(positions={
             "NVDA": DesiredPosition(symbol="NVDA", forced_exit=True),
@@ -1960,7 +1999,7 @@ class TestReconciliationDiff(unittest.TestCase):
         self.assertTrue(any(a.priority == self.PRIORITY_HIGH for a in diff.actions))
 
     def test_missing_stop_is_normal_priority(self):
-        from reconciliation import DesiredState, DesiredPosition
+        from reconciliation import DesiredPosition, DesiredState
 
         desired = DesiredState(positions={
             "GLD": DesiredPosition(symbol="GLD"),
@@ -1978,7 +2017,7 @@ class TestReconciliationDiff(unittest.TestCase):
         ))
 
     def test_position_with_stop_has_no_missing_stop(self):
-        from reconciliation import DesiredState, DesiredPosition
+        from reconciliation import DesiredPosition, DesiredState
 
         desired = DesiredState(positions={
             "GLD": DesiredPosition(symbol="GLD"),
@@ -1992,8 +2031,9 @@ class TestReconciliationDiff(unittest.TestCase):
 
     def test_critical_before_high_before_normal(self):
         """Actions must be sorted CRITICAL < HIGH < NORMAL."""
-        from datetime import datetime, timezone, timedelta
-        from reconciliation import DesiredState, DesiredPosition
+        from datetime import datetime, timedelta, timezone
+
+        from reconciliation import DesiredPosition, DesiredState
 
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         desired = DesiredState(positions={
@@ -2027,10 +2067,15 @@ class TestReconciliationOptionsStructures(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from reconciliation import reconcile_options_structures, OptionsReconResult
+        from reconciliation import OptionsReconResult, reconcile_options_structures
         from schemas import (
-            OptionsStructure, OptionsLeg, OptionStrategy,
-            StructureLifecycle, Tier, BrokerSnapshot, NormalizedPosition,
+            BrokerSnapshot,
+            NormalizedPosition,
+            OptionsLeg,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
         )
         cls.reconcile         = staticmethod(reconcile_options_structures)
         cls.OptionsReconResult = OptionsReconResult
@@ -2162,8 +2207,10 @@ class TestSonnetGate(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from sonnet_gate import (
-            GateState, TriggerReason,
-            should_run_sonnet, should_use_compact_prompt,
+            GateState,
+            TriggerReason,
+            should_run_sonnet,
+            should_use_compact_prompt,
         )
         cls.GateState              = GateState
         cls.TriggerReason          = TriggerReason
@@ -2205,8 +2252,8 @@ class TestSonnetGate(unittest.TestCase):
 
     def _state_expired(self, **overrides):
         """Gate state with last call 20 minutes ago (cooldown expired)."""
-        from datetime import datetime, timezone, timedelta
         import hashlib
+        from datetime import datetime, timedelta, timezone
         defaults = {
             "last_sonnet_call_utc": (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat(),
             "last_regime":          "neutral",
@@ -2301,8 +2348,8 @@ class TestSonnetGate(unittest.TestCase):
 
     def test_gate_trigger_deadline_approaching(self):
         """Time-bound action deadline within 30 min → DEADLINE_APPROACHING triggers."""
-        from datetime import datetime, timezone, timedelta
         import hashlib
+        from datetime import datetime, timedelta, timezone
 
         deadline_utc = (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat()
         state = self._state_expired(
@@ -2404,7 +2451,7 @@ class TestBug009BracketStopVisibility(unittest.TestCase):
         cls.NormalizedOrder         = NormalizedOrder
         cls.NormalizedPosition      = NormalizedPosition
 
-    def _make_order(self, order_type: str) -> "NormalizedOrder":
+    def _make_order(self, order_type: str) -> "NormalizedOrder":  # noqa: F821
         """Build a sell NormalizedOrder with the given order_type string."""
         return self.NormalizedOrder(
             order_id="test-ord-001",
@@ -2419,7 +2466,7 @@ class TestBug009BracketStopVisibility(unittest.TestCase):
             status="open",
         )
 
-    def _make_position(self) -> "NormalizedPosition":
+    def _make_position(self) -> "NormalizedPosition":  # noqa: F821
         return self.NormalizedPosition(
             symbol="AMZN",
             alpaca_sym="AMZN",
@@ -2589,8 +2636,9 @@ class TestSuite14OptionsBuilder(unittest.TestCase):
 
     def test_is_terminal_true_for_terminal_states(self):
         """T2: is_terminal() must return True for CLOSED/REJECTED/EXPIRED/CANCELLED."""
-        from schemas import StructureLifecycle, OptionsStructure, OptionStrategy, Tier
         from datetime import datetime, timezone
+
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
         base = dict(
             structure_id="x", underlying="GLD", strategy=OptionStrategy.SINGLE_CALL,
             lifecycle=StructureLifecycle.CLOSED,
@@ -2614,8 +2662,9 @@ class TestSuite14OptionsBuilder(unittest.TestCase):
 
     def test_is_open_true_for_filled_states(self):
         """T3: is_open() must return True for FULLY_FILLED and PARTIALLY_FILLED only."""
-        from schemas import StructureLifecycle, OptionsStructure, OptionStrategy, Tier
         from datetime import datetime, timezone
+
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
         base = dict(
             structure_id="y", underlying="GLD", strategy=OptionStrategy.SINGLE_CALL,
             lifecycle=StructureLifecycle.FULLY_FILLED,
@@ -2637,10 +2686,15 @@ class TestSuite14OptionsBuilder(unittest.TestCase):
 
     def test_net_debit_per_contract_from_legs(self):
         """T4: net_debit_per_contract() computes correctly from leg filled_prices."""
-        from schemas import (
-            StructureLifecycle, OptionsStructure, OptionsLeg, OptionStrategy, Tier,
-        )
         from datetime import datetime, timezone
+
+        from schemas import (
+            OptionsLeg,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
+        )
         buy_leg  = OptionsLeg(
             occ_symbol="GLD   260418C00430000", underlying="GLD",
             side="buy",  qty=1, option_type="call",
@@ -2669,7 +2723,7 @@ class TestSuite14OptionsBuilder(unittest.TestCase):
 
     def test_structure_proposal_importable(self):
         """T5: StructureProposal must be importable from schemas with all required fields."""
-        from schemas import StructureProposal, OptionStrategy
+        from schemas import OptionStrategy, StructureProposal
         p = StructureProposal(
             symbol="GLD",
             strategy=OptionStrategy.CALL_DEBIT_SPREAD,
@@ -2692,8 +2746,9 @@ class TestSuite14OptionsBuilder(unittest.TestCase):
 
     def test_select_expiry_returns_closest_to_midpoint(self):
         """T6: select_expiry picks the expiration closest to the DTE midpoint."""
-        from options_builder import select_expiry
         from datetime import date, timedelta
+
+        from options_builder import select_expiry
         chain = self._make_chain()
         exp14 = (date.today() + timedelta(days=14)).isoformat()
         result = select_expiry(chain, dte_min=5, dte_max=21)
@@ -2754,11 +2809,12 @@ class TestSuite14OptionsBuilder(unittest.TestCase):
     def test_options_state_save_load_round_trip(self):
         """T9: save_structure → load_structures round-trip preserves all key fields."""
         import tempfile
-        from unittest.mock import patch
         from pathlib import Path
+        from unittest.mock import patch
+
+        import options_state
         from options_builder import build_structure
         from schemas import OptionStrategy
-        import options_state
 
         action = {
             "symbol":          "GLD",
@@ -2817,8 +2873,12 @@ class TestSuite15OptionsExecutorAndIntelligence(unittest.TestCase):
     ):
         """Minimal OptionsStructure for executor tests."""
         from datetime import date, timedelta
+
         from schemas import (
-            OptionStrategy, OptionsStructure, StructureLifecycle, Tier,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
         )
         if strategy is None:
             strategy = OptionStrategy.CALL_DEBIT_SPREAD
@@ -2860,8 +2920,8 @@ class TestSuite15OptionsExecutorAndIntelligence(unittest.TestCase):
 
     def test_submit_structure_phase2_rejected(self):
         """T3: STRADDLE (Phase 2) → lifecycle=REJECTED, audit_log contains 'not yet supported'."""
-        from schemas import OptionStrategy, StructureLifecycle
         from options_executor import submit_structure
+        from schemas import OptionStrategy, StructureLifecycle
 
         struct = self._make_structure(
             strategy=OptionStrategy.STRADDLE,
@@ -2882,7 +2942,8 @@ class TestSuite15OptionsExecutorAndIntelligence(unittest.TestCase):
 
     def test_should_close_expiry_approaching(self):
         """T4: should_close_structure returns (True, 'expiry_approaching') when DTE ≤ 2."""
-        from datetime import date, timedelta, datetime, timezone
+        from datetime import date, datetime, timedelta, timezone
+
         from options_executor import should_close_structure
 
         tomorrow = (date.today() + timedelta(days=1)).isoformat()
@@ -2900,7 +2961,8 @@ class TestSuite15OptionsExecutorAndIntelligence(unittest.TestCase):
 
     def test_should_close_no_reason(self):
         """T5: should_close_structure returns (False, '') with 30 DTE and no P&L data."""
-        from datetime import date, timedelta, datetime, timezone
+        from datetime import date, datetime, timedelta, timezone
+
         from options_executor import should_close_structure
 
         far_expiry = (date.today() + timedelta(days=30)).isoformat()
@@ -2977,13 +3039,18 @@ class TestSuite16OptionsRecon(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from reconciliation import (
-            reconcile_options_structures,
-            plan_structure_repair,
             OptionsReconResult,
+            plan_structure_repair,
+            reconcile_options_structures,
         )
         from schemas import (
-            OptionsStructure, OptionsLeg, OptionStrategy,
-            StructureLifecycle, Tier, BrokerSnapshot, NormalizedPosition,
+            BrokerSnapshot,
+            NormalizedPosition,
+            OptionsLeg,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
         )
         cls.reconcile           = staticmethod(reconcile_options_structures)
         cls.plan_repair         = staticmethod(plan_structure_repair)
@@ -3150,6 +3217,7 @@ class TestSuite17AttributionAndDeadlineExit(unittest.TestCase):
 
     def _import_attribution(self):
         import importlib
+
         import attribution
         importlib.reload(attribution)
         return attribution
@@ -3159,7 +3227,7 @@ class TestSuite17AttributionAndDeadlineExit(unittest.TestCase):
     def test_deadline_exit_produces_market_action(self):
         """diff_state() must emit action_type='deadline_exit_market' for expired deadline."""
         import reconciliation
-        from reconciliation import DesiredState, DesiredPosition
+        from reconciliation import DesiredPosition, DesiredState
         from schemas import BrokerSnapshot, NormalizedPosition
 
         NOW = datetime(2026, 4, 22, 20, 0, 0, tzinfo=timezone.utc)  # past deadline
@@ -3270,7 +3338,7 @@ class TestSuite17AttributionAndDeadlineExit(unittest.TestCase):
 
     def test_attribution_log_roundtrip(self):
         """log_attribution_event writes a record; get_attribution_summary reads it back."""
-        import tempfile, importlib
+        import tempfile
         attr = self._import_attribution()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3357,7 +3425,6 @@ class TestSuite17AttributionAndDeadlineExit(unittest.TestCase):
     def test_get_attribution_summary_with_data(self):
         """get_attribution_summary returns correct counts and rates from real data."""
         import tempfile
-        from datetime import timedelta
         attr = self._import_attribution()
 
         module_tags_full = {
@@ -3423,7 +3490,7 @@ class TestSuite17AttributionAndDeadlineExit(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 import sys as _sys
-import os as _os
+
 _sys.path.insert(0, str(Path(__file__).parent.parent))
 
 class TestSuite18Divergence(unittest.TestCase):
@@ -3435,7 +3502,7 @@ class TestSuite18Divergence(unittest.TestCase):
 
     def test_divergence_classify_stop_missing(self):
         """stop_missing classifies as DE_RISK, SYMBOL scope, guarded_auto."""
-        from divergence import classify_divergence, DivergenceSeverity, DivergenceScope
+        from divergence import DivergenceScope, DivergenceSeverity, classify_divergence
         severity, scope, recov = classify_divergence(
             "stop_missing", "AAPL", "A1")
         self.assertEqual(severity, DivergenceSeverity.DE_RISK)
@@ -3444,7 +3511,7 @@ class TestSuite18Divergence(unittest.TestCase):
 
     def test_divergence_classify_escalates_large_position(self):
         """Large position ($10k) escalates stop_missing from DE_RISK to HALT."""
-        from divergence import classify_divergence, DivergenceSeverity, DivergenceScope
+        from divergence import DivergenceSeverity, classify_divergence
         severity, scope, recov = classify_divergence(
             "stop_missing", "TSLA", "A1",
             position_size_usd=10000,
@@ -3456,7 +3523,10 @@ class TestSuite18Divergence(unittest.TestCase):
     def test_operating_mode_normal_allows_all(self):
         """NORMAL mode allows all action types."""
         from divergence import (
-            is_action_allowed, AccountMode, OperatingMode, DivergenceScope,
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            is_action_allowed,
         )
         mode = AccountMode(
             account="A1", mode=OperatingMode.NORMAL,
@@ -3472,7 +3542,10 @@ class TestSuite18Divergence(unittest.TestCase):
     def test_operating_mode_risk_containment_blocks_entry(self):
         """RISK_CONTAINMENT with account scope blocks enter_long."""
         from divergence import (
-            is_action_allowed, AccountMode, OperatingMode, DivergenceScope,
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            is_action_allowed,
         )
         mode = AccountMode(
             account="A1", mode=OperatingMode.RISK_CONTAINMENT,
@@ -3488,7 +3561,10 @@ class TestSuite18Divergence(unittest.TestCase):
     def test_operating_mode_risk_containment_allows_close(self):
         """RISK_CONTAINMENT always allows close/reduce actions."""
         from divergence import (
-            is_action_allowed, AccountMode, OperatingMode, DivergenceScope,
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            is_action_allowed,
         )
         mode = AccountMode(
             account="A1", mode=OperatingMode.RISK_CONTAINMENT,
@@ -3504,7 +3580,10 @@ class TestSuite18Divergence(unittest.TestCase):
     def test_operating_mode_halted_blocks_entries(self):
         """HALTED mode blocks enter_long and enter_short."""
         from divergence import (
-            is_action_allowed, AccountMode, OperatingMode, DivergenceScope,
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            is_action_allowed,
         )
         mode = AccountMode(
             account="A1", mode=OperatingMode.HALTED,
@@ -3520,10 +3599,13 @@ class TestSuite18Divergence(unittest.TestCase):
 
     def test_clean_cycle_recovers_to_normal(self):
         """One clean cycle with recovery_condition=one_clean_cycle returns NORMAL."""
-        import tempfile, json
+        import tempfile
+
         from divergence import (
-            check_clean_cycle, AccountMode, OperatingMode,
-            DivergenceScope, RUNTIME_DIR,
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            check_clean_cycle,
         )
         mode = AccountMode(
             account="A1", mode=OperatingMode.RECONCILE_ONLY,
@@ -3551,16 +3633,18 @@ class TestSuite18Divergence(unittest.TestCase):
     def test_repeat_escalation_upgrades_severity(self):
         """Two repeats of same event within window upgrades INFO to RECONCILE."""
         import tempfile
-        from divergence import (
-            check_repeat_escalation, DivergenceSeverity, DIVERGENCE_COUNTS_PATH,
-        )
+
         import divergence as _div_mod
+        from divergence import (
+            DivergenceSeverity,
+            check_repeat_escalation,
+        )
         original_path = _div_mod.DIVERGENCE_COUNTS_PATH
         with tempfile.TemporaryDirectory() as tmp:
             _div_mod.DIVERGENCE_COUNTS_PATH = Path(tmp) / "divergence_counts.json"
             try:
                 # First call — no escalation yet
-                s1 = check_repeat_escalation(
+                check_repeat_escalation(
                     "A1", "fill_price_drift", "AAPL",
                     DivergenceSeverity.INFO, window_cycles=10,
                 )
@@ -3628,8 +3712,9 @@ class TestSuite18Divergence(unittest.TestCase):
                 }
             }
         }
-        from schemas import StructureProposal, OptionStrategy, Direction
         from datetime import datetime, timezone
+
+        from schemas import Direction, OptionStrategy, StructureProposal
         proposal = StructureProposal(
             symbol="TEST",
             strategy=OptionStrategy.SINGLE_CALL,
@@ -3754,9 +3839,10 @@ class TestSuite19Phase3(unittest.TestCase):
     # ── Test 6: time-stop fires at 40% elapsed for single leg ─────────────────
     def test_06_time_stop_single_leg_40pct(self):
         """should_close_structure returns True for single leg at 40% elapsed DTE."""
+        from datetime import date, timedelta
+
         import options_executor
         from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
-        from datetime import date, timedelta
         today = date.today()
         opened = today - timedelta(days=4)   # opened 4 days ago
         expiry = today + timedelta(days=6)   # expires 6 days → total=10, elapsed=4 → 40%
@@ -3780,9 +3866,10 @@ class TestSuite19Phase3(unittest.TestCase):
     # ── Test 7: time-stop fires at 50% elapsed for debit spread ───────────────
     def test_07_time_stop_debit_spread_50pct(self):
         """should_close_structure returns True for debit spread at 50% elapsed DTE."""
+        from datetime import date, timedelta
+
         import options_executor
         from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
-        from datetime import date, timedelta
         today = date.today()
         opened = today - timedelta(days=5)   # opened 5 days ago
         expiry = today + timedelta(days=5)   # total=10, elapsed=5 → 50%
@@ -3806,9 +3893,10 @@ class TestSuite19Phase3(unittest.TestCase):
     # ── Test 8: time-stop does NOT fire for credit spread ─────────────────────
     def test_08_time_stop_credit_spread_excluded(self):
         """Credit spreads must NOT trigger the time-stop rule."""
+        from datetime import date, timedelta
+
         import options_executor
         from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
-        from datetime import date, timedelta
         today = date.today()
         opened = today - timedelta(days=7)
         expiry = today + timedelta(days=3)  # 70% elapsed — above any threshold
@@ -4058,6 +4146,7 @@ class TestSuite21IVHistorySeeder(unittest.TestCase):
         """validate_seed_quality returns grade A for 20+ entries with variance."""
         import tempfile
         from pathlib import Path
+
         from iv_history_seeder import validate_seed_quality
 
         history = [
@@ -4080,6 +4169,7 @@ class TestSuite21IVHistorySeeder(unittest.TestCase):
         """validate_seed_quality returns grade F when fewer than 10 valid entries."""
         import tempfile
         from pathlib import Path
+
         from iv_history_seeder import validate_seed_quality
 
         history = [{"date": f"2026-01-0{i+1}", "iv": 0.20} for i in range(5)]
@@ -4124,6 +4214,7 @@ class TestSuite21IVHistorySeeder(unittest.TestCase):
         """_merge_with_existing does not replace entries where iv >= MIN_VALID_IV."""
         import tempfile
         from pathlib import Path
+
         from iv_history_seeder import _merge_with_existing
 
         existing = [{"date": "2026-01-02", "iv": 0.25}]
@@ -4146,7 +4237,8 @@ class TestSuite21IVHistorySeeder(unittest.TestCase):
         """_merge_with_existing replaces entries with iv < MIN_VALID_IV."""
         import tempfile
         from pathlib import Path
-        from iv_history_seeder import _merge_with_existing, MIN_VALID_IV
+
+        from iv_history_seeder import MIN_VALID_IV, _merge_with_existing
 
         # BUG-005 artifact: SPY same-day expiry returned iv=0.02
         existing = [{"date": "2026-04-14", "iv": 0.02}]
@@ -4172,7 +4264,8 @@ class TestSuite21IVHistorySeeder(unittest.TestCase):
         import sys
         from datetime import date, timedelta
         from unittest.mock import MagicMock, patch
-        from iv_history_seeder import _fetch_atm_iv_yfinance, MIN_DTE
+
+        from iv_history_seeder import MIN_DTE, _fetch_atm_iv_yfinance
 
         today = date.today()
         # Only provide expirations with DTE < MIN_DTE (same-day and next-day)
@@ -4224,9 +4317,10 @@ class TestSuite22PhaseA(unittest.TestCase):
     def test_shadow_event_has_decision_id(self):
         """log_shadow_event writes decision_id to JSONL and it is non-empty."""
         import tempfile
-        import shadow_lane
         from pathlib import Path
         from unittest.mock import patch
+
+        import shadow_lane
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_log = Path(tmpdir) / "near_miss_log.jsonl"
@@ -4293,8 +4387,8 @@ class TestSuite22PhaseA(unittest.TestCase):
 
     def test_executor_accepts_broker_action(self):
         """execute_all converts BrokerAction → dict via to_dict() before validation."""
-        from schemas import BrokerAction, AccountAction, Tier, Conviction
         import order_executor as oe
+        from schemas import AccountAction, BrokerAction, Conviction, Tier
 
         ba = BrokerAction(
             symbol="GLD",
@@ -4341,8 +4435,9 @@ class TestSuite23PhaseB(unittest.TestCase):
 
     def test_obs_iv_not_ready_blocks_completion(self):
         """check_iv_history_ready returns all_ready=False when no IV history files exist."""
-        import options_data as _od
         import tempfile
+
+        import options_data as _od
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(_od, "_IV_DIR", Path(tmpdir)):
@@ -4360,8 +4455,9 @@ class TestSuite23PhaseB(unittest.TestCase):
 
     def test_obs_validation_days_insufficient(self):
         """_update_obs_mode_state returns True (still in obs) when trading_days_observed < 20."""
-        import bot_options
         from datetime import date
+
+        import bot_options
 
         today_str = date.today().isoformat()
         state = {
@@ -4377,7 +4473,7 @@ class TestSuite23PhaseB(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_file = Path(tmpdir) / "obs_mode_state.json"
-            with mock.patch("bot_options._OBS_MODE_FILE", tmp_file):
+            with mock.patch("bot_options_stage0_preflight._OBS_MODE_FILE", tmp_file):
                 still_in_obs = bot_options._update_obs_mode_state(state)
 
         self.assertTrue(still_in_obs,
@@ -4402,8 +4498,8 @@ class TestSuite23PhaseB(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_file = Path(tmpdir) / "obs_mode_state.json"
-            with mock.patch("bot_options._OBS_MODE_FILE", tmp_file), \
-                 mock.patch("bot_options._check_and_update_iv_ready",
+            with mock.patch("bot_options_stage0_preflight._OBS_MODE_FILE", tmp_file), \
+                 mock.patch("bot_options_stage0_preflight._check_and_update_iv_ready",
                             side_effect=lambda s: s):
                 result = bot_options._update_obs_mode_state(state)
 
@@ -4416,8 +4512,9 @@ class TestSuite23PhaseB(unittest.TestCase):
 
     def test_obs_all_conditions_met(self):
         """_update_obs_mode_state completes obs mode at exactly 20 days and writes v2 fields."""
-        import bot_options
         from datetime import date
+
+        import bot_options
 
         yesterday = (date.today() - __import__("datetime").timedelta(days=1)).isoformat()
         state = {
@@ -4436,9 +4533,9 @@ class TestSuite23PhaseB(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_file = Path(tmpdir) / "obs_mode_state.json"
-            with mock.patch("bot_options._OBS_MODE_FILE", tmp_file), \
-                 mock.patch("bot_options._is_trading_day", return_value=True), \
-                 mock.patch("bot_options._check_and_update_iv_ready",
+            with mock.patch("bot_options_stage0_preflight._OBS_MODE_FILE", tmp_file), \
+                 mock.patch("bot_options_stage0_preflight._is_trading_day", return_value=True), \
+                 mock.patch("bot_options_stage0_preflight._check_and_update_iv_ready",
                             side_effect=_mock_iv_ready):
                 result = bot_options._update_obs_mode_state(state)
 
@@ -4509,11 +4606,16 @@ class TestSuite23PhaseB(unittest.TestCase):
 
     def test_options_structure_broken_triggers_close(self):
         """reconcile_options_structures marks a spread as broken when only one leg is present."""
-        from schemas import (
-            OptionsStructure, OptionsLeg, OptionStrategy, StructureLifecycle, Tier,
-            BrokerSnapshot, NormalizedPosition,
-        )
         from reconciliation import reconcile_options_structures
+        from schemas import (
+            BrokerSnapshot,
+            NormalizedPosition,
+            OptionsLeg,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
+        )
 
         occ_long  = "AAPL260417C00200000"
         occ_short = "AAPL260417C00210000"
@@ -4565,11 +4667,17 @@ class TestSuite23PhaseB(unittest.TestCase):
     def test_options_structure_expiry_approaching(self):
         """reconcile_options_structures marks structure as expiring_soon when DTE ≤ 2."""
         from datetime import date, timedelta
-        from schemas import (
-            OptionsStructure, OptionsLeg, OptionStrategy, StructureLifecycle, Tier,
-            BrokerSnapshot, NormalizedPosition,
-        )
+
         from reconciliation import reconcile_options_structures
+        from schemas import (
+            BrokerSnapshot,
+            NormalizedPosition,
+            OptionsLeg,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
+        )
 
         exp_date = date.today() + timedelta(days=1)
         occ = f"SPY{exp_date.strftime('%y%m%d')}C00500000"
@@ -4618,8 +4726,15 @@ class TestSuite23PhaseB(unittest.TestCase):
     def test_options_structure_time_stop_single_leg(self):
         """should_close_structure fires time_stop at 40% elapsed DTE for single-leg strategy."""
         from datetime import date, timedelta
-        from schemas import OptionsStructure, OptionsLeg, OptionStrategy, StructureLifecycle, Tier
+
         import options_executor
+        from schemas import (
+            OptionsLeg,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
+        )
 
         # 20-day total: opened 8 days ago, expires in 12 days → 8/20 = 40% elapsed
         open_date = date.today() - timedelta(days=8)
@@ -4660,8 +4775,15 @@ class TestSuite23PhaseB(unittest.TestCase):
     def test_options_structure_time_stop_no_fire_early(self):
         """should_close_structure does NOT fire time_stop when elapsed DTE < 40%."""
         from datetime import date, timedelta
-        from schemas import OptionsStructure, OptionsLeg, OptionStrategy, StructureLifecycle, Tier
+
         import options_executor
+        from schemas import (
+            OptionsLeg,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
+        )
 
         # 31-day total: opened 1 day ago, expires in 30 days → 1/31 ≈ 3% elapsed
         open_date = date.today() - timedelta(days=1)
@@ -4741,9 +4863,9 @@ class TestSuite23PhaseB(unittest.TestCase):
 
     def test_generate_outcomes_summary_empty(self):
         """generate_outcomes_summary returns empty-but-valid dict when no log file exists."""
-        import decision_outcomes as _do
-
         import tempfile
+
+        import decision_outcomes as _do
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_log = Path(tmpdir) / "decision_outcomes.jsonl"
             # File intentionally not created — simulates first-run with no log
@@ -4783,7 +4905,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_classify_fill_price_drift_returns_info(self):
         """classify_divergence('fill_price_drift') returns INFO severity."""
-        from divergence import classify_divergence, DivergenceSeverity, DivergenceScope
+        from divergence import DivergenceScope, DivergenceSeverity, classify_divergence
         severity, scope, recoverability = classify_divergence(
             "fill_price_drift", "SPY", "A1")
         self.assertEqual(severity, DivergenceSeverity.INFO)
@@ -4794,7 +4916,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_classify_stop_missing_returns_de_risk(self):
         """classify_divergence('stop_missing') returns DE_RISK / SYMBOL scope."""
-        from divergence import classify_divergence, DivergenceSeverity, DivergenceScope
+        from divergence import DivergenceScope, DivergenceSeverity, classify_divergence
         severity, scope, recoverability = classify_divergence(
             "stop_missing", "GLD", "A1")
         self.assertEqual(severity, DivergenceSeverity.DE_RISK)
@@ -4804,7 +4926,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_classify_protection_missing_returns_halt(self):
         """classify_divergence('protection_missing') returns HALT / manual recovery."""
-        from divergence import classify_divergence, DivergenceSeverity
+        from divergence import DivergenceSeverity, classify_divergence
         severity, scope, recoverability = classify_divergence(
             "protection_missing", "GLD", "A1")
         self.assertEqual(severity, DivergenceSeverity.HALT)
@@ -4814,7 +4936,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_classify_large_position_escalates_severity(self):
         """position_size_usd > 5000 escalates severity one level and tightens recoverability."""
-        from divergence import classify_divergence, DivergenceSeverity
+        from divergence import DivergenceSeverity, classify_divergence
         sev_base, _, rec_base = classify_divergence(
             "fill_price_drift", "SPY", "A1", position_size_usd=100)
         sev_large, _, rec_large = classify_divergence(
@@ -4827,7 +4949,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_classify_stressed_vix_escalates_severity(self):
         """vix > 25 escalates fill_price_drift from INFO to next level."""
-        from divergence import classify_divergence, DivergenceSeverity
+        from divergence import DivergenceSeverity, classify_divergence
         sev_normal, _, _ = classify_divergence(
             "fill_price_drift", "SPY", "A1", vix=20)
         sev_stressed, _, _ = classify_divergence(
@@ -4839,7 +4961,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_classify_near_expiry_escalates_severity(self):
         """dte <= 2 escalates structure_partial_fill from RECONCILE to DE_RISK."""
-        from divergence import classify_divergence, DivergenceSeverity
+        from divergence import DivergenceSeverity, classify_divergence
         sev_ok, _, _ = classify_divergence(
             "structure_partial_fill", "GLD", "A2", dte=10)
         sev_expiring, _, _ = classify_divergence(
@@ -4851,7 +4973,12 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_is_action_allowed_normal_mode_all_allowed(self):
         """NORMAL mode: every action intent is allowed."""
-        from divergence import is_action_allowed, AccountMode, OperatingMode, DivergenceScope
+        from divergence import (
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            is_action_allowed,
+        )
         mode_state = AccountMode(
             account="A1", mode=OperatingMode.NORMAL,
             scope=DivergenceScope.ACCOUNT, scope_id="",
@@ -4869,7 +4996,12 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_is_action_allowed_halted_blocks_enter(self):
         """HALTED mode: enter_long is blocked and reason contains 'halted'."""
-        from divergence import is_action_allowed, AccountMode, OperatingMode, DivergenceScope
+        from divergence import (
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            is_action_allowed,
+        )
         mode_state = AccountMode(
             account="A1", mode=OperatingMode.HALTED,
             scope=DivergenceScope.ACCOUNT, scope_id="A1",
@@ -4886,7 +5018,12 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_is_action_allowed_halted_allows_close(self):
         """HALTED mode: all _ALLOWED_ALWAYS actions are still permitted."""
-        from divergence import is_action_allowed, AccountMode, OperatingMode, DivergenceScope
+        from divergence import (
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            is_action_allowed,
+        )
         mode_state = AccountMode(
             account="A1", mode=OperatingMode.HALTED,
             scope=DivergenceScope.ACCOUNT, scope_id="A1",
@@ -4905,7 +5042,12 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_is_action_allowed_risk_containment_scoped_symbol(self):
         """RISK_CONTAINMENT scope=symbol: blocked for that symbol, allowed for others."""
-        from divergence import is_action_allowed, AccountMode, OperatingMode, DivergenceScope
+        from divergence import (
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            is_action_allowed,
+        )
         mode_state = AccountMode(
             account="A1", mode=OperatingMode.RISK_CONTAINMENT,
             scope=DivergenceScope.SYMBOL, scope_id="GLD",
@@ -4923,7 +5065,12 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_is_action_allowed_reconcile_only_blocks_entry(self):
         """RECONCILE_ONLY mode: enter_long is blocked regardless of symbol."""
-        from divergence import is_action_allowed, AccountMode, OperatingMode, DivergenceScope
+        from divergence import (
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            is_action_allowed,
+        )
         mode_state = AccountMode(
             account="A1", mode=OperatingMode.RECONCILE_ONLY,
             scope=DivergenceScope.SYMBOL, scope_id="GLD",
@@ -4940,8 +5087,9 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_detect_fill_divergence_below_threshold_returns_none(self):
         """detect_fill_divergence: < 0.5% price drift returns None (no event)."""
-        import divergence as _div_mod
         import tempfile
+
+        import divergence as _div_mod
         original_log = _div_mod.DIVERGENCE_LOG
         with tempfile.TemporaryDirectory() as tmp:
             _div_mod.DIVERGENCE_LOG = Path(tmp) / "divergence_log.jsonl"
@@ -4963,7 +5111,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_classify_unknown_event_type_returns_info(self):
         """classify_divergence with an unrecognised event_type returns the INFO default."""
-        from divergence import classify_divergence, DivergenceSeverity, DivergenceScope
+        from divergence import DivergenceScope, DivergenceSeverity, classify_divergence
         severity, scope, recoverability = classify_divergence(
             "totally_made_up_event_xyz", "SPY", "A1")
         self.assertEqual(severity, DivergenceSeverity.INFO)
@@ -4974,8 +5122,9 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_repeat_escalation_upgrades_severity(self):
         """check_repeat_escalation: two occurrences in same window escalate RECONCILE → DE_RISK."""
-        import divergence as _div_mod
         import tempfile
+
+        import divergence as _div_mod
         from divergence import DivergenceSeverity
         original_counts = _div_mod.DIVERGENCE_COUNTS_PATH
         with tempfile.TemporaryDirectory() as tmp:
@@ -4998,10 +5147,16 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_respond_to_reconcile_event_transitions_mode(self):
         """respond_to_divergence with RECONCILE event transitions NORMAL → RECONCILE_ONLY."""
-        import divergence as _div_mod
         import tempfile
-        from divergence import (DivergenceEvent, DivergenceSeverity, DivergenceScope,
-                                OperatingMode, AccountMode)
+
+        import divergence as _div_mod
+        from divergence import (
+            AccountMode,
+            DivergenceEvent,
+            DivergenceScope,
+            DivergenceSeverity,
+            OperatingMode,
+        )
         original_runtime = _div_mod.RUNTIME_DIR
         original_mtl = _div_mod.MODE_TRANSITION_LOG
         with tempfile.TemporaryDirectory() as tmp:
@@ -5037,10 +5192,16 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_respond_to_de_risk_event_transitions_mode(self):
         """respond_to_divergence with DE_RISK event transitions NORMAL → RISK_CONTAINMENT."""
-        import divergence as _div_mod
         import tempfile
-        from divergence import (DivergenceEvent, DivergenceSeverity, DivergenceScope,
-                                OperatingMode, AccountMode)
+
+        import divergence as _div_mod
+        from divergence import (
+            AccountMode,
+            DivergenceEvent,
+            DivergenceScope,
+            DivergenceSeverity,
+            OperatingMode,
+        )
         original_runtime = _div_mod.RUNTIME_DIR
         original_mtl = _div_mod.MODE_TRANSITION_LOG
         with tempfile.TemporaryDirectory() as tmp:
@@ -5076,10 +5237,16 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_respond_to_halt_event_transitions_mode(self):
         """respond_to_divergence with HALT event transitions NORMAL → HALTED."""
-        import divergence as _div_mod
         import tempfile
-        from divergence import (DivergenceEvent, DivergenceSeverity, DivergenceScope,
-                                OperatingMode, AccountMode)
+
+        import divergence as _div_mod
+        from divergence import (
+            AccountMode,
+            DivergenceEvent,
+            DivergenceScope,
+            DivergenceSeverity,
+            OperatingMode,
+        )
         original_runtime = _div_mod.RUNTIME_DIR
         original_mtl = _div_mod.MODE_TRANSITION_LOG
         with tempfile.TemporaryDirectory() as tmp:
@@ -5115,9 +5282,14 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_respond_already_halted_stays_halted(self):
         """respond_to_divergence when already HALTED: no transition, returns unchanged mode."""
-        from divergence import (DivergenceEvent, DivergenceSeverity, DivergenceScope,
-                                OperatingMode, AccountMode)
         import divergence as _div_mod
+        from divergence import (
+            AccountMode,
+            DivergenceEvent,
+            DivergenceScope,
+            DivergenceSeverity,
+            OperatingMode,
+        )
         halted_mode = AccountMode(
             account="A1_TEST", mode=OperatingMode.HALTED,
             scope=DivergenceScope.ACCOUNT, scope_id="A1_TEST",
@@ -5145,8 +5317,8 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_check_clean_cycle_in_normal_mode_no_op(self):
         """check_clean_cycle with NORMAL mode returns the same mode object immediately."""
-        from divergence import AccountMode, OperatingMode, DivergenceScope
         import divergence as _div_mod
+        from divergence import AccountMode, DivergenceScope, OperatingMode
         mode_state = AccountMode(
             account="A1_TEST", mode=OperatingMode.NORMAL,
             scope=DivergenceScope.ACCOUNT, scope_id="",
@@ -5163,9 +5335,10 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_check_clean_cycle_increments_count(self):
         """check_clean_cycle with no new events increments clean_cycles_since_entry."""
-        import divergence as _div_mod
         import tempfile
-        from divergence import AccountMode, OperatingMode, DivergenceScope
+
+        import divergence as _div_mod
+        from divergence import AccountMode, DivergenceScope, OperatingMode
         original_runtime = _div_mod.RUNTIME_DIR
         original_mtl = _div_mod.MODE_TRANSITION_LOG
         with tempfile.TemporaryDirectory() as tmp:
@@ -5193,8 +5366,9 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_detect_fill_divergence_above_threshold(self):
         """detect_fill_divergence: > 0.5% drift returns a fill_price_drift event."""
-        import divergence as _div_mod
         import tempfile
+
+        import divergence as _div_mod
         original_log = _div_mod.DIVERGENCE_LOG
         with tempfile.TemporaryDirectory() as tmp:
             _div_mod.DIVERGENCE_LOG = Path(tmp) / "divergence_log.jsonl"
@@ -5217,8 +5391,9 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_detect_protection_stop_missing(self):
         """detect_protection_divergence: position with no stop order → stop_missing event."""
-        import divergence as _div_mod
         import tempfile
+
+        import divergence as _div_mod
         original_log = _div_mod.DIVERGENCE_LOG
         original_counts = _div_mod.DIVERGENCE_COUNTS_PATH
         with tempfile.TemporaryDirectory() as tmp:
@@ -5252,9 +5427,10 @@ class TestSuite24DivergenceC7(unittest.TestCase):
           → respond_to_divergence → RISK_CONTAINMENT (one_clean_cycle recovery)
           → check_clean_cycle (no new events) → back to NORMAL.
         """
-        import divergence as _div_mod
         import tempfile
-        from divergence import AccountMode, OperatingMode, DivergenceScope
+
+        import divergence as _div_mod
+        from divergence import AccountMode, DivergenceScope, OperatingMode
         original_runtime = _div_mod.RUNTIME_DIR
         original_mtl = _div_mod.MODE_TRANSITION_LOG
         original_log = _div_mod.DIVERGENCE_LOG
@@ -5309,9 +5485,10 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_e2e_transition_mode_writes_to_tempdir(self):
         """transition_mode writes mode file to redirected RUNTIME_DIR; load_account_mode reads it back."""
-        import divergence as _div_mod
         import tempfile
-        from divergence import OperatingMode, DivergenceScope
+
+        import divergence as _div_mod
+        from divergence import DivergenceScope, OperatingMode
         original_runtime = _div_mod.RUNTIME_DIR
         original_mtl = _div_mod.MODE_TRANSITION_LOG
         with tempfile.TemporaryDirectory() as tmp:
@@ -5411,11 +5588,15 @@ class TestSuite25MarketDataAndOptionsAudit(unittest.TestCase):
         """T04: close_structure stamps close_reason_code, initiated_by, and audit entry."""
         import tempfile
         from datetime import date, timedelta
-        from schemas import (
-            OptionStrategy, OptionsStructure, OptionsLeg,
-            StructureLifecycle, Tier,
-        )
+
         import options_executor as _oe_mod
+        from schemas import (
+            OptionsLeg,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
+        )
 
         filled_leg = OptionsLeg(
             occ_symbol   = "GLD261219C00435000",
@@ -5468,10 +5649,14 @@ class TestSuite25MarketDataAndOptionsAudit(unittest.TestCase):
         """T05: roll_reason_code and rolled_to_structure_id survive save→load round-trip."""
         import tempfile
         from datetime import date, timedelta
-        from schemas import (
-            OptionStrategy, OptionsStructure, StructureLifecycle, Tier,
-        )
+
         import options_state
+        from schemas import (
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
+        )
 
         structure = OptionsStructure(
             structure_id           = "test-roll-001",
@@ -5510,10 +5695,14 @@ class TestSuite25MarketDataAndOptionsAudit(unittest.TestCase):
         """T06: _log_structure_event appends a valid JSONL record to the log file."""
         import tempfile
         from datetime import date, timedelta
-        from schemas import (
-            OptionStrategy, OptionsStructure, StructureLifecycle, Tier,
-        )
+
         import options_executor as _oe_mod
+        from schemas import (
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
+        )
 
         structure = OptionsStructure(
             structure_id      = "test-log-001",
@@ -5553,6 +5742,7 @@ class TestSuite26Session1(unittest.TestCase):
     def test_executor_no_tier_max_pct_constant(self):
         """T01: order_executor.py must not define TIER_MAX_PCT (policy consolidated to risk_kernel)."""
         import inspect
+
         import order_executor as _oe
         src = inspect.getsource(_oe)
         self.assertNotIn("TIER_MAX_PCT", src,
@@ -5575,8 +5765,9 @@ class TestSuite26Session1(unittest.TestCase):
 
     def test_execution_result_has_fill_price(self):
         """T03: ExecutionResult dataclass must expose fill_price, filled_qty, fill_timestamp, qty, order_type."""
-        from order_executor import ExecutionResult
         import dataclasses
+
+        from order_executor import ExecutionResult
         fields = {f.name for f in dataclasses.fields(ExecutionResult)}
         for expected in ("fill_price", "filled_qty", "fill_timestamp", "qty", "order_type"):
             self.assertIn(expected, fields,
@@ -5608,7 +5799,8 @@ class TestSuite26Session1(unittest.TestCase):
 
     def test_recommendation_id_format(self):
         """T05: _extract_recommendations() must attach rec_id in 'rec_{week_str}_{n}' format."""
-        import sys, os
+        import os
+        import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from weekly_review import _extract_recommendations
 
@@ -5632,7 +5824,8 @@ class TestSuite26Session1(unittest.TestCase):
 
     def test_apply_recommendation_updates_verdict(self):
         """T06: _apply_recommendation_updates() must update verdict/resolved_at for matching rec_id."""
-        import sys, os
+        import os
+        import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from weekly_review import _apply_recommendation_updates
 
@@ -5667,7 +5860,8 @@ class TestSuite26Session1(unittest.TestCase):
 
     def test_apply_updates_unknown_rec_id_ignored(self):
         """T07: _apply_recommendation_updates() must silently skip updates with unknown rec_id."""
-        import sys, os
+        import os
+        import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from weekly_review import _apply_recommendation_updates
 
@@ -5737,19 +5931,19 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_validate_label_known_value(self):
         """validate_label returns value unchanged for known enum member."""
-        from semantic_labels import validate_label, CatalystType
+        from semantic_labels import CatalystType, validate_label
         result = validate_label(CatalystType, "earnings_beat")
         self.assertEqual(result, "earnings_beat")
 
     def test_validate_label_unknown_allow(self):
         """validate_label allows unknown value when allow_unknown=True (logs warning)."""
-        from semantic_labels import validate_label, CatalystType
+        from semantic_labels import CatalystType, validate_label
         result = validate_label(CatalystType, "invented_label", allow_unknown=True)
         self.assertEqual(result, "invented_label")
 
     def test_validate_label_unknown_disallow_raises(self):
         """validate_label raises ValueError when allow_unknown=False and value not in enum."""
-        from semantic_labels import validate_label, CatalystType
+        from semantic_labels import CatalystType, validate_label
         with self.assertRaises(ValueError):
             validate_label(CatalystType, "invented_label", allow_unknown=False)
 
@@ -5757,8 +5951,8 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_hindsight_write_read_roundtrip(self):
         """log_hindsight_record writes to JSONL, get_hindsight_records reads it back."""
-        import hindsight as hs
         import cost_attribution as ca
+        import hindsight as hs
         orig_path = hs._HINDSIGHT_PATH
         orig_spine = ca._SPINE_ENABLED
         try:
@@ -5803,8 +5997,8 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_hindsight_flag_disabled_noop(self):
         """log_hindsight_record returns None without writing when flag is disabled."""
-        import hindsight as hs
         import feature_flags as ff
+        import hindsight as hs
         orig_path = hs._HINDSIGHT_PATH
         orig_ff_path = ff._CONFIG_PATH
         try:
@@ -5836,8 +6030,8 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_recommendation_save_get_update_roundtrip(self):
         """save + get + update_verdict round-trip works correctly."""
-        import recommendation_store as rs
         import feature_flags as ff
+        import recommendation_store as rs
         orig_store = rs._STORE_PATH
         orig_ff_path = ff._CONFIG_PATH
         try:
@@ -5878,8 +6072,8 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_recommendation_atomic_write(self):
         """save_recommendation produces a valid JSON file (no .tmp left behind)."""
-        import recommendation_store as rs
         import feature_flags as ff
+        import recommendation_store as rs
         orig_store = rs._STORE_PATH
         orig_ff_path = ff._CONFIG_PATH
         try:
@@ -5956,8 +6150,8 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_incident_build_log_get_roundtrip(self):
         """build_incident + log_incident + get_incidents round-trip."""
-        import incident_schema as isc
         import feature_flags as ff
+        import incident_schema as isc
         orig_path = isc._INCIDENT_PATH
         orig_ff_path = ff._CONFIG_PATH
         try:
@@ -6042,7 +6236,7 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_classify_alpha_insufficient_sample_no_return(self):
         """classify_alpha returns insufficient_sample when return_1d is None."""
-        from decision_outcomes import classify_alpha, DecisionOutcomeRecord
+        from decision_outcomes import DecisionOutcomeRecord, classify_alpha
         rec = DecisionOutcomeRecord(
             decision_id="dec_test", account="A1", symbol="GLD",
             timestamp="2026-04-16T12:00:00Z", action="buy",
@@ -6053,8 +6247,9 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_classify_alpha_positive(self):
         """classify_alpha returns alpha_positive for correct +1d direction with >0.3% return."""
-        from decision_outcomes import classify_alpha, DecisionOutcomeRecord
         from datetime import datetime, timedelta, timezone
+
+        from decision_outcomes import DecisionOutcomeRecord, classify_alpha
         old_ts = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat().replace("+00:00", "Z")
         rec = DecisionOutcomeRecord(
             decision_id="dec_test", account="A1", symbol="GLD",
@@ -6067,8 +6262,9 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_classify_alpha_insufficient_sample_recent(self):
         """classify_alpha returns insufficient_sample for records < 24h old."""
-        from decision_outcomes import classify_alpha, DecisionOutcomeRecord
         from datetime import datetime, timezone
+
+        from decision_outcomes import DecisionOutcomeRecord, classify_alpha
         rec = DecisionOutcomeRecord(
             decision_id="dec_test", account="A1", symbol="GLD",
             timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -6107,8 +6303,8 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_get_model_for_module_correct_string(self):
         """get_model_for_module returns correct canonical model string for known modules."""
-        import model_tiering as mt
         import feature_flags as ff
+        import model_tiering as mt
         orig_ff_path = ff._CONFIG_PATH
         try:
             ff._CONFIG_PATH = Path(self.tmpdir) / "cfg.json"
@@ -6129,7 +6325,7 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_escalation_predicate_fires_on_conflict(self):
         """should_escalate_to_premium fires when signals conflict and scores are tight."""
-        from model_tiering import should_escalate_to_premium, EscalationContext
+        from model_tiering import EscalationContext, should_escalate_to_premium
         ctx = EscalationContext(
             top_signal_scores=[65.0, 68.0, 70.0],  # tight range (<10 points)
             regime_score=50,
@@ -6146,7 +6342,7 @@ class Suite28Epic1SharedSubstrate(unittest.TestCase):
 
     def test_escalation_no_trigger(self):
         """should_escalate_to_premium returns False when no trigger fires."""
-        from model_tiering import should_escalate_to_premium, EscalationContext
+        from model_tiering import EscalationContext, should_escalate_to_premium
         ctx = EscalationContext(
             top_signal_scores=[50.0, 70.0, 90.0],  # wide range
             regime_score=70,
@@ -6201,8 +6397,9 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_checksum_log_get_roundtrip(self):
         """log_checksum + get_checksum roundtrip returns matching record."""
-        import thesis_checksum as tc
         from pathlib import Path
+
+        import thesis_checksum as tc
         orig_path = tc._CHECKSUM_PATH
         try:
             tc._CHECKSUM_PATH = Path(self.tmpdir) / "thesis_checksums.jsonl"
@@ -6252,8 +6449,9 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_catalyst_log_get_roundtrip(self):
         """log_catalyst + get_catalyst roundtrip."""
-        import catalyst_normalizer as cn
         from pathlib import Path
+
+        import catalyst_normalizer as cn
         orig_path = cn._CATALYST_LOG
         try:
             cn._CATALYST_LOG = Path(self.tmpdir) / "catalyst_log.jsonl"
@@ -6270,12 +6468,12 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_forensic_flag_disabled_returns_none(self):
         """review_closed_trade returns None when enable_thesis_checksum is False."""
-        import forensic_reviewer as fr
         import feature_flags as ff
+        import forensic_reviewer as fr
         orig_path = ff._CONFIG_PATH
         orig_cache = dict(ff._FLAG_CACHE)
         orig_loaded = ff._CACHE_LOADED
-        import tempfile, json
+        import json
         from pathlib import Path
         tmp_cfg = Path(self.tmpdir) / "cfg.json"
         tmp_cfg.write_text(json.dumps({"feature_flags": {"enable_thesis_checksum": False}}))
@@ -6306,8 +6504,9 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_forensic_log_get_roundtrip(self):
         """log_forensic + get_forensic roundtrip."""
-        import forensic_reviewer as fr
         from pathlib import Path
+
+        import forensic_reviewer as fr
         orig_path = fr._FORENSIC_LOG
         try:
             fr._FORENSIC_LOG = Path(self.tmpdir) / "forensic_log.jsonl"
@@ -6324,10 +6523,11 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_resolver_flag_disabled_returns_empty(self):
         """resolve_pending_recommendations returns [] when flag disabled."""
-        import recommendation_resolver as rr
-        import feature_flags as ff
         import json
         from pathlib import Path
+
+        import feature_flags as ff
+        import recommendation_resolver as rr
         orig_path = ff._CONFIG_PATH
         orig_cache = dict(ff._FLAG_CACHE)
         orig_loaded = ff._CACHE_LOADED
@@ -6346,10 +6546,11 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_resolver_too_young_rec_stays_pending(self):
         """Recommendation created today is not resolved (min_age_days=7)."""
-        import recommendation_resolver as rr
-        from datetime import datetime, timezone
         from dataclasses import dataclass
+        from datetime import datetime, timezone
         from typing import Optional
+
+        import recommendation_resolver as rr
 
         @dataclass
         class MockRec:
@@ -6373,16 +6574,17 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_anti_pattern_below_threshold_abstains(self):
         """Patterns with fewer than min_occurrences are not surfaced."""
-        import anti_pattern_miner as apm
         import json
         from pathlib import Path
+
+        import anti_pattern_miner as apm
         import feature_flags as ff
         orig_path = ff._CONFIG_PATH
         orig_cache = dict(ff._FLAG_CACHE)
         orig_loaded = ff._CACHE_LOADED
         tmp_cfg = Path(self.tmpdir) / "cfg.json"
         tmp_cfg.write_text(json.dumps({"feature_flags": {"enable_thesis_checksum": True}}))
-        orig_forensic = apm.Path("data/analytics/forensic_log.jsonl")
+        apm.Path("data/analytics/forensic_log.jsonl")
 
         from pathlib import Path as _P
         forensic_log = _P(self.tmpdir) / "forensic_log.jsonl"
@@ -6408,7 +6610,7 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
             ff._CACHE_LOADED = False
             # Temporarily redirect forensic path
             import anti_pattern_miner as _apm2
-            orig_forensic_path = _apm2.Path("data/analytics/forensic_log.jsonl")
+            _apm2.Path("data/analytics/forensic_log.jsonl")
 
             # Patch the path inside the module
             import unittest.mock as mock
@@ -6427,9 +6629,10 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_anti_pattern_above_threshold_surfaces_pattern(self):
         """Patterns with >= min_occurrences are surfaced as findings."""
-        import anti_pattern_miner as apm
         import json
         from pathlib import Path
+
+        import anti_pattern_miner as apm
         import feature_flags as ff
         orig_path = ff._CONFIG_PATH
         orig_cache = dict(ff._FLAG_CACHE)
@@ -6476,9 +6679,10 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_divergence_summarizer_below_min_returns_none(self):
         """summarize_divergence_incidents returns None when fewer than min_incidents."""
-        import divergence_summarizer as ds
         import json
         from pathlib import Path
+
+        import divergence_summarizer as ds
         import feature_flags as ff
         orig_path = ff._CONFIG_PATH
         orig_cache = dict(ff._FLAG_CACHE)
@@ -6497,7 +6701,6 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
                 "severity": "warning", "detected_at": datetime.now(timezone.utc).isoformat(),
             }) + "\n")
             import unittest.mock as mock
-            from pathlib import Path as _P
             with mock.patch("divergence_summarizer._INCIDENT_LOG", incident_log):
                 result = ds.summarize_divergence_incidents(min_incidents=2)
                 self.assertIsNone(result)
@@ -6522,10 +6725,11 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_experience_repaired_failure_requires_repair_marker(self):
         """save_experience raises ValueError for repaired_failure_case without repair_marker."""
-        import experience_library as el
-        import feature_flags as ff
         import json
         from pathlib import Path
+
+        import experience_library as el
+        import feature_flags as ff
         orig_path = ff._CONFIG_PATH
         orig_cache = dict(ff._FLAG_CACHE)
         orig_loaded = ff._CACHE_LOADED
@@ -6551,10 +6755,11 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_experience_roundtrip(self):
         """save_experience + get_experiences roundtrip returns correct record."""
-        import experience_library as el
-        import feature_flags as ff
         import json
         from pathlib import Path
+
+        import experience_library as el
+        import feature_flags as ff
         orig_path = ff._CONFIG_PATH
         orig_cache = dict(ff._FLAG_CACHE)
         orig_loaded = ff._CACHE_LOADED
@@ -6589,9 +6794,8 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_experience_retrieval_relevance_scoring(self):
         """retrieve_similar_experiences scores symbol match higher than regime match."""
-        import experience_retrieval as er
-        from experience_retrieval import _score_record
         from experience_library import ExperienceRecord
+        from experience_retrieval import _score_record
 
         rec = ExperienceRecord(
             symbol="AAPL",
@@ -6617,8 +6821,8 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_experience_retrieval_provenance_required(self):
         """Results without decision_id are filtered out by _to_result."""
-        from experience_retrieval import _to_result
         from experience_library import ExperienceRecord
+        from experience_retrieval import _to_result
 
         rec_no_dec = ExperienceRecord(
             symbol="AAPL",
@@ -6632,8 +6836,8 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
 
     def test_experience_retrieval_provenance_present(self):
         """Results with all IDs include provenance dict with experience_id and decision_id."""
-        from experience_retrieval import _to_result
         from experience_library import ExperienceRecord
+        from experience_retrieval import _to_result
 
         rec = ExperienceRecord(
             symbol="AAPL",

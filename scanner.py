@@ -23,13 +23,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
-from dotenv import load_dotenv
-
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.historical.news import NewsClient
 from alpaca.data.requests import NewsRequest, StockBarsRequest
-from alpaca.data.enums import DataFeed
 from alpaca.data.timeframe import TimeFrame
+from dotenv import load_dotenv
 
 import watchlist_manager as wm
 from log_setup import get_logger

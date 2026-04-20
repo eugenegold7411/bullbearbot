@@ -30,10 +30,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import anthropic
 import pandas as pd
 from dotenv import load_dotenv
 
-import anthropic
 from log_setup import get_logger
 from watchlist_manager import get_core
 
@@ -312,7 +312,7 @@ def _build_backtest_prompt(snapshot: dict, date_str: str, sim_equity: float) -> 
     lines.append("=== ACCOUNT STATE ===")
     lines.append(f"Equity:        ${sim_equity:,.2f}")
     lines.append(f"Cash:          ${sim_equity:,.2f}  (simulated, no open positions shown)")
-    lines.append(f"Open positions: see simulation state")
+    lines.append("Open positions: see simulation state")
     lines.append("")
 
     lines.append("=== MARKET REGIME ===")

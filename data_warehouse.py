@@ -18,16 +18,15 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
-from dotenv import load_dotenv
-
-from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
+from alpaca.data.enums import DataFeed
+from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
 from alpaca.data.historical.news import NewsClient
 from alpaca.data.requests import (
-    CryptoBarsRequest, NewsRequest,
-    StockBarsRequest, StockLatestTradeRequest,
+    NewsRequest,
+    StockBarsRequest,
 )
-from alpaca.data.enums import DataFeed
 from alpaca.data.timeframe import TimeFrame
+from dotenv import load_dotenv
 
 import watchlist_manager as wm
 from log_setup import get_logger
@@ -483,8 +482,9 @@ def refresh_crypto_sentiment() -> None:
     Called every 4 hours by scheduler (crypto trades 24/7).
     Graceful - never raises, preserves cache on any error.
     """
-    import requests  # noqa: PLC0415
     import time as _time  # noqa: PLC0415
+
+    import requests  # noqa: PLC0415
 
     CRYPTO_DIR.mkdir(parents=True, exist_ok=True)
     out_path = CRYPTO_DIR / "fear_greed.json"
@@ -650,12 +650,15 @@ def run_full_refresh(target_symbol: str | None = None) -> None:
     # Force-refresh at 4AM by passing all symbols; caches handle deduplication
     try:
         all_syms = stock_etfs
+        # Invalidate stale caches by temporarily removing cache files if > 4h old
         from insider_intelligence import (  # noqa: PLC0415
+            _CONGRESS_FILE,
+            _FORM4_FILE,
+            _is_stale,
+            _load_cache,
             fetch_congressional_trades,
             fetch_form4_insider_trades,
         )
-        # Invalidate stale caches by temporarily removing cache files if > 4h old
-        from insider_intelligence import _CONGRESS_FILE, _FORM4_FILE, _is_stale, _load_cache
         for path, max_h in ((_CONGRESS_FILE, 6.0), (_FORM4_FILE, 4.0)):
             cache = _load_cache(path)
             if _is_stale(cache, max_h):
@@ -704,8 +707,8 @@ def refresh_economic_calendar_finnhub() -> None:
     Saves to data/market/economic_calendar.json and archives.
     Graceful failure: preserves existing cache if Finnhub unavailable.
     """
+
     import requests  # noqa: PLC0415
-    from zoneinfo import ZoneInfo  # noqa: PLC0415
 
     finnhub_key = os.getenv("FINNHUB_API_KEY")
     if not finnhub_key:

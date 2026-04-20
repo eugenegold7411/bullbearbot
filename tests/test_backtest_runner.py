@@ -15,9 +15,6 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _make_snapshot(
@@ -267,8 +264,9 @@ class TestStrategyDirectorSampleGate:
         self, n_closed: int, min_required: int = 30,
         tmp_path: Path | None = None,
     ) -> dict:
+        import tempfile
+
         import backtest_runner as br
-        import tempfile, os
 
         perf = {"totals": {"trades": n_closed}}
         cfg  = {"parameters": {"backtest_minimum_sample_before_recalibration": min_required}}
@@ -312,8 +310,9 @@ class TestStrategyDirectorSampleGate:
         mock_claude.messages.create.assert_not_called()
 
     def test_at_minimum_proceeds(self):
-        import backtest_runner as br
         import tempfile
+
+        import backtest_runner as br
 
         perf = {"totals": {"trades": 30}}
         cfg  = {"parameters": {"backtest_minimum_sample_before_recalibration": 30}}
@@ -352,8 +351,9 @@ class TestStrategyDirectorSampleGate:
 
     def test_above_minimum_proceeds(self):
         # at 31 with min=30, should proceed (assert insufficient_sample not set)
-        import backtest_runner as br
         import tempfile
+
+        import backtest_runner as br
 
         perf = {"totals": {"trades": 31}}
         cfg  = {"parameters": {"backtest_minimum_sample_before_recalibration": 30}}
@@ -384,8 +384,9 @@ class TestStrategyDirectorSampleGate:
         assert result.get("insufficient_sample") is not True
 
     def test_missing_performance_file_defaults_to_zero(self):
-        import backtest_runner as br
         import tempfile
+
+        import backtest_runner as br
 
         cfg = {"parameters": {"backtest_minimum_sample_before_recalibration": 30}}
         with tempfile.TemporaryDirectory() as td:
@@ -447,8 +448,8 @@ class TestRunBacktestNoConfigWrite:
     """run_backtest must not write to strategy_config.json."""
 
     def test_config_file_unchanged_after_run_backtest(self, tmp_path):
+
         import backtest_runner as br
-        import tempfile
 
         config = {"active_strategy": "hybrid", "parameters": {}}
         cfg_path = tmp_path / "strategy_config.json"

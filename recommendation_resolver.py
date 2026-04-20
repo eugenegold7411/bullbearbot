@@ -29,8 +29,10 @@ def resolve_pending_recommendations(
     if not feature_flags.is_enabled("enable_recommendation_memory"):
         return []
     try:
-        from recommendation_store import get_recommendations, update_verdict  # noqa: PLC0415
         import decision_outcomes as _do  # noqa: PLC0415
+        from recommendation_store import (  # noqa: PLC0415
+            get_recommendations,
+        )
 
         pending = get_recommendations(verdict="pending", limit=200)
         if not pending:
@@ -81,7 +83,7 @@ def _resolve_single(rec: object, outcomes_summary: dict, min_age_cutoff: datetim
     if not expected_direction:
         return None  # no direction set — cannot resolve
 
-    target_metric = getattr(rec, "target_metric", None) or (rec.get("target_metric") if isinstance(rec, dict) else None)
+    getattr(rec, "target_metric", None) or (rec.get("target_metric") if isinstance(rec, dict) else None)
     text = getattr(rec, "text", None) or (rec.get("text") if isinstance(rec, dict) else "")
 
     # Evidence: look at outcomes_summary for metric movement
@@ -90,7 +92,7 @@ def _resolve_single(rec: object, outcomes_summary: dict, min_age_cutoff: datetim
 
     submitted_count = outcomes_summary.get("submitted_count", 0)
     avg_return = outcomes_summary.get("avg_return_1d")
-    win_rate = outcomes_summary.get("win_rate_1d")
+    outcomes_summary.get("win_rate_1d")
 
     if submitted_count > 0 and avg_return is not None:
         if expected_direction == "up" and float(avg_return) > 0.003:
@@ -121,7 +123,10 @@ def _resolve_single(rec: object, outcomes_summary: dict, min_age_cutoff: datetim
     # Create HindsightRecord
     hindsight_id = None
     try:
-        from hindsight import build_hindsight_record, log_hindsight_record  # noqa: PLC0415
+        from hindsight import (  # noqa: PLC0415
+            build_hindsight_record,
+            log_hindsight_record,
+        )
         hs = build_hindsight_record(
             subject_id=rec_id,
             subject_type="recommendation",

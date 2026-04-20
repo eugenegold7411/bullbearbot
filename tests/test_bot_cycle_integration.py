@@ -17,9 +17,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -259,21 +256,24 @@ class TestPreCycleStateShape:
     ]
 
     def test_dataclass_has_all_fields(self):
-        from bot_stage0_precycle import PreCycleState
         import dataclasses
+
+        from bot_stage0_precycle import PreCycleState
         field_names = {f.name for f in dataclasses.fields(PreCycleState)}
         for name in self.REQUIRED_FIELDS:
             assert name in field_names, f"PreCycleState missing field: {name}"
 
     def test_div_events_default_empty_list(self):
-        from bot_stage0_precycle import PreCycleState
         import dataclasses
+
+        from bot_stage0_precycle import PreCycleState
         fields = {f.name: f for f in dataclasses.fields(PreCycleState)}
         assert fields["div_events"].default_factory is list  # type: ignore[attr-defined]
 
     def test_exit_status_str_default(self):
-        from bot_stage0_precycle import PreCycleState
         import dataclasses
+
+        from bot_stage0_precycle import PreCycleState
         fields = {f.name: f for f in dataclasses.fields(PreCycleState)}
         assert fields["exit_status_str"].default == "  (unavailable)"
 

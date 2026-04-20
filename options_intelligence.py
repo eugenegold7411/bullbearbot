@@ -13,7 +13,7 @@ Strategy hierarchy (IV-first):
 """
 
 import logging
-from datetime import datetime, date, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -63,7 +63,7 @@ def select_options_strategy(
     None means hold/skip — caller should treat as no candidate.
     """
     env = iv_summary.get("iv_environment", "unknown")
-    iv_rank = iv_summary.get("iv_rank")
+    iv_summary.get("iv_rank")
     obs_mode = iv_summary.get("observation_mode", True)
     score = float(signal_data.get("score", 0))
     confidence = signal_data.get("confidence", "low")

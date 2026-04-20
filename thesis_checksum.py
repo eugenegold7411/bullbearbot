@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import feature_flags
 from semantic_labels import (
     CatalystFreshness,
     CatalystType,
@@ -45,8 +44,8 @@ def _infer_catalyst_type(raw_catalyst: str) -> str:
 
 def _infer_thesis_type(idea: dict, catalyst_type: str) -> str:
     """Infer ThesisType from idea dict and catalyst type."""
-    tier = str(idea.get("tier", "")).lower()
-    catalyst_lower = str(idea.get("catalyst", "")).lower()
+    str(idea.get("tier", "")).lower()
+    str(idea.get("catalyst", "")).lower()
 
     if catalyst_type in (CatalystType.EARNINGS_BEAT.value, CatalystType.EARNINGS_MISS.value,
                          CatalystType.GUIDANCE_RAISE.value, CatalystType.GUIDANCE_CUT.value,
@@ -100,8 +99,7 @@ def _infer_regime(regime_obj: dict) -> str:
 
 def _build_invalidation_condition(catalyst_type: str, idea: dict) -> str:
     """Template-based invalidation condition sentence."""
-    action = str(idea.get("action", "buy")).lower()
-    direction = "reversal" if action in ("sell", "close") else "breakdown"
+    str(idea.get("action", "buy")).lower()
     catalyst = str(idea.get("catalyst", "thesis"))[:60]
     return f"Thesis invalidated if {catalyst[:50]} reverses or fails to materialize within hold horizon."
 

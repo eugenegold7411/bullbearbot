@@ -10,11 +10,11 @@ Covers:
 """
 
 import json
-import sys
 import os
+import sys
 import tempfile
 import unittest
-from datetime import datetime, date, timezone, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -27,7 +27,6 @@ os.chdir(_BOT_DIR)
 # Stub third-party packages absent from local (non-venv) environments.
 # Only packages that are truly unavailable here — local modules (preflight,
 # log_setup, options_*) are on-disk and importable without side-effects.
-import logging as _logging
 
 _THIRD_PARTY_STUBS = {
     "dotenv":                   None,
@@ -274,7 +273,7 @@ class TestOptionsUniverseManager(unittest.TestCase):
 
     def test_is_tradeable_no_iv_history_queues_bootstrap(self):
         """Symbol with no IV history returns False and queues bootstrap."""
-        from options_universe_manager import is_tradeable, _BOOTSTRAP_QUEUE
+        from options_universe_manager import _BOOTSTRAP_QUEUE, is_tradeable
         result = is_tradeable("UNKNOWNSYM")
         self.assertFalse(result)
         queue = json.loads(_BOOTSTRAP_QUEUE.read_text())
@@ -323,7 +322,7 @@ class TestOptionsUniverseManager(unittest.TestCase):
 
         with mock.patch.dict("sys.modules", {"iv_history_seeder": _fake_seeder}):
             with mock.patch("options_universe_manager._has_sufficient_iv_history", return_value=True):
-                result = oum.run_bootstrap_queue()
+                oum.run_bootstrap_queue()
 
         self.assertTrue(len(called_with) > 0, "seed_iv_history was never called")
         total_processed = len(called_with[0])
@@ -347,7 +346,10 @@ class TestOptionsUniverseManager(unittest.TestCase):
 
     def test_initialize_idempotent(self):
         """Calling initialize twice yields same universe (no duplicate entries)."""
-        from options_universe_manager import initialize_universe_from_existing_iv_history, get_universe
+        from options_universe_manager import (
+            get_universe,
+            initialize_universe_from_existing_iv_history,
+        )
         self._write_iv_history("AAPL", 25)
         self._write_iv_history("MSFT", 25)
 
@@ -365,7 +367,10 @@ class TestOptionsUniverseManager(unittest.TestCase):
 
     def test_initialize_only_includes_sufficient_history(self):
         """Symbols with < 20 entries are not added to the universe."""
-        from options_universe_manager import initialize_universe_from_existing_iv_history, get_universe
+        from options_universe_manager import (
+            get_universe,
+            initialize_universe_from_existing_iv_history,
+        )
         self._write_iv_history("GOOD", 25)
         self._write_iv_history("SPARSE", 5)
 
@@ -376,7 +381,10 @@ class TestOptionsUniverseManager(unittest.TestCase):
 
     def test_initialize_marks_bootstrap_complete(self):
         """All universe entries have bootstrap_complete=True."""
-        from options_universe_manager import initialize_universe_from_existing_iv_history, get_universe
+        from options_universe_manager import (
+            get_universe,
+            initialize_universe_from_existing_iv_history,
+        )
         self._write_iv_history("GLD", 25)
 
         initialize_universe_from_existing_iv_history()

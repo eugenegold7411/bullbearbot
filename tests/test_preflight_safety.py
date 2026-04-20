@@ -11,7 +11,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _write_mode_file(directory: Path, mode: str) -> Path:
@@ -118,7 +117,8 @@ class TestPidLockfile(unittest.TestCase):
     def setUpClass(cls):
         # Ensure dotenv stub is present before scheduler is imported
         # (conftest.py does not stub dotenv, but scheduler → bot → dotenv)
-        import sys, types  # noqa: E401
+        import sys  # noqa: E401
+        import types
         if "dotenv" not in sys.modules:
             _m = types.ModuleType("dotenv")
             _m.load_dotenv = lambda *a, **kw: None  # type: ignore[attr-defined]

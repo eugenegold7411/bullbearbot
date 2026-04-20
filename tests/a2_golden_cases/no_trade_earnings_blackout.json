@@ -1,0 +1,50 @@
+{
+  "_fixture": "golden_002 — AAPL earnings 3 days away; router fires RULE1 earnings blackout",
+  "decision_id": "golden_002_earnings_blackout",
+  "session_tier": "market",
+  "candidate_sets": [
+    {
+      "symbol": "AAPL",
+      "pack": {
+        "symbol": "AAPL",
+        "a1_signal_score": 72.0,
+        "a1_direction": "bullish",
+        "trend_score": null,
+        "momentum_score": null,
+        "sector_alignment": "technology",
+        "iv_rank": 42.0,
+        "iv_environment": "neutral",
+        "term_structure_slope": null,
+        "skew": null,
+        "expected_move_pct": 3.8,
+        "flow_imbalance_30m": 0.12,
+        "sweep_count": null,
+        "gex_regime": null,
+        "oi_concentration": null,
+        "earnings_days_away": 3,
+        "macro_event_flag": false,
+        "premium_budget_usd": 5000.0,
+        "liquidity_score": 0.72,
+        "built_at": "2026-04-21T10:00:00+00:00",
+        "data_sources": ["signal_scores", "iv_history", "options_chain"]
+      },
+      "allowed_structures": [],
+      "router_rule_fired": "RULE1",
+      "generated_candidates": [],
+      "vetoed_candidates": [],
+      "surviving_candidates": [],
+      "generation_errors": [],
+      "built_at": "2026-04-21T10:00:00+00:00"
+    }
+  ],
+  "debate_input": null,
+  "debate_output_raw": null,
+  "debate_parsed": null,
+  "selected_candidate": null,
+  "execution_result": "no_trade",
+  "no_trade_reason": "no_candidates_after_router",
+  "elapsed_seconds": 1.2,
+  "schema_version": 1,
+  "code_version": null,
+  "built_at": "2026-04-21T10:00:00+00:00"
+}

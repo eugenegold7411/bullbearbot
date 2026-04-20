@@ -52,7 +52,6 @@ from schemas import (
     BrokerSnapshot,
     NormalizedPosition,
     OptionsStructure,
-    StructureLifecycle,
     normalize_symbol,
 )
 
@@ -519,8 +518,8 @@ def _opts_close_broken_leg(
     results: list[str],
 ) -> None:
     """Close the surviving filled leg of a broken options structure."""
-    from options_state import load_structures
     from options_executor import close_structure
+    from options_state import load_structures
 
     structure_id = action.get("structure_id", "")
     structs = {s.structure_id: s for s in load_structures()}
@@ -546,8 +545,8 @@ def _opts_close_structure(
     reason: str,
 ) -> None:
     """Close a full options structure (expiring or stop/target hit)."""
-    from options_state import load_structures, save_structure
     from options_executor import close_structure
+    from options_state import load_structures, save_structure
 
     structure_id = action.get("structure_id", "")
     structs = {s.structure_id: s for s in load_structures()}
@@ -569,8 +568,8 @@ def _opts_close_orphaned_leg(
     results: list[str],
 ) -> None:
     """Close an orphaned options position (OCC symbol in broker with no matching structure)."""
-    from alpaca.trading.requests import MarketOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import MarketOrderRequest
 
     occ_symbol = action.get("occ_symbol", action.get("symbol", ""))
     qty        = int(action.get("qty", 1))
@@ -598,9 +597,10 @@ def _close_position(
     reason: str,
 ) -> None:
     """Submit a market sell for `qty` of `symbol`."""
-    from alpaca.trading.requests import MarketOrderRequest  # noqa: PLC0415
     from alpaca.trading.enums import OrderSide, TimeInForce  # noqa: PLC0415
-    from schemas import is_crypto, alpaca_symbol  # noqa: PLC0415
+    from alpaca.trading.requests import MarketOrderRequest  # noqa: PLC0415
+
+    from schemas import alpaca_symbol, is_crypto  # noqa: PLC0415
 
     alpaca_sym = alpaca_symbol(symbol)
     tif = TimeInForce.GTC if is_crypto(symbol) else TimeInForce.DAY
@@ -633,9 +633,17 @@ def _execute_deadline_exit(
     Cancelling first avoids Alpaca OCA share-lock conflicts.
     Non-fatal: appends result description to `results`.
     """
-    from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest  # noqa: PLC0415
-    from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus  # noqa: PLC0415
-    from schemas import is_crypto, alpaca_symbol  # noqa: PLC0415
+    from alpaca.trading.enums import (  # noqa: PLC0415
+        OrderSide,
+        QueryOrderStatus,
+        TimeInForce,
+    )
+    from alpaca.trading.requests import (  # noqa: PLC0415
+        GetOrdersRequest,
+        MarketOrderRequest,
+    )
+
+    from schemas import alpaca_symbol, is_crypto  # noqa: PLC0415
 
     if trading_client is None:
         results.append(f"[RECON] DRY_RUN deadline_exit_market {symbol} qty={qty}")
@@ -735,7 +743,7 @@ def seed_backstop(
         log.debug("[RECON] Backstop already exists for %s", symbol)
         return
 
-    et = ZoneInfo = _ZI("America/New_York")
+    et = _ZI("America/New_York")
     now_et   = datetime.now(et)
     deadline = (now_et.replace(hour=15, minute=45, second=0, microsecond=0)
                 + __import__("datetime").timedelta(days=max_hold_days))

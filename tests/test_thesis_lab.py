@@ -537,8 +537,9 @@ class TestThesisLabImportSafety(unittest.TestCase):
 
     def test_registry_has_no_bot_imports(self):
         """thesis_registry must not contain import statements for execution modules."""
-        import thesis_registry
         import inspect
+
+        import thesis_registry
         lines = inspect.getsource(thesis_registry).splitlines()
         import_lines = [l for l in lines if l.strip().startswith(("import ", "from "))]
         import_text = "\n".join(import_lines)
@@ -552,8 +553,9 @@ class TestThesisLabImportSafety(unittest.TestCase):
 
     def test_research_has_no_bot_imports(self):
         """thesis_research must not contain import statements for execution modules."""
-        import thesis_research
         import inspect
+
+        import thesis_research
         lines = inspect.getsource(thesis_research).splitlines()
         import_lines = [l for l in lines if l.strip().startswith(("import ", "from "))]
         import_text = "\n".join(import_lines)
@@ -717,8 +719,8 @@ class TestThesisBacktestIntegration(unittest.TestCase):
     """Suite 33 (continued): backtest_thesis and backtest_all_theses behaviour."""
 
     def setUp(self):
-        import thesis_registry as tr
         import thesis_backtest as tb
+        import thesis_registry as tr
         self.tr = tr
         self.tb = tb
         self.tmp     = tempfile.TemporaryDirectory()
@@ -933,8 +935,9 @@ class TestThesisBacktestIntegration(unittest.TestCase):
 
     # T33.33 — thesis_backtest has no forbidden imports
     def test_backtest_has_no_bot_imports(self):
-        import thesis_backtest
         import inspect
+
+        import thesis_backtest
         lines        = inspect.getsource(thesis_backtest).splitlines()
         import_lines = [l for l in lines if l.strip().startswith(("import ", "from "))]
         import_text  = "\n".join(import_lines)
@@ -953,9 +956,9 @@ class TestThesisEvaluator(unittest.TestCase):
     """Suite 34: thesis_evaluator — deterministic stubs, AI enrichment, registry updates."""
 
     def setUp(self):
-        import thesis_registry as tr
         import thesis_backtest as tb
         import thesis_evaluator as te
+        import thesis_registry as tr
         self.tr = tr
         self.tb = tb
         self.te = te
@@ -1184,7 +1187,7 @@ class TestThesisEvaluator(unittest.TestCase):
         self.tb.append_backtest_result(self._make_backtest())
 
         with mock.patch.object(self.te, "_ai_enrichment_enabled", return_value=False):
-            results = self.te.run_checkpoint_reviews(checkpoint_month=3)
+            self.te.run_checkpoint_reviews(checkpoint_month=3)
 
         reviews_file = self.tmp_dir / "reviews.jsonl"
         self.assertTrue(reviews_file.exists())
@@ -1225,6 +1228,7 @@ class TestThesisEvaluator(unittest.TestCase):
     # T34.18 — thesis_evaluator has no forbidden execution-module imports
     def test_evaluator_has_no_bot_imports(self):
         import inspect
+
         import thesis_evaluator
         lines        = inspect.getsource(thesis_evaluator).splitlines()
         import_lines = [l for l in lines if l.strip().startswith(("import ", "from "))]
@@ -1244,8 +1248,8 @@ class TestThesisReviewPacket(unittest.TestCase):
     """Suite 35: thesis_review_packet — packet content, save, and weekly_review integration."""
 
     def setUp(self):
-        import thesis_registry as tr
         import thesis_backtest as tb
+        import thesis_registry as tr
         import thesis_review_packet as trp
         self.tr  = tr
         self.tb  = tb
@@ -1418,7 +1422,8 @@ class TestThesisReviewPacket(unittest.TestCase):
 
     # T35.9 — _get_thesis_packet returns empty string when flag disabled
     def test_weekly_review_integration_flag_off(self):
-        import types, sys
+        import sys
+        import types
         dotenv_stub = types.ModuleType("dotenv")
         dotenv_stub.load_dotenv = lambda *a, **kw: None
         with mock.patch.dict(sys.modules, {"dotenv": dotenv_stub}):
@@ -1429,7 +1434,8 @@ class TestThesisReviewPacket(unittest.TestCase):
 
     # T35.9b — _get_thesis_packet returns empty string when feature flag is false
     def test_get_thesis_packet_flag_false_returns_empty(self):
-        import types, sys
+        import sys
+        import types
         dotenv_stub = types.ModuleType("dotenv")
         dotenv_stub.load_dotenv = lambda *a, **kw: None
         with mock.patch.dict(sys.modules, {"dotenv": dotenv_stub}):
@@ -1468,6 +1474,7 @@ class TestThesisReviewPacket(unittest.TestCase):
     # T35.12 — thesis_review_packet has no forbidden execution-module imports
     def test_packet_has_no_bot_imports(self):
         import inspect
+
         import thesis_review_packet
         lines        = inspect.getsource(thesis_review_packet).splitlines()
         import_lines = [l for l in lines if l.strip().startswith(("import ", "from "))]

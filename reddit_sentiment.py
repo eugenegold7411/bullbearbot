@@ -213,7 +213,9 @@ def fetch_reddit_sentiment(symbols: list[str]) -> dict[str, dict]:
     if reddit is None:
         # Fall back to public JSON provider (no PRAW/OAuth needed)
         try:
-            from reddit_sentiment_public import RedditPublicProvider as _Pub  # noqa: PLC0415
+            from reddit_sentiment_public import (
+                RedditPublicProvider as _Pub,  # noqa: PLC0415
+            )
             _pub_posts = _Pub().fetch_all_posts()
         except Exception as _pub_exc:
             log.debug("[REDDIT] Public provider failed: %s", _pub_exc)

@@ -21,9 +21,8 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
-from schemas import OptionsStructure, StructureLifecycle
+from schemas import OptionsStructure
 
 log = logging.getLogger(__name__)
 

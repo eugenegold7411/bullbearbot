@@ -20,8 +20,8 @@ from datetime import datetime
 from pathlib import Path
 
 import portfolio_intelligence as pi
-from bot_clients import _get_claude, MODEL, MODEL_FAST
-from log_setup import get_logger, log_trade
+from bot_clients import MODEL, MODEL_FAST, _get_claude
+from log_setup import get_logger
 
 log = get_logger(__name__)
 
@@ -521,8 +521,8 @@ def _ask_claude_overnight(
     C3: saves ~$0.042/cycle × 24 overnight cycles/day ≈ $1.01/day vs Sonnet.
     """
     try:
-        from zoneinfo import ZoneInfo as _ZI
         from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
         _time_str = _dt.now(_ZI("America/New_York")).strftime("%I:%M %p ET")
 
         pos_lines = []

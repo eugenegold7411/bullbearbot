@@ -9,10 +9,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -173,7 +172,7 @@ def _derive_status(
         return "awaiting_sample"
 
     # Has some data — check ring to determine shadow_collecting vs awaiting_sample
-    ring_str = all_flags.get(flag_name, False)
+    all_flags.get(flag_name, False)
     # If we have records but few (< 10), still awaiting_sample
     if annex_record_count < 10:
         return "awaiting_sample"
@@ -261,8 +260,8 @@ def format_promotion_board_for_review(entries: list[dict] | None = None) -> str:
     lines = [
         "### Annex Promotion Board",
         "",
-        f"| Module | Status | Flag | Records | Ring |",
-        f"|--------|--------|------|---------|------|",
+        "| Module | Status | Flag | Records | Ring |",
+        "|--------|--------|------|---------|------|",
     ]
     for e in entries:
         flag_str = f"`{e['feature_flag']}`" if e["feature_flag"] else "—"

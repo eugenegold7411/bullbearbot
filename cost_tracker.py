@@ -10,7 +10,6 @@ Daily reset happens automatically on first call of each new day.
 """
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional

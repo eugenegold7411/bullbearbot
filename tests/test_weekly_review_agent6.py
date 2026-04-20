@@ -7,11 +7,9 @@ Suite: WhitelistGate      — non-whitelisted keys are never merged into config
 """
 
 import json
-import logging
 import sys
 import types
 import unittest
-
 
 # ── stubs needed before importing weekly_review ──────────────────────────────
 

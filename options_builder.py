@@ -31,16 +31,15 @@ explicitly not implemented this session:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
 from schemas import (
     Direction,
-    OptionStrategy,
     OptionsLeg,
     OptionsStructure,
+    OptionStrategy,
     StructureLifecycle,
     Tier,
 )

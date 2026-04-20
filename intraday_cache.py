@@ -105,9 +105,9 @@ def get_intraday_bars(symbol: str, client=None) -> list[dict]:
     client: optional StockHistoricalDataClient; uses internal lazy instance
             if not provided.
     """
+    from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-    from alpaca.data.enums import DataFeed
 
     _rotate_old_csvs()
 

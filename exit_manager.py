@@ -15,13 +15,11 @@ Logs at INFO level with [EXIT_MGR] and [TRAIL_STOP] prefixes.
 from __future__ import annotations
 
 import os
-import math
 from typing import Optional
 
 from dotenv import load_dotenv
 
 from log_setup import get_logger, log_trade
-from schemas import normalize_symbol, is_crypto as schema_is_crypto, alpaca_symbol
 
 load_dotenv()
 log = get_logger(__name__)
@@ -123,8 +121,8 @@ def _em_config(strategy_config: dict) -> dict:
 
 def _open_orders_by_symbol(alpaca_client) -> dict[str, list]:
     """Return {symbol: [order, ...]} for all open sell-side orders, including bracket legs."""
-    from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
     try:
         orders = alpaca_client.get_orders(
             GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=200)
@@ -313,8 +311,8 @@ def refresh_exits_for_position(
     Cancels the stale stop order first if one exists.
     Returns True if a new stop was successfully submitted.
     """
-    from alpaca.trading.requests import LimitOrderRequest, StopOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest, StopOrderRequest
 
     em_cfg = _em_config(strategy_config)
     sym    = position.symbol

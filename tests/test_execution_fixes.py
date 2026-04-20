@@ -12,7 +12,6 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
-
 # ── dependency stubs ──────────────────────────────────────────────────────────
 
 def _ensure_dotenv_stub():

@@ -156,7 +156,7 @@ def _print_summary(data: dict) -> None:
 
     mv = data.get("macro_view", {})
     if mv:
-        print(f"\n  Macro view:")
+        print("\n  Macro view:")
         print(f"    Growth: {mv.get('us_growth','?')}")
         print(f"    Rates:  {mv.get('rates_view','?')[:70]}")
         print(f"    Dollar: {mv.get('dollar_view','?')[:70]}")

@@ -7,7 +7,6 @@ Checks each T0.x ticket's actual acceptance criteria against live code and data.
 Prints PASS / FAIL / WARN per criterion with evidence.
 """
 
-import ast
 import json
 import re
 import sys
@@ -326,7 +325,7 @@ warns = sum(1 for _, _, s, _ in results if s == WARN)
 print(f"\n  {PASS} {passes}   {FAIL} {fails}   {WARN} {warns}   Total: {len(results)}")
 
 if fails:
-    print(f"\nFailing criteria:")
+    print("\nFailing criteria:")
     for ticket, criterion, status, evidence in results:
         if status == FAIL:
             print(f"  {ticket}: {criterion}")
@@ -334,7 +333,7 @@ if fails:
                 print(f"    {evidence}")
 
 if warns:
-    print(f"\nWarnings (need manual review):")
+    print("\nWarnings (need manual review):")
     for ticket, criterion, status, evidence in results:
         if status == WARN:
             print(f"  {ticket}: {criterion}")

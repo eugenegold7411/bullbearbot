@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import feature_flags
 from semantic_labels import CatalystFreshness, CatalystType
 
 log = logging.getLogger(__name__)

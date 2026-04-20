@@ -206,7 +206,7 @@ def enrich_review_with_ai(review: ThesisReview, thesis) -> ThesisReview:
         return review
 
     try:
-        client  = _get_client()
+        _get_client()
         roi_str = f"{review.roi_at_checkpoint:.2%}" if review.roi_at_checkpoint is not None else "N/A"
 
         prompt = _EVAL_PROMPT.format(

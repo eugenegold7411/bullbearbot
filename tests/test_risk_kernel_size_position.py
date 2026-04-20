@@ -12,14 +12,16 @@ Covers:
 All tests are offline-safe.
 """
 
-import pytest
 
+from risk_kernel import VIX_CAUTION, size_position
 from schemas import (
-    AccountAction, BrokerSnapshot, Direction, NormalizedPosition, Tier,
+    AccountAction,
+    BrokerSnapshot,
+    Direction,
+    NormalizedPosition,
+    Tier,
     TradeIdea,
 )
-from risk_kernel import size_position, VIX_CAUTION, PDT_FLOOR
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

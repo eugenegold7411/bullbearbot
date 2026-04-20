@@ -27,12 +27,11 @@ from_alpaca_*() factory methods accept duck-typed Alpaca objects (no import need
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field, asdict
+import subprocess as _subprocess
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
-
 
 # ── Internal helper ───────────────────────────────────────────────────────────
 
@@ -860,6 +859,80 @@ class A2FeaturePack:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# A2 pipeline stage contracts (Stage 1 → Stage 2 → Stage 3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+NO_TRADE_REASONS: list[str] = [
+    "no_signal_scores",
+    "no_candidates_after_router",
+    "no_candidates_after_veto",
+    "debate_low_confidence",
+    "debate_parse_failed",
+    "debate_rejected_all",
+    "execution_rejected",
+    "execution_error",
+    "preflight_halt",
+    "session_not_market",
+    "obs_mode_active",
+    "rollback_active",
+]
+
+
+def validate_no_trade_reason(reason: str) -> str:
+    """Assert reason is in NO_TRADE_REASONS, return it. Raises ValueError if not."""
+    if reason not in NO_TRADE_REASONS:
+        raise ValueError(
+            f"no_trade_reason={reason!r} not in NO_TRADE_REASONS taxonomy. "
+            f"Valid values: {NO_TRADE_REASONS}"
+        )
+    return reason
+
+
+def _get_git_commit() -> Optional[str]:
+    try:
+        return _subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=_subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return None
+
+
+@dataclass
+class A2CandidateSet:
+    """Output of Stage 1 → input to Stage 2."""
+    symbol: str
+    pack: A2FeaturePack
+    allowed_structures: list[str]       # from _route_strategy()
+    router_rule_fired: str              # e.g. "RULE5" — for logging/audit
+    generated_candidates: list[dict]    # from generate_candidate_structures()
+    vetoed_candidates: list[dict]       # {candidate_id, reason}
+    surviving_candidates: list[dict]    # candidates that passed veto
+    generation_errors: list[str]        # non-fatal errors during generation
+    built_at: str                       # ISO timestamp
+
+
+@dataclass
+class A2DecisionRecord:
+    """Full audit trail for one A2 decision cycle."""
+    decision_id: str
+    session_tier: str
+    candidate_sets: list                # list[A2CandidateSet]
+    debate_input: Optional[str]         # full prompt sent to Claude
+    debate_output_raw: Optional[str]    # raw Claude response
+    debate_parsed: Optional[dict]       # parsed JSON or None
+    selected_candidate: Optional[dict]  # the winning candidate
+    execution_result: Optional[str]     # "submitted"|"rejected"|"no_trade"|"error"
+    no_trade_reason: Optional[str]      # reject taxonomy (see NO_TRADE_REASONS)
+    elapsed_seconds: float
+    schema_version: int = 1             # bump when fields added/removed/renamed
+    code_version: Optional[str] = field(default_factory=_get_git_commit)
+    built_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Validation helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1141,6 +1214,9 @@ __all__ = [
     "NormalizedPosition", "NormalizedOrder", "BrokerSnapshot",
     # Options structure
     "OptionsLeg", "OptionsStructure", "StructureProposal", "A2FeaturePack",
+    # A2 stage contracts
+    "NO_TRADE_REASONS", "validate_no_trade_reason",
+    "A2CandidateSet", "A2DecisionRecord",
     # Validation
     "validate_trade_idea", "validate_broker_action",
     # Manifest

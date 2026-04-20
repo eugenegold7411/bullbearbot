@@ -15,7 +15,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 # ── stubs ─────────────────────────────────────────────────────────────────────
 
 def _ensure_trade_memory_stub() -> None:
@@ -36,7 +35,6 @@ def _ensure_dotenv_stub() -> None:
 def _import_memory():
     _ensure_dotenv_stub()
     _ensure_trade_memory_stub()
-    import importlib
     if "memory" in sys.modules:
         return sys.modules["memory"]
     import memory as mem

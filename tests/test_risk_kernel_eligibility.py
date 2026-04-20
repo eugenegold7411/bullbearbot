@@ -13,14 +13,16 @@ Covers all six hard gates:
 All tests are offline-safe (no Alpaca / Claude / Twilio / network calls).
 """
 
-import pytest
 
+from risk_kernel import PDT_FLOOR, VIX_HALT, eligibility_check
 from schemas import (
-    AccountAction, BrokerSnapshot, Direction, NormalizedPosition, Tier,
+    AccountAction,
+    BrokerSnapshot,
+    Direction,
+    NormalizedPosition,
+    Tier,
     TradeIdea,
 )
-from risk_kernel import eligibility_check, PDT_FLOOR, VIX_HALT
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

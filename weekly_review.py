@@ -117,8 +117,8 @@ def _send_email_alert(subject: str, body: str) -> None:
             f"<pre style='white-space:pre-wrap'>{body}</pre></body></html>"
         )
     try:
-        from sendgrid import SendGridAPIClient          # noqa: PLC0415
-        from sendgrid.helpers.mail import Mail          # noqa: PLC0415
+        from sendgrid import SendGridAPIClient  # noqa: PLC0415
+        from sendgrid.helpers.mail import Mail  # noqa: PLC0415
         resp = SendGridAPIClient(api_key).send(
             Mail(from_email=from_email, to_emails=to_email,
                  subject=subject, html_content=html)
@@ -982,8 +982,8 @@ Review the roadmap, identify what shipped vs planned, re-prioritize pending feat
 def _get_abstention_section() -> str:
     """Non-fatal abstention rate summary from hindsight log for Agent 10."""
     try:
-        import hindsight as _hs  # noqa: PLC0415
         import abstention as _ab  # noqa: PLC0415
+        import hindsight as _hs  # noqa: PLC0415
         records = _hs.get_hindsight_records(days_back=7)
         if not records:
             return "No hindsight records in last 7 days — abstention metrics unavailable."
@@ -1830,12 +1830,15 @@ def _compute_taxonomy_drift(days_back: int = 7) -> dict:
 
     # Load known labels from semantic_labels if available
     known_catalysts: set[str] = set()
-    known_regimes:   set[str] = set()
     known_close_reasons: set[str] = set()
     try:
-        from semantic_labels import CatalystType, RegimeType, CloseReasonType  # noqa: PLC0415
+        from semantic_labels import (  # noqa: PLC0415
+            CatalystType,
+            CloseReasonType,
+            RegimeType,
+        )
         known_catalysts      = {e.value for e in CatalystType}
-        known_regimes        = {e.value for e in RegimeType}
+        {e.value for e in RegimeType}
         known_close_reasons  = {e.value for e in CloseReasonType}
     except Exception:
         pass
@@ -1945,8 +1948,8 @@ def _get_abstention_section() -> str:
     two-consecutive-window lazy-abstainer detection. Advisory only.
     """
     try:
-        import hindsight as _hs   # noqa: PLC0415
         import abstention as _ab  # noqa: PLC0415
+        import hindsight as _hs  # noqa: PLC0415
         records = _hs.get_hindsight_records(days_back=7)
         if not records:
             return "No hindsight records in last 7 days — abstention metrics unavailable."
@@ -2012,7 +2015,7 @@ def _get_abstention_section() -> str:
         if lazy_candidates:
             lines += [
                 "",
-                f"**Lazy-abstainer candidates (flagged ≥2 consecutive weeks, advisory only):** "
+                "**Lazy-abstainer candidates (flagged ≥2 consecutive weeks, advisory only):** "
                 + ", ".join(lazy_candidates),
             ]
 
@@ -2157,8 +2160,8 @@ def _build_governance_signals_block() -> str:
 
     # Per-module abstention — lazy-abstainer candidates
     try:
-        import hindsight as _hs   # noqa: PLC0415
         import abstention as _ab  # noqa: PLC0415
+        import hindsight as _hs  # noqa: PLC0415
         _records = _hs.get_hindsight_records(days_back=7)
         _modules = _ab.list_modules(_records) if _records else []
         _per_mod = {}
@@ -2684,8 +2687,8 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
 
     # ── Agent 4 data: signal backtest + shadow lane ───────────────────────────
     try:
-        import signal_backtest as _signal_backtest
         import shadow_lane as _shadow_lane
+        import signal_backtest as _signal_backtest
         _bt_result    = _signal_backtest.run_signal_backtest(lookback_days=30)
         _bt_report    = _signal_backtest.format_backtest_report(_bt_result)
         _signal_backtest.save_backtest_results(_bt_result)
@@ -3286,7 +3289,7 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
 
     # ── Console summary ───────────────────────────────────────────────────────
     print(f"\n{'=' * 60}")
-    print(f"  WEEKLY REVIEW COMPLETE")
+    print("  WEEKLY REVIEW COMPLETE")
     print(f"  Active strategy : {sms_strategy}")
     print(f"  Report saved to : {report_path}")
     print(f"  Config updated  : {'yes' if params_update else 'metadata only (parse failed)'}")

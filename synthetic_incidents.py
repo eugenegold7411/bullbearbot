@@ -14,11 +14,7 @@ Feature flag: enable_synthetic_incidents (lab_flags, default False).
 
 from __future__ import annotations
 
-import json
 import logging
-import uuid
-from dataclasses import asdict
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -211,7 +207,7 @@ def format_synthetic_suite_results(results: list) -> str:
 
     ok = sum(1 for r in results if r.get("status") == "ok")
     lines = [
-        f"## Synthetic Incident Suite Results\n",
+        "## Synthetic Incident Suite Results\n",
         f"Passed: {ok}/{len(results)}\n",
         "| Template | Status | Error |",
         "|----------|--------|-------|",

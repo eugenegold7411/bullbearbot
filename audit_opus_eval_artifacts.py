@@ -8,9 +8,7 @@ which artifacts can be honestly captured vs which must be excluded.
 """
 
 import json
-import re
 from pathlib import Path
-from datetime import datetime, timezone
 
 BASE = Path("/home/trading-bot")
 
@@ -22,7 +20,7 @@ def section(title):
 def read_json(path):
     try:
         return json.loads((BASE / path).read_text())
-    except Exception as e:
+    except Exception:
         return None
 
 def read_jsonl(path, limit=None):
@@ -109,7 +107,7 @@ else:
     print("  [MISSING] data/reports/ directory not found")
 
 # Check if Agent 1-5 outputs are preserved anywhere
-print(f"\n  Agent output preservation check:")
+print("\n  Agent output preservation check:")
 for fname in ["data/reports/agent_outputs", "data/reports/weekly_review_latest.json",
               "data/reports/director_memo_history.json"]:
     path = BASE / fname

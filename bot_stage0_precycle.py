@@ -29,7 +29,8 @@ import trade_memory
 import watchlist_manager as wm
 from bot_clients import _get_alpaca
 from log_setup import get_logger
-from schemas import BrokerSnapshot, NormalizedPosition as _NP
+from schemas import BrokerSnapshot
+from schemas import NormalizedPosition as _NP
 
 log = get_logger(__name__)
 
@@ -282,8 +283,11 @@ def run_precycle(
     div_events: list = []
     try:
         from divergence import (  # noqa: PLC0415
-            load_account_mode, detect_protection_divergence,
-            respond_to_divergence, check_clean_cycle, OperatingMode,
+            OperatingMode,
+            check_clean_cycle,
+            detect_protection_divergence,
+            load_account_mode,
+            respond_to_divergence,
         )
         a1_mode = load_account_mode("A1")
         if snapshot is not None and snapshot.positions:

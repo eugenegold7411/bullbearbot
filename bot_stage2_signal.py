@@ -10,7 +10,7 @@ import json
 from itertools import islice
 from pathlib import Path
 
-from bot_clients import _get_claude, MODEL_FAST
+from bot_clients import MODEL_FAST, _get_claude
 from log_setup import get_logger, log_trade
 
 log = get_logger(__name__)

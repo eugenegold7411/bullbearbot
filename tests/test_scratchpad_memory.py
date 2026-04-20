@@ -22,9 +22,10 @@ Tests:
 # Set it here before chromadb is first imported so the lazy init in trade_memory
 # succeeds in the test environment.
 import os
+
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
-import json
 import os
+
 import pytest
 
 # All tests in this file require ChromaDB. Excluded from CI via -m "not requires_chromadb".
@@ -34,7 +35,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
@@ -225,7 +226,7 @@ class TestHistory(_TmpDbMixin, unittest.TestCase):
     def test_09_history_excludes_old_records(self):
         """get_scratchpad_history() excludes records older than days_back."""
         old_ts = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
-        sp_old = self._make_sp_with_ts(old_ts)
+        self._make_sp_with_ts(old_ts)
         # Save old record directly bypassing auto-ts — use raw ChromaDB add
         # (save_scratchpad_memory() stamps its own ts; we need to override metadata)
         short, _, _ = self._tm._get_scratchpad_collections()
@@ -252,7 +253,7 @@ class TestNearMiss(_TmpDbMixin, unittest.TestCase):
 
     def _save_sp_blocking(self, watching, blocking, ts_offset_hours=0):
         """Save a scratchpad where watching symbols are blocked."""
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
         ts = (datetime.now(timezone.utc) - timedelta(hours=ts_offset_hours)).isoformat()
         sp = {
             "watching":  watching,

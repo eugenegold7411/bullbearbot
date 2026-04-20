@@ -42,9 +42,19 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Union
 
 from schemas import (
-    AccountAction, BrokerAction, BrokerSnapshot, Conviction, Direction,
-    OptionsAction, OptionStrategy, SignalScore, StructureLifecycle, Tier,
-    TradeIdea, alpaca_symbol, is_crypto, normalize_symbol,
+    AccountAction,
+    BrokerAction,
+    BrokerSnapshot,
+    Conviction,
+    Direction,
+    OptionsAction,
+    OptionStrategy,
+    SignalScore,
+    Tier,
+    TradeIdea,
+    alpaca_symbol,
+    is_crypto,
+    normalize_symbol,
 )
 
 log = logging.getLogger(__name__)
@@ -992,7 +1002,7 @@ def process_options_idea(
     expiration  = select_expiry(strategy, expirations)
 
     # ── VIX / IV scaling ──────────────────────────────────────────────────────
-    vix_gates = a2_cfg.get("vix_gates", {})
+    a2_cfg.get("vix_gates", {})
     iv_rank   = iv_summary.get("iv_rank", 50)
     # Scale down 50% when: VIX > 25, IV rank > 60 (covered by options_regime size_mult)
     size_mult = float(options_regime.get("size_multiplier", 1.0))

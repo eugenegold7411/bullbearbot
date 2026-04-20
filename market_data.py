@@ -42,17 +42,13 @@ Technical indicators (via pandas-ta):
 #   - test_crypto_prices()     — CLI test only
 # ============================================================
 
-import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import pandas_ta as ta
 import yfinance as yf
-from dotenv import load_dotenv
-
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
 from alpaca.data.historical.news import NewsClient
@@ -65,6 +61,7 @@ from alpaca.data.requests import (
 )
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
+from dotenv import load_dotenv
 
 import data_warehouse as dw
 import watchlist_manager as wm
@@ -870,11 +867,11 @@ def _build_intermarket_signals() -> str:
             return "  (macro data not yet available)"
 
         signals = []
-        vix  = macro.get("vix",    {}).get("price", 0)
+        macro.get("vix",    {}).get("price", 0)
         oil  = macro.get("oil",    {}).get("chg_pct", 0)
         gold = macro.get("gold",   {}).get("chg_pct", 0)
         dxy  = macro.get("dollar", {}).get("chg_pct", 0)
-        tlt  = macro.get("sp500",  {}).get("chg_pct", 0)  # using sp500 as proxy
+        macro.get("sp500",  {}).get("chg_pct", 0)  # using sp500 as proxy
 
         if oil >= 2.0:
             signals.append(f"  Oil +{oil:.1f}% → geopolitical risk-on: long defense (LMT/RTX/ITA), watch airlines")
@@ -1066,7 +1063,7 @@ def fetch_all(symbols_stock: list, symbols_crypto: list, session_tier: str,
     Returns the full context dict consumed by build_user_prompt().
     """
     clock = get_market_clock()
-    wl    = wm.get_active_watchlist()
+    wm.get_active_watchlist()
 
     # Always fetch crypto
     crypto_str, crypto_prices, eth_btc = get_crypto_signals(symbols_crypto)
@@ -1113,7 +1110,9 @@ def fetch_all(symbols_stock: list, symbols_crypto: list, session_tier: str,
 
     insider_section = "  (insider intelligence unavailable this cycle)"
     try:
-        from insider_intelligence import build_insider_intelligence_section  # noqa: PLC0415
+        from insider_intelligence import (
+            build_insider_intelligence_section,  # noqa: PLC0415
+        )
         insider_section = build_insider_intelligence_section(all_stock_syms)
     except Exception:
         pass

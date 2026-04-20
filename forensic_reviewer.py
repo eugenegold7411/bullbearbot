@@ -187,6 +187,7 @@ def _build_prompt(
 def _call_haiku(prompt: str, model: str) -> dict:
     """Makes single Haiku API call. Raises on failure."""
     import anthropic  # noqa: PLC0415
+
     import cost_attribution as _ca  # noqa: PLC0415
 
     client = anthropic.Anthropic()
@@ -320,7 +321,10 @@ def review_closed_trade(
 
         # Create HindsightRecord linked to this trade
         try:
-            from hindsight import build_hindsight_record, log_hindsight_record  # noqa: PLC0415
+            from hindsight import (  # noqa: PLC0415
+                build_hindsight_record,
+                log_hindsight_record,
+            )
             hs = build_hindsight_record(
                 subject_id=decision_id,
                 subject_type="decision",
@@ -339,7 +343,10 @@ def review_closed_trade(
 
         # Auto-create experience record
         try:
-            from experience_library import build_experience_from_forensic, save_experience  # noqa: PLC0415
+            from experience_library import (  # noqa: PLC0415
+                build_experience_from_forensic,
+                save_experience,
+            )
             rec_type = (
                 "success_case" if record.thesis_verdict == "correct" else
                 "failure_case" if record.thesis_verdict == "incorrect" else

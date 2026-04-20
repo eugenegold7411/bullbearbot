@@ -29,13 +29,12 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from options_state import save_structure
 from schemas import (
-    Direction,
-    OptionStrategy,
     OptionsStructure,
+    OptionStrategy,
     StructureLifecycle,
 )
-from options_state import save_structure
 
 log = logging.getLogger(__name__)
 
@@ -165,8 +164,8 @@ def _submit_single_leg(
     limit_price = _round_limit(mid)
 
     try:
-        from alpaca.trading.requests import LimitOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
+        from alpaca.trading.requests import LimitOrderRequest
 
         req = LimitOrderRequest(
             symbol=occ_sym,
@@ -231,8 +230,8 @@ def _submit_spread_sequential(
     long_limit = _round_limit(long_mid)
 
     try:
-        from alpaca.trading.requests import LimitOrderRequest, GetOrderByIdRequest
-        from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus
+        from alpaca.trading.enums import OrderSide, TimeInForce
+        from alpaca.trading.requests import LimitOrderRequest
 
         long_req = LimitOrderRequest(
             symbol=long_occ,
@@ -303,7 +302,7 @@ def _submit_spread_sequential(
         # Can't price short leg — close long and abort
         _emergency_close_leg(trading_client, long_occ, structure.contracts)
         structure.add_audit(
-            f"short leg price unavailable — long leg closed, spread aborted"
+            "short leg price unavailable — long leg closed, spread aborted"
         )
         structure = _set_lifecycle(structure, StructureLifecycle.CANCELLED,
             "short leg mid price unavailable; long leg emergency-closed")
@@ -350,8 +349,8 @@ def _submit_spread_sequential(
 def _emergency_close_leg(trading_client, occ_symbol: str, qty: int) -> None:
     """Submit a market close for a single filled option leg."""
     try:
-        from alpaca.trading.requests import MarketOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
+        from alpaca.trading.requests import MarketOrderRequest
         req = MarketOrderRequest(
             symbol=occ_symbol,
             qty=qty,
@@ -368,6 +367,7 @@ def _send_spread_abort_sms(structure: OptionsStructure) -> None:
     """Non-fatal SMS alert when a spread aborts after long fill."""
     try:
         import os
+
         from twilio.rest import Client
         sid   = os.getenv("TWILIO_ACCOUNT_SID")
         token = os.getenv("TWILIO_AUTH_TOKEN")
@@ -437,8 +437,8 @@ def close_structure(
 
         try:
             if method == "market":
-                from alpaca.trading.requests import MarketOrderRequest
                 from alpaca.trading.enums import OrderSide, TimeInForce
+                from alpaca.trading.requests import MarketOrderRequest
                 close_side = OrderSide.SELL if leg.side == "buy" else OrderSide.BUY
                 req = MarketOrderRequest(
                     symbol=occ_sym,
@@ -447,8 +447,8 @@ def close_structure(
                     time_in_force=TimeInForce.DAY,
                 )
             else:
-                from alpaca.trading.requests import LimitOrderRequest
                 from alpaca.trading.enums import OrderSide, TimeInForce
+                from alpaca.trading.requests import LimitOrderRequest
                 close_side = OrderSide.SELL if leg.side == "buy" else OrderSide.BUY
                 mid = _mid_for_leg(leg)
                 limit_price = _round_limit(mid) if mid and mid > 0 else 0.05
@@ -626,7 +626,7 @@ def should_roll_structure(
     # Crisis VIX regime — no new options positions (including rolls)
     a2_cfg     = config.get("account2", {})
     vix_gates  = a2_cfg.get("vix_gates", {})
-    crisis_vix = float(vix_gates.get("crisis_halt", 40))
+    float(vix_gates.get("crisis_halt", 40))
     # VIX not directly available here; check config-level override flag if present
     if config.get("_vix_crisis_halt", False):
         return False, ""
@@ -661,7 +661,6 @@ def execute_roll(
     Returns the updated (closing) structure.
     """
     import uuid  # noqa: PLC0415
-    from options_state import save_structure  # already imported at top  # noqa: PLC0415
 
     # Assign a roll group ID if this is the first hop in the chain
     if not structure.roll_group_id:

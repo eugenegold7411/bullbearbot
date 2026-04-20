@@ -18,17 +18,21 @@ import scratchpad as _scratchpad
 import sonnet_gate as _gate
 import trade_memory
 import watchlist_manager as wm
-from bot_clients import MODEL, _get_alpaca, _get_claude  # noqa: F401 (_get_claude re-exported for callers)
-from bot_stage0_precycle import PreCycleState, run_precycle
+from bot_clients import (  # noqa: F401 (_get_claude re-exported for callers)
+    MODEL,
+    _get_alpaca,
+    _get_claude,
+)
+from bot_stage0_precycle import run_precycle
 from bot_stage1_regime import classify_regime, format_regime_summary
-from bot_stage2_signal import format_signal_scores, score_signals
 from bot_stage2_5_scratchpad import run_scratchpad_stage
+from bot_stage2_signal import format_signal_scores, score_signals
 from bot_stage3_decision import (
-    _OVERNIGHT_DEFAULT,     # re-exported — test_core.py accesses bot._OVERNIGHT_DEFAULT
+    _OVERNIGHT_DEFAULT,  # re-exported — test_core.py accesses bot._OVERNIGHT_DEFAULT  # noqa: F401
     _ask_claude_overnight,  # re-exported — test_core.py accesses bot._ask_claude_overnight
     _log_skip_cycle,
     _write_decision_capture,
-    ask_claude,             # re-exported — test_core.py mocks bot.ask_claude
+    ask_claude,  # re-exported — test_core.py mocks bot.ask_claude
     build_compact_prompt,
     build_user_prompt,
 )
@@ -36,8 +40,14 @@ from bot_stage4_execution import debate_trade, fundamental_check
 from log_setup import get_logger, log_trade
 from schemas import (
     BrokerAction as _BrokerAction,
+)
+from schemas import (
     BrokerSnapshot as _BrokerSnapshot,
+)
+from schemas import (
     NormalizedPosition as _NP,
+)
+from schemas import (
     normalize_symbol,
     validate_claude_decision,
 )
@@ -89,8 +99,8 @@ def _send_email_alert(subject: str, body: str) -> None:
             f"<pre style='white-space:pre-wrap'>{body}</pre></body></html>"
         )
     try:
-        from sendgrid import SendGridAPIClient          # noqa: PLC0415
-        from sendgrid.helpers.mail import Mail          # noqa: PLC0415
+        from sendgrid import SendGridAPIClient  # noqa: PLC0415
+        from sendgrid.helpers.mail import Mail  # noqa: PLC0415
         resp = SendGridAPIClient(api_key).send(
             Mail(from_email=from_email, to_emails=to_email,
                  subject=subject, html_content=html)
@@ -287,8 +297,8 @@ def run_cycle(
             regime_str = _bias
 
         # Sonnet gate — skip if no material state change since last call
-        from datetime import datetime as _dt       # noqa: PLC0415
-        from zoneinfo import ZoneInfo as _ZI       # noqa: PLC0415
+        from datetime import datetime as _dt  # noqa: PLC0415
+        from zoneinfo import ZoneInfo as _ZI  # noqa: PLC0415
         _use_compact = False
         _gate_state  = _gate.load_gate_state()
         _gate_full_cfg = state.cfg if isinstance(state.cfg, dict) else {}
@@ -383,8 +393,10 @@ def run_cycle(
     _trigger_flags: dict = {}
     try:
         from attribution import (  # noqa: PLC0415
-            build_module_tags, build_trigger_flags,
-            generate_decision_id, log_attribution_event,
+            build_module_tags,
+            build_trigger_flags,
+            generate_decision_id,
+            log_attribution_event,
         )
         _decision_id = generate_decision_id(
             "A1", _dt.now(_ZI("America/New_York")).strftime("%Y%m%d_%H%M%S")
@@ -459,7 +471,9 @@ def run_cycle(
             else:
                 log.info("[KERNEL] REJECTED %s %s — %s", _idea.intent, _idea.symbol, _result)
                 try:
-                    from shadow_lane import log_shadow_event as _log_shadow  # noqa: PLC0415
+                    from shadow_lane import (
+                        log_shadow_event as _log_shadow,  # noqa: PLC0415
+                    )
                     _log_shadow(
                         "rejected_by_risk_kernel", _sym,
                         {
@@ -480,8 +494,13 @@ def run_cycle(
                 except Exception:
                     pass
                 try:
-                    from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
-                    from datetime import datetime as _d, timezone as _tz
+                    from datetime import datetime as _d
+                    from datetime import timezone as _tz
+
+                    from decision_outcomes import (  # noqa: PLC0415
+                        DecisionOutcomeRecord,
+                        log_outcome_event,
+                    )
                     log_outcome_event(DecisionOutcomeRecord(
                         decision_id=_decision_id, account="A1", symbol=_sym,
                         timestamp=_d.now(_tz.utc).isoformat().replace("+00:00", "Z"),
@@ -505,7 +524,7 @@ def run_cycle(
     # Mode gate — filter new entries if A1 operating mode is not NORMAL
     if state.a1_mode is not None:
         try:
-            from divergence import is_action_allowed, OperatingMode  # noqa: PLC0415
+            from divergence import OperatingMode, is_action_allowed  # noqa: PLC0415
             if state.a1_mode.mode != OperatingMode.NORMAL:
                 _filtered: list = []
                 for _ba_dict in actions:
@@ -556,7 +575,10 @@ def run_cycle(
 
     # Pattern learning observations
     try:
-        from memory import _load_pattern_watchlist, add_watchlist_observation  # noqa: PLC0415
+        from memory import (  # noqa: PLC0415
+            _load_pattern_watchlist,
+            add_watchlist_observation,
+        )
         pwl            = _load_pattern_watchlist()
         current_prices = state.md.get("current_prices", {})
         for sym in list(pwl.keys()):
@@ -724,7 +746,9 @@ def run_cycle(
                 )
                 _send_email_alert(f"BullBearBot Order: {r.action.upper()} {r.symbol}", _order_html)
                 try:
-                    from attribution import log_attribution_event as _log_attr  # noqa: PLC0415
+                    from attribution import (
+                        log_attribution_event as _log_attr,  # noqa: PLC0415
+                    )
                     _log_attr(
                         event_type="order_submitted",
                         decision_id=_decision_id,
@@ -738,8 +762,13 @@ def run_cycle(
                 except Exception as _oa_exc:
                     log.debug("Attribution order_submitted failed (non-fatal): %s", _oa_exc)
                 try:
-                    from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
-                    from datetime import datetime as _d, timezone as _tz
+                    from datetime import datetime as _d
+                    from datetime import timezone as _tz
+
+                    from decision_outcomes import (  # noqa: PLC0415
+                        DecisionOutcomeRecord,
+                        log_outcome_event,
+                    )
                     _matching_action = next(
                         (a for a in actions if a.get("symbol") == r.symbol), {}
                     )
@@ -763,8 +792,13 @@ def run_cycle(
                     pass
             else:
                 try:
-                    from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
-                    from datetime import datetime as _d, timezone as _tz
+                    from datetime import datetime as _d
+                    from datetime import timezone as _tz
+
+                    from decision_outcomes import (  # noqa: PLC0415
+                        DecisionOutcomeRecord,
+                        log_outcome_event,
+                    )
                     _rej_action = next((a for a in actions if a.get("symbol") == r.symbol), {})
                     log_outcome_event(DecisionOutcomeRecord(
                         decision_id=_decision_id, account="A1", symbol=r.symbol,
@@ -782,7 +816,9 @@ def run_cycle(
                 except Exception as _rej_ex_exc:
                     log.warning("[OUTCOMES] rejected_by_executor log failed: %s", _rej_ex_exc)
                 try:
-                    from shadow_lane import log_shadow_event as _log_shadow  # noqa: PLC0415
+                    from shadow_lane import (
+                        log_shadow_event as _log_shadow,  # noqa: PLC0415
+                    )
                     _log_shadow(
                         "approved_trade", r.symbol,
                         {"action": r.action, "order_id": str(r.order_id) if r.order_id else ""},
@@ -807,10 +843,18 @@ def run_cycle(
                         log.debug("publisher trade_entry failed (non-fatal): %s", _pub_exc)
                 if r.action == "buy":
                     try:
-                        from feature_flags import is_enabled as _ff_enabled  # noqa: PLC0415
+                        from feature_flags import (
+                            is_enabled as _ff_enabled,  # noqa: PLC0415
+                        )
                         if _ff_enabled("enable_thesis_checksum"):
-                            from thesis_checksum import build_checksum_from_decision, log_checksum  # noqa: PLC0415
-                            from catalyst_normalizer import normalize_catalyst, log_catalyst  # noqa: PLC0415
+                            from catalyst_normalizer import (  # noqa: PLC0415
+                                log_catalyst,
+                                normalize_catalyst,
+                            )
+                            from thesis_checksum import (  # noqa: PLC0415
+                                build_checksum_from_decision,
+                                log_checksum,
+                            )
                             _matching_action = next(
                                 (a for a in actions if a.get("symbol") == r.symbol), {}
                             )
@@ -891,8 +935,13 @@ def run_cycle(
             log.warning("[PREFLIGHT] shadow_only — %d action(s) blocked; logging blocked_by_mode",
                         len(actions))
             try:
-                from decision_outcomes import DecisionOutcomeRecord, log_outcome_event  # noqa: PLC0415
-                from datetime import datetime as _d, timezone as _tz
+                from datetime import datetime as _d
+                from datetime import timezone as _tz
+
+                from decision_outcomes import (  # noqa: PLC0415
+                    DecisionOutcomeRecord,
+                    log_outcome_event,
+                )
                 _pf_reason = (
                     f"preflight verdict={state.pf_result.verdict}"
                     if state.pf_result is not None

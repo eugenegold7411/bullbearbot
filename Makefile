@@ -1,4 +1,6 @@
-.PHONY: install lint format test test-ci import-check clean
+.PHONY: install lint format test test-ci ci-local import-check clean
+
+PYTHON ?= .venv/bin/python3
 
 install:
 	pip install -e . -r requirements-dev.txt
@@ -15,8 +17,14 @@ test:
 test-ci:
 	pytest tests/ -m "not requires_chromadb"
 
+ci-local:
+	$(PYTHON) -m py_compile $(shell find . -name "*.py" -not -path "./.venv/*" -not -path "./__pycache__/*")
+	make import-check
+	pytest tests/ -m "not requires_chromadb" -q
+	@echo "CI-local complete — matches blocking CI subset"
+
 import-check:
-	python3 -c "\
+	$(PYTHON) -c "\
 import risk_kernel; \
 import schemas; \
 import attribution; \

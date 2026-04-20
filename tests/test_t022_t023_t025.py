@@ -8,7 +8,6 @@ T-025: update_outcomes_from_alpaca() SELL-fill path + backfill_forward_returns()
 """
 
 import json
-import logging
 import os
 import sys
 import tempfile
@@ -16,7 +15,6 @@ import types
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
 
 # ── stubs needed before any trading-bot imports ───────────────────────────────
 
@@ -56,7 +54,7 @@ _stub_module("scheduler")
 class TestCatalystClassifier(unittest.TestCase):
 
     def setUp(self):
-        from semantic_labels import classify_catalyst, CatalystType
+        from semantic_labels import CatalystType, classify_catalyst
         self.classify = classify_catalyst
         self.CatalystType = CatalystType
 
@@ -139,7 +137,6 @@ class TestCatalystClassifier(unittest.TestCase):
 class TestCatalystTypeInDecisionRecord(unittest.TestCase):
 
     def setUp(self):
-        import importlib
         if "memory" in sys.modules:
             self.mem = sys.modules["memory"]
         else:
@@ -187,7 +184,6 @@ class TestCatalystTypeInDecisionRecord(unittest.TestCase):
 class TestThesisStatus(unittest.TestCase):
 
     def setUp(self):
-        import importlib
         import portfolio_intelligence as pi
         self.pi = pi
 
@@ -338,7 +334,6 @@ class TestThesisStatus(unittest.TestCase):
 class TestOutcomeResolutionSellFill(unittest.TestCase):
 
     def setUp(self):
-        import importlib
         if "memory" in sys.modules:
             self.mem = sys.modules["memory"]
         else:
@@ -511,7 +506,6 @@ class TestBackfillInsufficientData(unittest.TestCase):
     def test_logs_info_when_status_insufficient_data(self):
         """backfill_forward_returns logs [OUTCOMES] backfill: backtest insufficient_data."""
         import decision_outcomes as do
-        import logging
         bt_content = json.dumps({
             "status": "insufficient_data",
             "n_signals": 3,
@@ -538,8 +532,9 @@ class TestBackfillInsufficientData(unittest.TestCase):
 
     def test_normal_backfill_still_works_when_results_present(self):
         """backfill_forward_returns works normally when backtest has results."""
+        from datetime import datetime, timedelta, timezone
+
         import decision_outcomes as do
-        from datetime import datetime, timezone, timedelta
         now = datetime.now(timezone.utc)
         ts = (now - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
         date_str = ts[:10]

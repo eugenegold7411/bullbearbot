@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -98,7 +97,7 @@ def _assign_verdict(event: dict, outcome: Optional[dict]) -> Optional[str]:
         return None
 
     return_1d = outcome.get("return_1d")
-    correct_1d = outcome.get("correct_1d")
+    outcome.get("correct_1d")
     if return_1d is None:
         return None
 

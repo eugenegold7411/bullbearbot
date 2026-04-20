@@ -152,8 +152,11 @@ def _load_context() -> str:
 
     # Congressional + insider activity (last 48h)
     try:
-        from insider_intelligence import fetch_congressional_trades, fetch_form4_insider_trades
         import watchlist_manager as wm
+        from insider_intelligence import (
+            fetch_congressional_trades,
+            fetch_form4_insider_trades,
+        )
         wl = wm.get_active_watchlist()
         all_syms = [s["symbol"] for s in wl["all"]]
         cong  = [t for t in fetch_congressional_trades(all_syms, days_back=2)]

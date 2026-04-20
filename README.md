@@ -88,7 +88,19 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full architecture summary.
 **Cycle intervals:** 5 min (market hours) · 15 min (extended) · 30 min (overnight)
 
 **Account 2** runs 90 s after every Account 1 market-hours cycle, reading A1's signal scores.
-No separate market data fetch; IV-first strategy selection → four-way debate → options builder → Alpaca.
+No separate market data fetch. Uses a **bounded adjudication** model — Claude selects from
+pre-built, pre-validated candidates; it cannot invent strikes, expiries, or contracts.
+
+**Account 2 Pipeline:**
+
+| Stage | Module | What happens |
+|-------|--------|--------------|
+| 0 — Preflight | `bot_options_stage0_preflight.py` | Session gate, equity floor ($25K), observation mode counter, options structure reconciliation |
+| 1 — Candidates | `bot_options_stage1_candidates.py` | A2FeaturePack per symbol (IV rank, direction, liquidity, earnings/macro flags) → deterministic router selects allowed structures → veto layer (liquidity, IV blackout, earnings) → concrete candidate list |
+| 3 — Bounded debate | `bot_options_stage3_debate.py` | Claude picks from pre-built `A2CandidateSet`; confidence ≥ 0.85 required for PROCEED; returns `A2DecisionRecord` |
+| 4 — Execution | `bot_options_stage4_execution.py` | Submits selected candidate via Alpaca GTC limit orders; persists `A2DecisionRecord`; close-check loop |
+
+**Key design principles:** Router constrains; AI adjudicates. All no-trade outcomes use the `NO_TRADE_REASONS` taxonomy. Emergency rollback flags (`a2_rollback` in `strategy_config.json`) can halt candidate generation or debate without code changes.
 
 ---
 

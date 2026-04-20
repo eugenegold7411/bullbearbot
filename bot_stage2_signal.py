@@ -7,12 +7,15 @@ Public API:
 """
 
 import json
+from itertools import islice
 from pathlib import Path
 
 from bot_clients import _get_claude, MODEL_FAST
 from log_setup import get_logger, log_trade
 
 log = get_logger(__name__)
+
+_BATCH_SIZE = 15
 
 _SIGNAL_SYS = (
     "You are a signal scorer for a trading bot. Score symbols based on available signals. "
@@ -27,6 +30,47 @@ _SIGNAL_SYS = (
     '"top_3":["SYM1","SYM2","SYM3"],"elevated_caution":["SYM4"],'
     '"reasoning":"<2 sentences>"}'
 )
+
+
+def _call_single_batch(user_content: str) -> dict:
+    """Make one scored-symbols API call with repair+retry. Returns parsed result dict."""
+    resp = _get_claude().messages.create(
+        model=MODEL_FAST, max_tokens=4000,
+        system=[{"type": "text", "text": _SIGNAL_SYS, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_content}],
+        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+    )
+    try:
+        from cost_tracker import get_tracker
+        get_tracker().record_api_call(MODEL_FAST, resp.usage, caller="signal_scorer")
+    except Exception as _ct_exc:
+        log.warning("Cost tracker failed: %s", _ct_exc)
+    raw = resp.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        last_brace = raw.rfind("}")
+        if last_brace >= 0:
+            try:
+                result = json.loads(raw[:last_brace + 1])
+                log.debug("[SIGNALS] JSON repaired by truncation (last_brace=%d)", last_brace)
+                return result
+            except json.JSONDecodeError:
+                pass
+        log.debug("[SIGNALS] JSON truncated, retrying API call with completeness hint")
+        _retry_sys = _SIGNAL_SYS + "\nReturn ONLY valid complete JSON. If you cannot fit all symbols, return fewer rather than truncating."
+        _retry_resp = _get_claude().messages.create(
+            model=MODEL_FAST, max_tokens=4000,
+            system=[{"type": "text", "text": _retry_sys}],
+            messages=[{"role": "user", "content": user_content}],
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+        )
+        _retry_raw = _retry_resp.content[0].text.strip()
+        if _retry_raw.startswith("```"):
+            _retry_raw = _retry_raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return json.loads(_retry_raw)  # raises on failure — caller handles
 
 
 def score_signals(
@@ -106,61 +150,56 @@ def score_signals(
         pwl_lines = [f"{s}: min {d.get('minimum_signals_required', 2)} signals required"
                      for s, d in pwl.items() if not d.get("graduated") and s in scored]
 
-        user_content = (
-            f"Symbols to score: {', '.join(scored)}\n\n"
+        regime_line = (
             f"REGIME: score={regime.get('regime_score', 50)} bias={regime.get('bias', 'neutral')} "
             f"theme={regime.get('session_theme', '?')}\n"
-            f"  constraints: {regime.get('constraints', [])}\n\n"
-            f"INSIDER/CONGRESSIONAL:\n{chr(10).join(insider_lines) or '(none)'}\n\n"
-            f"ORB CANDIDATES:\n{orb_str}\n\n"
-            f"REDDIT:\n{chr(10).join(reddit_lines) or '(none)'}\n\n"
-            f"MORNING BRIEF picks:\n{chr(10).join(morning_lines) or '(none)'}\n\n"
-            f"PATTERN WATCHLIST (elevated conviction required):\n{chr(10).join(pwl_lines) or '(none)'}"
+            f"  constraints: {regime.get('constraints', [])}"
         )
-        resp = _get_claude().messages.create(
-            model=MODEL_FAST, max_tokens=4000,
-            system=[{"type": "text", "text": _SIGNAL_SYS, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user_content}],
-            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
-        )
-        try:
-            from cost_tracker import get_tracker
-            get_tracker().record_api_call(MODEL_FAST, resp.usage, caller="signal_scorer")
-        except Exception as _ct_exc:
-            log.warning("Cost tracker failed: %s", _ct_exc)
-        raw = resp.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        try:
-            result = json.loads(raw)
-        except json.JSONDecodeError:
-            last_brace = raw.rfind("}")
-            _repaired = False
-            if last_brace >= 0:
-                try:
-                    result = json.loads(raw[:last_brace + 1])
-                    log.debug("[SIGNALS] JSON repaired by truncation (last_brace=%d)", last_brace)
-                    _repaired = True
-                except json.JSONDecodeError:
-                    pass
-            if not _repaired:
-                log.debug("[SIGNALS] JSON truncated, retrying API call with completeness hint")
-                _retry_sys = _SIGNAL_SYS + "\nReturn ONLY valid complete JSON. If you cannot fit all symbols, return fewer rather than truncating."
-                try:
-                    _retry_resp = _get_claude().messages.create(
-                        model=MODEL_FAST, max_tokens=4000,
-                        system=[{"type": "text", "text": _retry_sys}],
-                        messages=[{"role": "user", "content": user_content}],
-                        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
-                    )
-                    _retry_raw = _retry_resp.content[0].text.strip()
-                    if _retry_raw.startswith("```"):
-                        _retry_raw = _retry_raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                    result = json.loads(_retry_raw)
-                    log.debug("[SIGNALS] JSON recovered via retry")
-                except Exception as _retry_exc:
-                    log.warning("[SIGNALS] JSON parse failed after repair+retry — returning empty: %s", _retry_exc)
-                    return {}
+
+        merged_symbols: dict = {}
+        all_caution: list = []
+        all_reasoning: list = []
+
+        _it = iter(scored)
+        while True:
+            batch = list(islice(_it, _BATCH_SIZE))
+            if not batch:
+                break
+            b_insider = [l for l in insider_lines if any(s in l for s in batch)]
+            b_reddit  = [l for l in reddit_lines  if any(s in l for s in batch)]
+            b_pwl     = [l for l in pwl_lines     if any(l.startswith(s) for s in batch)]
+            batch_content = (
+                f"Symbols to score: {', '.join(batch)}\n\n"
+                f"{regime_line}\n\n"
+                f"INSIDER/CONGRESSIONAL:\n{chr(10).join(b_insider) or '(none)'}\n\n"
+                f"ORB CANDIDATES:\n{orb_str}\n\n"
+                f"REDDIT:\n{chr(10).join(b_reddit) or '(none)'}\n\n"
+                f"MORNING BRIEF picks:\n{chr(10).join(morning_lines) or '(none)'}\n\n"
+                f"PATTERN WATCHLIST (elevated conviction required):\n{chr(10).join(b_pwl) or '(none)'}"
+            )
+            try:
+                batch_result = _call_single_batch(batch_content)
+            except Exception as _be:
+                log.warning("[SIGNALS] Batch %s failed: %s", batch, _be)
+                continue
+            merged_symbols.update(batch_result.get("scored_symbols", {}))
+            all_caution.extend(batch_result.get("elevated_caution", []))
+            if batch_result.get("reasoning"):
+                all_reasoning.append(batch_result["reasoning"])
+            log.debug("[SIGNALS] batch scored %d symbols", len(batch_result.get("scored_symbols", {})))
+
+        if not merged_symbols:
+            log.warning("[SIGNALS] All batches failed — returning empty")
+            return {}
+
+        sorted_syms = sorted(merged_symbols.items(), key=lambda kv: kv[1].get("score", 0), reverse=True)
+        seen_c: set = set()
+        result = {
+            "scored_symbols": merged_symbols,
+            "top_3": [s for s, _ in sorted_syms[:3]],
+            "elevated_caution": [s for s in all_caution if not (s in seen_c or seen_c.add(s))],
+            "reasoning": " | ".join(all_reasoning),
+        }
         log.info("[SIGNALS] top_3=%s  caution=%s", result.get("top_3", []), result.get("elevated_caution", []))
         log_trade({"event": "signal_scoring", "top_3": result.get("top_3", []),
                    "elevated_caution": result.get("elevated_caution", []),

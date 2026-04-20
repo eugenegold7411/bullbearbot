@@ -242,5 +242,14 @@
     "enable_confession_channel": false,
     "enable_personality_forks": false,
     "enable_dream_mode": false
+  },
+  "thesis_lab": {
+    "enable_thesis_lab": false,
+    "enable_thesis_weekly_packet": false,
+    "enable_thesis_backtests": false,
+    "enable_thesis_archetypes": false,
+    "enable_thesis_rule_extraction": false,
+    "enable_thesis_overlay_shadow": false,
+    "enable_thesis_ai_ingestion": false
   }
 }

@@ -1,0 +1,27 @@
+# cycle_baseline.log
+#
+# Static fixture recording the expected log-line sequence for a normal
+# market-session cycle after the bot.py split.  Captured from the known
+# run_cycle() call graph; NOT a live capture.
+#
+# Format: each line is a log substring that must appear, in order, in the
+# output of test_bot_cycle_integration.py::test_run_cycle_log_sequence.
+# Lines starting with '#' are comments and are ignored by the test reader.
+#
+# Stage 0 — pre-cycle infrastructure (bot_stage0_precycle.run_precycle)
+Account  equity=
+Market   status=
+VectorMem  status=
+# Stage 1 — regime classifier (bot_stage1_regime.classify_regime)
+[REGIME]
+# Stage 2 — signal scorer (bot_stage2_signal.score_signals)
+[SIGNALS] top_3=
+# Stage 2.5 — scratchpad (bot_stage2_5_scratchpad.run_scratchpad_stage)
+# (stage 2.5 lines are optional — only fires when signal_scores_obj is non-empty)
+# Stage 3 — Sonnet gate + decision (bot.py / bot_stage3_decision)
+[GATE]
+[SCHEMA] regime_view=
+# Stage 4 — execution filters + broker submission (bot_stage4_execution / order_executor)
+# (fundamental_check and debate_trade lines are optional — only fire on buy candidates)
+# Cycle complete
+── Cycle done in

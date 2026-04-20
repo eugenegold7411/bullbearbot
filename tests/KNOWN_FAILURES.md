@@ -7,9 +7,8 @@ updating this document.
 
 ## Pre-existing failures in test_core.py
 
-These two failures were present before Prompt 3 and are tracked here for
-visibility. They are **not regressions** introduced by the test infrastructure
-work.
+One failure was present before Prompt 3 and is tracked here for visibility.
+It is **not a regression** introduced by the test infrastructure work.
 
 ---
 
@@ -36,22 +35,6 @@ or switch to f-string formatting: `f"... total exposure ${exp:,.0f} ..."`.
 **Status:** Tracked, not fixed. The production bot is unaffected because the
 VPS runs Python 3.12 and the logging handler never raises on formatting errors
 (it calls `handleError()` which silently discards the record).
-
----
-
-### `Suite28Epic1SharedSubstrate::test_hindsight_write_read_roundtrip`
-
-**File:** `tests/test_core.py`  
-**Error:** `AttributeError: module 'cost_attribution' has no attribute '_SPINE_ENABLED'`
-
-**Root cause:** `tests/test_core.py:5756` accesses `cost_attribution._SPINE_ENABLED`,
-a private module-level attribute that was removed or renamed during a refactor.
-The test relies on internal module state that no longer exists in the public API.
-
-**Fix (not applied):** Update the test to use the public `get_spine_summary()` or
-`log_spine_record()` API instead of the removed private attribute.
-
-**Status:** Tracked, not fixed. Does not affect production behaviour.
 
 ---
 

@@ -23,6 +23,9 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 _SPINE_PATH = Path("data/analytics/cost_attribution_spine.jsonl")
+# Test-override flag: set to False in tests to suppress spine writes without
+# touching strategy_config.json.  Production code must not mutate this.
+_SPINE_ENABLED: bool = True
 
 VALID_LAYER_NAMES: frozenset[str] = frozenset({
     "execution_control",
@@ -66,7 +69,10 @@ def _is_spine_enabled() -> bool:
     Read enable_cost_attribution_spine from strategy_config.json on every call.
     Returns False on any read/parse failure so flag toggles take effect immediately
     without requiring a process restart.
+    Also respects the module-level _SPINE_ENABLED override for test isolation.
     """
+    if not _SPINE_ENABLED:
+        return False
     try:
         config = json.loads(Path("strategy_config.json").read_text())
         return bool(

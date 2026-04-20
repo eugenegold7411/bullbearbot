@@ -25,6 +25,10 @@ import os
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 import json
 import os
+import pytest
+
+# All tests in this file require ChromaDB. Excluded from CI via -m "not requires_chromadb".
+pytestmark = pytest.mark.requires_chromadb
 import sys
 import tempfile
 import unittest

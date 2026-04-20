@@ -1,4 +1,4 @@
-.PHONY: install lint format test import-check clean
+.PHONY: install lint format test test-ci import-check clean
 
 install:
 	pip install -e . -r requirements-dev.txt
@@ -11,6 +11,9 @@ format:
 
 test:
 	pytest tests/
+
+test-ci:
+	pytest tests/ -m "not requires_chromadb"
 
 import-check:
 	python3 -c "\

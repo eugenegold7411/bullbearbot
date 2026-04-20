@@ -5,32 +5,15 @@ updating this document.
 
 ---
 
-## Environment-dependent failures in test_scratchpad_memory.py
+## ChromaDB tests excluded from CI
 
-Eight tests in `tests/test_scratchpad_memory.py` fail locally because
-**chromadb is not installed in the local development environment**.
+All tests in `tests/test_scratchpad_memory.py` are marked
+`@pytest.mark.requires_chromadb` and are **excluded from CI** via
+`pytest tests/ -m "not requires_chromadb"`.
 
-```
-TestSaveAndStats::test_01_save_returns_id
-TestSaveAndStats::test_02_stats_reflect_save
-TestSaveAndStats::test_13_stats_increment_on_multiple_saves
-TestSaveAndStats::test_14_summary_stored_in_metadata
-TestRetrieve::test_03_retrieve_finds_saved_record
-TestRetrieve::test_04_metadata_roundtrip
-TestHistory::test_08_history_returns_recent_records
-TestNearMiss::test_10_near_miss_identified
-```
+**Why:** chromadb is not installed in the CI environment. The VPS has
+`chromadb==1.5.7` installed and runs `make test` (full suite) which includes
+these tests. CI runs `make test-ci` which skips them.
 
-**Root cause:** `trade_memory.py` imports chromadb at startup. When it is absent
-the module logs `WARNING: chromadb not installed — vector memory disabled` and
-all save/retrieve functions return empty/zero results. The scratchpad tests
-assert non-empty ids and non-zero counts, so they fail.
-
-**On the VPS:** chromadb is installed (`pip install chromadb`), so these tests
-pass in the production environment.
-
-**Fix (not applied):** Install chromadb in the local venv (`pip install chromadb`)
-or mark the scratchpad tests with `@pytest.mark.skipif(not chromadb_available, ...)`.
-
-**Status:** Environment-specific. Do not add chromadb stubs in `conftest.py` —
-`trade_memory.py` has its own graceful degradation that must be preserved.
+**Status:** Resolved — no longer listed as failures. Run `make test` on the VPS
+or locally with chromadb installed to exercise the full suite.

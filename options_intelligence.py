@@ -13,10 +13,11 @@ Strategy hierarchy (IV-first):
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from typing import Optional
+from uuid import uuid4
 
-from schemas import Direction, OptionStrategy, StructureProposal
+from schemas import A2FeaturePack, Direction, OptionStrategy, StructureProposal
 
 log = logging.getLogger(__name__)
 
@@ -285,6 +286,182 @@ def _dynamic_single_leg(
         signal_score=signal_score,
         proposed_at=datetime.now(timezone.utc).isoformat(),
     )
+
+
+# ---------------------------------------------------------------------------
+# A2-2: Candidate structure generator
+# ---------------------------------------------------------------------------
+
+_STRUCTURE_MAP: dict[str, OptionStrategy] = {
+    "long_call":          OptionStrategy.SINGLE_CALL,
+    "long_put":           OptionStrategy.SINGLE_PUT,
+    "debit_call_spread":  OptionStrategy.CALL_DEBIT_SPREAD,
+    "debit_put_spread":   OptionStrategy.PUT_DEBIT_SPREAD,
+    "credit_call_spread": OptionStrategy.CALL_CREDIT_SPREAD,
+    "credit_put_spread":  OptionStrategy.PUT_CREDIT_SPREAD,
+}
+
+_DTE_RANGE: dict[OptionStrategy, tuple[int, int]] = {
+    OptionStrategy.SINGLE_CALL:        (5, 21),
+    OptionStrategy.SINGLE_PUT:         (5, 21),
+    OptionStrategy.CALL_DEBIT_SPREAD:  (5, 28),
+    OptionStrategy.PUT_DEBIT_SPREAD:   (5, 28),
+    OptionStrategy.CALL_CREDIT_SPREAD: (5, 45),
+    OptionStrategy.PUT_CREDIT_SPREAD:  (5, 45),
+}
+
+
+def _float_or_none(v) -> Optional[float]:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def generate_candidate_structures(
+    pack: A2FeaturePack,
+    allowed_structures: list[str],
+    equity: float,
+    chain: dict,
+) -> list[dict]:
+    """
+    Generate fully-specified candidate structures from live chain data.
+
+    For each allowed structure type, resolves expiry + strikes via options_builder,
+    computes economics, and builds a candidate dict with full risk/greek metadata.
+    Returns 0-N candidates. Non-fatal per structure — failures logged at DEBUG.
+
+    Candidate dict keys:
+        candidate_id, structure_type, symbol, expiry, long_strike, short_strike,
+        contracts, debit, max_loss, max_gain, breakeven, delta, theta, vega,
+        probability_profit, expected_value, liquidity_score, bid_ask_spread_pct,
+        open_interest, dte
+    """
+    import options_builder as _ob  # noqa: PLC0415
+
+    candidates: list[dict] = []
+    spot = chain.get("current_price")
+    if not spot or float(spot) <= 0:
+        log.debug("[GEN_CAND] %s: no current_price in chain", pack.symbol)
+        return []
+
+    spot = float(spot)
+    today = date.today()
+
+    for struct_name in allowed_structures:
+        strategy = _STRUCTURE_MAP.get(struct_name)
+        if strategy is None:
+            log.debug("[GEN_CAND] %s: unknown structure type %r", pack.symbol, struct_name)
+            continue
+
+        try:
+            dte_min, dte_max = _DTE_RANGE.get(strategy, (5, 28))
+            expiry = _ob.select_expiry(chain, dte_min, dte_max)
+            if expiry is None:
+                log.debug("[GEN_CAND] %s %s: no expiry in DTE %d-%d",
+                          pack.symbol, struct_name, dte_min, dte_max)
+                continue
+
+            strikes_data = _ob.select_strikes(
+                chain, expiry, strategy, spot, pack.a1_direction, {}
+            )
+            if strikes_data is None:
+                log.debug("[GEN_CAND] %s %s: select_strikes=None", pack.symbol, struct_name)
+                continue
+
+            economics = _ob.compute_economics(strategy, strikes_data)
+            net_debit = economics.get("net_debit")
+            if net_debit is None:
+                log.debug("[GEN_CAND] %s %s: net_debit=None", pack.symbol, struct_name)
+                continue
+
+            max_loss_per = economics.get("max_loss") or (abs(net_debit) if net_debit else None)
+            if not max_loss_per or max_loss_per <= 0:
+                continue
+
+            budget = min(pack.premium_budget_usd, equity * 0.05)
+            cost_per = (abs(net_debit) if net_debit > 0 else max_loss_per) * 100
+            contracts = max(1, min(10, int(budget / cost_per))) if cost_per > 0 else 1
+
+            max_loss_usd = max_loss_per * contracts * 100
+            max_gain_raw = economics.get("max_profit")
+            max_gain_usd = (max_gain_raw * contracts * 100) if max_gain_raw is not None else None
+
+            long_strike = float(strikes_data.get("long_strike_price") or 0)
+            short_strike = strikes_data.get("short_strike_price")
+            if short_strike is not None:
+                short_strike = float(short_strike)
+
+            if strategy in (OptionStrategy.SINGLE_CALL,
+                            OptionStrategy.CALL_DEBIT_SPREAD,
+                            OptionStrategy.CALL_CREDIT_SPREAD):
+                breakeven = long_strike + abs(net_debit)
+            else:
+                breakeven = long_strike - abs(net_debit)
+
+            dte = (date.fromisoformat(expiry) - today).days
+
+            long_leg = strikes_data.get("long_leg_data") or {}
+            short_leg = strikes_data.get("short_leg_data")
+            delta = _float_or_none(long_leg.get("delta"))
+            theta = _float_or_none(long_leg.get("theta"))
+            vega  = _float_or_none(long_leg.get("vega"))
+
+            bid = float(long_leg.get("bid") or 0)
+            ask = float(long_leg.get("ask") or 0)
+            mid = (bid + ask) / 2 if (bid + ask) > 0 else None
+            bid_ask_spread_pct = round((ask - bid) / mid, 4) if mid and mid > 0 else None
+
+            oi = long_leg.get("openInterest")
+            open_interest = int(oi) if oi is not None else None
+
+            probability_profit: Optional[float] = None
+            if strategy in (OptionStrategy.CALL_DEBIT_SPREAD, OptionStrategy.PUT_DEBIT_SPREAD):
+                s_delta = _float_or_none((short_leg or {}).get("delta"))
+                if s_delta is not None:
+                    probability_profit = round(1.0 - abs(s_delta), 3)
+            elif strategy in (OptionStrategy.SINGLE_CALL, OptionStrategy.SINGLE_PUT):
+                if delta is not None:
+                    probability_profit = round(abs(delta), 3)
+
+            expected_value: Optional[float] = None
+            if probability_profit is not None and max_gain_usd is not None:
+                expected_value = round(
+                    max_gain_usd * probability_profit - max_loss_usd * (1 - probability_profit),
+                    2,
+                )
+
+            candidates.append({
+                "candidate_id":       str(uuid4())[:8],
+                "structure_type":     struct_name,
+                "symbol":             pack.symbol,
+                "expiry":             expiry,
+                "long_strike":        long_strike,
+                "short_strike":       short_strike,
+                "contracts":          contracts,
+                "debit":              round(net_debit, 4),
+                "max_loss":           round(max_loss_usd, 2),
+                "max_gain":           round(max_gain_usd, 2) if max_gain_usd is not None else None,
+                "breakeven":          round(breakeven, 2),
+                "delta":              delta,
+                "theta":              theta,
+                "vega":               vega,
+                "probability_profit": probability_profit,
+                "expected_value":     expected_value,
+                "liquidity_score":    pack.liquidity_score,
+                "bid_ask_spread_pct": bid_ask_spread_pct,
+                "open_interest":      open_interest,
+                "dte":                dte,
+            })
+
+        except Exception as _exc:
+            log.debug("[GEN_CAND] %s %s: failed (non-fatal): %s",
+                      pack.symbol, struct_name, _exc)
+            continue
+
+    log.debug("[GEN_CAND] %s: %d candidates from %d allowed",
+              pack.symbol, len(candidates), len(allowed_structures))
+    return candidates
 
 
 # ---------------------------------------------------------------------------

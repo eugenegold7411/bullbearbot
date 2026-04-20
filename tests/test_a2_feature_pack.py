@@ -385,5 +385,316 @@ class TestOptionsUniverseManager(unittest.TestCase):
         self.assertEqual(uni["symbols"]["GLD"]["source"], "grandfathered")
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# SUITE 29d — generate_candidate_structures
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestGenerateCandidateStructures(unittest.TestCase):
+
+    def _make_pack(self, **kw):
+        from schemas import A2FeaturePack
+        defaults = dict(
+            symbol="NVDA", a1_signal_score=75.0, a1_direction="bullish",
+            trend_score=None, momentum_score=None, sector_alignment="tech",
+            iv_rank=30.0, iv_environment="cheap", term_structure_slope=None,
+            skew=None, expected_move_pct=5.0, flow_imbalance_30m=None,
+            sweep_count=None, gex_regime=None, oi_concentration=None,
+            earnings_days_away=None, macro_event_flag=False,
+            premium_budget_usd=5000.0, liquidity_score=0.75,
+            built_at=datetime.now(timezone.utc).isoformat(),
+            data_sources=["signal_scores", "iv_history"],
+        )
+        defaults.update(kw)
+        return A2FeaturePack(**defaults)
+
+    def _make_chain(self, symbol="NVDA", spot=100.0):
+        exp = (date.today() + timedelta(days=14)).isoformat()
+        atm  = {"strike": 100.0, "bid": 1.00, "ask": 1.20, "impliedVolatility": 0.30,
+                "volume": 500, "openInterest": 1000, "delta": 0.50, "theta": -0.04}
+        otm  = {"strike": 105.0, "bid": 0.50, "ask": 0.70, "impliedVolatility": 0.28,
+                "volume": 300, "openInterest": 600, "delta": 0.30, "theta": -0.02}
+        return {
+            "symbol": symbol,
+            "current_price": spot,
+            "expirations": {exp: {"calls": [atm, otm], "puts": [atm, otm]}},
+        }
+
+    def test_candidate_has_required_schema_fields(self):
+        from options_intelligence import generate_candidate_structures
+        pack = self._make_pack()
+        chain = self._make_chain()
+        cands = generate_candidate_structures(
+            pack=pack, allowed_structures=["long_call", "debit_call_spread"],
+            equity=100_000.0, chain=chain,
+        )
+        self.assertGreater(len(cands), 0)
+        required = [
+            "candidate_id", "structure_type", "symbol", "expiry",
+            "long_strike", "contracts", "debit", "max_loss", "breakeven", "dte",
+        ]
+        for field in required:
+            self.assertIn(field, cands[0], f"Missing field: {field}")
+
+    def test_empty_chain_returns_no_candidates(self):
+        from options_intelligence import generate_candidate_structures
+        pack = self._make_pack()
+        cands = generate_candidate_structures(
+            pack=pack, allowed_structures=["long_call"],
+            equity=100_000.0, chain={},
+        )
+        self.assertEqual(cands, [])
+
+    def test_unknown_structure_type_skipped(self):
+        from options_intelligence import generate_candidate_structures
+        pack = self._make_pack()
+        chain = self._make_chain()
+        cands = generate_candidate_structures(
+            pack=pack, allowed_structures=["iron_condor"],
+            equity=100_000.0, chain=chain,
+        )
+        self.assertEqual(cands, [])
+
+    def test_structure_type_recorded_correctly(self):
+        from options_intelligence import generate_candidate_structures
+        pack = self._make_pack()
+        chain = self._make_chain()
+        cands = generate_candidate_structures(
+            pack=pack, allowed_structures=["long_call"],
+            equity=100_000.0, chain=chain,
+        )
+        if cands:
+            self.assertEqual(cands[0]["structure_type"], "long_call")
+            self.assertEqual(cands[0]["symbol"], "NVDA")
+
+    def test_debit_spread_has_short_strike(self):
+        from options_intelligence import generate_candidate_structures
+        pack = self._make_pack()
+        chain = self._make_chain()
+        cands = generate_candidate_structures(
+            pack=pack, allowed_structures=["debit_call_spread"],
+            equity=100_000.0, chain=chain,
+        )
+        if cands:
+            self.assertIsNotNone(cands[0]["short_strike"])
+
+    def test_dte_positive(self):
+        from options_intelligence import generate_candidate_structures
+        pack = self._make_pack()
+        chain = self._make_chain()
+        cands = generate_candidate_structures(
+            pack=pack, allowed_structures=["long_call"],
+            equity=100_000.0, chain=chain,
+        )
+        if cands:
+            self.assertGreater(cands[0]["dte"], 0)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SUITE 29e — _apply_veto_rules
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestApplyVetoRules(unittest.TestCase):
+
+    def _make_pack(self):
+        from schemas import A2FeaturePack
+        return A2FeaturePack(
+            symbol="NVDA", a1_signal_score=75.0, a1_direction="bullish",
+            trend_score=None, momentum_score=None, sector_alignment="tech",
+            iv_rank=30.0, iv_environment="cheap", term_structure_slope=None,
+            skew=None, expected_move_pct=5.0, flow_imbalance_30m=None,
+            sweep_count=None, gex_regime=None, oi_concentration=None,
+            earnings_days_away=None, macro_event_flag=False,
+            premium_budget_usd=5000.0, liquidity_score=0.75,
+            built_at=datetime.now(timezone.utc).isoformat(),
+            data_sources=["signal_scores"],
+        )
+
+    def _base(self, **kw):
+        cand = {
+            "candidate_id": "abc123", "structure_type": "long_call",
+            "symbol": "NVDA", "expiry": "2026-05-04",
+            "long_strike": 100.0, "short_strike": None, "contracts": 1,
+            "debit": 1.50, "max_loss": 150.0, "max_gain": None,
+            "breakeven": 101.50, "delta": 0.50, "theta": -0.05, "vega": 0.10,
+            "probability_profit": 0.50, "expected_value": 50.0,
+            "liquidity_score": 0.75, "bid_ask_spread_pct": 0.03,
+            "open_interest": 500, "dte": 14,
+        }
+        cand.update(kw)
+        return cand
+
+    def test_passes_all_rules(self):
+        from bot_options import _apply_veto_rules
+        self.assertIsNone(_apply_veto_rules(self._base(), self._make_pack(), 100_000.0))
+
+    def test_v1_wide_bid_ask_spread(self):
+        from bot_options import _apply_veto_rules
+        result = _apply_veto_rules(self._base(bid_ask_spread_pct=0.06), self._make_pack(), 100_000.0)
+        self.assertIsNotNone(result)
+        self.assertIn("bid_ask", result)
+
+    def test_v1_exactly_at_limit_passes(self):
+        from bot_options import _apply_veto_rules
+        self.assertIsNone(
+            _apply_veto_rules(self._base(bid_ask_spread_pct=0.05), self._make_pack(), 100_000.0)
+        )
+
+    def test_v2_low_open_interest(self):
+        from bot_options import _apply_veto_rules
+        result = _apply_veto_rules(self._base(open_interest=50), self._make_pack(), 100_000.0)
+        self.assertIsNotNone(result)
+        self.assertIn("open_interest", result)
+
+    def test_v2_oi_none_skips_rule(self):
+        from bot_options import _apply_veto_rules
+        self.assertIsNone(
+            _apply_veto_rules(self._base(open_interest=None), self._make_pack(), 100_000.0)
+        )
+
+    def test_v3_theta_decay_too_high(self):
+        from bot_options import _apply_veto_rules
+        # |theta|/debit = 0.10/1.0 = 0.10 > 0.05
+        result = _apply_veto_rules(self._base(theta=-0.10, debit=1.0), self._make_pack(), 100_000.0)
+        self.assertIsNotNone(result)
+        self.assertIn("theta", result)
+
+    def test_v3_theta_none_skips_rule(self):
+        from bot_options import _apply_veto_rules
+        self.assertIsNone(
+            _apply_veto_rules(self._base(theta=None), self._make_pack(), 100_000.0)
+        )
+
+    def test_v4_max_loss_exceeds_equity_pct(self):
+        from bot_options import _apply_veto_rules
+        # max_loss=4000 > 100000*0.03=3000
+        result = _apply_veto_rules(self._base(max_loss=4000.0), self._make_pack(), 100_000.0)
+        self.assertIsNotNone(result)
+        self.assertIn("max_loss", result)
+
+    def test_v4_max_loss_at_limit_passes(self):
+        from bot_options import _apply_veto_rules
+        self.assertIsNone(
+            _apply_veto_rules(self._base(max_loss=3000.0), self._make_pack(), 100_000.0)
+        )
+
+    def test_v5_dte_too_short(self):
+        from bot_options import _apply_veto_rules
+        result = _apply_veto_rules(self._base(dte=3), self._make_pack(), 100_000.0)
+        self.assertIsNotNone(result)
+        self.assertIn("dte", result)
+
+    def test_v5_dte_exactly_5_passes(self):
+        from bot_options import _apply_veto_rules
+        self.assertIsNone(
+            _apply_veto_rules(self._base(dte=5), self._make_pack(), 100_000.0)
+        )
+
+    def test_v6_negative_expected_value(self):
+        from bot_options import _apply_veto_rules
+        result = _apply_veto_rules(self._base(expected_value=-100.0), self._make_pack(), 100_000.0)
+        self.assertIsNotNone(result)
+        self.assertIn("expected_value", result)
+
+    def test_v6_ev_none_skips_rule(self):
+        from bot_options import _apply_veto_rules
+        self.assertIsNone(
+            _apply_veto_rules(self._base(expected_value=None), self._make_pack(), 100_000.0)
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SUITE 29f — flow_imbalance_30m in A2FeaturePack
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestFlowImbalance(unittest.TestCase):
+
+    def _make_chain(self, call_vol: int, put_vol: int, spot: float = 100.0):
+        exp = (date.today() + timedelta(days=14)).isoformat()
+        call = {"strike": 100.0, "bid": 1.0, "ask": 1.2, "volume": call_vol,
+                "openInterest": 500, "impliedVolatility": 0.30}
+        put  = {"strike": 100.0, "bid": 1.0, "ask": 1.2, "volume": put_vol,
+                "openInterest": 500, "impliedVolatility": 0.30}
+        return {
+            "symbol": "SPY", "current_price": spot,
+            "expirations": {exp: {"calls": [call], "puts": [put]}},
+        }
+
+    def _make_iv(self):
+        return {"iv_environment": "cheap", "iv_rank": 25.0, "current_iv": 0.25,
+                "observation_mode": False, "history_days": 30}
+
+    def _make_sig(self):
+        return {"score": 70, "direction": "bullish", "conviction": "high",
+                "tier": "core", "primary_catalyst": "test", "price": 100.0}
+
+    def test_bullish_flow_positive(self):
+        """More call volume than put → positive flow_imbalance_30m."""
+        from bot_options import _build_a2_feature_pack
+        chain = self._make_chain(call_vol=800, put_vol=200)
+        pack = _build_a2_feature_pack(
+            symbol="SPY",
+            signal_scores={"SPY": self._make_sig()},
+            iv_summaries={"SPY": self._make_iv()},
+            equity=100_000.0, vix=18.0, chain=chain,
+        )
+        self.assertIsNotNone(pack)
+        self.assertIsNotNone(pack.flow_imbalance_30m)
+        self.assertGreater(pack.flow_imbalance_30m, 0)
+
+    def test_bearish_flow_negative(self):
+        """More put volume → negative flow_imbalance_30m."""
+        from bot_options import _build_a2_feature_pack
+        chain = self._make_chain(call_vol=200, put_vol=800)
+        pack = _build_a2_feature_pack(
+            symbol="SPY",
+            signal_scores={"SPY": self._make_sig()},
+            iv_summaries={"SPY": self._make_iv()},
+            equity=100_000.0, vix=18.0, chain=chain,
+        )
+        self.assertIsNotNone(pack)
+        self.assertIsNotNone(pack.flow_imbalance_30m)
+        self.assertLess(pack.flow_imbalance_30m, 0)
+
+    def test_no_chain_flow_none(self):
+        """No chain → flow_imbalance_30m=None."""
+        from bot_options import _build_a2_feature_pack
+        pack = _build_a2_feature_pack(
+            symbol="SPY",
+            signal_scores={"SPY": self._make_sig()},
+            iv_summaries={"SPY": self._make_iv()},
+            equity=100_000.0, vix=18.0, chain=None,
+        )
+        self.assertIsNotNone(pack)
+        self.assertIsNone(pack.flow_imbalance_30m)
+
+    def test_equal_volumes_zero(self):
+        """Equal call/put volumes → flow_imbalance_30m=0.0."""
+        from bot_options import _build_a2_feature_pack
+        chain = self._make_chain(call_vol=500, put_vol=500)
+        pack = _build_a2_feature_pack(
+            symbol="SPY",
+            signal_scores={"SPY": self._make_sig()},
+            iv_summaries={"SPY": self._make_iv()},
+            equity=100_000.0, vix=18.0, chain=chain,
+        )
+        self.assertIsNotNone(pack)
+        self.assertIsNotNone(pack.flow_imbalance_30m)
+        self.assertAlmostEqual(pack.flow_imbalance_30m, 0.0)
+
+    def test_flow_signals_in_data_sources_when_computed(self):
+        """flow_signals added to data_sources when flow_imbalance computed."""
+        from bot_options import _build_a2_feature_pack
+        chain = self._make_chain(call_vol=700, put_vol=300)
+        pack = _build_a2_feature_pack(
+            symbol="SPY",
+            signal_scores={"SPY": self._make_sig()},
+            iv_summaries={"SPY": self._make_iv()},
+            equity=100_000.0, vix=18.0, chain=chain,
+        )
+        self.assertIsNotNone(pack)
+        if pack.flow_imbalance_30m is not None:
+            self.assertIn("flow_signals", pack.data_sources)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -496,9 +496,39 @@ def _build_a2_feature_pack(
         except Exception as _liq_exc:
             log.debug("[OPTS] A2FeaturePack: %s liquidity calc failed: %s", symbol, _liq_exc)
 
+    # flow_imbalance_30m: (call_vol - put_vol) / (call_vol + put_vol) across ATM contracts
+    flow_imbalance_30m = None
+    if chain and chain.get("expirations") and chain.get("current_price"):
+        try:
+            _fi_spot = float(chain["current_price"])
+            _fi_exp = next(
+                (v for k, v in sorted(chain["expirations"].items())
+                 if (date.fromisoformat(k) - date.today()).days >= 2),
+                None,
+            )
+            if _fi_exp:
+                _atm_band = _fi_spot * 0.05
+                _call_vol = sum(
+                    int(o.get("volume") or 0)
+                    for o in _fi_exp.get("calls", [])
+                    if abs(float(o.get("strike", 0)) - _fi_spot) <= _atm_band
+                )
+                _put_vol = sum(
+                    int(o.get("volume") or 0)
+                    for o in _fi_exp.get("puts", [])
+                    if abs(float(o.get("strike", 0)) - _fi_spot) <= _atm_band
+                )
+                _total_vol = _call_vol + _put_vol
+                if _total_vol > 0:
+                    flow_imbalance_30m = round((_call_vol - _put_vol) / _total_vol, 4)
+        except Exception as _fi_exc:
+            log.debug("[OPTS] A2FeaturePack: %s flow_imbalance calc failed: %s", symbol, _fi_exc)
+
     data_sources = ["signal_scores", "iv_history"]
     if chain:
         data_sources.append("options_chain")
+    if flow_imbalance_30m is not None:
+        data_sources.append("flow_signals")
 
     pack = A2FeaturePack(
         symbol               = symbol,
@@ -512,7 +542,7 @@ def _build_a2_feature_pack(
         term_structure_slope = None,
         skew                 = None,
         expected_move_pct    = expected_move_pct,
-        flow_imbalance_30m   = None,
+        flow_imbalance_30m   = flow_imbalance_30m,
         sweep_count          = None,
         gex_regime           = None,
         oi_concentration     = None,
@@ -593,6 +623,49 @@ def _route_strategy(pack: A2FeaturePack) -> list[str]:
     log.debug("[OPTS] _route_strategy %s: RULE8 default no match (iv_env=%s dir=%s) → []",
               sym, pack.iv_environment, pack.a1_direction)
     return []
+
+
+def _apply_veto_rules(candidate: dict, pack: A2FeaturePack, equity: float) -> Optional[str]:
+    """
+    Apply deterministic veto rules to a fully-specified candidate structure.
+    Returns None if all rules pass, or a rejection reason string.
+
+    Rules:
+      V1: bid_ask_spread_pct > 0.05  — entry cost too high
+      V2: open_interest < 100        — liquidity risk
+      V3: |theta| / debit > 0.05     — theta decay rate too fast
+      V4: max_loss > equity × 0.03   — position too large
+      V5: dte < 5                    — too close to expiry
+      V6: expected_value < 0         — negative edge
+    """
+    spread = candidate.get("bid_ask_spread_pct")
+    if spread is not None and spread > 0.05:
+        return f"bid_ask_spread_pct={spread:.3f}>0.05"
+
+    oi = candidate.get("open_interest")
+    if oi is not None and oi < 100:
+        return f"open_interest={oi}<100"
+
+    theta = candidate.get("theta")
+    debit = candidate.get("debit")
+    if theta is not None and debit is not None and debit > 0:
+        rate = abs(theta) / debit
+        if rate > 0.05:
+            return f"theta_decay_rate={rate:.3f}>0.05"
+
+    max_loss = candidate.get("max_loss")
+    if max_loss is not None and max_loss > equity * 0.03:
+        return f"max_loss={max_loss:.0f}>equity*0.03={equity*0.03:.0f}"
+
+    dte = candidate.get("dte")
+    if dte is not None and dte < 5:
+        return f"dte={dte}<5"
+
+    ev = candidate.get("expected_value")
+    if ev is not None and ev < 0:
+        return f"expected_value={ev:.2f}<0"
+
+    return None
 
 
 def _build_options_candidates(
@@ -676,6 +749,32 @@ def _build_options_candidates(
                 log.debug("[OPTS] %s: routing gate blocked — no allowed structures", sym)
                 continue
             allowed_by_sym[sym] = allowed
+
+            # A2-2: generate fully-specified structures + apply veto rules
+            if chain:
+                try:
+                    from options_intelligence import generate_candidate_structures as _gen  # noqa
+                    _cand_structs = _gen(pack=pack, allowed_structures=allowed,
+                                        equity=equity, chain=chain)
+                    if _cand_structs is not None:
+                        _surviving = [
+                            c for c in _cand_structs
+                            if _apply_veto_rules(c, pack, equity) is None
+                        ]
+                        _vetoed = len(_cand_structs) - len(_surviving)
+                        if _vetoed:
+                            log.debug("[OPTS] %s: %d/%d structures vetoed",
+                                      sym, _vetoed, len(_cand_structs))
+                        if not _surviving:
+                            if _cand_structs:
+                                _sample_reason = _apply_veto_rules(_cand_structs[0], pack, equity)
+                                log.info("[OPTS] %s: all %d structures vetoed (%s) — skipping",
+                                         sym, len(_cand_structs), _sample_reason)
+                            else:
+                                log.info("[OPTS] %s: no structures generated — skipping", sym)
+                            continue
+                except Exception as _veto_exc:
+                    log.debug("[OPTS] %s: veto pass failed (non-fatal): %s", sym, _veto_exc)
 
         proposal = options_intelligence.select_options_strategy(
             symbol=sym,

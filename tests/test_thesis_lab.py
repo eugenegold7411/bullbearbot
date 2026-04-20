@@ -1,10 +1,13 @@
 """
-tests/test_thesis_lab.py — Thesis Lab subsystem tests (Build 1 + 2).
+tests/test_thesis_lab.py — Thesis Lab subsystem tests (Build 1 + 2 + 2b).
 
 Suites:
   29 — thesis_registry: record creation, retrieval, lifecycle transitions
   30 — thesis_research: parse_thesis_from_text with mock Claude response
   31 — thesis_research: ingest_citrini_corpus record count and field quality
+  32 — import safety + generate_thesis_id format
+  33 — thesis_backtest: pure calculations + integration
+  34 — thesis_evaluator: stub generation, AI enrichment, status updates
 """
 
 import json
@@ -939,6 +942,297 @@ class TestThesisBacktestIntegration(unittest.TestCase):
             self.assertNotIn(
                 forbidden, import_text,
                 f"thesis_backtest imports forbidden module: {forbidden!r}",
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SUITE 34 — thesis_evaluator: stub generation, AI enrichment, status updates
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestThesisEvaluator(unittest.TestCase):
+    """Suite 34: thesis_evaluator — deterministic stubs, AI enrichment, registry updates."""
+
+    def setUp(self):
+        import thesis_registry as tr
+        import thesis_backtest as tb
+        import thesis_evaluator as te
+        self.tr = tr
+        self.tb = tb
+        self.te = te
+        self.tmp     = tempfile.TemporaryDirectory()
+        self.tmp_dir = Path(self.tmp.name)
+
+        # Patch registry paths
+        self.dir_patch  = mock.patch.object(tr, "_THESIS_LAB_DIR", self.tmp_dir)
+        self.file_patch = mock.patch.object(tr, "_THESES_FILE",     self.tmp_dir / "theses.json")
+        self.quar_patch = mock.patch.object(tr, "_QUARANTINE_FILE", self.tmp_dir / "quarantine.jsonl")
+        self.dir_patch.start(); self.file_patch.start(); self.quar_patch.start()
+
+        # Patch backtest paths
+        self.bt_dir_patch  = mock.patch.object(tb, "_THESIS_LAB_DIR", self.tmp_dir)
+        self.bt_file_patch = mock.patch.object(tb, "_BACKTESTS_FILE", self.tmp_dir / "backtests.jsonl")
+        self.bt_dir_patch.start(); self.bt_file_patch.start()
+
+        # Patch evaluator paths
+        self.ev_dir_patch  = mock.patch.object(te, "_THESIS_LAB_DIR", self.tmp_dir)
+        self.ev_file_patch = mock.patch.object(te, "_REVIEWS_FILE",   self.tmp_dir / "reviews.jsonl")
+        self.ev_dir_patch.start(); self.ev_file_patch.start()
+
+    def tearDown(self):
+        self.dir_patch.stop(); self.file_patch.stop(); self.quar_patch.stop()
+        self.bt_dir_patch.stop(); self.bt_file_patch.stop()
+        self.ev_dir_patch.stop(); self.ev_file_patch.stop()
+        self.tmp.cleanup()
+
+    def _make_thesis(self, **overrides):
+        defaults = dict(
+            thesis_id="thesis_test_0001",
+            source_type="manual",
+            source_ref="test",
+            title="Test Long IBIT",
+            date_opened="2026-01-13",
+            status="researched",
+            time_horizons=[3, 6, 9, 12],
+            narrative="Test narrative.",
+            market_belief="Bullish.",
+            market_missing="Market underprices ETF flows.",
+            primary_bottleneck="Iran resolution.",
+            confirming_signals=["ETF inflows"],
+            countersignals=["Rising DXY"],
+            anchor_metrics=["IBIT weekly inflows"],
+            base_expression={"instrument": "etf", "symbols": ["IBIT"], "direction": "long"},
+            alternate_expressions=[],
+            review_schedule=[],
+            tags=["crypto"],
+            archetype_candidates=[],
+            notes="",
+            schema_version=1,
+        )
+        defaults.update(overrides)
+        return self.tr.ThesisRecord(**defaults)
+
+    def _make_backtest(self, **overrides):
+        defaults = dict(
+            thesis_id="thesis_test_0001",
+            expression_id="base",
+            mode="base",
+            entry_date="2026-01-13",
+            checkpoints={"3m": "2026-04-14", "6m": "2026-07-14",
+                         "9m": "2026-10-12", "12m": "2027-01-13"},
+            roi_3m=0.12,
+            roi_6m=None,
+            roi_9m=None,
+            roi_12m=None,
+            max_drawdown=0.05,
+            final_verdict="profitable",
+            data_quality="partial",
+            missing_checkpoints=["6m", "9m", "12m"],
+            schema_version=1,
+        )
+        defaults.update(overrides)
+        return self.tb.ThesisBacktestResult(**defaults)
+
+    # T34.1 — stub has correct roi_at_checkpoint for 3m
+    def test_stub_roi_at_checkpoint_3m(self):
+        thesis = self._make_thesis()
+        bt     = self._make_backtest(roi_3m=0.15)
+        stub   = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+        self.assertAlmostEqual(stub.roi_at_checkpoint, 0.15, places=5)
+        self.assertTrue(stub.is_profitable)
+
+    # T34.2 — stub pulls roi_12m for checkpoint_month=12
+    def test_stub_roi_at_checkpoint_12m(self):
+        thesis = self._make_thesis()
+        bt     = self._make_backtest(roi_12m=0.25)
+        stub   = self.te.generate_review_stub(thesis, bt, checkpoint_month=12)
+        self.assertAlmostEqual(stub.roi_at_checkpoint, 0.25, places=5)
+
+    # T34.3 — stub is_profitable=False for a losing thesis
+    def test_stub_is_profitable_false(self):
+        thesis = self._make_thesis()
+        bt     = self._make_backtest(roi_3m=-0.08)
+        stub   = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+        self.assertFalse(stub.is_profitable)
+
+    # T34.4 — stub is_profitable=None when roi within ±1% noise zone
+    def test_stub_is_profitable_none_inconclusive(self):
+        thesis = self._make_thesis()
+        bt     = self._make_backtest(roi_3m=0.005)
+        stub   = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+        self.assertIsNone(stub.is_profitable)
+
+    # T34.5 — stub is_profitable=None when roi is None (data pending)
+    def test_stub_is_profitable_none_when_no_data(self):
+        thesis = self._make_thesis()
+        bt     = self._make_backtest(roi_3m=None, data_quality="insufficient",
+                                     final_verdict="pending")
+        stub   = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+        self.assertIsNone(stub.roi_at_checkpoint)
+        self.assertIsNone(stub.is_profitable)
+
+    # T34.6 — stub always has ai_enriched=False, AI fields empty before enrichment
+    def test_stub_ai_enriched_false(self):
+        thesis = self._make_thesis()
+        bt     = self._make_backtest()
+        stub   = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+        self.assertFalse(stub.ai_enriched)
+        self.assertIsNone(stub.thesis_accuracy_score)
+        self.assertIsNone(stub.market_translation_score)
+        self.assertIsNone(stub.countersignal_score)
+        self.assertEqual(stub.recommended_action, "")
+        self.assertEqual(stub.summary, "")
+
+    # T34.7 — stub carries correct thesis_id, checkpoint_month, schema_version
+    def test_stub_metadata(self):
+        thesis = self._make_thesis(thesis_id="thesis_xyz")
+        bt     = self._make_backtest(thesis_id="thesis_xyz")
+        stub   = self.te.generate_review_stub(thesis, bt, checkpoint_month=6)
+        self.assertEqual(stub.thesis_id, "thesis_xyz")
+        self.assertEqual(stub.checkpoint_month, 6)
+        self.assertEqual(stub.schema_version, 1)
+        self.assertTrue(stub.review_id.startswith("review_"))
+
+    # T34.8 — enrich_review_with_ai populates scores from mock Claude
+    def test_enrich_with_ai_populates_scores(self):
+        thesis = self._make_thesis()
+        bt     = self._make_backtest()
+        stub   = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+
+        ai_payload = json.dumps({
+            "thesis_accuracy_score":    0.75,
+            "market_translation_score": 0.80,
+            "countersignal_score":      0.60,
+            "recommended_action":       "hold",
+            "summary":                  "Thesis performed well at 3m with 12% return.",
+        })
+        fake_response = SimpleNamespace(
+            content=[SimpleNamespace(text=ai_payload)]
+        )
+
+        with mock.patch.object(self.te, "_ai_enrichment_enabled", return_value=True):
+            with mock.patch.object(self.te, "_get_client") as mock_client:
+                mock_client.return_value.messages.create.return_value = fake_response
+                enriched = self.te.enrich_review_with_ai(stub, thesis)
+
+        self.assertTrue(enriched.ai_enriched)
+        self.assertAlmostEqual(enriched.thesis_accuracy_score,    0.75)
+        self.assertAlmostEqual(enriched.market_translation_score, 0.80)
+        self.assertAlmostEqual(enriched.countersignal_score,      0.60)
+        self.assertEqual(enriched.recommended_action, "hold")
+        self.assertIn("12%", enriched.summary)
+
+    # T34.9 — enrich_review_with_ai is non-fatal on Claude error
+    def test_enrich_non_fatal_on_error(self):
+        thesis = self._make_thesis()
+        bt     = self._make_backtest()
+        stub   = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+
+        with mock.patch.object(self.te, "_ai_enrichment_enabled", return_value=True):
+            with mock.patch.object(self.te, "_get_client") as mock_client:
+                mock_client.return_value.messages.create.side_effect = RuntimeError("API down")
+                result = self.te.enrich_review_with_ai(stub, thesis)
+
+        self.assertFalse(result.ai_enriched)
+        self.assertIsNone(result.thesis_accuracy_score)
+
+    # T34.10 — enrich_review_with_ai returns stub unchanged when flag disabled
+    def test_enrich_skips_when_flag_disabled(self):
+        thesis = self._make_thesis()
+        bt     = self._make_backtest()
+        stub   = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+
+        with mock.patch.object(self.te, "_ai_enrichment_enabled", return_value=False):
+            result = self.te.enrich_review_with_ai(stub, thesis)
+
+        self.assertFalse(result.ai_enriched)
+
+    # T34.11 — status transitions researched → active_tracking on any stub (no roi data)
+    def test_status_updated_to_active_tracking(self):
+        thesis = self._make_thesis(status="researched")
+        self.tr.create_thesis(thesis)
+        bt   = self._make_backtest(roi_3m=None, data_quality="insufficient",
+                                   final_verdict="pending")
+        stub = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+        self.te._update_thesis_status_for_checkpoint(thesis, stub)
+        updated = self.tr.get_thesis(thesis.thesis_id)
+        self.assertEqual(updated.status, "active_tracking")
+
+    # T34.12 — status transitions active_tracking → checkpoint_3m_complete when roi available
+    def test_status_updated_to_checkpoint_3m_complete(self):
+        thesis = self._make_thesis(status="active_tracking")
+        self.tr.create_thesis(thesis)
+        bt   = self._make_backtest(roi_3m=0.15)
+        stub = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+        self.te._update_thesis_status_for_checkpoint(thesis, stub)
+        updated = self.tr.get_thesis(thesis.thesis_id)
+        self.assertEqual(updated.status, "checkpoint_3m_complete")
+
+    # T34.13 — researched + roi available: two hops to checkpoint_3m_complete
+    def test_researched_with_data_two_hops(self):
+        thesis = self._make_thesis(status="researched")
+        self.tr.create_thesis(thesis)
+        bt   = self._make_backtest(roi_3m=0.15)
+        stub = self.te.generate_review_stub(thesis, bt, checkpoint_month=3)
+        self.te._update_thesis_status_for_checkpoint(thesis, stub)
+        updated = self.tr.get_thesis(thesis.thesis_id)
+        self.assertEqual(updated.status, "checkpoint_3m_complete")
+
+    # T34.14 — run_checkpoint_reviews writes to reviews.jsonl
+    def test_run_reviews_writes_jsonl(self):
+        thesis = self._make_thesis()
+        self.tr.create_thesis(thesis)
+        self.tb.append_backtest_result(self._make_backtest())
+
+        with mock.patch.object(self.te, "_ai_enrichment_enabled", return_value=False):
+            results = self.te.run_checkpoint_reviews(checkpoint_month=3)
+
+        reviews_file = self.tmp_dir / "reviews.jsonl"
+        self.assertTrue(reviews_file.exists())
+        lines = [json.loads(l) for l in reviews_file.read_text().strip().splitlines()]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["thesis_id"], thesis.thesis_id)
+        self.assertIn("roi_at_checkpoint", lines[0])
+        self.assertIn("data_quality", lines[0])
+        self.assertIn("saved_at", lines[0])
+
+    # T34.15 — run_checkpoint_reviews skips thesis with no backtest on file
+    def test_run_reviews_skips_no_backtest(self):
+        thesis = self._make_thesis()
+        self.tr.create_thesis(thesis)
+        # deliberately omit writing a backtest
+
+        with mock.patch.object(self.te, "_ai_enrichment_enabled", return_value=False):
+            results = self.te.run_checkpoint_reviews(checkpoint_month=3)
+
+        self.assertEqual(len(results), 0)
+
+    # T34.16 — load_reviews filtered by thesis_id
+    def test_load_reviews_filtered(self):
+        thesis_a = self._make_thesis(thesis_id="tid_a")
+        thesis_b = self._make_thesis(thesis_id="tid_b")
+        stub_a   = self.te.generate_review_stub(thesis_a, self._make_backtest(thesis_id="tid_a"), 3)
+        stub_b   = self.te.generate_review_stub(thesis_b, self._make_backtest(thesis_id="tid_b"), 3)
+        self.te.append_review(stub_a)
+        self.te.append_review(stub_b)
+        filtered = self.te.load_reviews(thesis_id="tid_a")
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["thesis_id"], "tid_a")
+
+    # T34.17 — thesis_evaluator importable without ANTHROPIC_API_KEY
+    def test_evaluator_importable_without_env_vars(self):
+        import thesis_evaluator  # noqa: F401
+
+    # T34.18 — thesis_evaluator has no forbidden execution-module imports
+    def test_evaluator_has_no_bot_imports(self):
+        import inspect
+        import thesis_evaluator
+        lines        = inspect.getsource(thesis_evaluator).splitlines()
+        import_lines = [l for l in lines if l.strip().startswith(("import ", "from "))]
+        import_text  = "\n".join(import_lines)
+        for forbidden in ("bot", "order_executor", "risk_kernel"):
+            self.assertNotIn(
+                forbidden, import_text,
+                f"thesis_evaluator imports forbidden module: {forbidden!r}",
             )
 
 

@@ -375,7 +375,7 @@ def validate_action(action: dict, account, positions: list, market_status: str,
     if new_exposure > effective_cap:
         log.warning(
             "[EXEC] %s: soft policy check (kernel primary): "
-            "total exposure $%,.0f would exceed cap $%,.0f (%s conviction)",
+            "total exposure $%.0f would exceed cap $%.0f (%s conviction)",
             symbol, new_exposure, effective_cap, conviction,
         )
 

@@ -5,39 +5,6 @@ updating this document.
 
 ---
 
-## Pre-existing failures in test_core.py
-
-One failure was present before Prompt 3 and is tracked here for visibility.
-It is **not a regression** introduced by the test infrastructure work.
-
----
-
-### `TestOrderExecutorValidation::test_exposure_cap_low_conviction_exceeded`
-
-**File:** `tests/test_core.py`  
-**Error:** `ValueError: unsupported format character ',' (0x2c) at index 64`
-
-**Root cause:** `order_executor.py:369` has a `log.warning()` call with a format
-string that uses `%,` (comma as a thousands separator), which is not supported
-by Python's `%`-style logging format strings. The format string is:
-
-```
-'[EXEC] %s: soft policy check (kernel primary): total exposure $%,.0f ...'
-```
-
-Python's `logging` uses `%`-style substitution (`msg % args`), which does not
-recognise the `,` flag. This raises `ValueError` when pytest's logging handler
-tries to format the record.
-
-**Fix (not applied):** Change `$%,.0f` to `$%.0f` in the `log.warning()` call,
-or switch to f-string formatting: `f"... total exposure ${exp:,.0f} ..."`.
-
-**Status:** Tracked, not fixed. The production bot is unaffected because the
-VPS runs Python 3.12 and the logging handler never raises on formatting errors
-(it calls `handleError()` which silently discards the record).
-
----
-
 ## Environment-dependent failures in test_scratchpad_memory.py
 
 Eight tests in `tests/test_scratchpad_memory.py` fail locally because

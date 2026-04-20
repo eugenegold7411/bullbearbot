@@ -271,7 +271,10 @@ class TestMemoryOutcomeRecording(unittest.TestCase):
               mock.patch("memory._save_decisions")  as mock_save,
               mock.patch("memory._load_perf",       return_value=self._empty_perf()),
               mock.patch("memory._save_perf"),
-              mock.patch("memory.trade_memory")):
+              mock.patch("memory.trade_memory"),
+              mock.patch.dict("os.environ",
+                              {"ALPACA_API_KEY": "test_key",
+                               "ALPACA_SECRET_KEY": "test_secret"})):
             MockTC.return_value.get_orders.return_value = [fill]
             self.mem.update_outcomes_from_alpaca()
 

@@ -4,7 +4,9 @@ import os
 import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
 from dotenv import load_dotenv
+
 from log_setup import get_logger
 
 load_dotenv()
@@ -36,17 +38,26 @@ def _get_alpaca():
     return _alpaca
 
 
-# Backward-compat re-exports: obs mode lives in stage0; tests patch stage0.* and call bot_options.*
+# Backward-compat re-exports — tests import these from bot_options
 from bot_options_stage0_preflight import (  # noqa: E402
-    _OBS_MODE_FILE, _OBS_SCHEMA_VERSION, _OBS_MODE_DAYS, _OBS_IV_SYMBOLS,
-    _get_obs_mode_state, _is_trading_day, _update_obs_mode_state,
-    is_observation_mode, _check_and_update_iv_ready,
+    _OBS_IV_SYMBOLS,  # noqa: F401
+    _OBS_MODE_DAYS,  # noqa: F401
+    _OBS_MODE_FILE,  # noqa: F401
+    _OBS_SCHEMA_VERSION,  # noqa: F401
+    _check_and_update_iv_ready,  # noqa: F401
+    _get_obs_mode_state,
+    _is_trading_day,  # noqa: F401
+    _update_obs_mode_state,
+    is_observation_mode,  # noqa: F401
 )
-from bot_options_stage1_candidates import _build_a2_feature_pack  # noqa: E402
-from bot_options_stage2_structures import (  # noqa: E402
-    _route_strategy, _apply_veto_rules, _quick_liquidity_check, _STRATEGY_FROM_STRUCTURE,
+from bot_options_stage1_candidates import _build_a2_feature_pack  # noqa: F401
+from bot_options_stage2_structures import (  # noqa: F401
+    _STRATEGY_FROM_STRUCTURE,  # noqa: F401
+    _apply_veto_rules,  # noqa: F401
+    _quick_liquidity_check,  # noqa: F401
+    _route_strategy,  # noqa: F401
 )
-from bot_options_stage3_debate import _parse_bounded_debate_response  # noqa: E402
+from bot_options_stage3_debate import _parse_bounded_debate_response  # noqa: F401
 
 
 def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") -> None:
@@ -75,8 +86,12 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
         pass
 
     from bot_options_stage1_candidates import (  # noqa: PLC0415
-        load_a1_signals, _get_core_equity_symbols, _get_iv_summaries_for_symbols,
-        _load_account1_last_decision, _summarize_account1_for_prompt, run_candidate_stage,
+        _get_core_equity_symbols,
+        _get_iv_summaries_for_symbols,
+        _load_account1_last_decision,
+        _summarize_account1_for_prompt,
+        load_a1_signals,
+        run_candidate_stage,
     )
     from bot_options_stage3_debate import _load_strategy_config  # noqa: PLC0415
     from bot_options_stage4_execution import save_legacy_decision  # noqa: PLC0415
@@ -128,7 +143,9 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
     )
 
     from bot_options_stage4_execution import (  # noqa: PLC0415
-        submit_selected_candidate, persist_decision_record, close_check_loop,
+        close_check_loop,
+        persist_decision_record,
+        submit_selected_candidate,
     )
     submit_selected_candidate(
         decision_record=decision_record, alpaca_client=_get_alpaca(),

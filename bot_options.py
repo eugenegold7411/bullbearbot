@@ -12,10 +12,12 @@ Account 2 credentials: ALPACA_API_KEY_OPTIONS / ALPACA_SECRET_KEY_OPTIONS
 
 import json
 import logging
+import math
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from pathlib import Path
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -37,6 +39,7 @@ from reconciliation import (
     execute_reconciliation_plan,
 )
 from schemas import (
+    A2FeaturePack,
     BrokerSnapshot,
     NormalizedOrder,
     NormalizedPosition,
@@ -404,6 +407,194 @@ def _quick_liquidity_check(
         return True, ""   # always pass on error — never block on pre-screen failure
 
 
+def _load_earnings_days_away(symbol: str) -> Optional[int]:
+    """
+    Return days until the nearest earnings event for symbol, or None if unknown.
+    Reads data/market/earnings_calendar.json. Non-fatal.
+    """
+    try:
+        cal_path = Path(__file__).parent / "data" / "market" / "earnings_calendar.json"
+        if not cal_path.exists():
+            return None
+        cal = json.loads(cal_path.read_text())
+        today = date.today()
+        min_days: Optional[int] = None
+        for entry in cal.get("calendar", []):
+            if entry.get("symbol", "").upper() != symbol.upper():
+                continue
+            raw = entry.get("earnings_date", "")
+            if not raw:
+                continue
+            try:
+                days = (date.fromisoformat(str(raw)[:10]) - today).days
+                if days >= 0:
+                    min_days = days if min_days is None else min(min_days, days)
+            except Exception:
+                continue
+        return min_days
+    except Exception:
+        return None
+
+
+def _build_a2_feature_pack(
+    symbol: str,
+    signal_scores: dict,
+    iv_summaries: dict,
+    equity: float,
+    vix: float,
+    chain: dict | None = None,
+) -> Optional[A2FeaturePack]:
+    """
+    Build a normalized A2FeaturePack from available data.
+    Returns None if required data is missing (IV summary required).
+    Flow/GEX fields are all None until UW is integrated (Phase 2).
+    """
+    sig = signal_scores.get(symbol, {})
+    iv  = iv_summaries.get(symbol, {})
+
+    if not iv or iv.get("iv_environment", "unknown") == "unknown":
+        log.debug("[OPTS] A2FeaturePack: %s — missing IV summary, skipping", symbol)
+        return None
+
+    iv_rank = iv.get("iv_rank")
+    if iv_rank is None:
+        log.debug("[OPTS] A2FeaturePack: %s — iv_rank=None, skipping", symbol)
+        return None
+
+    a1_direction = str(sig.get("direction", "neutral")).lower()
+    if a1_direction not in ("bullish", "bearish", "neutral"):
+        a1_direction = "neutral"
+
+    # expected_move_pct: IV × sqrt(30/252) expressed as percentage
+    current_iv = iv.get("current_iv") or 0.0
+    expected_move_pct = round(current_iv * math.sqrt(30 / 252) * 100, 2) if current_iv > 0 else 0.0
+
+    # Liquidity score from chain data (0-1); default 0.5 when chain unavailable
+    liquidity_score = 0.5
+    if chain and chain.get("expirations") and chain.get("current_price"):
+        try:
+            spot = float(chain["current_price"])
+            exp_data = next(
+                (v for k, v in sorted(chain["expirations"].items())
+                 if (date.fromisoformat(k) - date.today()).days >= 2),
+                None,
+            )
+            if exp_data:
+                opts = exp_data.get("calls", []) or exp_data.get("puts", [])
+                if opts:
+                    atm = min(opts, key=lambda o: abs(float(o.get("strike", 0)) - spot))
+                    oi  = int(atm.get("openInterest", 0) or 0)
+                    vol = int(atm.get("volume", 0) or 0)
+                    bid = float(atm.get("bid", 0) or 0)
+                    ask = float(atm.get("ask", 0) or 0)
+                    mid = (bid + ask) / 2 if (bid + ask) > 0 else 0
+                    spread_pct = (ask - bid) / mid if mid > 0 else 1.0
+                    oi_score      = min(1.0, oi / 500)
+                    vol_score     = min(1.0, vol / 50)
+                    spread_score  = max(0.0, 1.0 - spread_pct / 0.10)
+                    liquidity_score = round((oi_score + vol_score + spread_score) / 3, 3)
+        except Exception as _liq_exc:
+            log.debug("[OPTS] A2FeaturePack: %s liquidity calc failed: %s", symbol, _liq_exc)
+
+    data_sources = ["signal_scores", "iv_history"]
+    if chain:
+        data_sources.append("options_chain")
+
+    pack = A2FeaturePack(
+        symbol               = symbol,
+        a1_signal_score      = float(sig.get("score", 0)),
+        a1_direction         = a1_direction,
+        trend_score          = None,
+        momentum_score       = None,
+        sector_alignment     = str(sig.get("sector_signal", sig.get("sector", ""))),
+        iv_rank              = float(iv_rank),
+        iv_environment       = str(iv.get("iv_environment", "unknown")),
+        term_structure_slope = None,
+        skew                 = None,
+        expected_move_pct    = expected_move_pct,
+        flow_imbalance_30m   = None,
+        sweep_count          = None,
+        gex_regime           = None,
+        oi_concentration     = None,
+        earnings_days_away   = _load_earnings_days_away(symbol),
+        macro_event_flag     = False,
+        premium_budget_usd   = round(equity * 0.05, 2),
+        liquidity_score      = liquidity_score,
+        built_at             = datetime.now(timezone.utc).isoformat(),
+        data_sources         = data_sources,
+    )
+    log.debug("[OPTS] A2FeaturePack built for %s: iv_rank=%.1f env=%s dir=%s earn=%s liq=%.2f",
+              symbol, pack.iv_rank, pack.iv_environment, pack.a1_direction,
+              pack.earnings_days_away, pack.liquidity_score)
+    return pack
+
+
+def _route_strategy(pack: A2FeaturePack) -> list[str]:
+    """
+    Deterministic rules decide which structures are legal BEFORE AI debate.
+    Returns list of allowed structure types, empty list = no trade.
+
+    IMPORTANT: These are v1 safety defaults, hardcoded for initial deployment.
+    They are intentionally conservative. Each rule is a candidate for migration
+    into strategy_config.json parameters in a future sprint once shadow validation
+    confirms they are calibrated correctly. Do not treat them as permanent policy.
+    """
+    sym = pack.symbol
+
+    # Rule 1: earnings blackout
+    # v1 default: no new entries near earnings. Config candidate: earnings_dte_blackout
+    if pack.earnings_days_away is not None and pack.earnings_days_away <= 5:
+        log.debug("[OPTS] _route_strategy %s: RULE1 earnings_blackout days=%s → []",
+                  sym, pack.earnings_days_away)
+        return []
+
+    # Rule 2: no long premium in extreme IV
+    # v1 default: Config candidate: iv_env_blackout_list
+    if pack.iv_environment == "very_expensive":
+        log.debug("[OPTS] _route_strategy %s: RULE2 iv_env=very_expensive → []", sym)
+        return []
+
+    # Rule 3: liquidity floor
+    # v1 default: Config candidate: min_liquidity_score
+    if pack.liquidity_score < 0.3:
+        log.debug("[OPTS] _route_strategy %s: RULE3 liquidity=%.2f < 0.3 → []",
+                  sym, pack.liquidity_score)
+        return []
+
+    # Rule 4: macro event + elevated IV
+    # v1 default: Config candidate: macro_iv_gate
+    if pack.macro_event_flag and pack.iv_rank > 60:
+        log.debug("[OPTS] _route_strategy %s: RULE4 macro_event + iv_rank=%.1f > 60 → []",
+                  sym, pack.iv_rank)
+        return []
+
+    # Rule 5: cheap IV + directional signal
+    if pack.iv_environment in ("very_cheap", "cheap") and pack.a1_direction != "neutral":
+        allowed = ["long_call", "long_put", "debit_call_spread", "debit_put_spread"]
+        log.debug("[OPTS] _route_strategy %s: RULE5 iv_env=%s dir=%s → %s",
+                  sym, pack.iv_environment, pack.a1_direction, allowed)
+        return allowed
+
+    # Rule 6: neutral IV + directional signal
+    if pack.iv_environment == "neutral" and pack.a1_direction != "neutral":
+        allowed = ["debit_call_spread", "debit_put_spread"]
+        log.debug("[OPTS] _route_strategy %s: RULE6 iv_env=neutral dir=%s → %s",
+                  sym, pack.a1_direction, allowed)
+        return allowed
+
+    # Rule 7: expensive IV + directional signal (debit only, no naked long)
+    if pack.iv_environment == "expensive" and pack.a1_direction != "neutral":
+        allowed = ["debit_call_spread", "debit_put_spread"]
+        log.debug("[OPTS] _route_strategy %s: RULE7 iv_env=expensive dir=%s → %s",
+                  sym, pack.a1_direction, allowed)
+        return allowed
+
+    # Rule 8: default no-trade
+    log.debug("[OPTS] _route_strategy %s: RULE8 default no match (iv_env=%s dir=%s) → []",
+              sym, pack.iv_environment, pack.a1_direction)
+    return []
+
+
 def _build_options_candidates(
     watchlist_symbols: list[str],
     iv_summaries: dict,
@@ -411,22 +602,27 @@ def _build_options_candidates(
     vix: float,
     equity: float,
     config: dict | None = None,
-) -> list[StructureProposal]:
+) -> tuple[list[StructureProposal], dict[str, list[str]]]:
     """
     For each watchlist symbol with a signal score, run options_intelligence
-    to get a candidate trade. Returns list of StructureProposals.
+    to get a candidate trade. Returns (candidates, allowed_structures_by_symbol).
     None returns (hold/skip) are filtered out.
 
-    Includes a pre-debate liquidity pre-screen (loose thresholds = 50% of full
-    gate) to avoid wasting debate tokens on illiquid candidates.
+    Pipeline per symbol:
+      1. Universe tradeable gate (options_universe_manager.is_tradeable)
+      2. Build A2FeaturePack and run deterministic strategy router
+      3. Pre-debate liquidity pre-screen (loose thresholds = 50% of full gate)
+      4. options_intelligence.select_options_strategy → StructureProposal
     """
-    from options_data import get_options_regime
+    import options_universe_manager as _oum  # noqa: PLC0415
+    from options_data import get_options_regime  # noqa: PLC0415
 
     if config is None:
         config = {}
 
-    options_regime = get_options_regime(vix)
-    candidates = []
+    options_regime         = get_options_regime(vix)
+    candidates: list[StructureProposal]  = []
+    allowed_by_sym: dict[str, list[str]] = {}
 
     # Filter to symbols that have a meaningful signal.
     # score_signals() uses "conviction" field ("high"/"medium"/"low").
@@ -442,14 +638,44 @@ def _build_options_candidates(
             "symbol": sym, "iv_environment": "unknown", "observation_mode": True
         })
 
+        # Universe tradeable gate — replaces raw options_data.check_iv_history_ready()
+        if not _oum.is_tradeable(sym):
+            log.debug("[OPTS] %s: not in tradeable universe — queued for bootstrap", sym)
+            continue
+
         # Determine tier: use dynamic if sig_data says dynamic, otherwise core
-        tier = sig_data.get("tier", "core")
-        catalyst = sig_data.get("primary_catalyst", "no specific catalyst")
+        tier          = sig_data.get("tier", "core")
+        catalyst      = sig_data.get("primary_catalyst", "no specific catalyst")
         current_price = sig_data.get("price", 0)
 
         if current_price <= 0:
             log.debug("[OPTS] %s: no price data — skipping", sym)
             continue
+
+        # Fetch chain once — used by both liquidity check and A2FeaturePack
+        chain: dict = {}
+        try:
+            chain = options_data.fetch_options_chain(sym) or {}
+        except Exception as _ce:
+            log.debug("[OPTS] %s: chain fetch failed (non-fatal): %s", sym, _ce)
+
+        # Build A2FeaturePack (additive — existing code paths unaffected if None)
+        pack = _build_a2_feature_pack(
+            symbol=sym,
+            signal_scores=signal_scores,
+            iv_summaries=iv_summaries,
+            equity=equity,
+            vix=vix,
+            chain=chain or None,
+        )
+
+        # Deterministic strategy router — gates debate before AI sees this candidate
+        if pack is not None:
+            allowed = _route_strategy(pack)
+            if not allowed:
+                log.debug("[OPTS] %s: routing gate blocked — no allowed structures", sym)
+                continue
+            allowed_by_sym[sym] = allowed
 
         proposal = options_intelligence.select_options_strategy(
             symbol=sym,
@@ -466,20 +692,18 @@ def _build_options_candidates(
             continue
 
         # Pre-debate liquidity pre-screen (loose thresholds — 50% of full gate)
-        # Fetches chain; use cache so no extra network call if already fresh.
-        try:
-            chain = options_data.fetch_options_chain(sym)
-            if chain:
+        if chain:
+            try:
                 liq_ok, liq_reason = _quick_liquidity_check(chain, proposal, config)
                 if not liq_ok:
                     log.debug("[OPTS] %s: pre-debate liquidity fail — %s", sym, liq_reason)
                     continue
-        except Exception as _liq_err:
-            log.debug("[OPTS] %s: pre-debate liquidity check error (passing): %s", sym, _liq_err)
+            except Exception as _liq_err:
+                log.debug("[OPTS] %s: pre-debate liquidity check error (passing): %s", sym, _liq_err)
 
         candidates.append(proposal)
 
-    return candidates
+    return candidates, allowed_by_sym
 
 
 # ── Claude four-way debate ─────────────────────────────────────────────────────
@@ -503,6 +727,7 @@ def run_options_debate(
     account1_summary: str,
     obs_mode: bool,
     equity: float,
+    allowed_structures_by_symbol: dict | None = None,
 ) -> dict:
     """
     Submit candidates to Claude for the four-way options debate.
@@ -534,6 +759,19 @@ def run_options_debate(
         if obs_mode else ""
     )
 
+    # Format pre-approved structure types per symbol (from deterministic routing gate)
+    allowed_section = ""
+    if allowed_structures_by_symbol:
+        allowed_lines = [
+            f"  {sym}: {allowed}"
+            for sym, allowed in allowed_structures_by_symbol.items()
+        ]
+        allowed_section = (
+            "\n=== ALLOWED STRUCTURES (pre-approved by routing gate) ===\n"
+            + "\n".join(allowed_lines)
+            + "\nYou MUST only recommend structure types listed above for each symbol.\n"
+        )
+
     user_content = f"""{obs_notice}
 === MARKET CONTEXT ===
 VIX: {vix:.2f}
@@ -548,7 +786,7 @@ Account 2 Equity: ${equity:,.0f}
 
 === CANDIDATE TRADES (from signal scoring) ===
 {cands_text}
-
+{allowed_section}
 === YOUR TASK ===
 For each candidate, conduct the four-way debate:
 1. BULL AGENT: strongest bull case with specific catalyst
@@ -960,14 +1198,25 @@ def run_options_cycle(
     obs_count = sum(1 for iv in iv_summaries.values() if iv.get("observation_mode", True))
     log.info("[OPTS] IV summaries: %d symbols, %d in obs mode", len(iv_summaries), obs_count)
 
+    # 7b. Initialize universe from existing IV history on first run
+    try:
+        import options_universe_manager as _oum  # noqa: PLC0415
+        _universe_path = Path(__file__).parent / "data" / "options" / "universe.json"
+        if not _universe_path.exists():
+            log.info("[OPTS] universe.json absent — initializing from IV history")
+            _oum.initialize_universe_from_existing_iv_history()
+    except Exception as _uni_exc:
+        log.debug("[OPTS] universe init failed (non-fatal): %s", _uni_exc)
+
     # 8. Build candidate trades
     options_regime = options_data.get_options_regime(vix)
-    candidates = _build_options_candidates(
+    candidates, allowed_by_sym = _build_options_candidates(
         watchlist_symbols=equity_symbols,
         iv_summaries=iv_summaries,
         signal_scores=signal_scores,
         vix=vix,
         equity=equity,
+        config=_load_strategy_config(),
     )
 
     log.info("[OPTS] Candidates: %d  VIX=%.1f  regime=%s  options_regime=%s",
@@ -992,6 +1241,7 @@ def run_options_cycle(
         account1_summary=account1_summary,
         obs_mode=obs_mode,
         equity=equity,
+        allowed_structures_by_symbol=allowed_by_sym or None,
     )
 
     log.info("[OPTS] Debate complete: regime=%s  actions=%d",

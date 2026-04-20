@@ -927,6 +927,34 @@ _gate(
     else "Gate 13 — strategy_config.json missing shadow_lane section",
 )
 
+# Gate 18 — options_universe_manager.py importable and universe.json has ≥1 tradeable symbol
+try:
+    import importlib.util as _ilu_u
+    _oum_path = BASE_DIR / "options_universe_manager.py"
+    if not _oum_path.exists():
+        raise FileNotFoundError("options_universe_manager.py missing")
+    _oum_spec = _ilu_u.spec_from_file_location("options_universe_manager_vc", _oum_path)
+    _oum_mod  = _ilu_u.module_from_spec(_oum_spec)
+    _oum_spec.loader.exec_module(_oum_mod)
+    _universe_path = BASE_DIR / "data" / "options" / "universe.json"
+    if _universe_path.exists():
+        try:
+            _uni_data = json.loads(_universe_path.read_text())
+            _tradeable = [
+                sym for sym, entry in _uni_data.get("symbols", {}).items()
+                if entry.get("bootstrap_complete")
+            ]
+            if len(_tradeable) >= 1:
+                check(PASS, f"options_universe_manager.py: importable; universe.json has {len(_tradeable)} tradeable symbol(s)")
+            else:
+                check(WARN, "options_universe_manager.py: importable; universe.json exists but has 0 tradeable symbols — run initialize_universe_from_existing_iv_history()")
+        except Exception as _uni_err:
+            check(WARN, f"universe.json: parse error — {_uni_err}")
+    else:
+        check(WARN, "universe.json: absent — will be created on first A2 cycle")
+except Exception as _oum_err:
+    check(FAIL, f"options_universe_manager.py: import failed — {_oum_err}")
+
 # Gate 14 — A2 IV history seeded (>= 14 of 16 Phase 1 symbols have >= 20 valid entries)
 _PHASE1_SYMBOLS = [
     "SPY", "QQQ", "NVDA", "AAPL", "MSFT", "AMZN",
@@ -986,7 +1014,7 @@ _gate(
 
 _gates_passed = sum(1 for ok, _ in _gate_results if ok)
 print("─" * 65)
-print(f"  Go-live gates: {_gates_passed}/17 passing")
+print(f"  Go-live gates: {_gates_passed}/18 passing")
 print("─" * 65)
 print()
 
@@ -1001,7 +1029,7 @@ def _write_readiness_status() -> None:
             "overall_status":  "ready" if _gates_passed >= 16 else "not_ready",
             "a1_live_ready":   _gates_passed >= 16 and _clean_days >= 7,
             "gates_passed":    _gates_passed,
-            "gates_total":     17,
+            "gates_total":     18,
             "sev1_clean_days": _clean_days,
             "failures":        [label for ok, label in _gate_results if not ok],
             "generated_at":    datetime.now(timezone.utc).isoformat(),

@@ -672,6 +672,20 @@ def run_full_refresh(target_symbol: str | None = None) -> None:
     except Exception as _cs_exc:
         log.warning("Crypto sentiment refresh failed (non-fatal): %s", _cs_exc)
 
+    # A2 universe bootstrap queue — process up to 5 pending symbols
+    try:
+        import options_universe_manager as _oum  # noqa: PLC0415
+        _bootstrap_result = _oum.run_bootstrap_queue()
+        if _bootstrap_result.get("bootstrapped") or _bootstrap_result.get("failed"):
+            log.info(
+                "A2 bootstrap queue: bootstrapped=%s failed=%s remaining=%d",
+                _bootstrap_result["bootstrapped"],
+                _bootstrap_result["failed"],
+                len(_bootstrap_result.get("remaining", [])),
+            )
+    except Exception as exc:
+        log.warning("A2 bootstrap queue failed (non-fatal): %s", exc)
+
     log.info("Data warehouse refresh complete")
 
 

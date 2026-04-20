@@ -827,6 +827,38 @@ class StructureProposal:
     proposed_at:    str       = ""      # ISO-8601 UTC timestamp
 
 
+@dataclass
+class A2FeaturePack:
+    """Normalized feature object for A2 options decision pipeline."""
+    symbol: str
+    # Directional (from A1 signal scores)
+    a1_signal_score: float          # 0-100 from signal_scores.json
+    a1_direction: str               # "bullish" | "bearish" | "neutral"
+    trend_score: Optional[float]    # from intraday_cache if available
+    momentum_score: Optional[float]
+    sector_alignment: str           # sector from symbol_metadata
+    # IV / structure (from options_data)
+    iv_rank: float
+    iv_environment: str             # "very_cheap"|"cheap"|"neutral"|"expensive"|"very_expensive"
+    term_structure_slope: Optional[float]
+    skew: Optional[float]
+    expected_move_pct: float
+    # Flow / positioning (UW — all Optional, None until UW integrated)
+    flow_imbalance_30m: Optional[float]
+    sweep_count: Optional[int]
+    gex_regime: Optional[str]
+    oi_concentration: Optional[dict]
+    # Event state
+    earnings_days_away: Optional[int]
+    macro_event_flag: bool
+    # Trade geometry
+    premium_budget_usd: float
+    liquidity_score: float          # 0-1
+    # Metadata
+    built_at: str                   # ISO timestamp
+    data_sources: list[str]         # which sources populated this pack
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Validation helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1108,7 +1140,7 @@ __all__ = [
     # Broker state
     "NormalizedPosition", "NormalizedOrder", "BrokerSnapshot",
     # Options structure
-    "OptionsLeg", "OptionsStructure", "StructureProposal",
+    "OptionsLeg", "OptionsStructure", "StructureProposal", "A2FeaturePack",
     # Validation
     "validate_trade_idea", "validate_broker_action",
     # Manifest

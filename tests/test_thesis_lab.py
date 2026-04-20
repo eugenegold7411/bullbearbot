@@ -570,5 +570,377 @@ class TestThesisLabImportSafety(unittest.TestCase):
         self.assertEqual(len(parts[3]), 4)   # random suffix
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SUITE 33 — thesis_backtest: pure calculations + non-fatal I/O behaviour
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Deterministic price series for calculation tests
+_PRICES_UP = [
+    {"date": "2026-01-13", "close": 100.0},
+    {"date": "2026-02-13", "close": 110.0},
+    {"date": "2026-03-13", "close":  95.0},
+    {"date": "2026-04-13", "close": 120.0},
+    {"date": "2026-07-13", "close": 130.0},
+    {"date": "2026-10-13", "close": 140.0},
+    {"date": "2027-01-13", "close": 125.0},
+    {"date": "2027-04-13", "close": 150.0},
+]
+
+# Drawdown test: peak 120 → trough 95 (occurs before the peak)
+# Real drawdown: 100→95 = 5%; then 110→95 = 13.6%; then 120→... no lower follows
+_PRICES_WITH_DD = [
+    {"date": "2026-01-01", "close": 100.0},
+    {"date": "2026-02-01", "close": 110.0},
+    {"date": "2026-03-01", "close":  85.0},  # drawdown from 110 → 85 = 22.7%
+    {"date": "2026-04-01", "close": 105.0},
+]
+
+
+class TestThesisBacktestCalculations(unittest.TestCase):
+    """Suite 33: Pure deterministic calculations — no I/O, no mocking needed."""
+
+    def setUp(self):
+        import thesis_backtest as tb
+        self.tb = tb
+
+    # T33.1 — calc_roi long position
+    def test_calc_roi_long(self):
+        roi = self.tb.calc_roi(100.0, 115.0, "long")
+        self.assertAlmostEqual(roi, 0.15, places=5)
+
+    # T33.2 — calc_roi short position (inverted P&L)
+    def test_calc_roi_short(self):
+        roi = self.tb.calc_roi(100.0, 85.0, "short")
+        self.assertAlmostEqual(roi, 0.15, places=5)  # price fell 15%, short made 15%
+
+    # T33.3 — calc_roi short loss
+    def test_calc_roi_short_loss(self):
+        roi = self.tb.calc_roi(100.0, 120.0, "short")
+        self.assertAlmostEqual(roi, -0.20, places=5)
+
+    # T33.4 — calc_roi zero entry price returns 0
+    def test_calc_roi_zero_entry(self):
+        self.assertEqual(self.tb.calc_roi(0.0, 100.0, "long"), 0.0)
+
+    # T33.5 — calc_max_drawdown known series
+    def test_calc_max_drawdown_known(self):
+        # Peak = 110, trough = 85 → drawdown = (110-85)/110 = 22.72%
+        dd = self.tb.calc_max_drawdown(_PRICES_WITH_DD, "long")
+        self.assertAlmostEqual(dd, (110 - 85) / 110, places=4)
+
+    # T33.6 — max_drawdown monotone up series → ~0
+    def test_calc_max_drawdown_monotone_up(self):
+        prices = [{"close": float(i * 10)} for i in range(1, 6)]
+        dd = self.tb.calc_max_drawdown(prices, "long")
+        self.assertEqual(dd, 0.0)
+
+    # T33.7 — max_drawdown empty / single bar → 0
+    def test_calc_max_drawdown_insufficient(self):
+        self.assertEqual(self.tb.calc_max_drawdown([], "long"), 0.0)
+        self.assertEqual(self.tb.calc_max_drawdown([{"close": 100.0}], "long"), 0.0)
+
+    # T33.8 — compute_data_quality full
+    def test_data_quality_full(self):
+        rois = [0.05, 0.10, 0.08, 0.12]
+        self.assertEqual(self.tb.compute_data_quality(rois), "full")
+
+    # T33.9 — compute_data_quality partial
+    def test_data_quality_partial(self):
+        rois = [0.05, None, None, None]
+        self.assertEqual(self.tb.compute_data_quality(rois), "partial")
+
+    # T33.10 — compute_data_quality insufficient
+    def test_data_quality_insufficient(self):
+        rois = [None, None, None, None]
+        self.assertEqual(self.tb.compute_data_quality(rois), "insufficient")
+
+    # T33.11 — compute_verdict profitable
+    def test_verdict_profitable(self):
+        verdict = self.tb.compute_verdict(0.05, 0.12, 0.08, 0.15, "full")
+        self.assertEqual(verdict, "profitable")
+
+    # T33.12 — compute_verdict loss
+    def test_verdict_loss(self):
+        verdict = self.tb.compute_verdict(-0.10, -0.15, -0.08, -0.12, "full")
+        self.assertEqual(verdict, "loss")
+
+    # T33.13 — compute_verdict pending when insufficient
+    def test_verdict_pending_when_insufficient(self):
+        verdict = self.tb.compute_verdict(None, None, None, None, "insufficient")
+        self.assertEqual(verdict, "pending")
+
+    # T33.14 — compute_verdict inconclusive at boundary
+    def test_verdict_inconclusive(self):
+        # 0.005 < 0.01 threshold → inconclusive
+        verdict = self.tb.compute_verdict(None, None, None, 0.005, "partial")
+        self.assertEqual(verdict, "inconclusive")
+
+    # T33.15 — compute_checkpoint_dates uses 91/182/273/365 day offsets
+    def test_checkpoint_dates(self):
+        cps = self.tb.compute_checkpoint_dates("2026-01-13")
+        self.assertIn("3m", cps)
+        self.assertIn("12m", cps)
+        # 3m = 91 days after 2026-01-13 = 2026-04-14
+        from datetime import date, timedelta
+        expected_3m = (date(2026, 1, 13) + timedelta(days=91)).isoformat()
+        self.assertEqual(cps["3m"], expected_3m)
+
+    # T33.16 — price_on_or_after returns correct close
+    def test_price_on_or_after(self):
+        prices = [{"date": "2026-04-14", "close": 99.5}, {"date": "2026-04-15", "close": 101.0}]
+        result = self.tb._price_on_or_after(prices, "2026-04-14")
+        self.assertEqual(result, 99.5)
+
+    # T33.17 — price_on_or_after returns None for future target
+    def test_price_on_or_after_none(self):
+        prices = [{"date": "2026-04-14", "close": 99.5}]
+        result = self.tb._price_on_or_after(prices, "2026-12-01")
+        self.assertIsNone(result)
+
+    # T33.18 — normalize_symbol filters invalid symbols
+    def test_normalize_symbol_filters(self):
+        self.assertEqual(self.tb._normalize_symbol("2s30s Yield Curve"), "")
+        self.assertEqual(self.tb._normalize_symbol("VENZ 9.25% 9/15/27"), "")
+        self.assertEqual(self.tb._normalize_symbol("Tanker Basket"), "")
+        self.assertEqual(self.tb._normalize_symbol("IBIT"), "IBIT")
+        self.assertEqual(self.tb._normalize_symbol("FXI"), "FXI")
+
+    # T33.19 — normalize_symbol converts BTC/USD → BTC-USD
+    def test_normalize_symbol_crypto(self):
+        self.assertEqual(self.tb._normalize_symbol("BTC/USD"), "BTC-USD")
+
+
+class TestThesisBacktestIntegration(unittest.TestCase):
+    """Suite 33 (continued): backtest_thesis and backtest_all_theses behaviour."""
+
+    def setUp(self):
+        import thesis_registry as tr
+        import thesis_backtest as tb
+        self.tr = tr
+        self.tb = tb
+        self.tmp     = tempfile.TemporaryDirectory()
+        self.tmp_dir = Path(self.tmp.name)
+
+        # Patch registry paths
+        self.dir_patch  = mock.patch.object(tr, "_THESIS_LAB_DIR", self.tmp_dir)
+        self.file_patch = mock.patch.object(tr, "_THESES_FILE",     self.tmp_dir / "theses.json")
+        self.quar_patch = mock.patch.object(tr, "_QUARANTINE_FILE", self.tmp_dir / "quarantine.jsonl")
+        self.dir_patch.start()
+        self.file_patch.start()
+        self.quar_patch.start()
+
+        # Patch backtest paths
+        self.bt_dir_patch  = mock.patch.object(tb, "_THESIS_LAB_DIR", self.tmp_dir)
+        self.bt_file_patch = mock.patch.object(tb, "_BACKTESTS_FILE", self.tmp_dir / "backtests.jsonl")
+        self.bt_dir_patch.start()
+        self.bt_file_patch.start()
+
+    def tearDown(self):
+        self.dir_patch.stop()
+        self.file_patch.stop()
+        self.quar_patch.stop()
+        self.bt_dir_patch.stop()
+        self.bt_file_patch.stop()
+        self.tmp.cleanup()
+
+    def _make_thesis(self, **overrides):
+        defaults = dict(
+            thesis_id="thesis_test_0001",
+            source_type="manual",
+            source_ref="test",
+            title="Test Long IBIT",
+            date_opened="2026-01-13",
+            status="researched",
+            time_horizons=[3, 6, 9, 12],
+            narrative="Test narrative.",
+            market_belief="Bullish.",
+            market_missing="Market underprices ETF flows.",
+            primary_bottleneck="Iran resolution.",
+            confirming_signals=["ETF inflows"],
+            countersignals=["Rising DXY"],
+            anchor_metrics=["IBIT weekly inflows"],
+            base_expression={"instrument": "etf", "symbols": ["IBIT"], "direction": "long"},
+            alternate_expressions=[],
+            review_schedule=[],
+            tags=["crypto"],
+            archetype_candidates=[],
+            notes="",
+            schema_version=1,
+        )
+        defaults.update(overrides)
+        return self.tr.ThesisRecord(**defaults)
+
+    # T33.20 — data_quality=insufficient when yfinance returns no data
+    def test_insufficient_when_no_data(self):
+        thesis = self._make_thesis()
+        with mock.patch.object(self.tb, "_fetch_prices", return_value=[]):
+            result = self.tb.backtest_thesis(thesis)
+        self.assertEqual(result.data_quality, "insufficient")
+        self.assertEqual(result.final_verdict, "pending")
+        self.assertIsNone(result.roi_3m)
+        self.assertIsNone(result.roi_12m)
+
+    # T33.21 — missing_checkpoints populated when future dates unavailable
+    def test_missing_checkpoints_future_dates(self):
+        # Provide only 3m data — 6m/9m/12m are future
+        thesis  = self._make_thesis(date_opened="2026-04-20")
+        cps     = self.tb.compute_checkpoint_dates("2026-04-20")
+        cp_3m   = cps["3m"]
+        prices  = [
+            {"date": "2026-04-20", "close": 50.0},
+            {"date": cp_3m,        "close": 55.0},
+        ]
+        with mock.patch.object(self.tb, "_fetch_prices", return_value=prices):
+            result = self.tb.backtest_thesis(thesis)
+        self.assertIn("6m",  result.missing_checkpoints)
+        self.assertIn("9m",  result.missing_checkpoints)
+        self.assertIn("12m", result.missing_checkpoints)
+        self.assertNotIn("3m", result.missing_checkpoints)
+        self.assertIsNotNone(result.roi_3m)
+        self.assertAlmostEqual(result.roi_3m, 0.10, places=4)
+
+    # T33.22 — full data produces correct ROIs for a known price series
+    def test_full_data_correct_rois(self):
+        thesis = self._make_thesis(date_opened="2026-01-13")
+        cps    = self.tb.compute_checkpoint_dates("2026-01-13")
+        prices = [
+            {"date": "2026-01-13", "close": 100.0},
+            {"date": cps["3m"],    "close": 110.0},
+            {"date": cps["6m"],    "close": 105.0},
+            {"date": cps["9m"],    "close": 120.0},
+            {"date": cps["12m"],   "close": 130.0},
+        ]
+        with mock.patch.object(self.tb, "_fetch_prices", return_value=prices):
+            result = self.tb.backtest_thesis(thesis)
+        self.assertEqual(result.data_quality, "full")
+        self.assertAlmostEqual(result.roi_3m,  0.10, places=4)
+        self.assertAlmostEqual(result.roi_6m,  0.05, places=4)
+        self.assertAlmostEqual(result.roi_9m,  0.20, places=4)
+        self.assertAlmostEqual(result.roi_12m, 0.30, places=4)
+        self.assertEqual(result.final_verdict, "profitable")
+        self.assertEqual(result.missing_checkpoints, [])
+
+    # T33.23 — short thesis: inverted ROI
+    def test_short_thesis_roi_inverted(self):
+        thesis = self._make_thesis(
+            base_expression={"instrument": "macro", "symbols": ["TLT"], "direction": "short"}
+        )
+        cps    = self.tb.compute_checkpoint_dates(thesis.date_opened)
+        prices = [
+            {"date": thesis.date_opened, "close": 100.0},
+            {"date": cps["3m"],          "close":  90.0},  # price fell → short profits
+        ]
+        with mock.patch.object(self.tb, "_fetch_prices", return_value=prices):
+            result = self.tb.backtest_thesis(thesis)
+        self.assertAlmostEqual(result.roi_3m, 0.10, places=4)  # 10% gain on short
+
+    # T33.24 — non-yfinance symbols produce insufficient without error
+    def test_non_yfinance_symbol_graceful(self):
+        thesis = self._make_thesis(
+            base_expression={
+                "instrument": "macro",
+                "symbols": ["2s30s Yield Curve"],
+                "direction": "short",
+            }
+        )
+        result = self.tb.backtest_thesis(thesis)
+        self.assertEqual(result.data_quality, "insufficient")
+        self.assertEqual(result.final_verdict, "pending")
+
+    # T33.25 — multi-symbol thesis averages ROIs
+    def test_multi_symbol_averages_roi(self):
+        thesis = self._make_thesis(
+            base_expression={
+                "instrument": "equity",
+                "symbols": ["SYM_A", "SYM_B"],
+                "direction": "long",
+            }
+        )
+        cps    = self.tb.compute_checkpoint_dates(thesis.date_opened)
+        prices = [{"date": thesis.date_opened, "close": 100.0}, {"date": cps["3m"], "close": 120.0}]
+
+        def fake_fetch(sym, *args, **kwargs):
+            return prices
+
+        with mock.patch.object(self.tb, "_fetch_prices", side_effect=fake_fetch):
+            result = self.tb.backtest_thesis(thesis)
+        self.assertAlmostEqual(result.roi_3m, 0.20, places=4)  # both symbols: +20%
+
+    # T33.26 — result has schema_version=1
+    def test_result_schema_version(self):
+        thesis = self._make_thesis()
+        with mock.patch.object(self.tb, "_fetch_prices", return_value=[]):
+            result = self.tb.backtest_thesis(thesis)
+        self.assertEqual(result.schema_version, 1)
+
+    # T33.27 — append + load roundtrip
+    def test_append_and_load_roundtrip(self):
+        thesis = self._make_thesis()
+        with mock.patch.object(self.tb, "_fetch_prices", return_value=[]):
+            result = self.tb.backtest_thesis(thesis)
+        self.tb.append_backtest_result(result)
+        loaded = self.tb.load_backtest_results()
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["thesis_id"], thesis.thesis_id)
+        self.assertIn("backtested_at", loaded[0])
+
+    # T33.28 — load_backtest_results filtered by thesis_id
+    def test_load_filtered(self):
+        thesis_a = self._make_thesis(thesis_id="tid_a")
+        thesis_b = self._make_thesis(thesis_id="tid_b")
+        with mock.patch.object(self.tb, "_fetch_prices", return_value=[]):
+            self.tb.append_backtest_result(self.tb.backtest_thesis(thesis_a))
+            self.tb.append_backtest_result(self.tb.backtest_thesis(thesis_b))
+        filtered = self.tb.load_backtest_results(thesis_id="tid_a")
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["thesis_id"], "tid_a")
+
+    # T33.29 — backtest_all_theses skips quarantined entries
+    def test_backtest_all_skips_quarantine(self):
+        self.tr.create_thesis(self._make_thesis(thesis_id="researched_1", status="researched"))
+        self.tr.create_thesis(self._make_thesis(thesis_id="quarantined_1", status="quarantine"))
+        with mock.patch.object(self.tb, "_fetch_prices", return_value=[]):
+            results = self.tb.backtest_all_theses(status_filter="researched", force=True)
+        ids = [r.thesis_id for r in results]
+        self.assertIn("researched_1", ids)
+        self.assertNotIn("quarantined_1", ids)
+
+    # T33.30 — backtest_all_theses returns empty list when flag off and force=False
+    def test_backtest_all_respects_flag(self):
+        self.tr.create_thesis(self._make_thesis())
+        with mock.patch.object(self.tb, "_is_enabled", return_value=False):
+            results = self.tb.backtest_all_theses(force=False)
+        self.assertEqual(results, [])
+
+    # T33.31 — backtest_all writes to backtests.jsonl
+    def test_backtest_all_writes_jsonl(self):
+        self.tr.create_thesis(self._make_thesis())
+        with mock.patch.object(self.tb, "_fetch_prices", return_value=[]):
+            self.tb.backtest_all_theses(force=True)
+        bt_file = self.tmp_dir / "backtests.jsonl"
+        self.assertTrue(bt_file.exists())
+        lines = [json.loads(l) for l in bt_file.read_text().strip().splitlines()]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("final_verdict", lines[0])
+        self.assertIn("data_quality",  lines[0])
+
+    # T33.32 — thesis_backtest importable with no env vars (pure data module)
+    def test_backtest_importable_without_env_vars(self):
+        import thesis_backtest  # noqa: F401
+
+    # T33.33 — thesis_backtest has no forbidden imports
+    def test_backtest_has_no_bot_imports(self):
+        import thesis_backtest
+        import inspect
+        lines        = inspect.getsource(thesis_backtest).splitlines()
+        import_lines = [l for l in lines if l.strip().startswith(("import ", "from "))]
+        import_text  = "\n".join(import_lines)
+        for forbidden in ("bot", "order_executor", "risk_kernel"):
+            self.assertNotIn(
+                forbidden, import_text,
+                f"thesis_backtest imports forbidden module: {forbidden!r}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

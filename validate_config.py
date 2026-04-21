@@ -1060,15 +1060,21 @@ try:
 except Exception as _oum_err:
     check(FAIL, f"options_universe_manager.py: import failed — {_oum_err}")
 
-# Gate 14 — A2 IV history seeded (>= 14 of 16 Phase 1 symbols have >= 20 valid entries)
-_PHASE1_SYMBOLS = [
-    "SPY", "QQQ", "NVDA", "AAPL", "MSFT", "AMZN",
-    "META", "GOOGL", "TSM", "AMD", "XLE", "GLD",
-    "TLT", "IWM", "XLF", "XBI",
-]
+# Gate 14 — A2 IV history seeded (full universe from _OBS_IV_SYMBOLS, not hardcoded Phase 1)
+try:
+    import sys as _sys_vc
+    _sys_vc.path.insert(0, str(BASE_DIR))
+    from bot_options_stage0_preflight import _OBS_IV_SYMBOLS as _A2_UNIVERSE  # noqa: E402
+except Exception:
+    # Fallback: original 16 Phase 1 symbols if preflight module cannot be imported
+    _A2_UNIVERSE = [
+        "SPY", "QQQ", "NVDA", "AAPL", "MSFT", "AMZN",
+        "META", "GOOGL", "TSM", "AMD", "XLE", "GLD",
+        "TLT", "IWM", "XLF", "XBI",
+    ]
 _IV_HIST_DIR    = BASE_DIR / "data" / "options" / "iv_history"
 _iv_ready_count = 0
-for _sym in _PHASE1_SYMBOLS:
+for _sym in _A2_UNIVERSE:
     _hist_path = _IV_HIST_DIR / f"{_sym}_iv_history.json"
     if _hist_path.exists():
         try:
@@ -1078,12 +1084,13 @@ for _sym in _PHASE1_SYMBOLS:
                 _iv_ready_count += 1
         except Exception:
             pass
+_universe_total = len(_A2_UNIVERSE)
 _gate(
-    _iv_ready_count >= 14,
-    f"Gate 14 — A2 IV history seeded: {_iv_ready_count}/16 Phase 1 symbols have ≥20 valid entries"
-    if _iv_ready_count >= 14
-    else f"Gate 14 — A2 IV history seeded: only {_iv_ready_count}/16 ready "
-         f"(need 14 — run iv_history_seeder.py)",
+    _iv_ready_count >= _universe_total,
+    f"Gate 14 — A2 IV history seeded: {_iv_ready_count}/{_universe_total} symbols have ≥20 valid entries"
+    if _iv_ready_count >= _universe_total
+    else f"Gate 14 — A2 IV history seeded: only {_iv_ready_count}/{_universe_total} ready "
+         f"(run iv_history_seeder.py for missing symbols)",
 )
 
 # Gate 15 — data/analytics/ directory present (decision_outcomes.jsonl auto-creates there)

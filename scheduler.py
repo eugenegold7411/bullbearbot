@@ -244,6 +244,7 @@ _preopen_ran_date:             str = ""   # "YYYY-MM-DD" of last pre-open cycle
 _daily_digest_written_date:    str = ""   # "YYYY-MM-DD" of last daily digest
 _market_impact_backfill_date:  str = ""   # "YYYY-MM-DD" of last backfill
 _outcomes_backfill_date:       str = ""   # "YYYY-MM-DD" of last outcomes backfill
+_readiness_ran_date:           str = ""   # "YYYY-MM-DD" of last readiness check
 _econ_calendar_refresh_key:    str = ""   # "YYYY-MM-DD-HHMM" slot key
 _zero_fill_alert_date:         str = ""   # "YYYY-MM-DD" of last zero-fill alert
 
@@ -1284,6 +1285,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_refresh_economic_calendar(dry_run)  # intraday econ slots
         _maybe_run_morning_brief(dry_run)
         _maybe_run_orb_scan(dry_run)
+        _maybe_run_readiness_check(dry_run)
         _maybe_refresh_global_indices(dry_run)
         _maybe_refresh_reddit_sentiment(dry_run)
         _maybe_refresh_form4_trades(dry_run)
@@ -1571,6 +1573,48 @@ def _maybe_backfill_decision_outcomes(dry_run: bool = False) -> None:
             log.warning("[OUTCOMES] Daily backfill failed (non-fatal)", exc_info=True)
 
     _outcomes_backfill_date = today
+
+
+def _maybe_run_readiness_check(dry_run: bool = False) -> None:
+    """Run validate_config.py once daily at 4:45 AM ET — updates readiness_status_latest.json.
+
+    Runs after the data warehouse refresh (4:00 AM) and ORB scan (4:30 AM) so the
+    report reflects the freshest data. Non-fatal — never blocks the main bot cycle.
+    """
+    global _readiness_ran_date
+    now_et  = datetime.now(ET)
+    today   = _today()
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+
+    if _readiness_ran_date == today:
+        return
+    if weekday >= 5:
+        return
+    if not (4 * 60 + 45 <= now_min <= 5 * 60 + 30):   # 4:45–5:30 AM window
+        return
+
+    log.info("[READINESS] Running daily readiness check (validate_config.py)")
+    if not dry_run:
+        try:
+            import subprocess  # noqa: PLC0415
+            _vc_path = Path(__file__).parent / "validate_config.py"
+            _proc    = subprocess.run(
+                ["python3", str(_vc_path)],
+                capture_output=True, text=True, timeout=60,
+            )
+            if _proc.returncode == 0:
+                log.info("[READINESS] Readiness check passed — readiness_status_latest.json updated")
+            else:
+                log.warning(
+                    "[READINESS] Readiness check has failures — see data/reports/readiness_status_latest.json"
+                )
+        except Exception as _rc_exc:
+            log.warning("[READINESS] Readiness check failed (non-fatal): %s", _rc_exc)
+    else:
+        log.info("[dry-run] Skipping readiness check")
+
+    _readiness_ran_date = today
 
 
 if __name__ == "__main__":

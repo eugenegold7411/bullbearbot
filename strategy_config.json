@@ -6,14 +6,14 @@
   "backtest_results": {},
   "position_sizing": {
     "core_tier_pct": 0.15,
-    "dynamic_tier_pct": 0.08,
+    "dynamic_tier_pct": 0.10,
     "intraday_tier_pct": 0.05,
-    "max_total_exposure_pct": 0.67,
-    "cash_reserve_pct": 0.2
+    "max_total_exposure_pct": 0.75,
+    "cash_reserve_pct": 0.15
   },
   "parameters": {
     "min_confidence_threshold": "medium",
-    "max_positions": 12,
+    "max_positions": 14,
     "preferred_sessions": [
       "market",
       "extended"
@@ -119,18 +119,18 @@
       "pre_open"
     ],
     "position_sizing": {
-      "core_spread_max_pct": 0.05,
-      "core_single_leg_max_pct": 0.03,
+      "core_spread_max_pct": 0.06,
+      "core_single_leg_max_pct": 0.035,
       "dynamic_max_pct": 0.03,
       "intraday_options": false
     },
     "iv_rules": {
       "min_history_days": 20,
-      "buy_premium_rank_max": 35,
+      "buy_premium_rank_max": 40,
       "sell_premium_rank_min": 65,
       "spreads_rank_range": [
-        35,
-        65
+        30,
+        70
       ]
     },
     "greeks": {
@@ -143,14 +143,14 @@
       "high_max": 40,
       "crisis_halt": 40
     },
-    "debate_confidence_floor": 0.85,
-    "max_open_positions": 6,
+    "debate_confidence_floor": 0.78,
+    "max_open_positions": 8,
     "liquidity_gates": {
-      "min_open_interest": 200,
+      "min_open_interest": 150,
       "min_volume": 20,
-      "max_spread_pct": 0.08,
+      "max_spread_pct": 0.10,
       "min_mid_price": 0.05,
-      "pre_debate_oi_floor": 100,
+      "pre_debate_oi_floor": 75,
       "pre_debate_volume_floor": 10
     },
     "cycle_offset_note": "Account 2 runs 90s after Account 1 each market cycle to consume fresh signal scores",
@@ -190,10 +190,10 @@
     "earnings_intel": "medium"
   },
   "sonnet_gate": {
-    "cooldown_minutes": 15,
-    "max_consecutive_skips": 8,
-    "signal_score_threshold": 15,
-    "exposure_change_threshold": 0.05,
+    "cooldown_minutes": 10,
+    "max_consecutive_skips": 5,
+    "signal_score_threshold": 12,
+    "exposure_change_threshold": 0.035,
     "deadline_warning_minutes": 30,
     "scheduled_windows": [
       {
@@ -251,14 +251,14 @@
     "enable_thesis_ai_ingestion": false
   },
   "a2_router": {
-    "earnings_dte_blackout": 5,
-    "min_liquidity_score": 0.3,
-    "macro_iv_gate_rank": 60,
+    "earnings_dte_blackout": 3,
+    "min_liquidity_score": 0.25,
+    "macro_iv_gate_rank": 70,
     "iv_env_blackout": ["very_expensive"],
     "v1_defaults_note": "These are v1 safety defaults added 2026-04-20. Each is a candidate for tuning after shadow validation."
   },
   "a2_veto_thresholds": {
-    "max_bid_ask_spread_pct": 0.15,
+    "max_bid_ask_spread_pct": 0.18,
     "min_open_interest": 100,
     "max_theta_decay_pct": 0.05,
     "min_dte": 5,

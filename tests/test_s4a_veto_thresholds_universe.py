@@ -118,11 +118,11 @@ class TestVetoRulesConfigDriven(unittest.TestCase):
         self.assertIsNotNone(result, "XLF 33.7% spread should still be blocked at threshold=0.15")
 
     def test_v1_config_0_15_matches_strategy_config_json(self):
-        # The value in strategy_config.json must match 0.15 (the tuned value)
+        # Value widened to 0.18 in S5-CONFIG-ACTIVITY "Busier, Same-ish Risk" pass
         cfg = json.loads((_BOT_DIR / "strategy_config.json").read_text())
         vt = cfg.get("a2_veto_thresholds", {})
-        self.assertAlmostEqual(float(vt.get("max_bid_ask_spread_pct", 0)), 0.15,
-                               msg="strategy_config.json max_bid_ask_spread_pct should be 0.15")
+        self.assertAlmostEqual(float(vt.get("max_bid_ask_spread_pct", 0)), 0.18,
+                               msg="strategy_config.json max_bid_ask_spread_pct should be 0.18")
 
     def test_v1_config_tightened_blocks_previously_passing(self):
         # Tighter config → lower spread blocked
@@ -232,9 +232,10 @@ class TestStrategyConfigVetoThresholds(unittest.TestCase):
         vt = self._cfg()["a2_veto_thresholds"]
         self.assertIn("_tuned", vt, "_tuned rationale comment must be present")
 
-    def test_spread_threshold_is_0_15(self):
+    def test_spread_threshold_is_0_18(self):
+        # Widened from 0.15 to 0.18 in S5-CONFIG-ACTIVITY "Busier, Same-ish Risk" pass
         vt = self._cfg()["a2_veto_thresholds"]
-        self.assertAlmostEqual(float(vt["max_bid_ask_spread_pct"]), 0.15)
+        self.assertAlmostEqual(float(vt["max_bid_ask_spread_pct"]), 0.18)
 
     def test_oi_floor_unchanged_at_100(self):
         vt = self._cfg()["a2_veto_thresholds"]

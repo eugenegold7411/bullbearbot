@@ -101,10 +101,11 @@ def check_email_delivery() -> tuple[str, str]:
 def check_sms_delivery() -> tuple[str, str]:
     try:
         lines = _lines_today(_read_log_tail())
-        hits = [l for l in lines if "SMS sent" in l or ("201" in l and "twilio" in l.lower())]
+        hits = [l for l in lines if "WhatsApp sent" in l or "WhatsApp alert sent" in l
+                or "SMS sent" in l]  # SMS sent kept for backward compat with old log entries
         if hits:
-            return "OK", "Twilio SMS confirmed in today's log"
-        return "DEGRADED", "no SMS delivery logged today"
+            return "OK", "WhatsApp delivery confirmed in today's log"
+        return "DEGRADED", "no WhatsApp delivery logged today"
     except Exception as e:
         return "UNKNOWN", str(e)
 

@@ -26,10 +26,10 @@ Configuration (.env):
   TWITTER_ACCESS_SECRET            — OAuth 1.0a access token secret (direct mode)
   TWITTER_BOT_HANDLE               — @handle (for reference only)
   TWITTER_PAPER_MODE=true/false    — selects disclaimer text
-  TWILIO_ACCOUNT_SID               — for SMS approval delivery
+  TWILIO_ACCOUNT_SID               — for WhatsApp approval delivery
   TWILIO_AUTH_TOKEN
-  TWILIO_FROM_NUMBER
-  TWILIO_TO_NUMBER
+  WHATSAPP_FROM                    — whatsapp:+14155238886 (sandbox sender)
+  WHATSAPP_TO                      — whatsapp:+18189177789 (recipient)
   SENDGRID_API_KEY                 — for email approval delivery
   SENDGRID_FROM_EMAIL
 
@@ -292,12 +292,12 @@ class TradePublisher:
 
         sent_any = False
 
-        # ── SMS via Twilio ────────────────────────────────────────────────────
+        # ── WhatsApp via Twilio ───────────────────────────────────────────────
         try:
             sid   = os.getenv("TWILIO_ACCOUNT_SID")
             token = os.getenv("TWILIO_AUTH_TOKEN")
-            from_ = os.getenv("TWILIO_FROM_NUMBER")
-            to    = os.getenv("TWILIO_TO_NUMBER")
+            from_ = os.getenv("WHATSAPP_FROM")
+            to    = os.getenv("WHATSAPP_TO")
 
             if all([sid, token, from_, to]):
                 from twilio.rest import Client as TwilioClient  # noqa: PLC0415
@@ -312,12 +312,12 @@ class TradePublisher:
                     body=sms_body, from_=from_, to=to
                 )
                 sent_any = True
-                log.info("trade_publisher: approval SMS sent  type=%s  sym=%s",
+                log.info("trade_publisher: approval WhatsApp sent  type=%s  sym=%s",
                          post_type, sym_str or "—")
             else:
-                log.debug("trade_publisher: Twilio not configured — SMS skipped")
+                log.debug("trade_publisher: Twilio not configured — WhatsApp skipped")
         except Exception as exc:
-            log.warning("trade_publisher: approval SMS failed: %s", exc)
+            log.warning("trade_publisher: approval WhatsApp failed: %s", exc)
 
         # ── Email via SendGrid ────────────────────────────────────────────────
         try:
@@ -1266,6 +1266,30 @@ Rules:
         except Exception as exc:
             log.warning("trade_publisher: update_engagement_stats failed: %s", exc)
 
+    # ── Direct alert ─────────────────────────────────────────────────────────
+
+    def send_alert(self, message: str) -> bool:
+        """Send a WhatsApp alert message directly via Twilio. Returns True on success.
+
+        Bypasses the Claude post-generation pipeline — use for operational alerts
+        and verification checks, not for @BullBearBotAI post content.
+        """
+        try:
+            sid   = os.getenv("TWILIO_ACCOUNT_SID")
+            token = os.getenv("TWILIO_AUTH_TOKEN")
+            from_ = os.getenv("WHATSAPP_FROM")
+            to    = os.getenv("WHATSAPP_TO")
+            if not all([sid, token, from_, to]):
+                log.warning("trade_publisher: send_alert — WhatsApp credentials not configured")
+                return False
+            from twilio.rest import Client as TwilioClient  # noqa: PLC0415
+            TwilioClient(sid, token).messages.create(body=message, from_=from_, to=to)
+            log.info("trade_publisher: WhatsApp alert sent: %s", message[:80])
+            return True
+        except Exception as exc:
+            log.warning("trade_publisher: send_alert failed: %s", exc)
+            return False
+
     # ── Test / validation ─────────────────────────────────────────────────────
 
     def test_connection(self) -> bool:
@@ -1279,15 +1303,15 @@ Rules:
             twilio_ok   = all([
                 os.getenv("TWILIO_ACCOUNT_SID"),
                 os.getenv("TWILIO_AUTH_TOKEN"),
-                os.getenv("TWILIO_FROM_NUMBER"),
-                os.getenv("TWILIO_TO_NUMBER"),
+                os.getenv("WHATSAPP_FROM"),
+                os.getenv("WHATSAPP_TO"),
             ])
             sendgrid_ok = bool(os.getenv("SENDGRID_API_KEY"))
             claude_ok   = self._claude is not None
 
-            print("Mode        : APPROVAL (SMS+email delivery)")
+            print("Mode        : APPROVAL (WhatsApp+email delivery)")
             print(f"Claude      : {'OK' if claude_ok else 'MISSING'}")
-            print(f"Twilio SMS  : {'configured' if twilio_ok else 'not configured'}")
+            print(f"Twilio WA   : {'configured' if twilio_ok else 'not configured'}")
             print(f"SendGrid    : {'configured' if sendgrid_ok else 'not configured'}")
             print(f"Email to    : {_APPROVAL_TO_EMAIL}")
             return claude_ok and (twilio_ok or sendgrid_ok)

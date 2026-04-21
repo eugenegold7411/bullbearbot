@@ -22,6 +22,8 @@ _EMPTY_CREDS = {
     "TWILIO_AUTH_TOKEN": "",
     "TWILIO_FROM_NUMBER": "",
     "TWILIO_TO_NUMBER": "",
+    "WHATSAPP_FROM": "",
+    "WHATSAPP_TO": "",
     "SENDGRID_API_KEY": "",
 }
 

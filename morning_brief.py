@@ -296,11 +296,11 @@ def generate_morning_brief() -> dict:
 
     _save_brief(brief)
 
-    # SMS with top pick
+    # WhatsApp with top pick
     try:
         _send_sms_brief(brief)
     except Exception as exc:
-        log.warning("[MORNING] SMS failed: %s", exc)
+        log.warning("[MORNING] WhatsApp failed: %s", exc)
 
     picks = brief.get("conviction_picks", [])
     log.info("[MORNING] Brief generated — tone=%s  picks=%d",
@@ -311,8 +311,8 @@ def generate_morning_brief() -> dict:
 def _send_sms_brief(brief: dict) -> None:
     sid   = os.getenv("TWILIO_ACCOUNT_SID")
     token = os.getenv("TWILIO_AUTH_TOKEN")
-    from_ = os.getenv("TWILIO_FROM_NUMBER")
-    to    = os.getenv("TWILIO_TO_NUMBER")
+    from_ = os.getenv("WHATSAPP_FROM")
+    to    = os.getenv("WHATSAPP_TO")
 
     if not all([sid, token, from_, to]):
         return
@@ -331,9 +331,9 @@ def _send_sms_brief(brief: dict) -> None:
     try:
         from twilio.rest import Client
         Client(sid, token).messages.create(body=msg[:160], from_=from_, to=to)
-        log.info("[MORNING] SMS sent: %s", msg[:80])
+        log.info("[MORNING] WhatsApp sent: %s", msg[:80])
     except Exception as exc:
-        log.warning("[MORNING] SMS error: %s", exc)
+        log.warning("[MORNING] WhatsApp error: %s", exc)
 
 
 if __name__ == "__main__":

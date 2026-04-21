@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -606,7 +606,6 @@ def _write_artifact(artifact: dict) -> None:
     try:
         _ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
         line   = json.dumps(artifact, default=str)
-        tmp    = _ARTIFACT_PATH.with_suffix(".tmp")
         # Atomic append: write to tmp then rename is not practical for append-only
         # JSONL. Use standard append and rotate after.
         with _ARTIFACT_PATH.open("a") as fh:
@@ -645,7 +644,8 @@ def _update_shadow_registry(timestamp: str) -> None:
 
         tmp = _REGISTRY_JSON_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(existing, indent=2))
-        import os; os.replace(tmp, _REGISTRY_JSON_PATH)  # noqa: E702
+        import os
+        os.replace(tmp, _REGISTRY_JSON_PATH)
     except Exception as exc:
         log.debug("[ALLOC] registry update failed (non-fatal): %s", exc)
 

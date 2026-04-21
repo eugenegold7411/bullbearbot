@@ -12,14 +12,11 @@ Tests cover:
   Suite 8 — validate_config.py gate for portfolio_allocator section
 """
 
-import copy
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -686,7 +683,8 @@ class TestShadowOnlyGuarantee:
 
     def test_execute_all_never_called(self):
         """portfolio_allocator must not import order_executor or call execute_all()."""
-        import inspect, ast
+        import ast
+        import inspect
         source = inspect.getsource(pa)
         # Docstring may mention execute_all() as documentation — that's fine.
         # Check there's no actual call: execute_all( as a Python expression.

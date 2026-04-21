@@ -52,7 +52,7 @@ def load_a1_signals() -> dict:
 def _get_core_equity_symbols() -> list[str]:
     """
     Get equity (non-crypto) symbols from core watchlist.
-    Options only trade on equities.
+    Options only trade on equities; crypto symbols are excluded.
     """
     try:
         import watchlist_manager as wm  # noqa: PLC0415
@@ -60,10 +60,33 @@ def _get_core_equity_symbols() -> list[str]:
         return wl.get("stocks", []) + wl.get("etfs", [])
     except Exception as exc:
         log.debug("[OPTS] Could not load watchlist: %s", exc)
-        # Fallback core list
+        # Fallback — full optionable universe from watchlist_core.json (non-crypto)
+        # plus legacy symbols from original A2 bootstrap that are outside watchlist_core.
+        # Crypto (BTC/USD, ETH/USD) excluded — options not available.
+        # Symbols without IV history will be queued for bootstrap by is_tradeable().
         return [
-            "SPY", "QQQ", "NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL",
-            "TSM", "AMD", "XLE", "GLD", "TLT", "IWM", "XLF", "XBI",
+            # Technology
+            "NVDA", "TSM", "MSFT", "CRWV", "PLTR", "ASML",
+            # Energy
+            "XLE", "XOM", "CVX", "USO",
+            # Commodities
+            "GLD", "SLV", "COPX",
+            # Financials
+            "JPM", "GS", "XLF",
+            # Consumer
+            "AMZN", "WMT", "XRT",
+            # Defense
+            "LMT", "RTX", "ITA",
+            # Biotech / Health
+            "XBI", "JNJ", "LLY",
+            # International
+            "EWJ", "FXI", "EEM", "EWM", "ECH",
+            # Macro
+            "SPY", "QQQ", "IWM", "TLT", "VXX",
+            # Shipping / Housing / Utilities
+            "FRO", "STNG", "RKT", "BE",
+            # Legacy bootstrap symbols (from original A2 Phase 1, not in watchlist_core)
+            "AAPL", "META", "GOOGL", "AMD",
         ]
 
 
@@ -326,6 +349,7 @@ def build_candidate_set(
             equity=equity,
             chain=chain,
             allowed_structures=allowed_structures,
+            config=config,
         )
     except Exception as exc:
         generation_errors.append(str(exc))

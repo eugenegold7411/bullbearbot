@@ -145,47 +145,80 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
     return "RULE_UNKNOWN"
 
 
+# ── Veto thresholds ───────────────────────────────────────────────────────────
+
+_A2_VETO_DEFAULTS: dict = {
+    "max_bid_ask_spread_pct": 0.05,
+    "min_open_interest":      100,
+    "max_theta_decay_pct":    0.05,
+    "min_dte":                5,
+    "min_expected_value":     0.0,
+}
+
+
+def _get_veto_config(config: dict | None = None) -> dict:
+    """Return a2_veto_thresholds config block, filling in v1 defaults for missing keys."""
+    if not config:
+        return dict(_A2_VETO_DEFAULTS)
+    veto_cfg = config.get("a2_veto_thresholds", {})
+    return {**_A2_VETO_DEFAULTS, **veto_cfg}
+
+
 # ── Veto rules ────────────────────────────────────────────────────────────────
 
-def _apply_veto_rules(candidate: dict, pack, equity: float) -> Optional[str]:
+def _apply_veto_rules(
+    candidate: dict,
+    pack,
+    equity: float,
+    config: dict | None = None,
+) -> Optional[str]:
     """
     Apply deterministic veto rules to a fully-specified candidate structure.
     Returns None if all rules pass, or a rejection reason string.
 
+    Thresholds are read from config["a2_veto_thresholds"] with v1 safety defaults.
+
     Rules:
-      V1: bid_ask_spread_pct > 0.05  — entry cost too high
-      V2: open_interest < 100        — liquidity risk
-      V3: |theta| / debit > 0.05     — theta decay rate too fast
-      V4: max_loss > equity × 0.03   — position too large
-      V5: dte < 5                    — too close to expiry
-      V6: expected_value < 0         — negative edge
+      V1: bid_ask_spread_pct > max_bid_ask_spread_pct  — entry cost too high
+      V2: open_interest < min_open_interest            — liquidity risk
+      V3: |theta| / debit > max_theta_decay_pct        — theta decay rate too fast
+      V4: max_loss > equity × 0.03                     — position too large
+      V5: dte < min_dte                                — too close to expiry
+      V6: expected_value < min_expected_value          — negative edge
     """
+    vcfg = _get_veto_config(config)
+    max_spread  = float(vcfg["max_bid_ask_spread_pct"])
+    min_oi      = int(vcfg["min_open_interest"])
+    max_theta   = float(vcfg["max_theta_decay_pct"])
+    min_dte     = int(vcfg["min_dte"])
+    min_ev      = float(vcfg["min_expected_value"])
+
     spread = candidate.get("bid_ask_spread_pct")
-    if spread is not None and spread > 0.05:
-        return f"bid_ask_spread_pct={spread:.3f}>0.05"
+    if spread is not None and spread > max_spread:
+        return f"bid_ask_spread_pct={spread:.3f}>{max_spread}"
 
     oi = candidate.get("open_interest")
-    if oi is not None and oi < 100:
-        return f"open_interest={oi}<100"
+    if oi is not None and oi < min_oi:
+        return f"open_interest={oi}<{min_oi}"
 
     theta = candidate.get("theta")
     debit = candidate.get("debit")
     if theta is not None and debit is not None and debit > 0:
         rate = abs(theta) / debit
-        if rate > 0.05:
-            return f"theta_decay_rate={rate:.3f}>0.05"
+        if rate > max_theta:
+            return f"theta_decay_rate={rate:.3f}>{max_theta}"
 
     max_loss = candidate.get("max_loss")
     if max_loss is not None and max_loss > equity * 0.03:
         return f"max_loss={max_loss:.0f}>equity*0.03={equity*0.03:.0f}"
 
     dte = candidate.get("dte")
-    if dte is not None and dte < 5:
-        return f"dte={dte}<5"
+    if dte is not None and dte < min_dte:
+        return f"dte={dte}<{min_dte}"
 
     ev = candidate.get("expected_value")
-    if ev is not None and ev < 0:
-        return f"expected_value={ev:.2f}<0"
+    if ev is not None and ev < min_ev:
+        return f"expected_value={ev:.2f}<{min_ev}"
 
     return None
 
@@ -269,6 +302,7 @@ def build_candidate_structures(
     equity: float,
     chain: dict,
     allowed_structures: list[str],
+    config: dict | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """
     Generate fully-specified candidate structures from an A2FeaturePack and
@@ -299,7 +333,7 @@ def build_candidate_structures(
         if _cand_structs is not None:
             generated = list(_cand_structs)
             for c in generated:
-                reason = _apply_veto_rules(c, pack, equity)
+                reason = _apply_veto_rules(c, pack, equity, config=config)
                 if reason is None:
                     surviving.append(c)
                 else:

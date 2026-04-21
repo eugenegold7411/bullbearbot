@@ -1040,6 +1040,40 @@ T1.8 `model_tiering.py`: tier declarations + escalation predicates (5 triggers),
 `strategy_config.json`: `enable_model_tiering: false` added.
 Suite 28 — 287 tests total (23 new), all passing. Tag: `epic1-substrate`.
 
+**~~Sprint S4-A — A2 Veto Threshold Tuning + Universe Expansion~~ ✅ COMPLETED 2026-04-21**
+
+Veto audit: all A2 cycles were terminating at veto with `bid_ask_spread_pct > 0.05` as the sole
+dominant veto cause. GS observed at 9.1%, TSM at 11.8%, AMZN at 5.6% — all liquid equity names
+blocked by a threshold calibrated for ETFs. OI / theta / DTE / EV rules were not over-firing.
+XLF at 33.7% is genuinely illiquid and correctly blocked.
+
+`strategy_config.json`: added `a2_veto_thresholds` block with 5 configurable keys:
+  `max_bid_ask_spread_pct=0.15` (widened from 0.05), `min_open_interest=100`,
+  `max_theta_decay_pct=0.05`, `min_dte=5`, `min_expected_value=0.0`.
+  `_tuned` rationale comment included.
+
+`bot_options_stage2_structures.py`:
+  - Added `_A2_VETO_DEFAULTS` dict + `_get_veto_config()` helper (same pattern as `_get_router_config`).
+  - `_apply_veto_rules()` now accepts `config=None` and reads all thresholds from config. No hardcoding.
+  - `build_candidate_structures()` accepts `config=None` and threads it to `_apply_veto_rules`.
+
+`bot_options_stage1_candidates.py`:
+  - `build_candidate_set()` now passes `config=config` to `build_candidate_structures`.
+  - `_get_core_equity_symbols()` fallback expanded from 16 to 43 symbols: all non-crypto from
+    watchlist_core.json + legacy bootstrap symbols (AAPL, META, GOOGL, AMD). Crypto excluded.
+
+`bot_options_stage0_preflight.py`:
+  - `_OBS_IV_SYMBOLS` expanded from 16 to 43 symbols to match the full optionable universe.
+
+`validate_config.py`: Gate added for `a2_veto_thresholds` section — checks all 5 keys present
+  and within valid ranges (spread 0.01–0.50, OI 10–10000, theta 0.001–0.50, DTE 1–30).
+
+`tests/test_s4a_veto_thresholds_universe.py`: 42 new tests (Suites Build 1–5).
+  Tests: V1–V6 config-driven behaviour, GS/TSM/AMZN pass at 0.15, XLF still blocked,
+  config vs no-config parity, strategy_config.json structure, expanded universe contents,
+  _get_veto_config merge logic, validate_config range checks.
+967 total tests passing (was 925). 8 pre-existing scratchpad_memory failures unchanged.
+
 ---
 
 ## Scheduler Maintenance Jobs

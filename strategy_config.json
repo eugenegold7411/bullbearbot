@@ -259,6 +259,14 @@
     "iv_env_blackout": ["very_expensive"],
     "v1_defaults_note": "These are v1 safety defaults added 2026-04-20. Each is a candidate for tuning after shadow validation."
   },
+  "a2_veto_thresholds": {
+    "max_bid_ask_spread_pct": 0.15,
+    "min_open_interest": 100,
+    "max_theta_decay_pct": 0.05,
+    "min_dte": 5,
+    "min_expected_value": 0.0,
+    "_tuned": "2026-04-21 — widened max_bid_ask_spread_pct from 0.05 to 0.15 after observing GS (9.1%), TSM (11.8%), AMZN (5.6%) vetoed every cycle; OI/theta/DTE/EV thresholds held at v1 values (not over-firing)"
+  },
   "a2_rollback": {
     "disable_candidate_generation": false,
     "disable_bounded_debate": false,

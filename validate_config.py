@@ -694,6 +694,47 @@ if cfg:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# a2_veto_thresholds section (S4-A) — calibrated veto gate values
+# ─────────────────────────────────────────────────────────────────────────────
+if cfg:
+    _a2vt = cfg.get("a2_veto_thresholds")
+    if _a2vt is None:
+        check(FAIL, "strategy_config.json: a2_veto_thresholds section missing")
+    else:
+        _vt_required = [
+            "max_bid_ask_spread_pct", "min_open_interest",
+            "max_theta_decay_pct", "min_dte", "min_expected_value",
+        ]
+        _vt_missing = [k for k in _vt_required if k not in _a2vt]
+        if _vt_missing:
+            check(FAIL, f"strategy_config.json: a2_veto_thresholds missing keys: {_vt_missing}")
+        else:
+            _vt_spread = float(_a2vt["max_bid_ask_spread_pct"])
+            _vt_oi     = int(_a2vt["min_open_interest"])
+            _vt_theta  = float(_a2vt["max_theta_decay_pct"])
+            _vt_dte    = int(_a2vt["min_dte"])
+
+            _vt_errors = []
+            if not (0.01 <= _vt_spread <= 0.50):
+                _vt_errors.append(f"max_bid_ask_spread_pct={_vt_spread} out of range (0.01–0.50)")
+            if not (10 <= _vt_oi <= 10000):
+                _vt_errors.append(f"min_open_interest={_vt_oi} out of range (10–10000)")
+            if not (0.001 <= _vt_theta <= 0.50):
+                _vt_errors.append(f"max_theta_decay_pct={_vt_theta} out of range (0.001–0.50)")
+            if not (1 <= _vt_dte <= 30):
+                _vt_errors.append(f"min_dte={_vt_dte} out of range (1–30)")
+
+            if _vt_errors:
+                for _ve in _vt_errors:
+                    check(FAIL, f"strategy_config.json: a2_veto_thresholds.{_ve}")
+            else:
+                check(PASS, (
+                    f"strategy_config.json: a2_veto_thresholds valid "
+                    f"(spread≤{_vt_spread:.2f} oi≥{_vt_oi} theta≤{_vt_theta:.3f} dte≥{_vt_dte})"
+                ))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # a2_rollback section (S3-C) — emergency flags, must all default false
 # ─────────────────────────────────────────────────────────────────────────────
 if cfg:

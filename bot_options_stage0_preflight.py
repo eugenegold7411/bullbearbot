@@ -37,10 +37,32 @@ _A2_DIR = Path(__file__).parent / "data" / "account2"
 _OBS_MODE_DAYS      = 20
 _OBS_MODE_FILE      = _A2_DIR / "obs_mode_state.json"
 _OBS_SCHEMA_VERSION = 2
-# Core A2 symbols required for IV history before obs mode is fully meaningful
+# Full A2 optionable universe — used for IV readiness checks.
+# Crypto (BTC/USD, ETH/USD) excluded — no options available.
+# Symbols without IV history are bootstrapped automatically by the 4 AM job.
 _OBS_IV_SYMBOLS = [
-    "SPY", "QQQ", "NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL",
-    "TSM", "AMD", "XLE", "GLD", "TLT", "IWM", "XLF", "XBI",
+    # Technology
+    "NVDA", "TSM", "MSFT", "CRWV", "PLTR", "ASML",
+    # Energy
+    "XLE", "XOM", "CVX", "USO",
+    # Commodities
+    "GLD", "SLV", "COPX",
+    # Financials
+    "JPM", "GS", "XLF",
+    # Consumer
+    "AMZN", "WMT", "XRT",
+    # Defense
+    "LMT", "RTX", "ITA",
+    # Biotech / Health
+    "XBI", "JNJ", "LLY",
+    # International
+    "EWJ", "FXI", "EEM", "EWM", "ECH",
+    # Macro
+    "SPY", "QQQ", "IWM", "TLT", "VXX",
+    # Shipping / Housing / Utilities
+    "FRO", "STNG", "RKT", "BE",
+    # Legacy bootstrap symbols (original A2 Phase 1, not in watchlist_core)
+    "AAPL", "META", "GOOGL", "AMD",
 ]
 
 

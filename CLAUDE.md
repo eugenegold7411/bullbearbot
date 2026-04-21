@@ -62,9 +62,7 @@ rsync -avz -e 'ssh -i ~/.ssh/trading_bot' \
 rsync -avz -e 'ssh -i ~/.ssh/trading_bot' \
   --exclude .venv --exclude __pycache__ --exclude '*.pyc' \
   --exclude .env --exclude 'logs/*.log' --exclude 'logs/*.jsonl' \
-  --exclude nohup.out --exclude 'data/runtime/' \
-  --exclude 'data/trade_memory/' \
-  --exclude 'data/thesis_lab/' \
+  --exclude nohup.out --exclude 'data/' \
   /Users/eugene.gold/trading-bot/ tradingbot:/home/trading-bot/  # push
 ```
 
@@ -290,10 +288,11 @@ Stage 0 — Options reconciliation (BEFORE new proposals) [added 2026-04-15]
 - SYNTHESIS: PROCEED / VETO / RESIZE / RESTRUCTURE
 - Confidence ≥ 0.85 required for PROCEED
 
-**Observation mode:** Currently active (day 1/20, started 2026-04-14).
-Options chain fetched, IV recorded to `data/options/iv_history/{SYMBOL}_iv_history.json`.
-Full debates run but orders are logged as `status="observation"` and not submitted.
-Exits observation mode automatically after 20 trading days.
+**Observation mode:** Complete (`observation_complete=true`, `trading_days_observed=20`).
+IV history seeded for all 43 symbols. Account 2 is live — proposals are submitted to Alpaca.
+IV history stored at `data/options/iv_history/{SYMBOL}_iv_history.json`.
+Note: `iv_ready_symbols` in `obs_mode_state.json` is a legacy field (shows 16 symbols from
+pre-S4-A era); it is not authoritative post-observation-complete.
 
 ---
 

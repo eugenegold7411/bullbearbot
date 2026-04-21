@@ -87,6 +87,16 @@ def _is_spine_enabled() -> bool:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _rotate_jsonl(path: Path, max_lines: int = 10_000) -> None:
+    """Keep only the last max_lines entries. Non-fatal."""
+    try:
+        lines = path.read_text().splitlines()
+        if len(lines) > max_lines:
+            path.write_text("\n".join(lines[-max_lines:]) + "\n")
+    except Exception:
+        pass
+
+
 def log_spine_record(
     module_name: str,
     layer_name: str,
@@ -136,6 +146,7 @@ def log_spine_record(
         _SPINE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_SPINE_PATH, "a") as fh:
             fh.write(json.dumps(asdict(record)) + "\n")
+        _rotate_jsonl(_SPINE_PATH)
         return cid
 
     except Exception as exc:  # noqa: BLE001

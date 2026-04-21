@@ -1,7 +1,7 @@
 # Account 2 — Migration Status
 
 Tracks what has been built, what is still legacy, and known gaps in the A2 options pipeline.
-Updated: 2026-04-20 (S4-E session).
+Updated: 2026-04-20 (S5-3 hygiene session).
 
 ---
 
@@ -23,6 +23,7 @@ Updated: 2026-04-20 (S4-E session).
 | Bounded debate | `bot_options_stage3_debate.py` | Claude selects from pre-built candidates; confidence ≥ 0.85 required |
 | Options reconciliation (Stage 0) | `reconciliation.py`, `bot_options_stage0_preflight.py` | Runs before every new proposal cycle |
 | IV history + observation mode | `options_data.py`, `bot_options_stage0_preflight.py` | 20-trading-day obs mode; 43 symbols tracked (expanded from 16 in S4-A) |
+| `iv_ready_symbols` legacy field documented | `bot_options_stage0_preflight.py` | Stale on-disk snapshot shows 16 symbols; post-`observation_complete=true` this field is not authoritative. Comment added to `_check_and_update_iv_ready()`. |
 | Liquidity gates | `bot_options_stage2_structures.py`, `strategy_config.json["account2"]["liquidity_gates"]` | Pre-debate OI/volume floor + post-debate spread/OI gates |
 | Alpaca options credentials configured | `.env` on VPS | `ALPACA_API_KEY_OPTIONS` / `ALPACA_SECRET_KEY_OPTIONS` present; F002 complete |
 

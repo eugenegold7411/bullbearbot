@@ -80,6 +80,11 @@ def log_incident(record: IncidentRecord) -> Optional[str]:
         _INCIDENT_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_INCIDENT_PATH, "a") as fh:
             fh.write(json.dumps(asdict(record)) + "\n")
+        try:
+            from cost_attribution import _rotate_jsonl  # noqa: PLC0415
+            _rotate_jsonl(_INCIDENT_PATH)
+        except Exception:
+            pass
         return record.incident_id
     except Exception as exc:  # noqa: BLE001
         log.warning("[INCIDENT] log_incident failed: %s", exc)

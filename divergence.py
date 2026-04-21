@@ -144,6 +144,11 @@ def log_divergence_event(event: DivergenceEvent) -> None:
                 "trade_id": event.trade_id,
                 "structure_id": event.structure_id,
             }) + "\n")
+        try:
+            from cost_attribution import _rotate_jsonl  # noqa: PLC0415
+            _rotate_jsonl(DIVERGENCE_LOG)
+        except Exception:
+            pass
     except Exception as e:
         log.warning("[DIV] log_divergence_event failed: %s", e)
 

@@ -174,6 +174,11 @@ def log_attribution_event(
         with open(ATTRIBUTION_LOG, "a") as fh:
             fh.write(json.dumps(record) + "\n")
         try:
+            from cost_attribution import _rotate_jsonl  # noqa: PLC0415
+            _rotate_jsonl(ATTRIBUTION_LOG)
+        except Exception:
+            pass
+        try:
             _emit_spine_record(record, extra or {})
         except Exception as _spine_exc:
             log.warning("[ATTR] spine emit failed: %s", _spine_exc)

@@ -174,6 +174,13 @@ def _check_and_update_iv_ready(state: dict) -> dict:
     Writes iv_history_ready + iv_ready_symbols into state dict (in-place).
     Never modifies observation_complete. Non-fatal.
     Returns the mutated state dict.
+
+    NOTE: iv_ready_symbols in obs_mode_state.json is a legacy field.
+    It was authoritative during observation mode (first 20 trading days) when
+    individual symbols could be not-yet-seeded. Once observation_complete=true,
+    this dict is no longer checked — all 43 symbols are assumed IV-ready and
+    the bot proceeds unconditionally. The on-disk snapshot may show only the
+    original 16 symbols (pre-S4-A expansion); this is stale but harmless.
     """
     try:
         import options_data  # noqa: PLC0415

@@ -79,12 +79,19 @@ def fetch_congressional_trades(symbols: list[str], days_back: int = 45) -> list[
     if not _is_stale(cache, max_age_hours=6.0):
         return _filter_by_symbols(cache.get("trades", []), symbols, days_back, "days_since_trade")
 
-    log.info("[INSIDER] Fetching congressional trades from Lambda Finance")
+    # QuiverQuant free public API — no auth required.
+    # Previously used api.lambdafin.com which is no longer DNS-resolvable (discontinued 2026-04).
+    # QuiverQuant rate-limits datacenter IPs without browser-like headers; browser UA is required.
+    log.info("[INSIDER] Fetching congressional trades from QuiverQuant")
     try:
         resp = requests.get(
-            "https://api.lambdafin.com/api/congressional/recent",
+            "https://api.quiverquant.com/beta/live/congresstrading",
             timeout=_TIMEOUT,
-            headers={"User-Agent": "trading-bot/1.0"},
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+                "Referer": "https://www.quiverquant.com/",
+            },
         )
         resp.raise_for_status()
         raw = resp.json()
@@ -110,12 +117,14 @@ def _parse_congressional(raw) -> list[dict]:
     trades = []
     for item in items:
         try:
-            ticker = (item.get("ticker") or item.get("symbol") or "").upper().strip()
+            # Support both Lambda Finance (lowercase) and QuiverQuant (PascalCase) field names
+            ticker = (item.get("ticker") or item.get("Ticker") or item.get("symbol") or "").upper().strip()
             if not ticker or len(ticker) > 6 or not ticker.isalpha():
                 continue
 
             date_str = (
-                item.get("transaction_date") or item.get("filing_date") or
+                item.get("transaction_date") or item.get("TransactionDate") or
+                item.get("filing_date") or item.get("ReportDate") or
                 item.get("date") or ""
             )
             days_ago = 999
@@ -128,7 +137,7 @@ def _parse_congressional(raw) -> list[dict]:
                 except ValueError:
                     pass
 
-            tx = (item.get("transaction_type") or item.get("type") or "").lower()
+            tx = (item.get("transaction_type") or item.get("Transaction") or item.get("type") or "").lower()
             action = (
                 "buy"  if any(k in tx for k in ("purchas", "buy", "acqui")) else
                 "sell" if any(k in tx for k in ("sale", "sell", "dispose")) else
@@ -137,13 +146,13 @@ def _parse_congressional(raw) -> list[dict]:
 
             trades.append({
                 "ticker":          ticker,
-                "politician":      (item.get("politician") or item.get("representative") or
-                                    item.get("name") or "Unknown"),
-                "party":           item.get("party") or "",
-                "chamber":         item.get("chamber") or "",
+                "politician":      (item.get("politician") or item.get("Representative") or
+                                    item.get("representative") or item.get("name") or "Unknown"),
+                "party":           item.get("party") or item.get("Party") or "",
+                "chamber":         item.get("chamber") or item.get("House") or "",
                 "committee":       item.get("committee") or item.get("committees") or "",
                 "action":          action,
-                "amount_range":    item.get("amount") or item.get("amount_range") or "",
+                "amount_range":    item.get("amount") or item.get("Range") or item.get("amount_range") or "",
                 "filing_date":     date_str[:10] if date_str else "",
                 "days_since_trade": days_ago,
             })

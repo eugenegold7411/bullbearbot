@@ -269,5 +269,17 @@
     "disable_candidate_generation": false,
     "disable_bounded_debate": false,
     "force_no_trade": false
+  },
+  "portfolio_allocator": {
+    "enable_shadow": true,
+    "enable_live": false,
+    "replace_score_gap": 15,
+    "trim_score_drop": 10,
+    "weight_deadband": 0.02,
+    "min_rebalance_notional": 500,
+    "max_recommendations_per_cycle": 3,
+    "same_symbol_daily_cooldown_enabled": true,
+    "same_day_replace_block_hours": 6,
+    "_note": "S6-ALLOCATOR: shadow mode only. enable_live must remain false until trim-only promotion sprint."
   }
 }

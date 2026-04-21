@@ -20,6 +20,9 @@ make test                                   # run all tests
 | `test_risk_kernel_place_stops.py` | `place_stops()` — stop/target levels, ceilings, MIN_RR |
 | `test_scratchpad_isolated.py` | Scratchpad logic (offline-safe subset) |
 | `test_scratchpad_memory.py` | Scratchpad + ChromaDB integration (requires chromadb) |
+| `test_s4a_veto_thresholds_universe.py` | S4-A: A2 veto threshold config + 43-symbol universe |
+| `test_s4c_warehouse_scheduler_fixes.py` | S4-C: data_warehouse ETF/VIX/Finnhub silent failures |
+| `test_s6_portfolio_allocator.py` | S6-ALLOCATOR: portfolio allocator shadow engine |
 | `KNOWN_FAILURES.md` | Triaged failures with root causes |
 
 ## conftest.py

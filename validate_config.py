@@ -735,6 +735,56 @@ if cfg:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# portfolio_allocator section (S6-ALLOCATOR) — shadow mode config gates
+# ─────────────────────────────────────────────────────────────────────────────
+if cfg:
+    _pa = cfg.get("portfolio_allocator")
+    if _pa is None:
+        check(FAIL, "strategy_config.json: portfolio_allocator section missing")
+    else:
+        _pa_required = [
+            "enable_shadow", "enable_live", "replace_score_gap", "trim_score_drop",
+            "weight_deadband", "min_rebalance_notional", "max_recommendations_per_cycle",
+            "same_symbol_daily_cooldown_enabled", "same_day_replace_block_hours",
+        ]
+        _pa_missing = [k for k in _pa_required if k not in _pa]
+        if _pa_missing:
+            check(FAIL, f"strategy_config.json: portfolio_allocator missing keys: {_pa_missing}")
+        else:
+            _pa_errors = []
+            # enable_live must always be False (safety check)
+            if _pa.get("enable_live"):
+                _pa_errors.append("enable_live=true — live allocator must remain disabled this sprint")
+            _rsg = float(_pa["replace_score_gap"])
+            if not (5 <= _rsg <= 50):
+                _pa_errors.append(f"replace_score_gap={_rsg} out of range (5–50)")
+            _tsd = float(_pa["trim_score_drop"])
+            if not (1 <= _tsd <= 30):
+                _pa_errors.append(f"trim_score_drop={_tsd} out of range (1–30)")
+            _wdb = float(_pa["weight_deadband"])
+            if not (0.005 <= _wdb <= 0.15):
+                _pa_errors.append(f"weight_deadband={_wdb} out of range (0.005–0.15)")
+            _mrn = float(_pa["min_rebalance_notional"])
+            if not (100 <= _mrn <= 10000):
+                _pa_errors.append(f"min_rebalance_notional={_mrn} out of range (100–10000)")
+            _mrc = int(_pa["max_recommendations_per_cycle"])
+            if not (1 <= _mrc <= 10):
+                _pa_errors.append(f"max_recommendations_per_cycle={_mrc} out of range (1–10)")
+            _sdbh = float(_pa["same_day_replace_block_hours"])
+            if not (0 <= _sdbh <= 48):
+                _pa_errors.append(f"same_day_replace_block_hours={_sdbh} out of range (0–48)")
+            if _pa_errors:
+                for _pae in _pa_errors:
+                    check(FAIL, f"strategy_config.json: portfolio_allocator.{_pae}")
+            else:
+                shadow_str = "enabled" if _pa.get("enable_shadow") else "disabled"
+                check(PASS, (
+                    f"strategy_config.json: portfolio_allocator valid "
+                    f"(shadow={shadow_str}, live=false, gap={_rsg:.0f}, notional=${_mrn:,.0f})"
+                ))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # a2_rollback section (S3-C) — emergency flags, must all default false
 # ─────────────────────────────────────────────────────────────────────────────
 if cfg:

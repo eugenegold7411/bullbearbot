@@ -186,6 +186,7 @@ def build_user_prompt(
     exit_status:          str = "",
     macro_backdrop:       str = "",
     scratchpad_section:   str = "",
+    allocator_section:    str = "",
 ) -> str:
     equity        = float(account.equity)
     cash          = float(account.cash)
@@ -252,7 +253,7 @@ def build_user_prompt(
               session_tier,
               "yes" if scratchpad_section and "unavailable" not in scratchpad_section else "no",
               len(user_template))
-    return user_template.format(
+    rendered = user_template.format(
         session_tier=session_tier,
         session_instruments=session_instruments,
         next_cycle_time=next_cycle_time,
@@ -302,6 +303,11 @@ def build_user_prompt(
         thesis_ranking_section=thesis_sec,
         scratchpad_section=scratchpad_section or "  (scratchpad unavailable this cycle)",
     )
+    # Inject allocator shadow section if provided (advisory only; appended after template render).
+    # This avoids modifying user_template_v1.txt for backward compatibility with cached prompts.
+    if allocator_section and allocator_section.strip():
+        rendered += "\n\n" + allocator_section
+    return rendered
 
 
 def _load_compact_template() -> str:

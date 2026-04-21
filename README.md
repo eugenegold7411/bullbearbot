@@ -148,6 +148,12 @@ Key sections: `active_strategy`, `parameters`, `time_bound_actions`, `exit_manag
 
 Feature flags live in `strategy_config.json` under `feature_flags`, `shadow_flags`, `lab_flags`.
 
+**Portfolio Allocator Shadow** (`portfolio_allocator.enable_shadow: true`) — runs every Stage 0
+cycle, compares held positions against top signal candidates, and produces HOLD/TRIM/ADD/REPLACE
+recommendations. Advisory only — no orders are ever submitted. Artifacts written to
+`data/analytics/portfolio_allocator_shadow.jsonl`. `enable_live` must remain `false`.
+See `docs/shadow_systems_registry.md` and `ARCHITECTURE.md §Portfolio Allocator Shadow`.
+
 ---
 
 ## v2 Roadmap

@@ -72,6 +72,8 @@ class PreCycleState:
     div_events: list = field(default_factory=list)
     # Exit management
     exit_status_str: str = "  (unavailable)"
+    # Portfolio allocator shadow output (S6-ALLOCATOR)
+    allocator_output: Any = None   # dict | None from portfolio_allocator.run_allocator_shadow()
 
 
 def run_precycle(
@@ -334,6 +336,21 @@ def run_precycle(
     except Exception as _em_exc:
         log.debug("Exit manager failed (non-fatal): %s", _em_exc)
 
+    # 4f. Portfolio allocator shadow (S6-ALLOCATOR)
+    # Runs after pi_data is built. Shadow only — no orders, no execute_all().
+    allocator_output = None
+    try:
+        import portfolio_allocator as _pa_mod  # noqa: PLC0415
+        allocator_output = _pa_mod.run_allocator_shadow(
+            pi_data=pi_data,
+            positions=positions,
+            cfg=cfg,
+            session_tier=session_tier,
+            equity=equity,
+        )
+    except Exception as _pa_exc:
+        log.debug("Portfolio allocator shadow failed (non-fatal): %s", _pa_exc)
+
     # T-003 final DESYNC gate — synchronous fresh file read at the last possible
     # moment before the cycle commits to executing orders.  Catches any mode
     # transition that occurred after preflight's _check_operating_mode() call.
@@ -371,4 +388,5 @@ def run_precycle(
         a1_mode=a1_mode,
         div_events=div_events,
         exit_status_str=exit_status_str,
+        allocator_output=allocator_output,
     )

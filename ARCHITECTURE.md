@@ -33,8 +33,10 @@ Stage 0 — Pre-Cycle Infrastructure (no Claude)
   ├── exit_manager.run_exit_manager() → audit stops, trail profits
   ├── portfolio_intelligence.build_portfolio_intelligence()
   │     → thesis scores, correlation matrix, forced exits, dynamic sizing
-  └── macro_intelligence.build_macro_backdrop_section()
-        → rates (2y/10y/30y), commodities, credit stress, Citrini, geopolitics
+  ├── macro_intelligence.build_macro_backdrop_section()
+  │     → rates (2y/10y/30y), commodities, credit stress, Citrini, geopolitics
+  └── portfolio_allocator.run_allocator_shadow()  [S6-ALLOCATOR, shadow only]
+        → HOLD/TRIM/ADD/REPLACE recommendations — advisory artifact, no orders
 
 Stage 1 — Regime Classifier (claude-haiku-4-5-20251001)
   ├── Input: VIX, macro wire, economic calendar, global indices
@@ -150,12 +152,77 @@ Feature flags in `strategy_config.json` enforce a three-ring model:
 | **lab** | `lab_flags` | Experimental, may be incomplete |
 
 Key shadow modules: `context_compiler.py` (prompt compressor), `shadow_lane.py` (counterfactual
-decision log), `divergence.py` (fill/protection divergence tracker).
+decision log), `divergence.py` (fill/protection divergence tracker),
+`portfolio_allocator.py` (portfolio rebalancing recommendations — see below).
 
 Divergence operating mode ladder: `NORMAL → RECONCILE_ONLY → RISK_CONTAINMENT → HALTED`.
 Mode state persisted at `data/runtime/a1_mode.json` / `data/runtime/a2_mode.json`.
 
 Never import shadow modules into the prod pipeline. Never execute orders from lab code.
+
+---
+
+## Portfolio Allocator Shadow (S6-ALLOCATOR)
+
+`portfolio_allocator.py` runs in Stage 0 every cycle. It compares held positions against top
+signal candidates and produces a ranked set of HOLD/TRIM/ADD/REPLACE recommendations.
+
+**Shadow mode only.** `enable_live` must remain `false` until the trim-only promotion sprint.
+No orders are submitted. `execute_all()` is never called from this module.
+
+### Decision rules
+
+| Action | Condition |
+|--------|-----------|
+| TRIM | incumbent `thesis_score ≤ 4` (scale 1–10) |
+| ADD | incumbent `thesis_score ≥ 7` + room to grow in tier weight |
+| REPLACE | `candidate.signal_score − weakest_incumbent_normalized ≥ replace_score_gap` (default 15) |
+| HOLD | all other cases |
+
+Thesis scores (1–10) are normalized to 0–100 by ×10 for direct comparison with signal scores.
+
+### Anti-churn friction rules
+
+1. **Same-sector block** — candidate and incumbent share sector → REPLACE suppressed
+2. **Time-bound exit block** — incumbent has a forced exit within `same_day_replace_block_hours` → REPLACE suppressed
+3. **Notional floor** — position `market_value < min_rebalance_notional` ($500 default) → recommendation suppressed
+4. **Daily cooldown** — same symbol not acted on more than once per calendar day
+5. **Max cap** — at most `max_recommendations_per_cycle` (default 3) recommendations per cycle
+
+### Artifacts and registry
+
+- Output JSONL: `data/analytics/portfolio_allocator_shadow.jsonl` (rotated at 10,000 lines)
+- Registry: `data/reports/shadow_status_latest.json` — updated after every cycle
+- Full shadow registry: `docs/shadow_systems_registry.md`
+
+### Feature flags (`strategy_config.json portfolio_allocator`)
+
+```
+enable_shadow                    — master on/off for shadow mode
+enable_live                      — MUST remain false; gates any live execution path
+replace_score_gap                — minimum score delta to justify a REPLACE (default 15)
+trim_score_drop                  — reserved for future use
+weight_deadband                  — reserved for future use
+min_rebalance_notional           — notional floor below which positions are skipped ($500)
+max_recommendations_per_cycle    — cap on total actions per cycle (default 3)
+same_symbol_daily_cooldown_enabled — per-symbol once-per-day gate
+same_day_replace_block_hours     — hours before time-bound exit that blocks a REPLACE (default 6)
+```
+
+### Promotion criteria (Phase 1 — trim-only live execution)
+
+1. ≥14 consecutive shadow cycles with stable artifacts (no write failures)
+2. Weekly review confirms recommendation quality
+3. TRIM logic explicitly validated against closed-trade outcomes
+4. `enable_live` flag wired to actual execution path (currently a no-op guard)
+5. `validate_config.py` gate passes with `enable_live: true`
+6. `docs/rollback_playbook.md` updated with trim rollback procedure
+
+### Stage 3 injection
+
+`format_allocator_section(output) → str` produces a compact advisory block appended to the
+Stage 3 FULL prompt via `build_user_prompt(allocator_section=...)`. The section never modifies
+the cached prompt template — it is appended post-format to preserve prompt cache hit rates.
 
 ---
 
@@ -230,6 +297,7 @@ Side effects: updates `strategy_config.json`, sends SMS summary, writes
 | `decision_outcomes.py` | Per-decision outcome log with forward returns and alpha classification. |
 | `signal_backtest.py` | Signal-level forward-return backtest (+1d/+3d/+5d windows). |
 | `shadow_lane.py` | Counterfactual decision log (zero execution side effects). |
+| `portfolio_allocator.py` | **Shadow only.** HOLD/TRIM/ADD/REPLACE recommendations each cycle. |
 
 ### Epic 1 Shared Substrate
 
@@ -283,6 +351,7 @@ data/
 ├── analytics/decision_outcomes.jsonl   # per-decision outcome log
 ├── analytics/divergence_log.jsonl      # divergence events
 ├── analytics/cost_attribution_spine.jsonl
+├── analytics/portfolio_allocator_shadow.jsonl   # S6-ALLOCATOR shadow artifacts (rotated at 10k lines)
 ├── market/signal_scores.json           # A1 → A2 signal handoff (≤10 min stale)
 ├── market/gate_state.json              # Stage 3 gate state
 ├── options/iv_history/                 # per-symbol IV history (252-day rolling)

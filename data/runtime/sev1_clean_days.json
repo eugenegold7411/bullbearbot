@@ -1,6 +1,6 @@
 {
-  "last_check_date": "2026-04-16",
-  "consecutive_clean_days": 2,
+  "last_check_date": "2026-04-21",
+  "consecutive_clean_days": 3,
   "history": [
     {
       "date": "2026-04-15",
@@ -8,6 +8,10 @@
     },
     {
       "date": "2026-04-16",
+      "sev1_count": 0
+    },
+    {
+      "date": "2026-04-21",
       "sev1_count": 0
     }
   ]

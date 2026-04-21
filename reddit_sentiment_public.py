@@ -37,10 +37,14 @@ class RedditPublicProvider:
       [{"title": str, "selftext": str, "score": int, "created": float, "sub": str}, ...]
 
     Per-subreddit caches are kept at data/social/reddit_cache/{subreddit}.json.
+
+    Instance attribute sentiment_unavailable is set to True after fetch_all_posts()
+    when no posts were collected from any subreddit (all 403 or all empty).
     """
 
     def __init__(self) -> None:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self.sentiment_unavailable: bool = False
 
     # ── Cache helpers ──────────────────────────────────────────────────────────
 
@@ -86,11 +90,11 @@ class RedditPublicProvider:
         subreddit: str,
         sort: str = "hot",
         limit: int = 25,
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         """
         Fetch posts from reddit.com/r/{subreddit}/{sort}.json.
-        Returns list of post dicts compatible with the PRAW format.
-        Returns [] on any failure — non-fatal.
+        Returns list of post dicts on success, [] on non-403 failure,
+        None on 403 (access restricted — caller should skip this subreddit).
         """
         url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}"
         req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
@@ -109,6 +113,9 @@ class RedditPublicProvider:
                     })
                 return posts
         except urllib.error.HTTPError as exc:
+            if exc.code == 403:
+                # Subreddit is access-restricted to unauthenticated requests — signal to caller
+                return None
             if exc.code == 429:
                 log.warning("[REDDIT_PUB] Rate limited on r/%s — will use cache", subreddit)
             else:
@@ -125,10 +132,16 @@ class RedditPublicProvider:
         Fetch hot+new posts from all configured subreddits.
 
         Uses per-subreddit disk cache (TTL 1 hour). Falls back to stale cache
-        per subreddit if a live fetch fails. Returns flat list of post dicts.
+        per subreddit if a live fetch fails (non-403). Returns flat list of post dicts.
         Returns [] only if all subreddits fail AND no cache exists.
+
+        Subreddits that return 403 are skipped entirely (no stale cache used).
+        Sets self.sentiment_unavailable=True when no posts are collected from any source.
         """
-        all_posts: list[dict] = []
+        self.sentiment_unavailable = False
+        all_posts: list[dict]  = []
+        succeeded:  list[str]  = []
+        skipped_403: list[str] = []
 
         for subreddit in _SUBREDDITS:
             cached = self._load_cache(subreddit)
@@ -136,23 +149,31 @@ class RedditPublicProvider:
             if self._is_fresh(cached):
                 log.debug("[REDDIT_PUB] r/%s: cache hit (< 1h)", subreddit)
                 all_posts.extend(cached.get("posts", []))
+                succeeded.append(subreddit)
                 continue
 
-            # Fetch hot
+            # Fetch hot — None means 403 (access restricted)
             hot_posts = self._fetch_subreddit(subreddit, sort="hot", limit=_MAX_POSTS)
             time.sleep(_REQUEST_DELAY)
 
-            # Fetch new (half count)
+            if hot_posts is None:
+                skipped_403.append(subreddit)
+                continue
+
+            # Fetch new (half count) — 403 here treated as empty, hot data still valid
             new_posts = self._fetch_subreddit(subreddit, sort="new", limit=_MAX_POSTS // 2)
             time.sleep(_REQUEST_DELAY)
+            if new_posts is None:
+                new_posts = []
 
             if hot_posts or new_posts:
                 posts = hot_posts + new_posts
                 self._save_cache(subreddit, posts)
                 all_posts.extend(posts)
+                succeeded.append(subreddit)
                 log.debug("[REDDIT_PUB] r/%s: fetched %d posts", subreddit, len(posts))
             else:
-                # Use stale cache rather than contributing nothing
+                # Non-403 failure — use stale cache rather than contributing nothing
                 stale = cached.get("posts", [])
                 all_posts.extend(stale)
                 if stale:
@@ -160,6 +181,21 @@ class RedditPublicProvider:
                         "[REDDIT_PUB] r/%s: live fetch failed — using stale cache (%d posts)",
                         subreddit, len(stale),
                     )
+
+        if skipped_403:
+            log.info(
+                "[REDDIT_PUB] Subreddits skipped (403 access-restricted): %s",
+                ", ".join(f"r/{s}" for s in skipped_403),
+            )
+        if succeeded:
+            log.info(
+                "[REDDIT_PUB] Subreddits succeeded: %s",
+                ", ".join(f"r/{s}" for s in succeeded),
+            )
+
+        if not all_posts:
+            self.sentiment_unavailable = True
+            log.warning("[REDDIT_PUB] No posts collected from any subreddit — sentiment_unavailable=True")
 
         log.debug("[REDDIT_PUB] fetch_all_posts: %d total posts", len(all_posts))
         return all_posts

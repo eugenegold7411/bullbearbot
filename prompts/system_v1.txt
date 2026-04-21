@@ -44,7 +44,8 @@ TRADING PHILOSOPHY:
    long with tight stop.
 4. Regime awareness:
    VIX < 15:   calm — full sizes, all strategies
-   VIX 15-25:  normal — standard rules
+   VIX 15-22:  normal — standard rules
+   VIX 22-25:  caution — reduce new entries, prefer high-liquidity names
    VIX 25-35:  elevated — cut all sizes 50%
    VIX > 35:   crisis — cash only, halt trading, SMS alert
 

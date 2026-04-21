@@ -172,14 +172,39 @@ def load_bars_cached(symbol: str) -> list[dict] | None:
         return None
 
 
+# ── ETF symbol set ────────────────────────────────────────────────────────────
+
+# ETFs do not have quoteSummary data on yfinance — skip them in refresh_fundamentals.
+# Primary source is watchlist_manager; this fallback covers CLI single-symbol runs
+# and any watchlist-manager import failures.
+_ETF_SYMBOLS_FALLBACK: frozenset[str] = frozenset({
+    "XLE", "USO", "GLD", "SLV", "XLF", "XRT", "ITA", "XBI",
+    "EWJ", "FXI", "QQQ", "IWM", "EEM", "COPX", "EWM", "ECH",
+    "VXX", "TLT", "SPY", "BITO", "IBB", "XLK", "XLV", "XLY",
+    "XLP", "XLI", "XLU", "XLB", "XLRE",
+})
+
+
+def _get_etf_symbols() -> frozenset[str]:
+    """Return current ETF symbol set from active watchlist, falling back to static set."""
+    try:
+        return frozenset(wm.get_active_watchlist().get("etfs", []))
+    except Exception:
+        return _ETF_SYMBOLS_FALLBACK
+
+
 # ── Fundamentals ──────────────────────────────────────────────────────────────
 
 def refresh_fundamentals(symbols: list[str]) -> None:
-    """Fetch P/E, market cap, 52w high/low via yfinance."""
+    """Fetch P/E, market cap, 52w high/low via yfinance. Skips ETFs (no quoteSummary)."""
     FUND_DIR.mkdir(parents=True, exist_ok=True)
-    log.info("Refreshing fundamentals for %d symbols", len(symbols))
+    etf_symbols    = _get_etf_symbols()
+    equity_symbols = [s for s in symbols if s not in etf_symbols]
+    skipped        = len(symbols) - len(equity_symbols)
+    log.info("Refreshing fundamentals for %d equity symbols (%d ETF skipped)",
+             len(equity_symbols), skipped)
 
-    for sym in symbols:
+    for sym in equity_symbols:
         try:
             info = yf.Ticker(sym).info
             data = {
@@ -404,7 +429,7 @@ _GLOBAL_INDICES = {
     "SP500 Fut":      "ES=F",
     "Nasdaq Fut":     "NQ=F",
     "Dow Fut":        "YM=F",
-    "VIX Fut":        "VX=F",
+    "VIX":            "^VIX",
     "USD/JPY":        "JPY=X",
     "USD/CNY":        "CNY=X",
     "EUR/USD":        "EURUSD=X",
@@ -689,7 +714,30 @@ def run_full_refresh(target_symbol: str | None = None) -> None:
     except Exception as exc:
         log.warning("A2 bootstrap queue failed (non-fatal): %s", exc)
 
+    # Prune stale intraday bar files (non-fatal)
+    try:
+        _prune_bars()
+    except Exception as exc:
+        log.warning("Bar pruning failed (non-fatal): %s", exc)
+
     log.info("Data warehouse refresh complete")
+
+
+def _prune_bars(keep_days: int = 30) -> None:
+    """Delete intraday bar CSVs older than keep_days. Never deletes daily CSVs."""
+    cutoff = datetime.now() - timedelta(days=keep_days)
+    deleted = 0
+    for f in BARS_DIR.glob("*_intraday_*.csv"):
+        try:
+            date_str = f.stem.split("_intraday_")[1]
+            file_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if file_date < cutoff:
+                f.unlink()
+                deleted += 1
+        except (IndexError, ValueError):
+            continue
+    if deleted:
+        log.info("Pruned %d stale intraday bar files (keep_days=%d)", deleted, keep_days)
 
 
 if __name__ == "__main__":
@@ -712,7 +760,15 @@ def refresh_economic_calendar_finnhub() -> None:
 
     finnhub_key = os.getenv("FINNHUB_API_KEY")
     if not finnhub_key:
-        log.warning("FINNHUB_API_KEY not set — skipping economic calendar refresh")
+        log.debug("FINNHUB_API_KEY not set — writing empty economic calendar placeholder")
+        MARKET_DIR.mkdir(parents=True, exist_ok=True)
+        _placeholder = {
+            "fetched_at":       datetime.now(ET).isoformat(),
+            "events":           [],
+            "next_high_impact": None,
+            "_source":          "no_key_placeholder",
+        }
+        _save_json(MARKET_DIR / "economic_calendar.json", _placeholder)
         return
 
     now_et  = datetime.now(ET)

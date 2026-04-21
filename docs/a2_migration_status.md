@@ -1,7 +1,7 @@
 # Account 2 — Migration Status
 
 Tracks what has been built, what is still legacy, and known gaps in the A2 options pipeline.
-Updated: 2026-04-20 (S3-C/S3-E session).
+Updated: 2026-04-20 (S4-E session).
 
 ---
 
@@ -9,7 +9,7 @@ Updated: 2026-04-20 (S3-C/S3-E session).
 
 | Item | File(s) | Notes |
 |------|---------|-------|
-| Stage decomposition (5 modules) | `bot_options_stage0_preflight.py` through `_stage4_execution.py` | `bot_options.py` is now a thin orchestrator |
+| Stage decomposition (5 modules) ✅ complete | `bot_options_stage0_preflight.py` through `_stage4_execution.py` | `bot_options.py` is a thin orchestrator (149 lines) |
 | `A2FeaturePack` dataclass | `schemas.py` | Normalized per-symbol feature object; built in Stage 1 |
 | `A2CandidateSet` dataclass | `schemas.py` | Tracks router rule fired, allowed structures, generated/vetoed/surviving candidates |
 | `A2DecisionRecord` dataclass | `schemas.py` | Full audit trail for one A2 cycle; `no_trade_reason` uses `NO_TRADE_REASONS` taxonomy |
@@ -22,8 +22,9 @@ Updated: 2026-04-20 (S3-C/S3-E session).
 | `validate_config.py` gates | `validate_config.py` | `a2_router` (4 fields), `a2_rollback` (3 fields, WARN if any active) |
 | Bounded debate | `bot_options_stage3_debate.py` | Claude selects from pre-built candidates; confidence ≥ 0.85 required |
 | Options reconciliation (Stage 0) | `reconciliation.py`, `bot_options_stage0_preflight.py` | Runs before every new proposal cycle |
-| IV history + observation mode | `options_data.py`, `bot_options.py` | 20-trading-day obs mode; 16 core symbols tracked |
+| IV history + observation mode | `options_data.py`, `bot_options_stage0_preflight.py` | 20-trading-day obs mode; 43 symbols tracked (expanded from 16 in S4-A) |
 | Liquidity gates | `bot_options_stage2_structures.py`, `strategy_config.json["account2"]["liquidity_gates"]` | Pre-debate OI/volume floor + post-debate spread/OI gates |
+| Alpaca options credentials configured | `.env` on VPS | `ALPACA_API_KEY_OPTIONS` / `ALPACA_SECRET_KEY_OPTIONS` present; F002 complete |
 
 ---
 
@@ -63,3 +64,6 @@ Updated: 2026-04-20 (S3-C/S3-E session).
 | UW (Unusual Whales) options flow not integrated | A2 candidates built purely from A1 signal scores; no options-flow-specific catalyst | F004 (Unusual Whales subscription) — medium priority, deferred |
 | `bot_options.py` backward-compat re-exports | Tests that `from bot_options import _route_strategy` etc. will break if the re-exports are removed | Update test imports to point at stage modules before removing re-exports |
 | ~~Congressional API `api.lambdafin.com` dead~~ | ~~Congressional signal permanently stale~~ | **RESOLVED 2026-04-21** — Migrated to QuiverQuant free API (`api.quiverquant.com/beta/live/congresstrading`). Lambda Finance discontinued their free `api.lambdafin.com` subdomain (pivoted to paid MCP tier). QuiverQuant requires browser-like `User-Agent` + `Referer` headers from datacenter IPs to avoid 401. Fix in `insider_intelligence.py`. 800 trades fetched, 24 watchlist hits confirmed live on server. |
+| FINNHUB API not integrated | `FINNHUB_API_KEY` is available in `.env` but `market_data.py` does not consume it; Finnhub tick data and earnings calendar not used | Wire into `market_data.py` or `earnings_intel.py` as supplemental data source |
+| Reddit auth credentials absent | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` missing from `.env`; `reddit_sentiment.py` falls back to `reddit_sentiment_public.py` (rate-limited, no OAuth) | F013 — add credentials once Reddit developer app approved |
+| VX=F (VIX futures) not tracked | Spot VIX via yfinance only; VIX term structure (VX=F front month vs. spot) not computed; contango/backwardation regime signal absent | Add VX=F to watchlist and build a simple contango ratio signal in `market_data.py` |

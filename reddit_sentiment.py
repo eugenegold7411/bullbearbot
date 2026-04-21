@@ -12,6 +12,29 @@ Fetches at most once per hour during market hours. Cached to disk.
 Rate limits:
   - OAuth apps: ~60 req/min (well within our 1/hour fetch cadence)
   - Aggressive caching: never hit Reddit during live trading cycles
+
+──────────────────────────────────────────────────────────────────────────────
+REDDIT API CREDENTIALS — HOW TO ACTIVATE (FREE, ~5 MINUTES)
+──────────────────────────────────────────────────────────────────────────────
+Without credentials, the public JSON fallback (reddit_sentiment_public.py) is
+used. It has no rate-limit headers and may get 403s on restricted subreddits
+like r/options. Authenticated apps get ~60 req/min and access to all subs.
+
+1. Log in at reddit.com, go to: https://www.reddit.com/prefs/apps
+2. Click "create another app" (or "create app")
+3. Choose "script" type, fill in any name/description/redirect (use http://localhost)
+4. After creation, note the client_id (under the app name) and client_secret
+5. Add to .env on the VPS:
+     REDDIT_CLIENT_ID=<your_client_id>
+     REDDIT_CLIENT_SECRET=<your_client_secret>
+     REDDIT_USERNAME=<your_reddit_username>   (optional — read-only app doesn't need login)
+     REDDIT_PASSWORD=<your_reddit_password>   (optional — only needed for user-context calls)
+6. Run: pip install praw  (already in requirements.txt if listed)
+7. Restart the trading-bot service
+
+This module auto-detects the credentials and switches to authenticated PRAW.
+The public fallback is still used if credentials are missing or PRAW import fails.
+──────────────────────────────────────────────────────────────────────────────
 """
 
 import json
@@ -216,11 +239,19 @@ def fetch_reddit_sentiment(symbols: list[str]) -> dict[str, dict]:
             from reddit_sentiment_public import (
                 RedditPublicProvider as _Pub,  # noqa: PLC0415
             )
-            _pub_posts = _Pub().fetch_all_posts()
+            _pub     = _Pub()
+            _pub_posts = _pub.fetch_all_posts()
+            _sentiment_unavailable = _pub.sentiment_unavailable
         except Exception as _pub_exc:
             log.debug("[REDDIT] Public provider failed: %s", _pub_exc)
             _pub_posts = []
+            _sentiment_unavailable = True
         if not _pub_posts:
+            if _sentiment_unavailable:
+                log.info(
+                    "[REDDIT] All subreddits unavailable (403/empty) — treating as neutral, "
+                    "returning cached symbols"
+                )
             return cache.get("symbols", {})
         log.info("[REDDIT] PRAW unavailable — public JSON provider: %d posts", len(_pub_posts))
         all_posts: list[dict] = _pub_posts

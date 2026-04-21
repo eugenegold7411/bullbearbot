@@ -543,12 +543,9 @@ def _maybe_refresh_economic_calendar(dry_run: bool = False) -> None:
     if _econ_calendar_refresh_key == slot_key:
         return
 
-    # Always mark the slot as consumed — even on failure or dry-run — so we
-    # don't spam Finnhub on every cycle within the window.
-    _econ_calendar_refresh_key = slot_key
-
     if dry_run:
         log.info("[dry-run] Skipping economic calendar refresh (slot=%s)", slot_key)
+        _econ_calendar_refresh_key = slot_key
         return
 
     try:
@@ -573,6 +570,7 @@ def _maybe_refresh_economic_calendar(dry_run: bool = False) -> None:
         # Run the refresh
         _dw.refresh_economic_calendar_finnhub()
         log.info("[ECON] Calendar refreshed (slot=%s)", slot_key)
+        _econ_calendar_refresh_key = slot_key
 
         # Detect newly-populated actuals and fire triggers
         if cal_path.exists():
@@ -594,7 +592,7 @@ def _maybe_refresh_economic_calendar(dry_run: bool = False) -> None:
                 log.debug("[ECON] actual comparison failed (non-fatal): %s", _cmp_exc)
 
     except Exception as exc:
-        log.warning("[ECON] calendar refresh failed (non-fatal): %s", exc)
+        log.warning("[ECON] calendar refresh failed — will retry next eligible slot: %s", exc)
 
 
 def _maybe_run_premarket_jobs(dry_run: bool = False) -> None:
@@ -613,13 +611,15 @@ def _maybe_run_premarket_jobs(dry_run: bool = False) -> None:
         return
 
     log.info("Running pre-market jobs (data warehouse + scanner)")
+    _warehouse_ok = False
     if not dry_run:
         try:
             import data_warehouse
             data_warehouse.run_full_refresh()
             log.info("Data warehouse refresh complete")
+            _warehouse_ok = True
         except Exception:
-            log.error("Data warehouse failed", exc_info=True)
+            log.error("Data warehouse failed — will retry in next eligible cycle", exc_info=True)
 
         try:
             import scanner
@@ -629,8 +629,10 @@ def _maybe_run_premarket_jobs(dry_run: bool = False) -> None:
             log.error("Scanner failed", exc_info=True)
     else:
         log.info("[dry-run] Skipping data warehouse + scanner")
+        _warehouse_ok = True
 
-    _premarket_ran_date = today
+    if _warehouse_ok:
+        _premarket_ran_date = today
 
 
 def _maybe_reset_session_watchlist() -> None:
@@ -673,10 +675,11 @@ def _maybe_refresh_global_indices(dry_run: bool = False) -> None:
         try:
             import data_warehouse
             data_warehouse.refresh_global_indices()
+            _global_indices_refresh_key = slot_key
         except Exception:
-            log.error("Global indices refresh failed", exc_info=True)
-
-    _global_indices_refresh_key = slot_key
+            log.error("Global indices refresh failed — will retry next eligible slot", exc_info=True)
+    else:
+        _global_indices_refresh_key = slot_key
 
 
 def _maybe_run_morning_brief(dry_run: bool = False) -> None:

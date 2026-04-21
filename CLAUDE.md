@@ -109,33 +109,34 @@ ssh tradingbot 'cd /home/trading-bot && source .venv/bin/activate && python3 sch
 
 ---
 
-## Account Status (as of 2026-04-14)
+## Account Status (as of 2026-04-20)
 
 ### Account 1 — Equities/ETF/Crypto
-- **Equity:** $100,428.17
-- **Cash:** $81,504.17
-- **Buying power:** $181,932 (margin available)
-- **Open positions:** 2
-  - GLD: 34 shares, market value $15,113, unrealized P&L +$374
-  - TSM: 10 shares, market value $3,811, unrealized P&L +$57
-  - ⚠️ **TSM must exit by 2026-04-15 15:45 ET** (TSM earnings April 16 — binary event)
+- **Equity:** $101,180.46
+- **Cash:** $15,744.80
+- **Buying power:** $116,925.26
+- **Open positions:** 5
+  - AMZN: 60 shares, market value $15,300.60, unrealized P&L +$414.00
+  - GLD: 34 shares, market value $15,067.44, unrealized P&L +$328.58
+  - MSFT: 47 shares, market value $19,680.78, unrealized P&L +$2.35
+  - QQQ: 31 shares, market value $20,114.35, unrealized P&L +$368.90
+  - XBI: 111 shares, market value $15,272.49, unrealized P&L +$245.31
 - **PDT floor:** $26,000 (hard limit, checked every cycle)
 - **Credentials:** `ALPACA_API_KEY` / `ALPACA_SECRET_KEY`
 - **Base URL:** `https://paper-api.alpaca.markets`
 
 ### Account 2 — Options Only
-- **Equity:** $100,000.00 (starting capital, no trades yet)
+- **Equity:** $100,000.00 (starting capital, no trades executed)
 - **Cash:** $100,000.00
 - **Open positions:** 0
-- **Mode:** Observation mode complete (bootstrapped 2026-04-14). Live — 20 symbols with IV history.
+- **Mode:** Observation mode complete (bootstrapped 2026-04-14). Live — 43 symbols with IV history (expanded from 16 in S4-A).
   `obs_mode_state.json`: `trading_days_observed=20`, `observation_complete=true`
 - **Credentials:** `ALPACA_API_KEY_OPTIONS` / `ALPACA_SECRET_KEY_OPTIONS`
 
-### Performance (all-time as of 2026-04-14)
-- Total trades: 27 (3 actual buys, 24 HOLDs recorded)
-- Wins: 0 / Losses: 27 / Pending: 0
-- ⚠️ Note: performance.py records "stock_hold" as a loss when exits trigger — this
-  is a tracking artifact, not reflective of actual P&L. GLD is up $374.
+### Performance (all-time as of 2026-04-20)
+- Total unrealized P&L: +$1,358.84 across 5 open positions
+- TSM exited before 2026-04-15 15:45 ET deadline (earnings binary event avoided)
+- ⚠️ Note: BUG-003 resolved — performance.py no longer records HOLDs as losses.
 
 ---
 
@@ -1073,6 +1074,26 @@ XLF at 33.7% is genuinely illiquid and correctly blocked.
   config vs no-config parity, strategy_config.json structure, expanded universe contents,
   _get_veto_config merge logic, validate_config range checks.
 967 total tests passing (was 925). 8 pre-existing scratchpad_memory failures unchanged.
+
+**~~Sprint S4-C — data_warehouse Silent Failure Fix~~ ✅ COMPLETED 2026-04-21**
+
+Three silent pipeline failures fixed:
+- `refresh_fundamentals()`: ETFs now skipped (no quoteSummary on yfinance). ETF set driven from
+  `watchlist_manager.get_active_watchlist()["etfs"]` with fallback to `_ETF_SYMBOLS_FALLBACK`.
+  Logged at DEBUG not ERROR.
+- `_GLOBAL_INDICES`: `"VIX Fut": "VX=F"` replaced with `"VIX": "^VIX"` (VX=F is delisted).
+  Count unchanged at 13 entries.
+- `refresh_economic_calendar_finnhub()`: when `FINNHUB_API_KEY` not set, writes a fresh empty
+  placeholder file (events=[], _source="no_key_placeholder") at DEBUG instead of WARNING.
+  Cache is always current; downstream `build_economic_calendar_section()` degrades cleanly.
+- `_maybe_run_premarket_jobs()`: `_premarket_ran_date` only set when `run_full_refresh()` succeeds.
+  On exception: WARNING logged, no date set, retry allowed next eligible cycle.
+- `_maybe_refresh_global_indices()`: `_global_indices_refresh_key` only set on success.
+- `_maybe_refresh_economic_calendar()`: `_econ_calendar_refresh_key` only set on success.
+  (No-key path now always succeeds by writing placeholder.)
+
+`tests/test_s4c_warehouse_scheduler_fixes.py`: 23 new tests.
+1005 total tests passing (was 967). 8 pre-existing scratchpad_memory failures unchanged.
 
 ---
 

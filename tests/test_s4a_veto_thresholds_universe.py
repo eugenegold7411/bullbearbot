@@ -271,7 +271,6 @@ class TestExpandedUniverse(unittest.TestCase):
         return []
 
     def test_fallback_exceeds_16_symbols(self):
-        from bot_options_stage1_candidates import _get_core_equity_symbols
         # When watchlist_manager works (or fails), we care about the fallback size
         # Test the module constant directly
         from bot_options_stage0_preflight import _OBS_IV_SYMBOLS
@@ -305,7 +304,6 @@ class TestExpandedUniverse(unittest.TestCase):
     def test_fallback_in_stage1_excludes_crypto(self):
         # Check that crypto symbols are not present in the returned lists
         # by mocking watchlist_manager to force the fallback path.
-        import importlib
         # Temporarily remove cached module to force fallback path on reimport
         _saved = sys.modules.pop("bot_options_stage1_candidates", None)
         _mock_wm = mock.MagicMock()
@@ -319,8 +317,9 @@ class TestExpandedUniverse(unittest.TestCase):
         self.assertNotIn("ETH/USD", result, "ETH/USD must not appear in fallback equity list")
 
     def test_fallback_in_stage1_contains_expanded_symbols(self):
-        import bot_options_stage1_candidates as s1
         import inspect
+
+        import bot_options_stage1_candidates as s1
         src = inspect.getsource(s1._get_core_equity_symbols)
         for sym in ("JPM", "GS", "LMT", "RTX", "EWM", "ECH", "RKT", "BE"):
             self.assertIn(sym, src, f"Expanded symbol {sym} should be in stage1 fallback")

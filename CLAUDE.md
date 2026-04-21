@@ -22,6 +22,49 @@ manages stops, and publishes to @BullBearBotAI (approval mode currently — huma
 
 ---
 
+## Verification Policy — READ THIS BEFORE WRITING ANY CODE
+
+These rules are non-negotiable and override any other instruction:
+
+### Never assume something works
+- "Deployed" does not mean "working"
+- "Tests pass" does not mean "the feature works end-to-end"
+- "Log line shows execution" does not mean "output is correct"
+- Only server-side evidence proves a feature works
+
+### Every fix requires proof
+Before calling any fix complete, you must:
+1. Run the relevant check on the server
+2. Paste the actual output
+3. Confirm it matches the expected result
+4. If you cannot verify, say explicitly: "UNVERIFIED — needs manual check"
+
+### Forbidden phrases
+Never use these unless you have evidence:
+- "should work"
+- "looks good"
+- "that's working"
+- "CI should pass"
+- "it's probably"
+- "this will fix"
+
+Use instead:
+- "verified working — evidence: [paste output]"
+- "deployed but unverified — run [command] to confirm"
+
+### Every prompt must end with a VERIFICATION block
+Do not close any task without running the verification commands and pasting real output.
+If verification fails, the task is not done. Fix and re-verify.
+
+### The feature audit script is the source of truth
+When in doubt about system health, run:
+```bash
+ssh tradingbot 'cd /home/trading-bot && .venv/bin/python3 scripts/feature_audit.py'
+```
+Do not contradict its output without evidence.
+
+---
+
 ## Server
 
 | Field | Value |

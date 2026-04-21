@@ -39,7 +39,8 @@ _MAX_IV_HISTORY = 252
 def fetch_options_chain(symbol: str, force_refresh: bool = False) -> dict:
     """
     Fetch options chain for symbol. Uses yfinance. Returns dict with calls/puts
-    for the nearest 4 expiration dates. Caches to disk for _CHAIN_CACHE_TTL seconds.
+    for expirations within 45 DTE (up to 12), ensuring the 5-28 DTE window used by
+    A2 candidate generation is always covered. Caches to disk for _CHAIN_CACHE_TTL seconds.
 
     Returns {} on failure (non-fatal).
     """
@@ -63,8 +64,12 @@ def fetch_options_chain(symbol: str, force_refresh: bool = False) -> dict:
             log.debug("[OPTIONS_DATA] %s: no options expirations found", symbol)
             return {}
 
-        # Take nearest 4 expirations
-        target_exps = list(expirations[:4])
+        # Take expirations within 45 DTE to ensure 5-28 DTE window has coverage
+        today = date.today()
+        target_exps = [
+            e for e in expirations
+            if (datetime.strptime(e, "%Y-%m-%d").date() - today).days <= 45
+        ][:12]
         chain_data = {
             "symbol": symbol,
             "fetched_at": time.time(),

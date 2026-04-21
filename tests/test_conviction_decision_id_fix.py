@@ -206,3 +206,93 @@ class TestDecisionIdBackfill:
         saved = self._persist(record, tmp_path)
         assert re.match(r"^a2_dec_\d{8}_\d{6}$", saved["decision_id"]), \
             f"decision_id format wrong: {saved['decision_id']!r}"
+
+    def test_wrong_format_id_is_rejected_by_format_check(self, tmp_path):
+        """dec_A2_... (old format) must NOT be accepted — must be replaced."""
+        import re
+        record = _MinimalDecisionRecord(decision_id="dec_A2_20260421_161100")
+        saved = self._persist(record, tmp_path)
+        # The old format should no longer appear in new artifacts.
+        assert not saved["decision_id"].startswith("dec_A2_"), \
+            f"Old dec_A2_ format must not be persisted: {saved['decision_id']!r}"
+        assert re.match(r"^a2_dec_\d{8}_\d{6}$", saved["decision_id"]), \
+            f"decision_id format wrong after correcting old format: {saved['decision_id']!r}"
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 — run_bounded_debate generates a2_dec_ format directly (S7-F fix)
+# ---------------------------------------------------------------------------
+
+class TestRunBoundedDebateDecisionId:
+    """run_bounded_debate must produce decision_id in a2_dec_YYYYMMDD_HHMMSS format."""
+
+    def test_decision_id_format_from_bounded_debate(self):
+        """decision_id generated inside run_bounded_debate must match a2_dec_YYYYMMDD_HHMMSS."""
+        import re
+        from unittest.mock import patch, MagicMock
+        from bot_options_stage3_debate import run_bounded_debate
+
+        fake_debate_result = {
+            "selected_candidate_id": None,
+            "confidence": 0.0,
+            "reject": True,
+            "key_risks": [],
+            "reasons": "test",
+            "recommended_size_modifier": 1.0,
+        }
+
+        with patch("bot_options_stage3_debate.run_options_debate",
+                   return_value=(fake_debate_result, "prompt", "raw")):
+            record = run_bounded_debate(
+                candidate_sets=[],
+                candidates=[],
+                candidate_structures=[],
+                allowed_by_sym={},
+                equity=100_000.0,
+                vix=18.0,
+                regime="normal",
+                account1_summary="test",
+                obs_mode=False,
+                session_tier="market",
+                iv_summaries={},
+                t_start=0.0,
+                config={},
+            )
+
+        assert re.match(r"^a2_dec_\d{8}_\d{6}$", record.decision_id), \
+            f"run_bounded_debate decision_id format wrong: {record.decision_id!r}"
+
+    def test_decision_id_not_using_dec_a2_format(self):
+        """decision_id must not use the old dec_A2_ format from generate_decision_id."""
+        from unittest.mock import patch
+        from bot_options_stage3_debate import run_bounded_debate
+
+        fake_debate_result = {
+            "selected_candidate_id": None,
+            "confidence": 0.0,
+            "reject": True,
+            "key_risks": [],
+            "reasons": "test",
+            "recommended_size_modifier": 1.0,
+        }
+
+        with patch("bot_options_stage3_debate.run_options_debate",
+                   return_value=(fake_debate_result, "prompt", "raw")):
+            record = run_bounded_debate(
+                candidate_sets=[],
+                candidates=[],
+                candidate_structures=[],
+                allowed_by_sym={},
+                equity=100_000.0,
+                vix=18.0,
+                regime="normal",
+                account1_summary="test",
+                obs_mode=False,
+                session_tier="market",
+                iv_summaries={},
+                t_start=0.0,
+                config={},
+            )
+
+        assert not record.decision_id.startswith("dec_A2_"), \
+            f"Old dec_A2_ format must not be used: {record.decision_id!r}"

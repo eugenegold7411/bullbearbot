@@ -245,9 +245,14 @@ def get_iv_summary(symbol: str, chain: dict | None = None) -> dict:
         "history_days": int,
         "observation_mode": bool,   # True if < _MIN_IV_HISTORY days
         "current_price": float | None,
+        "current_iv_source": str,   # "chain" | "history" — only set when falling back
       }
 
     If chain is provided, extracts ATM IV from it and updates history.
+    When current_price is None after processing chain, fetches a live chain to
+    populate current_price and current_iv.  If the live fetch also fails, falls
+    back to the most recent history entry's IV and sets current_iv_source="history"
+    so callers know it is not a live value.
     """
     result = {
         "symbol": symbol,
@@ -260,7 +265,7 @@ def get_iv_summary(symbol: str, chain: dict | None = None) -> dict:
         "current_price": None,
     }
 
-    # Extract ATM IV from chain if available
+    # Extract ATM IV from chain if provided and it has a usable price.
     if chain and chain.get("expirations") and chain.get("current_price"):
         spot = chain["current_price"]
         result["current_price"] = spot
@@ -269,6 +274,37 @@ def get_iv_summary(symbol: str, chain: dict | None = None) -> dict:
             result["current_iv"] = atm_iv
             update_iv_history(symbol, atm_iv)
             result["history_days"] = len(_load_iv_history(symbol))
+
+    # If current_price is still None (no chain provided, or cached chain had no price),
+    # attempt a live chain fetch to get the current price and ATM IV.
+    if result["current_price"] is None:
+        try:
+            live_chain = fetch_options_chain(symbol, force_refresh=True)
+            if live_chain and live_chain.get("expirations") and live_chain.get("current_price"):
+                spot = live_chain["current_price"]
+                result["current_price"] = spot
+                atm_iv = _extract_atm_iv(live_chain, spot)
+                if atm_iv:
+                    result["current_iv"] = atm_iv
+                    update_iv_history(symbol, atm_iv)
+                    result["history_days"] = len(_load_iv_history(symbol))
+        except Exception as exc:
+            log.debug("[OPTIONS_DATA] %s: live chain fetch failed, will use history IV: %s",
+                      symbol, exc)
+
+    # If current_iv is still None but we have IV history, use the most recent entry
+    # so callers get a usable value without treating the symbol as observation-mode.
+    if result["current_iv"] is None:
+        history = _load_iv_history(symbol)
+        if history:
+            last_iv = history[-1].get("iv")
+            if last_iv and last_iv > 0:
+                result["current_iv"] = last_iv
+                result["current_iv_source"] = "history"
+                log.debug(
+                    "[OPTIONS_DATA] %s: using history IV=%.3f (no live chain available)",
+                    symbol, last_iv,
+                )
 
     rank = compute_iv_rank(symbol)
     pct = compute_iv_percentile(symbol)

@@ -396,8 +396,8 @@ def persist_decision_record(decision_record) -> None:
         filename = f"a2_dec_{ts}.json"
         dest = _DECISIONS_DIR / filename
 
-        # Backfill decision_id if stage3 left it empty (rollback/no-candidate paths).
-        if not decision_record.decision_id:
+        # Ensure decision_id is present and in the correct a2_dec_YYYYMMDD_HHMMSS format.
+        if not decision_record.decision_id or not decision_record.decision_id.startswith("a2_dec_"):
             decision_record.decision_id = f"a2_dec_{ts}"
 
         # Serialize — A2DecisionRecord contains A2CandidateSet which contains A2FeaturePack;
@@ -406,18 +406,21 @@ def persist_decision_record(decision_record) -> None:
         try:
             record_dict = _asdict(decision_record)
         except Exception:
-            # Fallback if asdict fails (e.g., nested non-dataclass objects)
+            # Fallback if asdict fails (e.g., nested non-dataclass objects).
+            # ALL debate fields must be present here — omissions cause silent data loss.
             record_dict = {
-                "decision_id": decision_record.decision_id,
-                "session_tier": decision_record.session_tier,
-                "debate_parsed": decision_record.debate_parsed,
+                "decision_id":       decision_record.decision_id,
+                "session_tier":      decision_record.session_tier,
+                "debate_input":      decision_record.debate_input,
+                "debate_output_raw": decision_record.debate_output_raw,
+                "debate_parsed":     decision_record.debate_parsed,
                 "selected_candidate": decision_record.selected_candidate,
-                "execution_result": decision_record.execution_result,
-                "no_trade_reason": decision_record.no_trade_reason,
-                "elapsed_seconds": decision_record.elapsed_seconds,
-                "schema_version": decision_record.schema_version,
-                "code_version": decision_record.code_version,
-                "built_at": decision_record.built_at,
+                "execution_result":  decision_record.execution_result,
+                "no_trade_reason":   decision_record.no_trade_reason,
+                "elapsed_seconds":   decision_record.elapsed_seconds,
+                "schema_version":    decision_record.schema_version,
+                "code_version":      decision_record.code_version,
+                "built_at":          decision_record.built_at,
             }
 
         dest.write_text(json.dumps(record_dict, default=str, indent=2))

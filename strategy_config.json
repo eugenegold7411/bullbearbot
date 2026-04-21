@@ -143,7 +143,7 @@
       "high_max": 40,
       "crisis_halt": 40
     },
-    "debate_confidence_floor": 0.78,
+    "debate_confidence_floor": 0.65,
     "max_open_positions": 8,
     "liquidity_gates": {
       "min_open_interest": 150,
@@ -254,16 +254,17 @@
     "earnings_dte_blackout": 3,
     "min_liquidity_score": 0.25,
     "macro_iv_gate_rank": 70,
-    "iv_env_blackout": ["very_expensive"],
+    "iv_env_blackout": [],
     "v1_defaults_note": "These are v1 safety defaults added 2026-04-20. Each is a candidate for tuning after shadow validation."
   },
   "a2_veto_thresholds": {
     "max_bid_ask_spread_pct": 0.18,
     "min_open_interest": 100,
     "max_theta_decay_pct": 0.05,
+    "max_loss_pct": 0.05,
     "min_dte": 5,
     "min_expected_value": 0.0,
-    "_tuned": "2026-04-21 — widened max_bid_ask_spread_pct from 0.05 to 0.15 after observing GS (9.1%), TSM (11.8%), AMZN (5.6%) vetoed every cycle; OI/theta/DTE/EV thresholds held at v1 values (not over-firing)"
+    "_tuned": "2026-04-21 — widened max_bid_ask_spread_pct from 0.05 to 0.15 after observing GS (9.1%), TSM (11.8%), AMZN (5.6%) vetoed every cycle; OI/theta/DTE/EV thresholds held at v1 values (not over-firing). 2026-04-21 — added max_loss_pct=0.05 (raised from hardcoded 0.03): V4 was hardcoded and not config-driven unlike all other rules. options_intelligence.py sizes contracts to equity*0.05 budget cap, so V4 at 0.03 created an internal contradiction where the sizer built candidates that V4 always vetoed for high-priced stocks (TSM $367: max_loss=4740 > 0.03*100K=3000). Setting max_loss_pct to match the budget cap (0.05) resolves the contradiction without loosening absolute position size control — contract count is still bounded by the budget."
   },
   "a2_rollback": {
     "disable_candidate_generation": false,

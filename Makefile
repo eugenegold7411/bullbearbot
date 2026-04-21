@@ -1,4 +1,4 @@
-.PHONY: install lint format test test-ci ci-local import-check clean
+.PHONY: install lint format test test-ci ci-local import-check clean deploy deploy-env
 
 PYTHON ?= $(shell [ -f .venv/bin/python3 ] && echo .venv/bin/python3 || echo python3)
 
@@ -42,3 +42,22 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true
 	find . -name "*.pyc" -delete 2>/dev/null; true
 	rm -rf *.egg-info
+
+deploy:
+	rsync -avz -e 'ssh -i ~/.ssh/trading_bot' \
+		--exclude .venv \
+		--exclude __pycache__ \
+		--exclude '*.pyc' \
+		--exclude 'data/' \
+		--exclude '.env' \
+		--exclude '.git/' \
+		. tradingbot:/home/trading-bot/
+	ssh tradingbot 'systemctl restart trading-bot && sleep 3 && systemctl status trading-bot --no-pager | head -5'
+
+deploy-env:
+	ssh tradingbot 'cp /home/trading-bot/.env /home/trading-bot/.env.backup.$(shell date +%Y%m%d_%H%M%S)'
+	rsync -avz -e 'ssh -i ~/.ssh/trading_bot' \
+		/Users/eugene.gold/trading-bot/.env \
+		tradingbot:/home/trading-bot/.env
+	@echo "Verifying no placeholders..."
+	ssh tradingbot 'grep -c "your_" /home/trading-bot/.env && echo "PLACEHOLDERS FOUND" || echo "Clean — 0 placeholders"'

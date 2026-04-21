@@ -170,8 +170,8 @@ class TestRouteStrategy(unittest.TestCase):
         self.assertNotEqual(result, [])
 
     def test_rule2_very_expensive(self):
-        """very_expensive IV → block."""
-        self.assertEqual(self._route(iv_environment="very_expensive"), [])
+        """very_expensive IV + bullish → RULE2_CREDIT routes to credit_put_spread."""
+        self.assertEqual(self._route(iv_environment="very_expensive"), ["credit_put_spread"])
 
     def test_rule3_low_liquidity(self):
         """Liquidity score < 0.3 → block."""

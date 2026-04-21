@@ -96,18 +96,24 @@ Host tradingbot
 **Local mirror:** `/Users/eugene.gold/trading-bot/` — source of truth for code.
 Synced to server via rsync. `.env`, `logs/`, and `data/` are excluded from sync.
 
+## Deployment
+
+Always use `make deploy` — never run rsync manually.
+Never use `make deploy-env` unless you have verified the local .env has all real keys.
+The .env file on the server is the source of truth for credentials — do not overwrite it casually.
+
 **Deploy new code:**
 ```bash
-rsync -avz -e 'ssh -i ~/.ssh/trading_bot' \
-  --exclude .venv --exclude __pycache__ --exclude '*.pyc' \
-  --exclude .env --exclude logs/ --exclude data/ \
-  tradingbot:/home/trading-bot/ /Users/eugene.gold/trading-bot/   # pull first
-rsync -avz -e 'ssh -i ~/.ssh/trading_bot' \
-  --exclude .venv --exclude __pycache__ --exclude '*.pyc' \
-  --exclude .env --exclude 'logs/*.log' --exclude 'logs/*.jsonl' \
-  --exclude nohup.out --exclude 'data/' \
-  /Users/eugene.gold/trading-bot/ tradingbot:/home/trading-bot/  # push
+make deploy
 ```
+This rsync always excludes `.env`. It will never overwrite server credentials.
+
+**Sync .env only (explicit, rare):**
+```bash
+make deploy-env
+```
+This backs up the server's current `.env` before overwriting, then reports placeholder count.
+Only run this after verifying the local `.env` has all real Alpaca and Twilio keys.
 
 **Single-file edit workflow** (IMPORTANT — Edit tool requires local files):
 ```bash

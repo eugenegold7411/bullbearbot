@@ -177,6 +177,81 @@ class TestExpirationsFilter:
             days = (datetime.strptime(exp, "%Y-%m-%d").date() - date.today()).days
             assert days <= 45, f"Expiration {exp} ({days} DTE) exceeds 45-DTE limit"
 
+    # ── S7-C: get_iv_summary live chain fallback ─────────────────────────────
+
+    def test_get_iv_summary_fetches_live_chain_when_no_chain_arg(self, tmp_path):
+        """get_iv_summary must return non-None current_price by fetching a live chain."""
+        today = date.today()
+        exp = (today + timedelta(days=14)).strftime("%Y-%m-%d")
+
+        ticker = MagicMock()
+        ticker.options = (exp,)
+        ticker.fast_info.last_price = 86.57
+        ticker.option_chain.return_value = SimpleNamespace(
+            calls=_as_dataframe(_minimal_chain()["calls"]),
+            puts=_as_dataframe(_minimal_chain()["puts"]),
+        )
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value = ticker
+
+        with patch("options_data._CHAIN_DIR", tmp_path), \
+             patch("options_data._IV_DIR", tmp_path), \
+             patch.dict("sys.modules", {"yfinance": mock_yf}):
+            result = options_data.get_iv_summary("TLT")
+
+        assert result["current_price"] is not None, (
+            "get_iv_summary must populate current_price via live chain fetch"
+        )
+        assert result["current_price"] == pytest.approx(86.57, abs=0.01)
+
+    def test_get_iv_summary_uses_history_iv_when_chain_fails(self, tmp_path):
+        """When live chain fetch fails, current_iv falls back to last history entry."""
+        iv_dir = tmp_path / "iv_history"
+        iv_dir.mkdir()
+        hist_file = iv_dir / "FAIL_iv_history.json"
+        import json as _json
+        history = [{"date": "2026-04-01", "iv": v}
+                   for v in [0.15, 0.16, 0.17, 0.18, 0.19,
+                              0.20, 0.21, 0.22, 0.23, 0.24,
+                              0.25, 0.26, 0.27, 0.28, 0.29,
+                              0.30, 0.31, 0.32, 0.33, 0.34,
+                              0.35, 0.36, 0.37]]
+        hist_file.write_text(_json.dumps(history))
+
+        # Make fetch_options_chain raise so we hit the fallback path
+        mock_yf = MagicMock()
+        mock_yf.Ticker.side_effect = RuntimeError("network error")
+
+        with patch("options_data._CHAIN_DIR", tmp_path / "chains"), \
+             patch("options_data._IV_DIR", iv_dir), \
+             patch.dict("sys.modules", {"yfinance": mock_yf}):
+            result = options_data.get_iv_summary("FAIL")
+
+        assert result["observation_mode"] is False, (
+            "Symbol with sufficient history must NOT be obs_mode even when chain fails"
+        )
+        assert result["current_iv"] is not None, (
+            "current_iv must be populated from history when chain fetch fails"
+        )
+        assert result.get("current_iv_source") == "history", (
+            "current_iv_source must be 'history' when using fallback IV"
+        )
+
+    def test_get_iv_summary_no_history_is_obs_mode(self, tmp_path):
+        """Symbol with zero history is obs_mode regardless of chain fetch."""
+        mock_yf = MagicMock()
+        mock_yf.Ticker.side_effect = RuntimeError("no data")
+
+        with patch("options_data._CHAIN_DIR", tmp_path), \
+             patch("options_data._IV_DIR", tmp_path / "empty_iv"), \
+             patch.dict("sys.modules", {"yfinance": mock_yf}):
+            result = options_data.get_iv_summary("NEWSY")
+
+        assert result["observation_mode"] is True, (
+            "Symbol with no IV history must be in observation_mode"
+        )
+        assert result["history_days"] == 0
+
     def test_malformed_expiry_string_does_not_crash(self, tmp_path):
         """A malformed expiry in the tuple must not crash fetch_options_chain."""
         today = date.today()

@@ -17,6 +17,7 @@ Responsibilities:
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import asdict
 from datetime import datetime
@@ -90,20 +91,10 @@ def _parse_bounded_debate_response(raw: str) -> dict:
 
     text = raw.strip()
 
-    # Strip markdown code fences
-    if text.startswith("```"):
-        lines = text.splitlines()
-        inner: list[str] = []
-        in_fence = False
-        for line in lines:
-            if line.startswith("```") and not in_fence:
-                in_fence = True
-                continue
-            if line.startswith("```") and in_fence:
-                break
-            if in_fence:
-                inner.append(line)
-        text = "\n".join(inner).strip()
+    # Find the last JSON fence block anywhere in the response (handles prose preamble)
+    fence_matches = re.findall(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL)
+    if fence_matches:
+        text = fence_matches[-1].strip()
 
     # Direct parse
     try:
@@ -111,8 +102,8 @@ def _parse_bounded_debate_response(raw: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Extract first {...} block
-    start = text.find("{")
+    # Extract last {...} block (last to avoid prose containing { before the real JSON)
+    start = text.rfind("{")
     end   = text.rfind("}")
     if 0 <= start < end:
         try:
@@ -179,7 +170,7 @@ def run_options_debate(
             exp   = c.get("expiry", "?")
             ls    = c.get("long_strike", 0)
             ss    = c.get("short_strike")
-            strike_str = f"{ls:.0f}/{ss:.0f}" if ss else f"{ls:.0f}"
+            strike_str = f"{ls:.2f}/{ss:.2f}" if ss else f"{ls:.2f}"
             debit    = c.get("debit", 0) or 0
             max_loss = c.get("max_loss", 0) or 0
             max_gain = c.get("max_gain")
@@ -245,7 +236,7 @@ Confidence >= 0.85 required for PROCEED. If rejecting all: selected_candidate_id
         try:
             resp = claude.messages.create(
                 model=MODEL,
-                max_tokens=1000,
+                max_tokens=4000,
                 system=[{
                     "type": "text",
                     "text": system_prompt,
@@ -436,13 +427,9 @@ def run_bounded_debate(
             elapsed_seconds=time.monotonic() - t_start,
         )
 
-    # Generate decision ID
-    decision_id = ""
-    try:
-        from attribution import generate_decision_id  # noqa: PLC0415
-        decision_id = generate_decision_id("A2", datetime.now(ET).strftime("%Y%m%d_%H%M%S"))
-    except Exception as _did_exc:
-        log.debug("[OPTS] generate_decision_id failed (non-fatal): %s", _did_exc)
+    # Generate decision ID — A2 format: a2_dec_YYYYMMDD_HHMMSS
+    _ts = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
+    decision_id = f"a2_dec_{_ts}"
 
     debate_result, prompt_used, raw_response = run_options_debate(
         candidates=candidates,

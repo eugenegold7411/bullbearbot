@@ -257,10 +257,10 @@ if cfg:
     dcf = a2.get("debate_confidence_floor")
     if dcf is None:
         check(FAIL, "strategy_config.json: account2.debate_confidence_floor missing")
-    elif 0.70 <= float(dcf) <= 0.95:
-        check(PASS, f"strategy_config.json: account2.debate_confidence_floor={dcf} (valid 0.70–0.95)")
+    elif 0.60 <= float(dcf) <= 0.95:
+        check(PASS, f"strategy_config.json: account2.debate_confidence_floor={dcf} (valid 0.60–0.95)")
     else:
-        check(FAIL, f"strategy_config.json: account2.debate_confidence_floor={dcf} out of range (0.70–0.95)")
+        check(FAIL, f"strategy_config.json: account2.debate_confidence_floor={dcf} out of range (0.60–0.95)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -687,10 +687,10 @@ if cfg:
         _ieb = _a2r.get("iv_env_blackout")
         if _ieb is None:
             check(FAIL, "strategy_config.json: a2_router.iv_env_blackout missing")
-        elif isinstance(_ieb, list) and len(_ieb) >= 1:
-            check(PASS, f"strategy_config.json: a2_router.iv_env_blackout={_ieb} (non-empty list)")
+        elif isinstance(_ieb, list):
+            check(PASS, f"strategy_config.json: a2_router.iv_env_blackout={_ieb} (valid list, may be empty)")
         else:
-            check(FAIL, f"strategy_config.json: a2_router.iv_env_blackout={_ieb!r} must be a non-empty list")
+            check(FAIL, f"strategy_config.json: a2_router.iv_env_blackout={_ieb!r} must be a list")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

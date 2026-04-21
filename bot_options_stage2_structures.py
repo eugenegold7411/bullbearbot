@@ -40,7 +40,7 @@ _A2_ROUTER_DEFAULTS: dict = {
     "earnings_dte_blackout": 5,
     "min_liquidity_score":   0.3,
     "macro_iv_gate_rank":    60,
-    "iv_env_blackout":       ["very_expensive"],
+    "iv_env_blackout":       [],  # S7-VOL: very_expensive now routes to credit spreads (RULE2_CREDIT)
 }
 
 
@@ -91,6 +91,18 @@ def _route_strategy(pack, config: dict | None = None) -> list[str]:
                   sym, pack.iv_rank, macro_iv_gate_rank)
         return []
 
+    # Rule 2b: very expensive IV → route to credit structures (sell premium)
+    if pack.iv_environment == "very_expensive":
+        if pack.a1_direction == "bullish":
+            _vexp = ["credit_put_spread"]
+        elif pack.a1_direction == "bearish":
+            _vexp = ["credit_call_spread"]
+        else:  # neutral — allow both sides
+            _vexp = ["credit_put_spread", "credit_call_spread"]
+        log.debug("[OPTS] _route_strategy %s: RULE2_CREDIT iv_env=very_expensive dir=%s → %s",
+                  sym, pack.a1_direction, _vexp)
+        return _vexp
+
     # Rule 5: cheap IV + directional signal
     if pack.iv_environment in ("very_cheap", "cheap") and pack.a1_direction != "neutral":
         allowed = ["long_call", "long_put", "debit_call_spread", "debit_put_spread"]
@@ -105,10 +117,10 @@ def _route_strategy(pack, config: dict | None = None) -> list[str]:
                   sym, pack.a1_direction, allowed)
         return allowed
 
-    # Rule 7: expensive IV + directional signal (debit only, no naked long)
+    # Rule 7: expensive IV + directional signal (mixed: credit preferred, debit allowed)
     if pack.iv_environment == "expensive" and pack.a1_direction != "neutral":
-        allowed = ["debit_call_spread", "debit_put_spread"]
-        log.debug("[OPTS] _route_strategy %s: RULE7 iv_env=expensive dir=%s → %s",
+        allowed = ["credit_put_spread", "credit_call_spread", "debit_call_spread", "debit_put_spread"]
+        log.debug("[OPTS] _route_strategy %s: RULE7_MIXED iv_env=expensive dir=%s → %s",
                   sym, pack.a1_direction, allowed)
         return allowed
 
@@ -142,6 +154,8 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
         return "RULE6"
     if pack.iv_environment == "expensive":
         return "RULE7"
+    if pack.iv_environment == "very_expensive":
+        return "RULE2_CREDIT"
     return "RULE_UNKNOWN"
 
 
@@ -151,6 +165,7 @@ _A2_VETO_DEFAULTS: dict = {
     "max_bid_ask_spread_pct": 0.05,
     "min_open_interest":      100,
     "max_theta_decay_pct":    0.05,
+    "max_loss_pct":           0.03,
     "min_dte":                5,
     "min_expected_value":     0.0,
 }
@@ -182,7 +197,7 @@ def _apply_veto_rules(
       V1: bid_ask_spread_pct > max_bid_ask_spread_pct  — entry cost too high
       V2: open_interest < min_open_interest            — liquidity risk
       V3: |theta| / debit > max_theta_decay_pct        — theta decay rate too fast
-      V4: max_loss > equity × 0.03                     — position too large
+      V4: max_loss > equity × max_loss_pct              — position too large
       V5: dte < min_dte                                — too close to expiry
       V6: expected_value < min_expected_value          — negative edge
     """
@@ -190,6 +205,7 @@ def _apply_veto_rules(
     max_spread  = float(vcfg["max_bid_ask_spread_pct"])
     min_oi      = int(vcfg["min_open_interest"])
     max_theta   = float(vcfg["max_theta_decay_pct"])
+    max_loss_pct = float(vcfg["max_loss_pct"])
     min_dte     = int(vcfg["min_dte"])
     min_ev      = float(vcfg["min_expected_value"])
 
@@ -209,8 +225,8 @@ def _apply_veto_rules(
             return f"theta_decay_rate={rate:.3f}>{max_theta}"
 
     max_loss = candidate.get("max_loss")
-    if max_loss is not None and max_loss > equity * 0.03:
-        return f"max_loss={max_loss:.0f}>equity*0.03={equity*0.03:.0f}"
+    if max_loss is not None and max_loss > equity * max_loss_pct:
+        return f"max_loss={max_loss:.0f}>equity*{max_loss_pct}={equity*max_loss_pct:.0f}"
 
     dte = candidate.get("dte")
     if dte is not None and dte < min_dte:

@@ -27,7 +27,7 @@ import queue
 import signal
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -327,7 +327,7 @@ def _maybe_send_daily_report() -> None:
 
     log.info("Sending daily report for %s", today)
     try:
-        report_module.send_report_email()
+        report_module.send_report_email(target_date=date.fromisoformat(today))
         _report_sent_date = today
         _STATUS_DIR.mkdir(parents=True, exist_ok=True)
         flag_file.touch()

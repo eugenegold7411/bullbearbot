@@ -153,11 +153,13 @@ class TestRouterConfigThresholds(unittest.TestCase):
 
     # ── iv_env_blackout ───────────────────────────────────────────────────────
 
-    def test_iv_env_blackout_default_blocks_very_expensive(self):
+    def test_iv_env_blackout_default_routes_very_expensive_to_credit(self):
+        # S7-VOL: very_expensive now routes to credit structures via RULE2_CREDIT
         pack = _make_pack(iv_environment="very_expensive", a1_direction="bullish",
                           liquidity_score=0.7)
         result = self._route(pack)
-        self.assertEqual(result, [], "very_expensive should be blocked by default blackout")
+        self.assertEqual(result, ["credit_put_spread"],
+                         "very_expensive + bullish should route to credit_put_spread")
 
     def test_iv_env_blackout_config_extends_to_expensive(self):
         # expensive also blocked when config adds it
@@ -167,16 +169,14 @@ class TestRouterConfigThresholds(unittest.TestCase):
         result = self._route(pack, config=config)
         self.assertEqual(result, [], "expensive should be blocked when in config iv_env_blackout")
 
-    def test_iv_env_blackout_config_removes_default(self):
-        # Clear the blackout — very_expensive no longer blocked (reaches Rule 8 default)
+    def test_iv_env_blackout_config_empty_very_expensive_neutral(self):
+        # S7-VOL: RULE2_CREDIT hardcoded — blackout config is irrelevant for very_expensive.
+        # Neutral direction → both sides offered.
         pack = _make_pack(iv_environment="very_expensive", a1_direction="neutral",
                           liquidity_score=0.7)
         config = {"a2_router": {"iv_env_blackout": []}}
         result = self._route(pack, config=config)
-        # Rule 8: neutral direction → still empty, but Rule 2 not the reason
-        # With neutral direction, result is [] from Rule 8, not Rule 2
-        # This test just checks Rule 2 doesn't fire when blackout is cleared
-        self.assertEqual(result, [])  # Rule 8 fires — neutral direction
+        self.assertEqual(result, ["credit_put_spread", "credit_call_spread"])
 
     # ── Default behavior unchanged when config matches defaults ───────────────
 

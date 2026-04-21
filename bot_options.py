@@ -132,7 +132,7 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
         _persist_early_exit(session_tier, t_start, "no_signal_scores")
         return
 
-    iv_summaries = _get_iv_summaries_for_symbols(list(signal_scores.keys())[:20])
+    iv_summaries = _get_iv_summaries_for_symbols(list(signal_scores.keys()))
     log.info("[OPTS] IV summaries: %d symbols, %d in obs mode", len(iv_summaries),
              sum(1 for iv in iv_summaries.values() if iv.get("observation_mode", True)))
 

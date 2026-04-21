@@ -105,7 +105,7 @@ def check_sms_delivery() -> tuple[str, str]:
                 or "SMS sent" in l]  # SMS sent kept for backward compat with old log entries
         if hits:
             return "OK", "WhatsApp delivery confirmed in today's log"
-        return "DEGRADED", "no WhatsApp delivery logged today"
+        return "BROKEN", "no WhatsApp delivery logged today"
     except Exception as e:
         return "UNKNOWN", str(e)
 
@@ -453,11 +453,59 @@ def check_incident_log() -> tuple[str, str]:
         path = DATA / "analytics" / "incident_log.jsonl"
         if not path.exists():
             return "BROKEN", "incident_log.jsonl missing"
-        total = _jsonl_total(path)
-        today = _jsonl_lines_today(path)
-        if today > 0:
-            return "DEGRADED", f"{today} incident(s) logged TODAY — review required"
-        return "OK", f"{total} total incident records, 0 today"
+        all_incidents = []
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                all_incidents.append(json.loads(line))
+            except Exception:
+                all_incidents.append({})
+        real_incidents = [e for e in all_incidents if "TEST" not in e.get("account", "")]
+        today_real = [e for e in real_incidents if TODAY_STR in json.dumps(e)]
+        filtered = len(all_incidents) - len(real_incidents)
+        filter_note = f" ({filtered} test acct filtered)" if filtered else ""
+        if today_real:
+            return "DEGRADED", f"{len(today_real)} real incident(s) today — review required{filter_note}"
+        return "OK", f"{len(real_incidents)} real incident records, 0 today{filter_note}"
+    except Exception as e:
+        return "UNKNOWN", str(e)
+
+
+def check_a2_debate_status() -> tuple[str, str]:
+    """
+    Check whether the A2 four-way debate has ever run and what the latest outcome was.
+    Reads from data/account2/decisions/a2_dec_*.json (primary artifact files).
+    decisions_account2.json is the legacy early-exit log — it never has debate_input.
+    """
+    try:
+        dec_dir = DATA / "account2" / "decisions"
+        if not dec_dir.exists():
+            return "DEGRADED", "decisions dir missing — debate has never run"
+        all_files = sorted(dec_dir.glob("a2_dec_*.json"))
+        if not all_files:
+            return "DEGRADED", "no a2_dec_*.json files found — debate has never run"
+        # Scan the most recent 50 files for a record with non-null debate_input
+        recent = all_files[-50:]
+        debates_found = []
+        for fpath in reversed(recent):
+            try:
+                rec = json.loads(fpath.read_text())
+                if rec.get("debate_input") is not None:
+                    debates_found.append(rec)
+            except Exception:
+                continue
+        if not debates_found:
+            return "DEGRADED", f"{len(all_files)} decision files, none with debate_input in last 50"
+        latest = debates_found[0]
+        parsed = latest.get("debate_parsed") or {}
+        confidence = parsed.get("confidence", "?")
+        reject = parsed.get("reject", True)
+        outcome = "reject" if reject else "proceed"
+        reasons = str(parsed.get("reasons", ""))[:80]
+        ts = str(latest.get("built_at", ""))[:10]
+        return "OK", (f"debate ran ({len(debates_found)} in last 50 files), "
+                      f"latest: {outcome} conf={confidence} ({ts}) — {reasons}")
     except Exception as e:
         return "UNKNOWN", str(e)
 
@@ -504,6 +552,7 @@ FEATURES: list[tuple[str, object]] = [
     ("ChromaDB Trade Memory",       check_trade_memory),
     ("Divergence Log",              check_divergence_log),
     ("Incident Log",                check_incident_log),
+    ("A2 Debate Status",            check_a2_debate_status),
     ("Sonnet Gate Activity",        check_sonnet_gate),
 ]
 

@@ -203,6 +203,56 @@ def get_spine_summary(
         return {}
 
 
+_CALL_SITE_PRICING: dict[str, dict[str, float]] = {
+    "claude-sonnet-4-6":         {"input": 3.00,  "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
+    "claude-haiku-4-5-20251001": {"input": 1.00,  "output":  5.00, "cache_read": 0.10, "cache_write": 1.25},
+    "claude-opus-4-6":           {"input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_write": 18.75},
+}
+
+
+def log_claude_call_to_spine(
+    module_name: str,
+    model: str,
+    purpose: str,
+    usage,
+    *,
+    linked_subject_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Extract token counts from a Claude API response usage object and append a
+    spine record.  Call this at each Claude API call site immediately after the
+    response is received.  Non-fatal — any exception caught and logged.
+    """
+    try:
+        in_tok  = getattr(usage, "input_tokens",               0) or 0
+        out_tok = getattr(usage, "output_tokens",              0) or 0
+        cache_r = getattr(usage, "cache_read_input_tokens",    0) or 0
+        cache_w = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        rates   = _CALL_SITE_PRICING.get(model, _CALL_SITE_PRICING["claude-sonnet-4-6"])
+        regular = max(0, in_tok - cache_r - cache_w)
+        cost_usd = (
+            regular  * rates["input"]
+            + out_tok * rates["output"]
+            + cache_r * rates["cache_read"]
+            + cache_w * rates["cache_write"]
+        ) / 1_000_000
+        return log_spine_record(
+            module_name=module_name,
+            layer_name="execution_control",
+            ring="prod",
+            model=model,
+            purpose=purpose,
+            linked_subject_id=linked_subject_id,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            cached_tokens=cache_r,
+            estimated_cost_usd=cost_usd,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[SPINE] log_claude_call_to_spine failed: %s", exc)
+        return None
+
+
 def format_spine_summary_for_review(days_back: int = 7) -> str:
     """
     Return a markdown-formatted cost summary for weekly review injection.

@@ -494,5 +494,76 @@ class TestPersistenceNoCycle(unittest.TestCase):
                     self.assertEqual(len(files), 1)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Suite 7 — S5-2 Part B: early-exit artifact persistence
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestEarlyExitPersistence(unittest.TestCase):
+    """_persist_early_exit writes valid A2DecisionRecord artifacts for early exits."""
+
+    _REQUIRED_FIELDS = (
+        "decision_id", "built_at", "session_tier", "candidate_sets",
+        "execution_result", "no_trade_reason", "elapsed_seconds",
+        "schema_version", "code_version",
+    )
+
+    def _call_early_exit(self, tmpdir: str, reason: str) -> dict:
+        import bot_options
+        import bot_options_stage4_execution as s4
+
+        with mock.patch.object(s4, "_DECISIONS_DIR", Path(tmpdir)):
+            bot_options._persist_early_exit("market", 0.0, reason)
+
+        files = list(Path(tmpdir).glob("a2_dec_*.json"))
+        self.assertEqual(len(files), 1, f"Expected 1 file for reason={reason}")
+        return json.loads(files[0].read_text())
+
+    def test_no_signal_scores_artifact_fields(self):
+        """no_signal_scores early exit writes all required fields."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data = self._call_early_exit(tmpdir, "no_signal_scores")
+        for f in self._REQUIRED_FIELDS:
+            self.assertIn(f, data, f"Missing field: {f}")
+        self.assertEqual(data["execution_result"], "no_trade")
+        self.assertEqual(data["no_trade_reason"], "no_signal_scores")
+        self.assertEqual(data["session_tier"], "market")
+        self.assertEqual(data["candidate_sets"], [])
+
+    def test_preflight_halt_artifact_fields(self):
+        """preflight_halt early exit writes all required fields."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data = self._call_early_exit(tmpdir, "preflight_halt")
+        for f in self._REQUIRED_FIELDS:
+            self.assertIn(f, data, f"Missing field: {f}")
+        self.assertEqual(data["no_trade_reason"], "preflight_halt")
+
+    def test_no_candidates_after_veto_artifact_fields(self):
+        """no_candidates_after_veto early exit writes all required fields."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data = self._call_early_exit(tmpdir, "no_candidates_after_veto")
+        for f in self._REQUIRED_FIELDS:
+            self.assertIn(f, data, f"Missing field: {f}")
+        self.assertEqual(data["no_trade_reason"], "no_candidates_after_veto")
+
+    def test_early_exit_no_trade_reason_in_taxonomy(self):
+        """All early-exit reasons used by _persist_early_exit are in NO_TRADE_REASONS."""
+        from schemas import NO_TRADE_REASONS
+        early_exit_reasons = ["preflight_halt", "no_signal_scores", "no_candidates_after_veto"]
+        for reason in early_exit_reasons:
+            with self.subTest(reason=reason):
+                self.assertIn(reason, NO_TRADE_REASONS,
+                              f"{reason} missing from NO_TRADE_REASONS taxonomy")
+
+    def test_persist_writes_schema_version_1(self):
+        """Persisted artifact has schema_version=1."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data = self._call_early_exit(tmpdir, "no_signal_scores")
+        self.assertEqual(data["schema_version"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

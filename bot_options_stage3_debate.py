@@ -256,6 +256,12 @@ Confidence >= 0.85 required for PROCEED. If rejecting all: selected_candidate_id
             )
             raw = resp.content[0].text.strip() if resp.content else ""
             _log_claude_cost(resp, "bounded_debate")
+            try:
+                from cost_attribution import log_claude_call_to_spine
+                log_claude_call_to_spine("bot_options_stage3_debate", MODEL,
+                                         "bounded_debate", resp.usage)
+            except Exception:
+                pass
         except Exception as exc:
             log.error("[OPTS] Bounded debate Claude call failed: %s", exc)
             return _parse_bounded_debate_response(""), user_content, ""
@@ -322,6 +328,11 @@ Respond ONLY with valid JSON. No markdown. No explanation outside JSON fields.
         )
         raw = resp.content[0].text.strip() if resp.content else ""
         _log_claude_cost(resp, "debate")
+        try:
+            from cost_attribution import log_claude_call_to_spine
+            log_claude_call_to_spine("bot_options_stage3_debate", MODEL, "debate", resp.usage)
+        except Exception:
+            pass
 
         if not raw:
             log.warning("[OPTS] Claude returned empty response")

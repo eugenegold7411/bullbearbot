@@ -497,6 +497,11 @@ def ask_claude(user_prompt: str) -> dict:
         get_tracker().record_api_call(MODEL, usage, caller="ask_claude")
     except Exception as _ct_exc:
         log.warning("Cost tracker failed: %s", _ct_exc)
+    try:
+        from cost_attribution import log_claude_call_to_spine
+        log_claude_call_to_spine("bot_stage3_decision", MODEL, "decision", usage)
+    except Exception:
+        pass
     raw = response.content[0].text.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1]
@@ -565,6 +570,12 @@ def _ask_claude_overnight(
             get_tracker().record_api_call(
                 MODEL_FAST, response.usage, caller="ask_claude_overnight"
             )
+        except Exception:
+            pass
+        try:
+            from cost_attribution import log_claude_call_to_spine
+            log_claude_call_to_spine("bot_stage3_decision", MODEL_FAST, "overnight_decision",
+                                     response.usage)
         except Exception:
             pass
 

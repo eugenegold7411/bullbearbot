@@ -6853,5 +6853,89 @@ class Suite29Epic2ProductionLearning(unittest.TestCase):
         self.assertEqual(result["provenance"]["decision_id"], "d-uuid-456")
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# S5-2 Part A — Cost spine call-site attribution
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestCostSpineCallSite(unittest.TestCase):
+    """log_claude_call_to_spine produces a spine record with correct module/tokens/cost."""
+
+    def test_log_claude_call_to_spine_populates_fields(self):
+        """A mocked Claude usage object yields non-unknown module_name, non-null tokens/cost."""
+        import cost_attribution as ca
+
+        usage = mock.MagicMock()
+        usage.input_tokens = 1200
+        usage.output_tokens = 300
+        usage.cache_read_input_tokens = 0
+        usage.cache_creation_input_tokens = 0
+
+        captured: list[dict] = []
+
+        def _fake_log_spine(module_name, layer_name, ring, model, purpose,
+                            linked_subject_id=None, linked_subject_type=None,
+                            input_tokens=None, output_tokens=None,
+                            cached_tokens=None, estimated_cost_usd=None,
+                            call_id=None):
+            captured.append({
+                "module_name": module_name,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "estimated_cost_usd": estimated_cost_usd,
+            })
+            return "test-cid"
+
+        with mock.patch.object(ca, "log_spine_record", side_effect=_fake_log_spine):
+            ca.log_claude_call_to_spine(
+                "bot_stage3_decision",
+                "claude-sonnet-4-6",
+                "decision",
+                usage,
+            )
+
+        self.assertEqual(len(captured), 1)
+        rec = captured[0]
+        self.assertNotEqual(rec["module_name"], "unknown",
+                            "module_name must not be 'unknown'")
+        self.assertEqual(rec["module_name"], "bot_stage3_decision")
+        self.assertIsNotNone(rec["input_tokens"])
+        self.assertEqual(rec["input_tokens"], 1200)
+        self.assertIsNotNone(rec["output_tokens"])
+        self.assertEqual(rec["output_tokens"], 300)
+        self.assertIsNotNone(rec["estimated_cost_usd"])
+        self.assertGreater(rec["estimated_cost_usd"], 0.0)
+
+    def test_log_claude_call_to_spine_computes_cost_from_pricing(self):
+        """estimated_cost_usd matches manual calculation for sonnet pricing."""
+        import cost_attribution as ca
+
+        usage = mock.MagicMock()
+        usage.input_tokens = 1000
+        usage.output_tokens = 200
+        usage.cache_read_input_tokens = 0
+        usage.cache_creation_input_tokens = 0
+
+        captured: list[dict] = []
+
+        with mock.patch.object(ca, "log_spine_record",
+                               side_effect=lambda *a, **kw: captured.append(kw)):
+            ca.log_claude_call_to_spine("test_module", "claude-sonnet-4-6", "test", usage)
+
+        self.assertEqual(len(captured), 1)
+        expected = (1000 * 3.00 + 200 * 15.00) / 1_000_000
+        self.assertAlmostEqual(captured[0]["estimated_cost_usd"], expected, places=8)
+
+    def test_log_claude_call_to_spine_nonfatal_on_bad_usage(self):
+        """log_claude_call_to_spine does not raise when usage attributes are missing."""
+        import cost_attribution as ca
+
+        class _BadUsage:
+            pass  # no input_tokens/output_tokens attributes
+
+        with mock.patch.object(ca, "log_spine_record", return_value="cid"):
+            result = ca.log_claude_call_to_spine("mod", "claude-sonnet-4-6", "test", _BadUsage())
+        self.assertIsNotNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

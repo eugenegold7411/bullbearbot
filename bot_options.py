@@ -60,6 +60,28 @@ from bot_options_stage2_structures import (  # noqa: F401
 from bot_options_stage3_debate import _parse_bounded_debate_response  # noqa: F401
 
 
+def _persist_early_exit(session_tier: str, t_start: float, no_trade_reason: str) -> None:
+    """Persist a minimal A2DecisionRecord for cycles that exit before Stage 3."""
+    try:
+        from schemas import A2DecisionRecord  # noqa: PLC0415
+        from bot_options_stage4_execution import persist_decision_record  # noqa: PLC0415
+        rec = A2DecisionRecord(
+            decision_id="",
+            session_tier=session_tier,
+            candidate_sets=[],
+            debate_input=None,
+            debate_output_raw=None,
+            debate_parsed=None,
+            selected_candidate=None,
+            execution_result="no_trade",
+            no_trade_reason=no_trade_reason,
+            elapsed_seconds=time.monotonic() - t_start,
+        )
+        persist_decision_record(rec)
+    except Exception as _exc:
+        log.debug("[OPTS] _persist_early_exit failed (non-fatal): %s", _exc)
+
+
 def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") -> None:
     """Run one Account 2 options cycle."""
     _ensure_dirs()
@@ -69,6 +91,7 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
     from bot_options_stage0_preflight import run_a2_preflight  # noqa: PLC0415
     pf = run_a2_preflight(session_tier, _get_alpaca())
     if pf.halt:
+        _persist_early_exit(session_tier, t_start, "preflight_halt")
         return
     equity = pf.equity
     pf_allow_live_orders = pf.pf_allow_live_orders
@@ -104,6 +127,7 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
         log.info("[OPTS] No signal scores from Account 1 — skipping debate (no catalyst context)")
         save_legacy_decision({"reasoning": "no_account1_signals", "regime": regime,
                               "actions": [], "observation_mode": obs_mode})
+        _persist_early_exit(session_tier, t_start, "no_signal_scores")
         return
 
     iv_summaries = _get_iv_summaries_for_symbols(list(signal_scores.keys())[:20])
@@ -131,6 +155,7 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
         log.info("[OPTS] No candidates after filtering — holding")
         save_legacy_decision({"reasoning": "no_candidates_after_filter", "regime": regime,
                               "actions": [], "observation_mode": obs_mode})
+        _persist_early_exit(session_tier, t_start, "no_candidates_after_veto")
         return
 
     from bot_options_stage3_debate import run_bounded_debate  # noqa: PLC0415

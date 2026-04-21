@@ -396,6 +396,10 @@ def persist_decision_record(decision_record) -> None:
         filename = f"a2_dec_{ts}.json"
         dest = _DECISIONS_DIR / filename
 
+        # Backfill decision_id if stage3 left it empty (rollback/no-candidate paths).
+        if not decision_record.decision_id:
+            decision_record.decision_id = f"a2_dec_{ts}"
+
         # Serialize — A2DecisionRecord contains A2CandidateSet which contains A2FeaturePack;
         # use a custom serializer to handle dataclasses and non-JSON-native types.
         from dataclasses import asdict as _asdict  # noqa: PLC0415

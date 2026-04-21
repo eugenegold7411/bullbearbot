@@ -66,7 +66,7 @@ def select_options_strategy(
     iv_summary.get("iv_rank")
     obs_mode = iv_summary.get("observation_mode", True)
     score = float(signal_data.get("score", 0))
-    confidence = signal_data.get("confidence", "low")
+    confidence = signal_data.get("conviction", signal_data.get("confidence", "low"))
 
     # Observation mode — no trades, just log
     if obs_mode:

@@ -63,8 +63,10 @@ from bot_options_stage3_debate import _parse_bounded_debate_response  # noqa: F4
 def _persist_early_exit(session_tier: str, t_start: float, no_trade_reason: str) -> None:
     """Persist a minimal A2DecisionRecord for cycles that exit before Stage 3."""
     try:
+        from bot_options_stage4_execution import (
+            persist_decision_record,  # noqa: PLC0415
+        )
         from schemas import A2DecisionRecord  # noqa: PLC0415
-        from bot_options_stage4_execution import persist_decision_record  # noqa: PLC0415
         rec = A2DecisionRecord(
             decision_id="",
             session_tier=session_tier,

@@ -11,7 +11,6 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
-
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
@@ -35,7 +34,6 @@ def _make_now_et(weekday: int, hour: int, minute: int, date_str: str = "2026-04-
 def _import_fresh_scheduler():
     """Import scheduler with minimal stubs (mirrors pattern from test_s4c)."""
     import sys
-    import importlib
 
     stubs = {}
     for name in ("bot", "report", "weekly_review"):

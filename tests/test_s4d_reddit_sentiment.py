@@ -7,7 +7,6 @@ Build 2: all-403 scenario sets sentiment_unavailable=True
 
 import json
 import urllib.error
-from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -115,8 +114,8 @@ class TestFetchSubreddit403:
 class TestFetchAllPostsSkip403:
     def test_skips_403_subreddit_no_stale_cache(self, tmp_path):
         """A 403 subreddit is skipped entirely — stale cache not used."""
-        from reddit_sentiment_public import RedditPublicProvider
         import reddit_sentiment_public as rsp
+        from reddit_sentiment_public import RedditPublicProvider
 
         # Patch cache dir and _SUBREDDITS
         old_cache_dir = rsp._CACHE_DIR
@@ -143,8 +142,8 @@ class TestFetchAllPostsSkip403:
 
     def test_403_subreddit_skipped_next_subreddit_tried(self, tmp_path):
         """When r/options 403s, r/wallstreetbets is still tried."""
-        from reddit_sentiment_public import RedditPublicProvider
         import reddit_sentiment_public as rsp
+        from reddit_sentiment_public import RedditPublicProvider
 
         old_cache_dir = rsp._CACHE_DIR
         old_subs = rsp._SUBREDDITS
@@ -176,8 +175,8 @@ class TestFetchAllPostsSkip403:
 
     def test_subreddits_tried_in_order(self, tmp_path):
         """Subreddits are attempted in _SUBREDDITS list order."""
-        from reddit_sentiment_public import RedditPublicProvider
         import reddit_sentiment_public as rsp
+        from reddit_sentiment_public import RedditPublicProvider
 
         old_cache_dir = rsp._CACHE_DIR
         old_subs = rsp._SUBREDDITS
@@ -215,8 +214,8 @@ class TestFetchAllPostsSkip403:
 class TestSentimentUnavailable:
     def test_all_403_sets_sentiment_unavailable(self, tmp_path):
         """All subreddits returning 403 sets sentiment_unavailable=True."""
-        from reddit_sentiment_public import RedditPublicProvider
         import reddit_sentiment_public as rsp
+        from reddit_sentiment_public import RedditPublicProvider
 
         old_cache_dir = rsp._CACHE_DIR
         old_subs = rsp._SUBREDDITS
@@ -237,8 +236,8 @@ class TestSentimentUnavailable:
 
     def test_partial_403_does_not_set_unavailable(self, tmp_path):
         """If at least one subreddit returns posts, sentiment_unavailable stays False."""
-        from reddit_sentiment_public import RedditPublicProvider
         import reddit_sentiment_public as rsp
+        from reddit_sentiment_public import RedditPublicProvider
 
         old_cache_dir = rsp._CACHE_DIR
         old_subs = rsp._SUBREDDITS
@@ -265,8 +264,8 @@ class TestSentimentUnavailable:
 
     def test_all_empty_non_403_sets_unavailable(self, tmp_path):
         """All subreddits returning [] (non-403) and no cache also sets unavailable."""
-        from reddit_sentiment_public import RedditPublicProvider
         import reddit_sentiment_public as rsp
+        from reddit_sentiment_public import RedditPublicProvider
 
         old_cache_dir = rsp._CACHE_DIR
         old_subs = rsp._SUBREDDITS
@@ -288,8 +287,8 @@ class TestSentimentUnavailable:
 
     def test_sentiment_unavailable_resets_on_new_call(self, tmp_path):
         """A second call to fetch_all_posts resets sentiment_unavailable."""
-        from reddit_sentiment_public import RedditPublicProvider
         import reddit_sentiment_public as rsp
+        from reddit_sentiment_public import RedditPublicProvider
 
         old_cache_dir = rsp._CACHE_DIR
         old_subs = rsp._SUBREDDITS
@@ -317,8 +316,8 @@ class TestSentimentUnavailable:
 
     def test_initial_sentiment_unavailable_is_false(self, tmp_path):
         """Provider starts with sentiment_unavailable=False before any fetch."""
-        from reddit_sentiment_public import RedditPublicProvider
         import reddit_sentiment_public as rsp
+        from reddit_sentiment_public import RedditPublicProvider
 
         old_cache_dir = rsp._CACHE_DIR
         rsp._CACHE_DIR = tmp_path
@@ -349,8 +348,8 @@ class TestAcceptanceCriteria:
 
     def test_no_unhandled_exception_on_403(self, tmp_path):
         """403 responses must never raise an unhandled exception."""
-        from reddit_sentiment_public import RedditPublicProvider
         import reddit_sentiment_public as rsp
+        from reddit_sentiment_public import RedditPublicProvider
 
         old_cache_dir = rsp._CACHE_DIR
         old_subs = rsp._SUBREDDITS

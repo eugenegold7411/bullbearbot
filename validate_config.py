@@ -1064,7 +1064,9 @@ except Exception as _oum_err:
 try:
     import sys as _sys_vc
     _sys_vc.path.insert(0, str(BASE_DIR))
-    from bot_options_stage0_preflight import _OBS_IV_SYMBOLS as _A2_UNIVERSE  # noqa: E402
+    from bot_options_stage0_preflight import (
+        _OBS_IV_SYMBOLS as _A2_UNIVERSE,  # noqa: E402
+    )
 except Exception:
     # Fallback: original 16 Phase 1 symbols if preflight module cannot be imported
     _A2_UNIVERSE = [

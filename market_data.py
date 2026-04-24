@@ -378,7 +378,10 @@ def _compute_crypto_vwap_24h(symbols: list) -> dict:
 
 # ── Stock signals ─────────────────────────────────────────────────────────────
 
-def get_stock_signals(symbols: list, use_cache: bool = True) -> tuple[str, dict]:
+def get_stock_signals(
+    symbols: list,
+    use_cache: bool = True,
+) -> tuple[str, dict, dict, dict]:
     """Returns (formatted_string, current_prices_dict).
 
     Section type: REQUIRED
@@ -442,8 +445,10 @@ def get_stock_signals(symbols: list, use_cache: bool = True) -> tuple[str, dict]
     except Exception as _ic_exc:
         log.debug("intraday_cache unavailable: %s", _ic_exc)
 
-    lines          = []
-    current_prices = {}
+    lines           = []
+    current_prices  = {}
+    ind_by_symbol: dict[str, dict]   = {}
+    # intraday_summaries already built above — retained in an outer var; re-attached below.
 
     for sym in symbols:
         try:
@@ -457,6 +462,11 @@ def get_stock_signals(symbols: list, use_cache: bool = True) -> tuple[str, dict]
 
             price = float(latest_resp[sym].price) if sym in latest_resp else ind["price"]
             current_prices[sym] = price
+            # Retain live price inside the indicator dict so downstream consumers
+            # don't need to re-fetch / re-join against current_prices.
+            ind_with_price = dict(ind)
+            ind_with_price["price"] = price
+            ind_by_symbol[sym] = ind_with_price
 
             ma20 = ind.get("ma20")
             ma50 = ind.get("ma50")
@@ -511,7 +521,12 @@ def get_stock_signals(symbols: list, use_cache: bool = True) -> tuple[str, dict]
         except Exception:
             continue
 
-    return ("\n".join(lines) if lines else "  (no stock data)"), current_prices
+    return (
+        ("\n".join(lines) if lines else "  (no stock data)"),
+        current_prices,
+        ind_by_symbol,
+        intraday_summaries,
+    )
 
 
 # ── Crypto helpers ────────────────────────────────────────────────────────────
@@ -1073,9 +1088,11 @@ def fetch_all(symbols_stock: list, symbols_crypto: list, session_tier: str,
     breaking_news         = "  (extended/overnight — not fetched)"
     sector_news           = "  (extended/overnight — not fetched)"
     signals_by_sym: dict  = {}
+    ind_by_symbol: dict   = {}   # raw indicator dicts per symbol, for L2 scorer
+    intraday_summaries: dict = {}  # intraday_cache summaries, for L2 scorer
 
     if session_tier == "market":
-        stock_str, stock_prices = get_stock_signals(symbols_stock)
+        stock_str, stock_prices, ind_by_symbol, intraday_summaries = get_stock_signals(symbols_stock)
         current_prices.update(stock_prices)
 
         # Build per-symbol signal dict for sector grouping
@@ -1217,6 +1234,14 @@ def fetch_all(symbols_stock: list, symbols_crypto: list, session_tier: str,
         "economic_calendar_section": economic_cal_section,
         "macro_wire_section":      macro_wire_section,
         "orb_section":             orb_section,
+        # Raw per-symbol indicator dicts retained for L2 python scorer.
+        # Keys: symbol → {rsi, macd, macd_signal, ma20, ma50, ema9, ema21,
+        #                 ema9_cross, price_above_ema9, vol_ratio, price, prev, ...}
+        "ind_by_symbol":           ind_by_symbol,
+        # intraday_cache.get_intraday_summary output per symbol (5-min bars).
+        # Keys: symbol → {rsi, macd, macd_signal, momentum_5bar, vol_ratio,
+        #                 vwap, bar_count, last_bar}
+        "intraday_summaries":      intraday_summaries,
     }
 
 

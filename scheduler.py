@@ -25,6 +25,7 @@ import json
 import os
 import queue
 import signal
+import threading
 import time
 import traceback
 from datetime import date, datetime, timedelta
@@ -247,6 +248,12 @@ _outcomes_backfill_date:       str = ""   # "YYYY-MM-DD" of last outcomes backfi
 _readiness_ran_date:           str = ""   # "YYYY-MM-DD" of last readiness check
 _econ_calendar_refresh_key:    str = ""   # "YYYY-MM-DD-HHMM" slot key
 _zero_fill_alert_date:         str = ""   # "YYYY-MM-DD" of last zero-fill alert
+_last_qualitative_sweep_key:   str = ""   # "YYYY-MM-DD-HH" of last L1 sweep (hourly slot)
+_last_qualitative_news_hash:   str = ""   # news hash at last L1 sweep, for event-driven refresh
+_qualitative_sweep_running:    bool = False  # guard against concurrent sweeps
+_qualitative_thread = None                  # threading.Thread for the background sweep
+_momentum_cfg: dict | None = None           # cached momentum_trigger config
+_momentum_last_fired: dict[str, float] = {}  # sym → monotonic ts of last momentum trigger
 
 
 # ── Event-driven cycle trigger queue ─────────────────────────────────────────
@@ -1291,6 +1298,8 @@ def run(dry_run: bool = False) -> None:
         _maybe_refresh_form4_trades(dry_run)
         _maybe_refresh_crypto_sentiment(dry_run)
         _maybe_refresh_macro_wire(dry_run)
+        _maybe_refresh_qualitative_context(dry_run)
+        _check_intraday_momentum(dry_run)
         _maybe_run_preopen_cycle(dry_run)
         _maybe_send_daily_report()
         _maybe_send_zero_fill_alert(dry_run)
@@ -1376,6 +1385,259 @@ def _sleep_with_interrupt(seconds: int) -> None:
 
 
 # ── New scheduled functions ───────────────────────────────────────────────────
+
+def _check_intraday_momentum(dry_run: bool = False) -> None:
+    """Lightweight intraday momentum detector.
+
+    Runs every scheduler loop pass during market hours. Uses already-cached
+    intraday_cache data (no fresh API calls). Fires scheduler.trigger_cycle
+    when a symbol's 5-min momentum and volume both exceed config thresholds.
+
+    Scope:
+      - All symbols with open A1 positions
+      - Top-N symbols from the latest signal_scores.json (default N=10)
+
+    Cooldown: the existing 60-second run() cooldown handles flood prevention
+    for triggered cycles; no additional rate-limit needed here. Per-symbol
+    last-fire timestamps prevent re-alerting on the same bar rollover.
+    """
+    now_et  = datetime.now(ET)
+    weekday = now_et.weekday()
+    now_min = now_et.hour * 60 + now_et.minute
+    if weekday >= 5:
+        return
+    # Only during core 9:30 AM – 4:00 PM ET window (avoid extended session noise)
+    if now_min < 9 * 60 + 30 or now_min >= 16 * 60:
+        return
+    if dry_run:
+        return
+
+    # Load thresholds from strategy_config.json (cached per module lifetime)
+    global _momentum_cfg, _momentum_last_fired
+    try:
+        if _momentum_cfg is None:
+            try:
+                _scfg = json.loads((Path(__file__).parent / "strategy_config.json").read_text())
+                _momentum_cfg = _scfg.get("momentum_trigger", {}) or {}
+            except Exception:
+                _momentum_cfg = {}
+        min_move = float(_momentum_cfg.get("min_price_move_pct", 1.5))
+        min_vol  = float(_momentum_cfg.get("min_vol_ratio",       2.0))
+        cooldown_sec = int(_momentum_cfg.get("per_symbol_cooldown_sec", 300))
+        top_n = int(_momentum_cfg.get("top_n_from_signals", 10))
+    except Exception:
+        return
+
+    # Build universe: open A1 positions + top-N scored symbols
+    universe: set[str] = set()
+    try:
+        key = os.getenv("ALPACA_API_KEY")
+        sec = os.getenv("ALPACA_SECRET_KEY")
+        if key and sec:
+            from alpaca.trading.client import TradingClient  # noqa: PLC0415
+            client = TradingClient(key, sec, paper=True)
+            for p in client.get_all_positions():
+                s = (getattr(p, "symbol", "") or "").upper()
+                if s and "/" not in s:
+                    universe.add(s)
+    except Exception as exc:
+        log.debug("[MOMENTUM] positions fetch failed: %s", exc)
+
+    try:
+        _ss_path = Path("data/market/signal_scores.json")
+        if _ss_path.exists():
+            _ss = json.loads(_ss_path.read_text())
+            scored = _ss.get("scored_symbols", {}) or {}
+            ranked = sorted(
+                scored.items(),
+                key=lambda kv: float(kv[1].get("score", 0)) if isinstance(kv[1], dict) else 0,
+                reverse=True,
+            )[:top_n]
+            for sym, _ in ranked:
+                universe.add(sym.upper())
+    except Exception as exc:
+        log.debug("[MOMENTUM] signal_scores read failed: %s", exc)
+
+    if not universe:
+        return
+
+    try:
+        import intraday_cache as _ic  # noqa: PLC0415
+    except Exception:
+        return
+
+    now_ts = time.monotonic()
+    for sym in universe:
+        try:
+            # Per-symbol cooldown to avoid re-triggering on the same bar
+            last = _momentum_last_fired.get(sym, 0.0)
+            if now_ts - last < cooldown_sec:
+                continue
+            s = _ic.get_intraday_summary(sym)
+            if not s or s.get("bar_count", 0) < 3:
+                continue
+            mom = s.get("momentum_5bar")
+            vol = s.get("vol_ratio")
+            if mom is None or vol is None:
+                continue
+            if abs(mom) >= min_move and vol >= min_vol:
+                reason = f"momentum: {sym} {mom:+.1f}% vol={vol:.1f}x"
+                try:
+                    trigger_cycle(reason)
+                    _momentum_last_fired[sym] = now_ts
+                    log.info("[MOMENTUM] trigger fired — %s", reason)
+                except Exception as exc:
+                    log.debug("[MOMENTUM] trigger_cycle failed for %s: %s", sym, exc)
+        except Exception as exc:
+            log.debug("[MOMENTUM] check %s failed: %s", sym, exc)
+
+
+def _run_qualitative_sweep_background(
+    md: dict,
+    regime: dict,
+    symbols: list,
+    now_slot: str,
+    news_hash: str,
+) -> None:
+    """Background worker for the L1 sweep. Sets the running guard on entry
+    and clears it on exit. Updates last-run keys on success. Non-fatal."""
+    global _qualitative_sweep_running, _last_qualitative_sweep_key
+    global _last_qualitative_news_hash
+    try:
+        from bot_stage1_5_qualitative import run_qualitative_sweep  # noqa: PLC0415
+        result = run_qualitative_sweep(md, regime, symbols)
+        if result:
+            _last_qualitative_sweep_key = now_slot
+            _last_qualitative_news_hash = news_hash
+    except Exception as exc:
+        log.warning("[L1] background sweep failed (non-fatal): %s", exc)
+    finally:
+        _qualitative_sweep_running = False
+
+
+def _maybe_refresh_qualitative_context(dry_run: bool = False) -> None:
+    """Fire the L1 Sonnet qualitative sweep when due.
+
+    Scheduled windows (weekdays): 2:00 AM, 6:00 AM, 10:00 AM ET.
+    Event-driven: if the news-hash fingerprint changed since last sweep
+    AND last sweep is older than 30 min.
+
+    Age gate: never re-fire within 4 hours unless event-driven.
+
+    Runs in a background thread so the main cycle never blocks on a ~20-40s
+    Sonnet call. The `_qualitative_sweep_running` flag prevents overlap.
+    """
+    global _qualitative_sweep_running, _qualitative_thread
+
+    now_et = datetime.now(ET)
+    weekday = now_et.weekday()
+    now_min = now_et.hour * 60 + now_et.minute
+
+    # Build a "slot" key — scheduled windows are 2/6/10 AM ET weekdays.
+    # Anything outside those windows can only be triggered by event-driven
+    # refresh (news hash changed + last sweep > 30 min).
+    scheduled_slot: str | None = None
+    if weekday < 5:
+        if 2 * 60 <= now_min < 3 * 60:
+            scheduled_slot = now_et.strftime("%Y-%m-%d-02")
+        elif 6 * 60 <= now_min < 7 * 60:
+            scheduled_slot = now_et.strftime("%Y-%m-%d-06")
+        elif 10 * 60 <= now_min < 11 * 60:
+            scheduled_slot = now_et.strftime("%Y-%m-%d-10")
+
+    if _qualitative_sweep_running:
+        return   # another thread is mid-sweep
+
+    # ── Build snapshot inputs (cheap — just reads market_data cache) ──────
+    try:
+        import watchlist_manager as _wm  # noqa: PLC0415
+        import market_data as _md_mod  # noqa: PLC0415
+
+        wl = _wm.get_active_watchlist()
+        all_syms = [s["symbol"] for s in wl.get("all", []) if s.get("symbol")]
+        if not all_syms:
+            return
+
+        # Read the current cycle's cached md dict if available; otherwise
+        # build a lightweight snapshot.
+        try:
+            md_snap = _md_mod.fetch_all(
+                wl.get("stocks", []) + wl.get("etfs", []),
+                wl.get("crypto", []),
+                "market",
+                next_cycle_time="?",
+            )
+        except Exception as exc:
+            log.debug("[L1] md snapshot build failed: %s", exc)
+            return
+
+        # Regime snapshot (cheap — one Haiku call already happens every cycle,
+        # but we reuse the cached last regime from gate state to avoid an extra call).
+        regime_snap: dict = {}
+        try:
+            _gate_path = Path("data/market/gate_state.json")
+            if _gate_path.exists():
+                _gs = json.loads(_gate_path.read_text())
+                regime_snap = {
+                    "bias":          _gs.get("last_regime", "neutral"),
+                    "regime_score":  50,
+                    "session_theme": "",
+                }
+        except Exception:
+            pass
+
+        from bot_stage1_5_qualitative import news_hash_fingerprint  # noqa: PLC0415
+        news_hash = news_hash_fingerprint(md_snap)
+    except Exception as exc:
+        log.debug("[L1] snapshot assembly failed: %s", exc)
+        return
+
+    # Decide whether to fire
+    fire = False
+    reason = ""
+    if scheduled_slot and scheduled_slot != _last_qualitative_sweep_key:
+        fire = True
+        reason = f"scheduled_slot={scheduled_slot}"
+    else:
+        # Event-driven: news changed AND age gate (>30 min) elapsed
+        try:
+            from bot_stage1_5_qualitative import context_age_minutes  # noqa: PLC0415
+            age_min = context_age_minutes()
+        except Exception:
+            age_min = 1e9
+        if news_hash and news_hash != _last_qualitative_news_hash and age_min > 30:
+            fire = True
+            reason = f"news_hash_change age={age_min:.0f}m"
+        elif age_min > 240 and news_hash:
+            # Hard fallback: 4h age gate ensures we don't go stale even on
+            # quiet news days. Only applies during weekday market-extended
+            # session to avoid overnight over-refresh.
+            if weekday < 5 and 4 * 60 <= now_min < 20 * 60:
+                fire = True
+                reason = f"age_gate age={age_min:.0f}m"
+
+    if not fire:
+        return
+
+    if dry_run:
+        log.info("[L1] [dry-run] would fire qualitative sweep (%s)", reason)
+        return
+
+    log.info("[L1] firing qualitative sweep — %s", reason)
+    _qualitative_sweep_running = True
+    slot_key = scheduled_slot or now_et.strftime("%Y-%m-%d-%H")
+    try:
+        _qualitative_thread = threading.Thread(
+            target=_run_qualitative_sweep_background,
+            args=(md_snap, regime_snap, all_syms, slot_key, news_hash),
+            daemon=True,
+            name="L1_qualitative_sweep",
+        )
+        _qualitative_thread.start()
+    except Exception as exc:
+        _qualitative_sweep_running = False
+        log.warning("[L1] thread start failed (non-fatal): %s", exc)
+
 
 def _maybe_refresh_macro_wire(dry_run: bool = False) -> None:
     """

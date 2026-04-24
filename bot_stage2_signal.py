@@ -1,21 +1,511 @@
 """
-bot_stage2_signal.py — Stage 2: Haiku signal scorer.
+bot_stage2_signal.py — Stage 2 signal scorer.
 
-Public API:
-  score_signals(watchlist_symbols, regime, md, positions) -> dict
-  format_signal_scores(scores)                            -> str
+Three-layer architecture (post-overhaul):
+  L2 (python, deterministic) — computes numerical anchor for every symbol
+  L1 (Sonnet, async)         — writes qualitative_context.json from narrative
+  L3 (Haiku, this module)    — synthesises L1 + L2 into final SignalScore
+
+Public API
+----------
+score_signals_layered(watchlist_symbols, regime, md, positions) -> dict
+    Drop-in replacement for the legacy score_signals(). L3 synthesis layer.
+
+format_signal_scores(scores) -> str
+    Unchanged — formats the final dict for prompt injection.
+
+score_signals(watchlist_symbols, regime, md, positions) -> dict
+    Legacy single-layer Haiku scorer. Kept as a fallback and referenced by
+    tests; not used in the hot path once bot.py imports `score_signals_layered`.
 """
+from __future__ import annotations
 
 import json
+import logging
+from datetime import datetime
 from itertools import islice
 from pathlib import Path
+from typing import Optional
 
 from bot_clients import MODEL_FAST, _get_claude
 from log_setup import get_logger, log_trade
 
 log = get_logger(__name__)
 
-_BATCH_SIZE = 15
+_BASE = Path(__file__).parent
+
+# L3 batch size is smaller than the legacy scorer's because each symbol now
+# carries an L1+L2 context block (~80-120 tokens) in addition to the bare
+# ticker. Target ~1.5K input tokens per batch.
+_BATCH_SIZE = 10
+
+# Legacy path uses a larger batch because its input is much leaner (no L1/L2).
+_LEGACY_BATCH_SIZE = 20
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# L3: Haiku synthesis layer
+# ═════════════════════════════════════════════════════════════════════════════
+
+_L3_SYSTEM = (
+    "You are a synthesis layer for a trading bot's signal pipeline. "
+    "A Python L2 scorer has already computed a numerical score in [0,100] for "
+    "each symbol using RSI, MACD, MA stacks, volume, intraday momentum, and "
+    "ORB context. A separate Sonnet L1 layer has distilled qualitative context "
+    "(insider activity, thesis tags, macro beta stress) into structured tags.\n\n"
+    "Your job is NOT to re-score from scratch. Your job is:\n"
+    "  1. Treat L2_score as your anchor.\n"
+    "  2. Adjust by ≤ 15 points only when L1 context reveals a direct "
+    "contradiction or strong corroboration (e.g. L2 bullish + L1 shows active "
+    "fraud catalyst → adjust down; L2 neutral + L1 shows recent insider buy → "
+    "adjust up modestly).\n"
+    "  3. If you adjust by more than 5 points, cite the reason in "
+    "adjustment_reason. Otherwise leave adjustment_reason empty.\n"
+    "  4. Emit primary_catalyst as a ≤12-word phrase. Use only L1 context and "
+    "L2 signals — do NOT quote prose from elsewhere.\n\n"
+    "HARD RULES:\n"
+    "- Never use 'today', 'tonight', or 'this week' for earnings timing. L2 "
+    "provides earnings_days_away as an integer; write 'earnings in N days' "
+    "when relevant.\n"
+    "- Never invent price levels. L2's price is the only valid price reference.\n"
+    "- If no L1 context is provided for a symbol, use L2 alone — do NOT fabricate.\n\n"
+    "Return JSON only, no markdown. Schema:\n"
+    '{"scored_symbols":{"SYMBOL":{'
+    '"score":<0-100>,"direction":"bullish"|"bearish"|"neutral",'
+    '"conviction":"high"|"medium"|"low"|"avoid",'
+    '"signals":[<strings>],"conflicts":[<strings>],'
+    '"primary_catalyst":"<≤12 words>",'
+    '"orb_candidate":true|false,'
+    '"pattern_watchlist":false|"<caution note>",'
+    '"tier":"core"|"dynamic",'
+    '"l2_score":<number>,"l3_adjustment":<number>,'
+    '"adjustment_reason":"<string or empty>"'
+    '}},'
+    '"top_3":["SYM1","SYM2","SYM3"],'
+    '"elevated_caution":["SYM4"],'
+    '"reasoning":"<2 sentences>"}'
+)
+
+
+def _load_qualitative_context() -> dict:
+    """Read qualitative_context.json gracefully.
+
+    Returns {} if:
+      - file missing
+      - read / parse fails
+      - staleness_minutes computed > 480 (8h)
+    """
+    try:
+        from bot_stage1_5_qualitative import (  # noqa: PLC0415
+            context_age_minutes,
+            load_qualitative_context,
+        )
+        ctx = load_qualitative_context()
+        if not ctx:
+            return {}
+        age = context_age_minutes()
+        if age > 480:
+            log.warning(
+                "[L3] qualitative_context.json is %.0fm stale (>480m) — "
+                "proceeding with L2-only synthesis",
+                age,
+            )
+            return {}
+        if age > 360:
+            log.info(
+                "[L3] qualitative_context.json is %.0fm stale (>360m) — using with warning",
+                age,
+            )
+        ctx["_staleness_minutes"] = age
+        return ctx
+    except Exception as exc:
+        log.debug("[L3] _load_qualitative_context failed: %s", exc)
+        return {}
+
+
+def _format_l2_for_l3(sym: str, l2: dict, qual_entry: Optional[dict],
+                      l2_price: Optional[float]) -> str:
+    """Build the compact per-symbol block that Haiku sees."""
+    score     = l2.get("score", 50)
+    direction = l2.get("direction", "neutral")
+    conviction = l2.get("conviction", "low")
+    signals   = (l2.get("signals") or [])[:6]
+    conflicts = (l2.get("conflicts") or [])[:4]
+    orb_flag  = "yes" if l2.get("orb_candidate") else "no"
+    eda       = l2.get("earnings_days_away")
+    sig_str   = ", ".join(signals) if signals else "(none)"
+    con_str   = ", ".join(conflicts) if conflicts else "(none)"
+
+    lines = [
+        f"{sym}:",
+        f"  L2_score={score} direction={direction} conviction={conviction}",
+        f"  L2_signals: {sig_str}",
+        f"  L2_conflicts: {con_str}",
+    ]
+    if qual_entry and isinstance(qual_entry, dict):
+        tags = ", ".join((qual_entry.get("thesis_tags") or [])[:5]) or "(none)"
+        cat  = qual_entry.get("catalyst_active") or "(none)"
+        mbs  = qual_entry.get("macro_beta_stress") or "unknown"
+        narr = (qual_entry.get("narrative") or "")[:140]
+        lines.append(f"  L1_thesis_tags: {tags}")
+        lines.append(f"  L1_catalyst: {cat}")
+        lines.append(f"  L1_macro_beta_stress: {mbs}")
+        if narr:
+            lines.append(f"  L1_narrative: {narr}")
+
+    # Include price + key numbers so Haiku has a concrete anchor for catalyst prose
+    price_str = f"Price: ${l2_price:.2f}" if l2_price else "Price: ?"
+    eda_str   = f"  earnings_days_away={eda}" if eda is not None else ""
+    lines.append(f"  {price_str}{eda_str}")
+    return "\n".join(lines)
+
+
+def _call_l3_batch(user_content: str) -> dict:
+    """One L3 Haiku call. Returns parsed dict. Raises on total failure."""
+    resp = _get_claude().messages.create(
+        model=MODEL_FAST,
+        max_tokens=4000,
+        system=[{
+            "type": "text",
+            "text": _L3_SYSTEM,
+            "cache_control": {"type": "ephemeral"},
+        }],
+        messages=[{"role": "user", "content": user_content}],
+        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+    )
+    try:
+        from cost_tracker import get_tracker  # noqa: PLC0415
+        get_tracker().record_api_call(MODEL_FAST, resp.usage, caller="signal_scorer_l3")
+    except Exception as _ct_exc:
+        log.debug("[L3] cost tracker failed: %s", _ct_exc)
+    try:
+        from cost_attribution import log_claude_call_to_spine  # noqa: PLC0415
+        log_claude_call_to_spine("signal_scorer_l3", MODEL_FAST, "signal_scoring", resp.usage)
+    except Exception:
+        pass
+
+    raw = resp.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        last_brace = raw.rfind("}")
+        if last_brace >= 0:
+            try:
+                parsed = json.loads(raw[: last_brace + 1])
+                log.debug("[L3] JSON repaired by truncation")
+                return parsed
+            except json.JSONDecodeError:
+                pass
+        # One retry with completeness hint
+        log.debug("[L3] JSON truncated; retrying with completeness hint")
+        _retry_sys = _L3_SYSTEM + (
+            "\n\nCRITICAL: Return ONLY valid complete JSON. If you cannot fit "
+            "all symbols, return fewer rather than truncating."
+        )
+        retry = _get_claude().messages.create(
+            model=MODEL_FAST, max_tokens=4000,
+            system=[{"type": "text", "text": _retry_sys,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": user_content}],
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+        )
+        retry_raw = retry.content[0].text.strip()
+        if retry_raw.startswith("```"):
+            retry_raw = retry_raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return json.loads(retry_raw)
+
+
+def _run_l3_synthesis(
+    symbols: list[str],
+    l2_scores: dict[str, dict],
+    qual_ctx: dict,
+    regime: dict,
+    positions: Optional[list],
+) -> dict:
+    """Batch L3 synthesis across all L2-scored symbols. Returns the final
+    SignalScore dict consumed by downstream A1/A2.
+
+    Falls open to L2-only output on total L3 failure so the cycle never dies.
+    """
+    sym_ctx = qual_ctx.get("symbol_context", {}) if qual_ctx else {}
+    regime_ctx_block = qual_ctx.get("regime_context", {}) if qual_ctx else {}
+    staleness = qual_ctx.get("_staleness_minutes", 0) if qual_ctx else 0
+
+    merged_symbols: dict = {}
+    all_caution: list = []
+    all_reasoning: list = []
+
+    # Build regime / L1 regime header once — cached via prompt_caching in L3.
+    regime_line = (
+        f"REGIME: score={regime.get('regime_score', 50)} "
+        f"bias={regime.get('bias', 'neutral')} "
+        f"theme={regime.get('session_theme', '?')}  "
+        f"constraints={regime.get('constraints', [])}"
+    )
+    l1_regime_line = ""
+    if isinstance(regime_ctx_block, dict) and regime_ctx_block:
+        narr = (regime_ctx_block.get("narrative") or "")[:180]
+        ron  = ", ".join(regime_ctx_block.get("risk_on_catalysts", [])[:4]) or "(none)"
+        roff = ", ".join(regime_ctx_block.get("risk_off_catalysts", [])[:4]) or "(none)"
+        l1_regime_line = (
+            f"L1_regime_narrative: {narr}\n"
+            f"L1_risk_on: {ron}\n"
+            f"L1_risk_off: {roff}\n"
+            f"L1_staleness_minutes: {int(staleness)}"
+        )
+
+    _it = iter(symbols)
+    while True:
+        batch = list(islice(_it, _BATCH_SIZE))
+        if not batch:
+            break
+
+        sym_blocks: list[str] = []
+        for sym in batch:
+            l2 = l2_scores.get(sym)
+            if not l2:
+                continue
+            l2_price = l2.get("price")
+            qual_entry = sym_ctx.get(sym) if isinstance(sym_ctx, dict) else None
+            sym_blocks.append(_format_l2_for_l3(sym, l2, qual_entry, l2_price))
+
+        if not sym_blocks:
+            continue
+
+        user_content = (
+            f"{regime_line}\n\n"
+            f"{l1_regime_line}\n\n"
+            f"=== SYMBOLS ===\n"
+            + "\n\n".join(sym_blocks)
+            + "\n\nProduce the JSON synthesis object per the schema. "
+              "Every symbol in the input must appear in scored_symbols. "
+              "Remember: L2_score is your anchor — ≤15 point adjustment, "
+              "explain >5 in adjustment_reason."
+        )
+
+        try:
+            batch_result = _call_l3_batch(user_content)
+        except Exception as exc:
+            log.warning("[L3] batch %s failed: %s — falling back to L2 for these symbols", batch, exc)
+            # L2-only fallback for this batch
+            for sym in batch:
+                l2 = l2_scores.get(sym, {})
+                merged_symbols[sym] = _l2_to_signal_score(sym, l2)
+            continue
+
+        ss = batch_result.get("scored_symbols", {}) or {}
+        for sym in batch:
+            row = ss.get(sym)
+            if isinstance(row, dict):
+                # Enforce the ≤15 point adjustment guardrail defensively
+                l2 = l2_scores.get(sym, {})
+                l2_score = float(l2.get("score", 50))
+                final = float(row.get("score", l2_score))
+                adjustment = final - l2_score
+                if abs(adjustment) > 15.0:
+                    clamped = l2_score + max(-15.0, min(15.0, adjustment))
+                    log.debug(
+                        "[L3] %s clamped adjustment %.1f → %.1f (anchor=%.1f)",
+                        sym, adjustment, clamped - l2_score, l2_score,
+                    )
+                    final = clamped
+                    adjustment = final - l2_score
+                row["score"]             = round(final, 1)
+                row["l2_score"]          = round(l2_score, 1)
+                row["l3_adjustment"]     = round(adjustment, 1)
+                row.setdefault("adjustment_reason", "")
+                row.setdefault("orb_candidate", bool(l2.get("orb_candidate")))
+                row.setdefault("pattern_watchlist", l2.get("pattern_watchlist") or False)
+                # Keep L2's earnings_days_away passthrough
+                if "earnings_days_away" not in row and l2.get("earnings_days_away") is not None:
+                    row["earnings_days_away"] = l2.get("earnings_days_away")
+                merged_symbols[sym] = row
+            else:
+                # L3 dropped this symbol — use L2 anchor
+                merged_symbols[sym] = _l2_to_signal_score(sym, l2_scores.get(sym, {}))
+
+        all_caution.extend(batch_result.get("elevated_caution", []) or [])
+        if batch_result.get("reasoning"):
+            all_reasoning.append(batch_result["reasoning"])
+
+    if not merged_symbols:
+        log.warning("[L3] No symbols made it through L3 — full L2 fallback")
+        for sym, l2 in l2_scores.items():
+            merged_symbols[sym] = _l2_to_signal_score(sym, l2)
+
+    sorted_syms = sorted(
+        merged_symbols.items(),
+        key=lambda kv: float(kv[1].get("score", 0)) if isinstance(kv[1], dict) else 0,
+        reverse=True,
+    )
+    seen_c: set = set()
+    result = {
+        "scored_symbols": merged_symbols,
+        "top_3": [s for s, _ in sorted_syms[:3]],
+        "elevated_caution": [s for s in all_caution if not (s in seen_c or seen_c.add(s))],
+        "reasoning": " | ".join(all_reasoning),
+        "l1_staleness_minutes": int(staleness),
+        "l3_used": True,
+    }
+    log.info(
+        "[L3] synthesised %d symbols  top_3=%s  l1_stale=%sm",
+        len(merged_symbols), result["top_3"], int(staleness),
+    )
+    return result
+
+
+def _l2_to_signal_score(sym: str, l2: dict) -> dict:
+    """Project a pure L2 result into the legacy SignalScore shape. Used as
+    fallback when L3 is unavailable or silently drops a symbol."""
+    if not l2:
+        return {
+            "score": 50.0, "direction": "neutral", "conviction": "low",
+            "signals": [], "conflicts": ["l2_missing"],
+            "primary_catalyst": "",
+            "orb_candidate": False, "pattern_watchlist": False,
+            "tier": "dynamic",
+            "l2_score": 50.0, "l3_adjustment": 0.0,
+            "adjustment_reason": "l3_unavailable",
+        }
+    return {
+        "score":             float(l2.get("score", 50.0)),
+        "direction":         l2.get("direction", "neutral"),
+        "conviction":        l2.get("conviction", "low"),
+        "signals":           list(l2.get("signals", []) or []),
+        "conflicts":         list(l2.get("conflicts", []) or []),
+        "primary_catalyst":  "",
+        "orb_candidate":     bool(l2.get("orb_candidate")),
+        "pattern_watchlist": l2.get("pattern_watchlist") or False,
+        "tier":              "core" if sym else "dynamic",
+        "l2_score":          float(l2.get("score", 50.0)),
+        "l3_adjustment":     0.0,
+        "adjustment_reason": "l3_unavailable_or_skip",
+        "earnings_days_away": l2.get("earnings_days_away"),
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# score_signals_layered — public entry point (replaces score_signals)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def score_signals_layered(
+    watchlist_symbols: list,
+    regime: dict,
+    md: dict,
+    positions: list = None,
+) -> dict:
+    """Three-layer signal scoring.
+
+    L2 (python)  — numerical anchor per symbol (zero API calls)
+    L1 (Sonnet)  — qualitative context, read-only from disk
+    L3 (Haiku)   — synthesise L1 + L2 into final SignalScore shape
+
+    Drop-in replacement for the legacy score_signals(). Returns the same
+    top-level shape ({"scored_symbols", "top_3", "elevated_caution",
+    "reasoning"}) plus two new metadata fields (`l1_staleness_minutes`,
+    `l3_used`) which existing consumers safely ignore.
+    """
+    if not watchlist_symbols:
+        return {}
+
+    try:
+        _MAX_SCORED = 80
+        scored: list[str] = []
+        seen: set[str] = set()
+
+        def _add(sym: str) -> None:
+            if sym in seen or sym not in watchlist_symbols:
+                return
+            scored.append(sym)
+            seen.add(sym)
+
+        # Priority 1: held positions
+        for p in (positions or []):
+            if float(getattr(p, "qty", 0)) > 0:
+                _add(getattr(p, "symbol", ""))
+
+        # Priority 2: morning brief conviction picks (structural only — no prose)
+        try:
+            _brief_path = _BASE / "data" / "market" / "morning_brief.json"
+            if _brief_path.exists():
+                _brief = json.loads(_brief_path.read_text())
+                for pick in (_brief.get("conviction_picks") or []):
+                    _add(str(pick.get("symbol", "")))
+        except Exception:
+            pass
+
+        # Priority 3: breaking news mentions
+        _news = (md or {}).get("breaking_news", "") or ""
+        for sym in watchlist_symbols:
+            if sym in _news:
+                _add(sym)
+
+        # Priority 4: fill remainder
+        for sym in watchlist_symbols:
+            if len(scored) >= _MAX_SCORED:
+                break
+            _add(sym)
+
+        log.debug("[SIGNALS_L] scoring %d/%d symbols", len(scored), len(watchlist_symbols))
+
+        # ── L2: python deterministic (ZERO API calls) ─────────────────────────
+        try:
+            from bot_stage2_python import score_all_symbols_python  # noqa: PLC0415
+            l2_scores = score_all_symbols_python(scored, md or {}, regime or {})
+        except Exception as exc:
+            log.warning("[SIGNALS_L] L2 python scoring failed: %s — falling back to legacy scorer", exc)
+            return score_signals(watchlist_symbols, regime, md, positions)
+
+        # ── L1: qualitative context (read-only from disk) ────────────────────
+        qual_ctx = _load_qualitative_context()
+
+        # ── L3: Haiku synthesis ──────────────────────────────────────────────
+        result = _run_l3_synthesis(scored, l2_scores, qual_ctx, regime or {}, positions)
+
+        log_trade({
+            "event":             "signal_scoring",
+            "layer_architecture": "L2+L3",
+            "top_3":             result.get("top_3", []),
+            "elevated_caution":  result.get("elevated_caution", []),
+            "scored_count":      len(result.get("scored_symbols", {})),
+            "l1_staleness_min":  result.get("l1_staleness_minutes", 0),
+        })
+
+        # Archive to daily_conviction.json (unchanged from legacy behaviour)
+        try:
+            conv_path = _BASE / "data" / "market" / "daily_conviction.json"
+            existing: list = []
+            if conv_path.exists():
+                try:
+                    existing = json.loads(conv_path.read_text())
+                    if not isinstance(existing, list):
+                        existing = []
+                except Exception:
+                    existing = []
+            existing.append({
+                "ts": datetime.now().isoformat(),
+                "top_3": result.get("top_3", []),
+                "l1_staleness_min": result.get("l1_staleness_minutes", 0),
+            })
+            conv_path.write_text(json.dumps(existing[-50:], indent=2))
+        except Exception:
+            pass
+
+        return result
+
+    except Exception as exc:
+        log.warning("[SIGNALS_L] Layered scorer failed (%s) — falling back to legacy", exc)
+        try:
+            return score_signals(watchlist_symbols, regime, md, positions)
+        except Exception:
+            return {}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Legacy single-layer Haiku scorer (kept as fallback)
+# ═════════════════════════════════════════════════════════════════════════════
 
 _SIGNAL_SYS = (
     "You are a signal scorer for a trading bot. Score symbols based on available signals. "
@@ -33,17 +523,27 @@ _SIGNAL_SYS = (
 
 
 def _call_single_batch(user_content: str) -> dict:
-    """Make one scored-symbols API call with repair+retry. Returns parsed result dict."""
+    """Legacy single-Haiku-call batch scorer. Preserved for fallback."""
     resp = _get_claude().messages.create(
         model=MODEL_FAST, max_tokens=4000,
-        system=[{"type": "text", "text": _SIGNAL_SYS}],
+        system=[{
+            "type": "text",
+            "text": _SIGNAL_SYS,
+            "cache_control": {"type": "ephemeral"},
+        }],
         messages=[{"role": "user", "content": user_content}],
+        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
     )
     try:
         from cost_tracker import get_tracker
         get_tracker().record_api_call(MODEL_FAST, resp.usage, caller="signal_scorer")
     except Exception as _ct_exc:
-        log.warning("Cost tracker failed: %s", _ct_exc)
+        log.debug("[SIGNALS] Cost tracker failed: %s", _ct_exc)
+    try:
+        from cost_attribution import log_claude_call_to_spine
+        log_claude_call_to_spine("signal_scorer", MODEL_FAST, "signal_scoring", resp.usage)
+    except Exception:
+        pass
     raw = resp.content[0].text.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
@@ -62,13 +562,15 @@ def _call_single_batch(user_content: str) -> dict:
         _retry_sys = _SIGNAL_SYS + "\nReturn ONLY valid complete JSON. If you cannot fit all symbols, return fewer rather than truncating."
         _retry_resp = _get_claude().messages.create(
             model=MODEL_FAST, max_tokens=4000,
-            system=[{"type": "text", "text": _retry_sys}],
+            system=[{"type": "text", "text": _retry_sys,
+                     "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}],
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
         _retry_raw = _retry_resp.content[0].text.strip()
         if _retry_raw.startswith("```"):
             _retry_raw = _retry_raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        return json.loads(_retry_raw)  # raises on failure — caller handles
+        return json.loads(_retry_raw)
 
 
 def score_signals(
@@ -77,10 +579,10 @@ def score_signals(
     md: dict,
     positions: list = None,
 ) -> dict:
-    """
-    Stage 2: Haiku call scoring watchlist symbols against all signals.
-    Only runs during market session. Fails to empty dict on error.
-    System prompt cached.
+    """Legacy single-layer Haiku scorer — kept as a fallback path.
+
+    bot.py imports `score_signals_layered` (aliased as `score_signals` at call
+    time), so this function is only used when the layered path fails.
 
     Symbol list is capped at _MAX_SCORED, prioritised:
       1. Currently held positions (always included)
@@ -91,7 +593,7 @@ def score_signals(
     if not watchlist_symbols:
         return {}
     try:
-        _MAX_SCORED = 35
+        _MAX_SCORED = 80
         scored: list[str] = []
         seen: set[str] = set()
 
@@ -106,7 +608,7 @@ def score_signals(
                 _add(p.symbol)
 
         try:
-            _brief_path = Path(__file__).parent / "data" / "market" / "morning_brief.json"
+            _brief_path = _BASE / "data" / "market" / "morning_brief.json"
             if _brief_path.exists():
                 _brief = json.loads(_brief_path.read_text())
                 for pick in _brief.get("conviction_picks", []):
@@ -131,7 +633,7 @@ def score_signals(
                          if any(s in l for s in scored)][:10]
         orb_str = "(none)"
         try:
-            orb_path = Path(__file__).parent / "data" / "scanner" / "orb_candidates.json"
+            orb_path = _BASE / "data" / "scanner" / "orb_candidates.json"
             if orb_path.exists():
                 orb_cands = json.loads(orb_path.read_text()).get("candidates", [])
                 orb_str = "\n".join(
@@ -160,7 +662,7 @@ def score_signals(
 
         _it = iter(scored)
         while True:
-            batch = list(islice(_it, _BATCH_SIZE))
+            batch = list(islice(_it, _LEGACY_BATCH_SIZE))
             if not batch:
                 break
             b_insider = [l for l in insider_lines if any(s in l for s in batch)]
@@ -204,7 +706,7 @@ def score_signals(
                    "scored_count": len(result.get("scored_symbols", {}))})
         try:
             from datetime import datetime as _dt
-            conv_path = Path(__file__).parent / "data" / "market" / "daily_conviction.json"
+            conv_path = _BASE / "data" / "market" / "daily_conviction.json"
             existing: list = []
             if conv_path.exists():
                 try:
@@ -222,6 +724,10 @@ def score_signals(
         log.warning("[SIGNALS] Scorer failed (non-fatal): %s", exc)
         return {}
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Format helper (unchanged)
+# ═════════════════════════════════════════════════════════════════════════════
 
 def format_signal_scores(scores: dict) -> str:
     if not scores:

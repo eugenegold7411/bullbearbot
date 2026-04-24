@@ -179,7 +179,16 @@ def _score_article(headline: str, summary: str) -> tuple:
                 if highest_tier == "none" or tier_order.index(tier) < tier_order.index(highest_tier):
                     highest_tier = tier
 
-    return round(min(score, 10.0), 2), highest_tier, matched[:10]
+    # Relative scaling before cap: compress the top end so routine
+    # geopolitical articles don't all cluster at 10.0.
+    if score >= 8.0:
+        final = 8.0 + (score - 8.0) * 0.2
+    elif score >= 5.0:
+        final = 5.0 + (score - 5.0) * 0.6
+    else:
+        final = score
+
+    return round(min(final, 10.0), 2), highest_tier, matched[:10]
 
 
 # ── RSS fetch ─────────────────────────────────────────────────────────────────
@@ -416,6 +425,16 @@ def save_significant_events(articles: list) -> None:
                             )
                         except Exception as _trig_exc:
                             log.debug("trigger_cycle skipped (non-fatal): %s", _trig_exc)
+                        # Critical events also invalidate L1 qualitative context
+                        # so the next scheduler pass sees news_hash change and fires
+                        # a sweep. We nudge by clearing the last_news_hash module
+                        # var; the L1 refresh function rechecks hash on next call.
+                        if tier == "critical":
+                            try:
+                                import scheduler as _sched2  # noqa: PLC0415
+                                _sched2._last_qualitative_news_hash = ""
+                            except Exception:
+                                pass
     except Exception as exc:
         log.warning("save_significant_events failed: %s", exc)
 

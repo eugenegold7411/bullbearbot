@@ -34,12 +34,16 @@ _SYSTEM = """You are a senior portfolio manager running a morning briefing for y
 
 For each idea:
 - Name the symbol and direction (long/short)
-- State the specific catalyst driving the thesis
+- State the catalyst using the STRUCTURED schema below — never free prose for dates
 - Identify the key risk that could invalidate the trade
-- Suggest entry zone, stop level, and target
+- Suggest entry zone, stop level, and target for the EQUITY (never for a commodity, index, or underlying asset)
 - Rate conviction: high/medium
 
-Be specific. Reference actual data points from the intelligence provided. No generic market commentary. If there are no high-conviction setups today, say so clearly — "no edge today" is a valid and valuable output.
+HARD CONSTRAINTS:
+1. `entry_zone` MUST be the equity or option price range you are recommending — NEVER a commodity spot price, index level, or underlying asset price. If the thesis depends on a commodity, reference the commodity separately in `catalyst.short_text`.
+2. `catalyst.date_iso` and `catalyst.days_away` MUST come from the earnings calendar data provided — do NOT infer dates. For non-earnings catalysts, emit null for both.
+3. `catalyst.short_text` MUST use "in N days" (never "today" / "tonight" / "this week") for any future date reference, where N equals `catalyst.days_away`.
+4. If no high-conviction setups, emit `conviction_picks: []` — "no edge today" is a valid output.
 
 Return ONLY valid JSON in this exact format:
 {
@@ -49,7 +53,12 @@ Return ONLY valid JSON in this exact format:
     {
       "symbol": "NVDA",
       "direction": "long",
-      "catalyst": "CEO bought $2M yesterday, gap above resistance",
+      "catalyst": {
+        "type": "earnings" | "insider" | "macro" | "technical" | "other",
+        "date_iso": "YYYY-MM-DD" | null,
+        "days_away": <integer> | null,
+        "short_text": "max 12 words — use 'in N days' not 'today' for future dates"
+      },
       "risk": "Broader tech selloff on rate fears",
       "entry_zone": "118-120",
       "stop": "115",
@@ -78,6 +87,22 @@ def _load_context() -> str:
         pass
 
     # VIX + macro snapshot
+    # Commodity prices are labelled explicitly to prevent the author from
+    # confusing WTI crude spot with XLE or USO equity prices. If an equity
+    # tracks a commodity (XLE → energy sector, USO → WTI), its price is
+    # emitted alongside the commodity spot so the contrast is obvious.
+    xle_price = None
+    uso_price = None
+    try:
+        from data_warehouse import load_bars_cached
+        _xle = load_bars_cached("XLE") or []
+        if _xle:
+            xle_price = float(_xle[-1].get("close", 0) or 0) or None
+        _uso = load_bars_cached("USO") or []
+        if _uso:
+            uso_price = float(_uso[-1].get("close", 0) or 0) or None
+    except Exception:
+        pass
     try:
         from data_warehouse import load_macro_snapshot
         macro = load_macro_snapshot()
@@ -86,7 +111,14 @@ def _load_context() -> str:
             parts.append(f"\nVIX: {vix.get('price','?')} ({vix.get('chg_pct',0):+.1f}%)")
         oil = macro.get("oil", {})
         if oil:
-            parts.append(f"Oil: {oil.get('price','?')} ({oil.get('chg_pct',0):+.1f}%)")
+            parts.append(
+                f"WTI crude oil spot (NOT equity price): "
+                f"${oil.get('price','?')} ({oil.get('chg_pct',0):+.1f}%)"
+            )
+            if xle_price:
+                parts.append(f"XLE ETF price: ${xle_price:.2f}")
+            if uso_price:
+                parts.append(f"USO ETF price: ${uso_price:.2f}")
     except Exception:
         pass
 
@@ -134,11 +166,17 @@ def _load_context() -> str:
     except Exception:
         pass
 
-    # Earnings calendar (today + tomorrow)
+    # Earnings calendar (today + tomorrow) — use the structured-date format
+    # helper so every line renders as "reports YYYY-MM-DD (N days away)".
+    # This avoids relative phrases ("reports today", "reports this week") that
+    # Claude can misinterpret as same-session when the brief is hours old.
     try:
         from data_warehouse import load_earnings_calendar
+        from datetime import date as _date  # noqa: PLC0415
+        from earnings_calendar_lookup import format_earnings_line  # noqa: PLC0415
         ec = load_earnings_calendar()
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_dt = _date.today()
+        today_str = today_dt.isoformat()
         upcoming = [
             e for e in ec.get("calendar", [])
             if e.get("earnings_date", "") >= today_str
@@ -146,7 +184,13 @@ def _load_context() -> str:
         if upcoming:
             parts.append("\n=== EARNINGS (today + upcoming) ===")
             for e in upcoming:
-                parts.append(f"  {e.get('symbol','?')}  reports: {e.get('earnings_date','?')}")
+                sym = e.get("symbol", "?")
+                iso = str(e.get("earnings_date", ""))[:10]
+                try:
+                    n_days = (_date.fromisoformat(iso) - today_dt).days
+                except Exception:
+                    n_days = None
+                parts.append("  " + format_earnings_line(sym, n_days, iso))
     except Exception:
         pass
 
@@ -174,7 +218,97 @@ def _load_context() -> str:
     except Exception:
         pass
 
+    # Account 2 open options structures
+    try:
+        from options_state import format_a2_closed_today, format_a2_summary_section  # noqa: PLC0415
+        _a2_open   = format_a2_summary_section()
+        _a2_closed = format_a2_closed_today()
+        parts.append("\n=== ACCOUNT 2 (OPTIONS) OPEN POSITIONS ===")
+        parts.append(_a2_open)
+        if _a2_closed and "no A2 close events today" not in _a2_closed:
+            parts.append("Closed yesterday:")
+            parts.append(_a2_closed)
+    except Exception:
+        pass
+
     return "\n".join(parts) if parts else "No overnight intelligence available."
+
+
+def _parse_entry_zone_midpoint(ez: str) -> float | None:
+    """Parse "91.50-92.50" / "$91.50-$92.50" / "91.5 to 92.5" → midpoint float."""
+    if not ez:
+        return None
+    import re as _re
+    nums = _re.findall(r"\d+(?:\.\d+)?", str(ez))
+    if not nums:
+        return None
+    try:
+        vals = [float(n) for n in nums[:2]]
+    except Exception:
+        return None
+    if len(vals) == 1:
+        return vals[0]
+    return (vals[0] + vals[1]) / 2.0
+
+
+def _current_prices_from_disk() -> dict:
+    """Best-effort snapshot of last-known equity prices from cached bars.
+    Used by the morning-brief post-gen validator. Non-fatal."""
+    prices: dict = {}
+    try:
+        from data_warehouse import load_bars_cached
+        import watchlist_manager as _wm  # noqa: PLC0415
+        wl = _wm.get_active_watchlist()
+        for sym in wl.get("stocks", []) + wl.get("etfs", []):
+            try:
+                bars = load_bars_cached(sym) or []
+                if bars:
+                    prices[sym] = float(bars[-1].get("close", 0) or 0)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return prices
+
+
+def _validate_and_sanitize_brief(brief: dict) -> dict:
+    """Drop picks whose entry_zone is implausible for the symbol's actual
+    price (ratio > 2.0x or < 0.5x vs last-known close). This catches the
+    XLE/WTI confusion failure mode — if Sonnet's entry_zone midpoint is
+    within 50-200% of the equity price, the pick is kept; otherwise it's
+    dropped with a WARNING."""
+    if not isinstance(brief, dict):
+        return brief
+    picks = brief.get("conviction_picks") or []
+    if not picks:
+        return brief
+    current_prices = _current_prices_from_disk()
+    kept: list = []
+    for pick in picks:
+        if not isinstance(pick, dict):
+            continue
+        sym = (pick.get("symbol") or "").upper()
+        ez  = pick.get("entry_zone", "")
+        cp  = current_prices.get(sym)
+        if sym and cp and cp > 0:
+            mid = _parse_entry_zone_midpoint(ez)
+            if mid and mid > 0:
+                ratio = mid / cp
+                if ratio > 2.0 or ratio < 0.5:
+                    log.warning(
+                        "[MORNING] dropping %s — entry_zone=%s midpoint=$%.2f "
+                        "vs price=$%.2f (ratio=%.2fx)",
+                        sym, ez, mid, cp, ratio,
+                    )
+                    continue
+        kept.append(pick)
+    if len(kept) != len(picks):
+        brief = dict(brief)
+        brief["conviction_picks"] = kept
+        brief["_validation_note"] = (
+            f"{len(picks) - len(kept)} pick(s) dropped by entry_zone sanity check"
+        )
+    return brief
 
 
 def _save_brief(brief: dict) -> None:
@@ -243,7 +377,23 @@ def format_morning_brief_section() -> str:
                 f"entry={p.get('entry_zone','?')}  stop={p.get('stop','?')}  "
                 f"target={p.get('target','?')}"
             )
-            lines.append(f"       catalyst: {p.get('catalyst','?')}")
+            # catalyst may be the legacy free-prose string OR the new structured dict
+            cat_raw = p.get("catalyst", "?")
+            if isinstance(cat_raw, dict):
+                ctype = cat_raw.get("type", "other")
+                days  = cat_raw.get("days_away")
+                iso   = cat_raw.get("date_iso")
+                text  = cat_raw.get("short_text", "")
+                date_suffix = ""
+                if days is not None:
+                    date_suffix = f" (in {days}d"
+                    if iso:
+                        date_suffix += f", {iso}"
+                    date_suffix += ")"
+                cat_line = f"[{ctype}] {text}{date_suffix}"
+            else:
+                cat_line = str(cat_raw)
+            lines.append(f"       catalyst: {cat_line}")
             lines.append(f"       risk:     {p.get('risk','?')}")
 
     avoid = brief.get("avoid_today", [])
@@ -294,11 +444,15 @@ def generate_morning_brief() -> dict:
             "brief_summary":   f"Morning brief generation failed: {exc}",
         }
 
+    # Post-generation sanity check: drop picks where entry_zone is implausible
+    # vs the symbol's actual price (catches commodity-price-vs-equity confusion).
+    brief = _validate_and_sanitize_brief(brief)
+
     _save_brief(brief)
 
     # WhatsApp with top pick
     try:
-        _send_sms_brief(brief)
+        _send_whatsapp_brief(brief)
     except Exception as exc:
         log.warning("[MORNING] WhatsApp failed: %s", exc)
 
@@ -308,7 +462,7 @@ def generate_morning_brief() -> dict:
     return brief
 
 
-def _send_sms_brief(brief: dict) -> None:
+def _send_whatsapp_brief(brief: dict) -> None:
     sid   = os.getenv("TWILIO_ACCOUNT_SID")
     token = os.getenv("TWILIO_AUTH_TOKEN")
     from_ = os.getenv("WHATSAPP_FROM")
@@ -321,9 +475,14 @@ def _send_sms_brief(brief: dict) -> None:
     tone  = brief.get("market_tone", "?").upper()
     if picks:
         top   = picks[0]
+        cat_raw = top.get("catalyst", "?")
+        if isinstance(cat_raw, dict):
+            cat_text = (cat_raw.get("short_text") or "")[:80]
+        else:
+            cat_text = str(cat_raw)[:80]
         msg   = (f"MORNING BRIEF [{tone}]: "
                  f"{top.get('symbol')} {top.get('direction','?').upper()} "
-                 f"— {top.get('catalyst','?')[:80]}  "
+                 f"— {cat_text}  "
                  f"stop={top.get('stop')} tgt={top.get('target')}")
     else:
         msg = f"MORNING BRIEF [{tone}]: No high-conviction setups today. {brief.get('brief_summary','')[:100]}"

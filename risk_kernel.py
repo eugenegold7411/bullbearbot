@@ -195,7 +195,7 @@ def _effective_exposure_cap(snapshot: BrokerSnapshot, conviction: float) -> floa
     Max total portfolio exposure allowed for this conviction level.
 
     Mirrors order_executor.py margin cap logic exactly:
-      >= 0.75 (HIGH)   → 2.0× equity (full margin)
+      >= 0.75 (HIGH)   → 3.0× equity (full margin — matches MARGIN_HIGH_CONVICTION)
       >= 0.50 (MEDIUM) → 1.5× equity (partial margin)
       < 0.50  (LOW)    → 1.0× equity (no margin)
     Hard ceiling: never exceed 3× equity regardless of buying_power.
@@ -203,7 +203,7 @@ def _effective_exposure_cap(snapshot: BrokerSnapshot, conviction: float) -> floa
     equity = snapshot.equity
     bp     = max(snapshot.buying_power, equity)  # safety floor
     if conviction >= 0.75:
-        cap = equity * 2.0
+        cap = equity * 3.0
     elif conviction >= 0.50:
         cap = equity * 1.5
     else:

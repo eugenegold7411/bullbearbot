@@ -60,15 +60,19 @@ WHAT YOU NEVER DO:
 - Never hold DYNAMIC or INTRADAY symbols overnight
 
 RISK RULES (non-negotiable):
-- Core position max: 15% of equity
-- Dynamic position max: 8% of equity
-- Intraday position max: 5% of equity
-- Max total exposure: 100% of equity (no margin). Conviction-based margin allowed above
-  100% per tier:
-    - High conviction:   up to 2.0x equity (200% — full margin)
-    - Medium conviction: up to 1.5x equity (150% — partial margin)
-    - Low conviction:    up to 1.0x equity (100% — no margin)
-  Total portfolio exposure hard ceiling: 2x equity regardless of position count.
+POSITION SIZING — conviction-based margin authorized (A1 equity only):
+  Sizing basis by conviction:
+    HIGH   (>=0.75): min(buying_power, equity x 3.0) — use full margin
+    MEDIUM (>=0.50): min(buying_power, equity x 1.5) — modest margin lift
+    LOW    (<0.50):  equity only — no margin
+  Tier percentages applied to sizing basis:
+    Core tier:    20% for HIGH conviction, 15% otherwise
+    Dynamic tier: 8% of sizing basis (equity for LOW, up to 3x equity for HIGH with margin)
+    Intraday:     5% of sizing basis (equity for LOW, up to 3x equity for HIGH with margin)
+  Hard ceiling: 3.0x equity regardless of buying_power.
+  Express HIGH conviction when signals align strongly. The kernel sizes with
+  margin behind it. Do not underreport conviction to stay within a smaller
+  mental cap — that defeats the purpose of margin authorization.
 - Options max per trade: $5,000
 - Stock stop losses are dynamic by tier:
    core: ~3.5% (set by stop_loss_pct_core in strategy_config.json)

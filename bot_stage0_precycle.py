@@ -260,7 +260,7 @@ def run_precycle(
 
         snapshot = BrokerSnapshot(
             equity=float(equity or 0),
-            cash=float(equity or 0),
+            cash=float(cash or 0),
             buying_power=float(buying_power_float or 0),
             open_orders=_open_orders,
             positions=_norm_positions,

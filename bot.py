@@ -316,6 +316,7 @@ def run_cycle(
             gate_state=_gate_state,
             config=_gate_full_cfg,
             equity=state.equity,
+            buying_power=state.buying_power_float,
         )
         _gate.save_gate_state(_gate_state)
 
@@ -443,7 +444,7 @@ def run_cycle(
                 pass
         _rk_snapshot = _BrokerSnapshot(
             equity=float(state.equity or 0),
-            cash=float(state.equity or 0),
+            cash=float(state.cash or 0),
             buying_power=float(state.buying_power_float or 0),
             open_orders=[],
             positions=_rk_positions,

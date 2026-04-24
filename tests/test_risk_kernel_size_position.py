@@ -215,3 +215,170 @@ class TestQtyRounding:
             _idea(), _snapshot(), kernel_config, current_price=0.0,
         )
         assert isinstance(result, str)
+
+
+# ── BP-aware margin sizing (Thing 1) ──────────────────────────────────────────
+
+import copy
+from risk_kernel import _effective_exposure_cap
+
+
+def _margin_snapshot(
+    equity: float = 100_000.0,
+    buying_power: float = 300_000.0,
+    extra_exposure: float = 0.0,
+) -> BrokerSnapshot:
+    """Snapshot simulating a 3x margin account: BP > equity."""
+    positions = []
+    if extra_exposure > 0:
+        positions.append(NormalizedPosition(
+            symbol="SPY", alpaca_sym="SPY",
+            qty=extra_exposure / 100.0,
+            avg_entry_price=100.0, current_price=100.0,
+            market_value=extra_exposure,
+            unrealized_pl=0.0, unrealized_plpc=0.0,
+            is_crypto_pos=False,
+        ))
+    return BrokerSnapshot(
+        positions=positions,
+        open_orders=[],
+        equity=equity,
+        cash=max(0.0, equity - extra_exposure),
+        buying_power=buying_power,
+    )
+
+
+def _margin_config(kernel_config: dict, *, margin_authorized: bool = True,
+                   multiplier: float = 3.0) -> dict:
+    """Deep-copy kernel_config and inject Thing 1 margin parameters."""
+    cfg = copy.deepcopy(kernel_config)
+    cfg["parameters"]["margin_authorized"] = margin_authorized
+    cfg["parameters"]["margin_sizing_multiplier"] = multiplier
+    cfg["parameters"]["margin_sizing_conviction_thresholds"] = {
+        "high": 0.75, "medium": 0.50,
+    }
+    return cfg
+
+
+class TestBPAwareSizing:
+    def test_high_conviction_margin_3x_basis(self, kernel_config):
+        # HIGH (0.80) + margin_authorized + 3.0 multiplier
+        # sizing_basis = min(BP=300K, equity*3=300K) = 300K
+        # core HIGH bump 20% → 60K; at $100 → 600 shares
+        cfg = _margin_config(kernel_config, multiplier=3.0)
+        qty, value = size_position(
+            _idea(tier=Tier.CORE, conviction=0.80), _margin_snapshot(),
+            cfg, current_price=100.0,
+        )
+        assert abs(value - 60_000.0) < 1.0
+        assert qty == 600
+
+    def test_medium_conviction_margin_capped_at_15x(self, kernel_config):
+        # MEDIUM (0.60): sizing_basis = min(BP=300K, equity * min(3, 1.5)=150K) = 150K
+        # core 15% → 22,500
+        cfg = _margin_config(kernel_config, multiplier=3.0)
+        qty, value = size_position(
+            _idea(tier=Tier.CORE, conviction=0.60), _margin_snapshot(),
+            cfg, current_price=100.0,
+        )
+        assert abs(value - 22_500.0) < 1.0
+
+    def test_low_conviction_no_margin(self, kernel_config):
+        # LOW (0.30): sizing_basis = equity = 100K
+        # core 15% → 15,000 (same as cash account)
+        cfg = _margin_config(kernel_config, multiplier=3.0)
+        qty, value = size_position(
+            _idea(tier=Tier.CORE, conviction=0.30), _margin_snapshot(),
+            cfg, current_price=100.0,
+        )
+        assert abs(value - 15_000.0) < 1.0
+
+    def test_margin_authorized_false_disables_basis(self, kernel_config):
+        # margin_authorized=False, HIGH conviction:
+        # sizing_basis = equity → core HIGH bump (20%) = 20,000
+        cfg = _margin_config(kernel_config, margin_authorized=False, multiplier=3.0)
+        qty, value = size_position(
+            _idea(tier=Tier.CORE, conviction=0.80), _margin_snapshot(),
+            cfg, current_price=100.0,
+        )
+        assert abs(value - 20_000.0) < 1.0
+
+
+class TestBPAwareEligibility:
+    def test_high_conviction_existing_position_passes(self, kernel_config):
+        # Eligibility ceiling moved out of eligibility_check by sprint refactor.
+        # This test confirms eligibility now passes for any non-PDT/non-VIX/non-session
+        # condition — a HIGH conviction BUY with no blocking conditions returns None.
+        from risk_kernel import eligibility_check
+        cfg = _margin_config(kernel_config, multiplier=3.0)
+        snap = _margin_snapshot()
+        idea = _idea(symbol="AAPL", tier=Tier.CORE, conviction=0.80)
+        result = eligibility_check(idea, snap, cfg, session_tier="market", vix=20.0)
+        assert result is None, f"expected pass, got rejection: {result}"
+
+
+class TestBPAwareExposureHeadroom:
+    def test_high_conv_3x_cap_with_180k_existing_exposure(self, kernel_config):
+        # HIGH conviction (0.80), equity=100K, BP=300K, pre-existing 180K exposure.
+        # Old aggregate cap was equity*2=200K → headroom $20K.
+        # New hard ceiling: equity*3=300K. Conviction ladder still gives 2.0× for HIGH
+        # but the OUTER cap is min(2.0×equity, 3.0×equity_ceiling, bp) = 200K.
+        # Headroom = 200K - 180K = 20K > 0.
+        snap = _margin_snapshot(extra_exposure=180_000.0)
+        cap = _effective_exposure_cap(snap, conviction=0.80)
+        # Cap should be at least 200K (HIGH gives 2.0× equity), bound by min(equity*3=300K, bp=300K)
+        assert cap >= 200_000.0
+        assert cap - 180_000.0 > 0
+
+
+class TestBPAwareDynamicSizesAllocator:
+    def test_compute_dynamic_sizes_exposes_bp_aware_caps(self):
+        """
+        compute_dynamic_sizes() should expose conviction-tiered caps so Sonnet
+        sees BP-aware sizing. With margin_authorized=true and multiplier=3.0,
+        a HIGH-conviction core slot should be 20% of min(bp, equity*3).
+        """
+        from portfolio_intelligence import compute_dynamic_sizes
+        cfg = {
+            "position_sizing": {
+                "core_tier_pct":         0.15,
+                "dynamic_tier_pct":      0.08,
+                "max_total_exposure_pct": 0.30,
+                "cash_reserve_pct":      0.10,
+            },
+            "parameters": {
+                "margin_authorized":         True,
+                "margin_sizing_multiplier":  3.0,
+                "margin_sizing_conviction_thresholds": {"high": 0.75, "medium": 0.50},
+            },
+        }
+        sizes = compute_dynamic_sizes(
+            equity=100_000.0, config=cfg,
+            current_exposure_dollars=0.0, buying_power=300_000.0,
+        )
+        # sizing_basis_high = min(300K, 300K) = 300K → core HIGH (20%) = 60K
+        assert abs(sizes["core_high"] - 60_000.0) < 1.0
+        # sizing_basis_med = min(300K, 150K) = 150K → core 15% = 22.5K
+        assert abs(sizes["core_med"] - 22_500.0) < 1.0
+        # sizing_basis_low = equity = 100K → core 15% = 15K
+        assert abs(sizes["core_low"] - 15_000.0) < 1.0
+        # cap_high should equal sizing_basis_high
+        assert abs(sizes["cap_high"] - 300_000.0) < 1.0
+
+    def test_compute_dynamic_sizes_margin_disabled_falls_back_to_equity(self):
+        from portfolio_intelligence import compute_dynamic_sizes
+        cfg = {
+            "position_sizing": {"core_tier_pct": 0.15, "dynamic_tier_pct": 0.08},
+            "parameters": {
+                "margin_authorized":        False,
+                "margin_sizing_multiplier": 3.0,
+            },
+        }
+        sizes = compute_dynamic_sizes(
+            equity=100_000.0, config=cfg,
+            current_exposure_dollars=0.0, buying_power=300_000.0,
+        )
+        # margin disabled → all sizing bases = equity → core HIGH = 20% × 100K = 20K
+        assert abs(sizes["core_high"] - 20_000.0) < 1.0
+        assert abs(sizes["core_med"]  - 15_000.0) < 1.0
+        assert abs(sizes["core_low"]  - 15_000.0) < 1.0

@@ -206,6 +206,7 @@ def should_run_sonnet(
     gate_state:            GateState,
     config:                dict,
     equity:                float = 0.0,  # account equity for exposure delta calc
+    buying_power:          float = 0.0,  # account BP for BP-aware scale-up gates (forward-compat)
 ) -> tuple[bool, list[TriggerReason], GateState]:
     """
     Decide whether to call Sonnet this cycle.

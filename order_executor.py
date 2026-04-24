@@ -120,7 +120,7 @@ def _get_alpaca() -> TradingClient:
 # These constants are BACKSTOP ONLY — the executor's last-resort safety net.
 # If the values diverge from risk_kernel.py, risk_kernel.py wins.
 PDT_FLOOR                 = 26_000.0    # regulatory backstop — kernel is primary owner
-MARGIN_HIGH_CONVICTION    = 2.0         # 2x equity — mirrors kernel _effective_exposure_cap()
+MARGIN_HIGH_CONVICTION    = 3.0         # 3x equity — mirrors kernel _effective_exposure_cap()
 MARGIN_MEDIUM_CONVICTION  = 1.5         # 1.5x equity
 MARGIN_LOW_CONVICTION     = 1.0         # 1x equity
 MAX_OPTIONS_USD           = 5_000.0     # max cost per options trade (general)
@@ -341,15 +341,23 @@ def validate_action(action: dict, account, positions: list, market_status: str,
         )
 
     # Tier-based position sizing (soft — kernel sized this; warn if value drifted)
+    # Conviction-aware ceiling matches kernel BP-aware sizing basis so
+    # margin-sized positions don't false-positive this warning.
     position_value = qty * entry
     _tier_ceiling = {"core": 0.15, "dynamic": 0.08, "intraday": 0.05}
     tier_pct = _tier_ceiling.get(tier, 0.15)
-    max_position = equity * tier_pct
-    if position_value > max_position:
+    _conv_str = action.get("confidence", "medium").lower()
+    if _conv_str == "high":
+        effective_tier_ceiling = equity * MARGIN_HIGH_CONVICTION * tier_pct
+    elif _conv_str == "medium":
+        effective_tier_ceiling = equity * MARGIN_MEDIUM_CONVICTION * tier_pct
+    else:
+        effective_tier_ceiling = equity * tier_pct
+    if position_value > effective_tier_ceiling * 1.05:   # 5% tolerance
         log.warning(
             "[EXEC] %s: soft policy check (kernel primary): "
-            "position $%,.0f exceeds %s ceiling ($%,.0f)",
-            symbol, position_value, tier, max_position,
+            "position $%,.0f exceeds tier ceiling $%,.0f (%s tier, %s conviction)",
+            symbol, position_value, effective_tier_ceiling, tier, _conv_str,
         )
 
     # Conviction-adjusted exposure cap (soft — kernel enforced via size_position)

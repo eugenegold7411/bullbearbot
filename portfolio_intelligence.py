@@ -94,19 +94,35 @@ def compute_dynamic_sizes(
     core_pct        = float(sizing.get("core_tier_pct",         0.15))
     standard_pct    = float(sizing.get("standard_tier_pct",     0.08))
     speculative_pct = float(sizing.get("speculative_tier_pct",  0.05))
+    dyn_pct         = float(sizing.get("dynamic_tier_pct",      0.08))
     max_exp_pct     = float(sizing.get("max_total_exposure_pct", 0.30))
     cash_reserve_pct = float(sizing.get("cash_reserve_pct",     0.10))
+
+    # Conviction-tiered sizing basis (mirrors risk_kernel._compute_sizing_basis)
+    params      = config.get("parameters", {})
+    margin_ok   = bool(params.get("margin_authorized", False))
+    mult        = float(params.get("margin_sizing_multiplier", 1.0))
+    _bp         = max(buying_power, equity)   # safety floor: never below equity
+    sizing_basis_high = min(_bp, equity * mult)            if margin_ok else equity
+    sizing_basis_med  = min(_bp, equity * min(mult, 1.5))  if margin_ok else equity
+    sizing_basis_low  = equity
 
     max_exposure    = equity * max_exp_pct
     available       = max(0.0, max_exposure - current_exposure_dollars)
     exposure_pct    = round(current_exposure_dollars / equity * 100, 1) if equity > 0 else 0.0
 
-    # Conviction-scaled margin caps (buying_power = 2x equity on margin accounts)
-    _bp = max(buying_power, equity)  # safety floor: never below equity
-    cap_high   = round(min(equity * 1.5,  _bp), 2)
-    cap_medium = round(min(equity * 1.25, _bp), 2)
-    cap_low    = round(equity, 2)
+    cap_high   = round(sizing_basis_high, 2)
+    cap_medium = round(sizing_basis_med, 2)
+    cap_low    = round(sizing_basis_low, 2)
     margin_available = round(max(0.0, buying_power - equity), 2)
+
+    # Per-tier dollar maxes at each conviction level (HIGH core uses 20% bump)
+    _core_pct_high = 0.20
+    core_high      = round(sizing_basis_high * _core_pct_high, 2)
+    core_med       = round(sizing_basis_med  * core_pct,        2)
+    core_low       = round(sizing_basis_low  * core_pct,        2)
+    dynamic_high   = round(sizing_basis_high * dyn_pct,         2)
+    dynamic_med    = round(sizing_basis_med  * dyn_pct,         2)
 
     # Excess cash detection: actual uninvested > reserve + 10%
     actual_cash_pct  = max(0.0, 1.0 - (current_exposure_dollars / equity)) if equity > 0 else 1.0
@@ -128,6 +144,13 @@ def compute_dynamic_sizes(
         "cap_high":           cap_high,
         "cap_medium":         cap_medium,
         "cap_low":            cap_low,
+        "core_high":          core_high,
+        "core_med":           core_med,
+        "core_low":           core_low,
+        "dynamic_high":       dynamic_high,
+        "dynamic_med":        dynamic_med,
+        "margin_authorized":  margin_ok,
+        "margin_multiplier":  mult,
         "excess_cash_dollars": excess_cash_dollars,
     }
 
@@ -139,24 +162,36 @@ def format_dynamic_sizes_section(sizes: dict, equity: float) -> str:
       No enforcement authority.
     """
     lines = [
-        "=== DYNAMIC POSITION SIZES ===",
-        f"Current equity: ${equity:,.2f}",
-        f"Core tier max: ${sizes['core']:,.0f} (15%)",
-        f"Standard tier max: ${sizes['standard']:,.0f} (8%)",
-        f"Speculative tier max: ${sizes['speculative']:,.0f} (5%)",
-        f"Max total exposure: ${sizes['max_exposure']:,.0f} (30%)",
-        f"Cash reserve floor: ${sizes['cash_reserve']:,.0f} (10%)",
+        "=== POSITION SIZING — conviction-tiered (margin authorized) ===",
+        f"Current equity: ${equity:,.2f}   Buying power: ${sizes.get('buying_power', 0.0):,.0f}",
+        "",
+        "Core tier:",
+        f"  HIGH conviction:   up to ${sizes.get('core_high', sizes['core']):,.0f}  "
+        f"(20% of ${sizes.get('cap_high', equity):,.0f} sizing basis)",
+        f"  MEDIUM conviction: up to ${sizes.get('core_med', sizes['core']):,.0f}  "
+        f"(15% of ${sizes.get('cap_medium', equity):,.0f} sizing basis)",
+        f"  LOW conviction:    up to ${sizes.get('core_low', sizes['core']):,.0f}  "
+        "(15% of equity, no margin)",
+        "Dynamic tier:",
+        f"  HIGH:   up to ${sizes.get('dynamic_high', sizes['standard']):,.0f}",
+        f"  MEDIUM: up to ${sizes.get('dynamic_med', sizes['standard']):,.0f}",
+        "",
+        f"Cash reserve floor: ${sizes['cash_reserve']:,.0f}",
         f"Available for new positions: ${sizes['available_for_new']:,.0f}",
         f"Current exposure: ${sizes['current_exposure']:,.0f} ({sizes['exposure_pct']}%)",
     ]
     bp = sizes.get("buying_power", 0.0)
     if bp > equity:
-        multiplier = round(bp / equity, 1) if equity > 0 else 1
-        lines.append(f"Buying power: ${bp:,.0f} ({multiplier}x margin available)")
+        actual_mult = round(bp / equity, 1) if equity > 0 else 1
+        cfg_mult = sizes.get("margin_multiplier", 1.0)
         lines.append(
-            f"Margin scaling: high conviction=1.5x (cap=${sizes.get('cap_high', equity):,.0f}), "
-            f"medium=1.25x (cap=${sizes.get('cap_medium', equity):,.0f}), "
-            f"low=1x (no margin)"
+            f"Margin: {actual_mult}x available; sizing basis = "
+            f"min(buying_power, equity × {cfg_mult:.1f}x) for HIGH conviction."
+        )
+        lines.append(
+            "Express HIGH conviction when signals align strongly — the kernel "
+            "will size with margin behind it. Do not underreport conviction "
+            "to stay within a smaller mental cap."
         )
     excess = sizes.get("excess_cash_dollars", 0.0)
     if excess > 1000:

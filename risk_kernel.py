@@ -157,6 +157,39 @@ def _float_to_conviction(v: float) -> Conviction:
     return Conviction.LOW
 
 
+def _compute_sizing_basis(
+    snapshot: BrokerSnapshot,
+    conviction: float,
+    config: dict,
+) -> float:
+    """
+    Returns the dollar basis used for per-position sizing.
+
+    HIGH   (>= thresholds["high"], default 0.75) → min(buying_power, equity × multiplier)
+    MEDIUM (>= thresholds["medium"], default 0.50) → min(buying_power, equity × min(multiplier, 1.5))
+    LOW   / margin_authorized=False              → equity only
+
+    Always floors at equity (via bp safety floor) so sizing never goes below
+    cash-account behavior. Used by size_position (per-position dollar budget).
+    """
+    equity = snapshot.equity
+    bp     = max(snapshot.buying_power, equity)  # safety floor — never below equity
+
+    params     = config.get("parameters", {}) if config else {}
+    margin_ok  = bool(params.get("margin_authorized", False))
+    mult       = float(params.get("margin_sizing_multiplier", 1.0))
+    thresholds = params.get(
+        "margin_sizing_conviction_thresholds",
+        {"high": 0.75, "medium": 0.50},
+    )
+
+    if margin_ok and conviction >= float(thresholds.get("high", 0.75)):
+        return min(bp, equity * mult)
+    if margin_ok and conviction >= float(thresholds.get("medium", 0.50)):
+        return min(bp, equity * min(mult, 1.5))
+    return equity
+
+
 def _effective_exposure_cap(snapshot: BrokerSnapshot, conviction: float) -> float:
     """
     Max total portfolio exposure allowed for this conviction level.
@@ -165,7 +198,7 @@ def _effective_exposure_cap(snapshot: BrokerSnapshot, conviction: float) -> floa
       >= 0.75 (HIGH)   → 2.0× equity (full margin)
       >= 0.50 (MEDIUM) → 1.5× equity (partial margin)
       < 0.50  (LOW)    → 1.0× equity (no margin)
-    Hard ceiling: never exceed 2× equity regardless of buying_power.
+    Hard ceiling: never exceed 3× equity regardless of buying_power.
     """
     equity = snapshot.equity
     bp     = max(snapshot.buying_power, equity)  # safety floor
@@ -175,7 +208,7 @@ def _effective_exposure_cap(snapshot: BrokerSnapshot, conviction: float) -> floa
         cap = equity * 1.5
     else:
         cap = equity * 1.0
-    return min(cap, equity * 2.0, bp)
+    return min(cap, equity * 3.0, bp)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -357,9 +390,18 @@ def size_position(
     if current_price is None or current_price <= 0:
         return "current_price unavailable or zero"
 
-    tier_str  = idea.tier.value
-    equity    = snapshot.equity
-    crypto    = is_crypto(idea.symbol)
+    tier_str     = idea.tier.value
+    equity       = snapshot.equity                                    # PDT/log/aggregate cap
+    sizing_basis = _compute_sizing_basis(snapshot, idea.conviction, config)
+    crypto       = is_crypto(idea.symbol)
+
+    log.info(
+        "[RISK] size_position %s: conviction=%.2f sizing_basis=$%.0f "
+        "equity=$%.0f bp=$%.0f margin_ok=%s",
+        idea.symbol, idea.conviction, sizing_basis, equity,
+        max(snapshot.buying_power, equity),
+        bool(config.get("parameters", {}).get("margin_authorized", False)),
+    )
 
     # ── Tier pct ─────────────────────────────────────────────────────────────
     tier_pct = float(
@@ -372,7 +414,7 @@ def size_position(
     size_mult = 0.5 if vix >= VIX_CAUTION else 1.0
 
     # ── Dollar budget ─────────────────────────────────────────────────────────
-    max_dollars = equity * tier_pct * size_mult
+    max_dollars = sizing_basis * tier_pct * size_mult
 
     # ── Exposure headroom ─────────────────────────────────────────────────────
     eff_cap  = _effective_exposure_cap(snapshot, idea.conviction)

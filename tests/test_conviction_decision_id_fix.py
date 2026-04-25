@@ -17,18 +17,13 @@ Fix 2 — decision_id populated in persisted A2DecisionRecord artifacts
 import json
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 _REPO = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO))
 
 import options_intelligence as oi
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -229,7 +224,8 @@ class TestRunBoundedDebateDecisionId:
     def test_decision_id_format_from_bounded_debate(self):
         """decision_id generated inside run_bounded_debate must match a2_dec_YYYYMMDD_HHMMSS."""
         import re
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
+
         from bot_options_stage3_debate import run_bounded_debate
 
         fake_debate_result = {
@@ -265,6 +261,7 @@ class TestRunBoundedDebateDecisionId:
     def test_decision_id_not_using_dec_a2_format(self):
         """decision_id must not use the old dec_A2_ format from generate_decision_id."""
         from unittest.mock import patch
+
         from bot_options_stage3_debate import run_bounded_debate
 
         fake_debate_result = {

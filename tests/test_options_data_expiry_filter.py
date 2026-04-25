@@ -8,9 +8,7 @@ expirations (QQQ, SPY) returned only ~4 days of coverage — never reaching the
 5-28 DTE window used by A2 candidate generation.
 """
 
-import json
 import sys
-import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +20,6 @@ _REPO = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO))
 
 import options_data
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,7 +55,6 @@ def _stub_ticker(expirations: tuple, chain_data: dict | None = None) -> MagicMoc
 
 def _as_dataframe(records: list[dict]):
     """Return a minimal pandas-like object from a list of dicts."""
-    import types
     df = MagicMock()
     df.columns = list(records[0].keys()) if records else []
     df.to_dict.return_value = records
@@ -85,13 +81,11 @@ class TestExpirationsFilter:
         """Run fetch_options_chain with a stubbed ticker and return result."""
         expirations = _make_exp_list(dte_values)
         ticker = _stub_ticker(expirations)
-        cache_path = tmp_path / "QQQ_chain.json"
 
         with patch("options_data._CHAIN_DIR", tmp_path), \
              patch("options_data.yf") as mock_yf:
             mock_yf.Ticker.return_value = ticker
             # Inject yfinance into the module's namespace
-            import importlib
             import unittest.mock as um
             with um.patch.dict("sys.modules", {"yfinance": mock_yf}):
                 result = options_data.fetch_options_chain("QQQ", force_refresh=True)
@@ -105,7 +99,6 @@ class TestExpirationsFilter:
 
         with patch("options_data._CHAIN_DIR", tmp_path):
             with patch.dict("sys.modules", {"yfinance": MagicMock()}):
-                import importlib
                 # Build a fake yf module that returns our ticker
                 mock_yf = MagicMock()
                 mock_yf.Ticker.return_value = ticker

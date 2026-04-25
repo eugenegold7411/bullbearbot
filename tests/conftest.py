@@ -21,6 +21,7 @@ Test-isolation guards (must run before any production module import):
 
 # ── PRE-IMPORT ENV: must run before any module that imports google.protobuf
 import os as _os
+
 _os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
 import sys
@@ -216,7 +217,7 @@ except Exception:
 # attaches the RotatingFileHandler that points at logs/bot.log.
 
 import logging as _logging
-import logging.handlers as _logging_handlers   # noqa: F401  (binds for the strip below)
+import logging.handlers as _logging_handlers  # noqa: F401  (binds for the strip below)
 
 _root_logger = _logging.getLogger()
 _root_logger.setLevel(_logging.WARNING)  # quiet during tests; caplog overrides per-test

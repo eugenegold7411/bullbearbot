@@ -171,9 +171,11 @@ def _load_context() -> str:
     # This avoids relative phrases ("reports today", "reports this week") that
     # Claude can misinterpret as same-session when the brief is hours old.
     try:
-        from data_warehouse import load_earnings_calendar
         from datetime import date as _date  # noqa: PLC0415
+
         from earnings_calendar_lookup import format_earnings_line  # noqa: PLC0415
+
+        from data_warehouse import load_earnings_calendar
         ec = load_earnings_calendar()
         today_dt = _date.today()
         today_str = today_dt.isoformat()
@@ -220,7 +222,10 @@ def _load_context() -> str:
 
     # Account 2 open options structures
     try:
-        from options_state import format_a2_closed_today, format_a2_summary_section  # noqa: PLC0415
+        from options_state import (  # noqa: PLC0415
+            format_a2_closed_today,
+            format_a2_summary_section,
+        )
         _a2_open   = format_a2_summary_section()
         _a2_closed = format_a2_closed_today()
         parts.append("\n=== ACCOUNT 2 (OPTIONS) OPEN POSITIONS ===")
@@ -256,8 +261,8 @@ def _current_prices_from_disk() -> dict:
     Used by the morning-brief post-gen validator. Non-fatal."""
     prices: dict = {}
     try:
-        from data_warehouse import load_bars_cached
         import watchlist_manager as _wm  # noqa: PLC0415
+        from data_warehouse import load_bars_cached
         wl = _wm.get_active_watchlist()
         for sym in wl.get("stocks", []) + wl.get("etfs", []):
             try:

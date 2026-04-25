@@ -353,7 +353,6 @@ class ReportDateFixTests(unittest.TestCase):
 
     def test_send_report_email_called_with_today_et_date(self):
         """send_report_email must receive target_date matching the scheduler's ET date."""
-        from datetime import date as _date
         with tempfile.TemporaryDirectory() as td:
             sched = _import_scheduler(Path(td))
             t = datetime(2026, 4, 21, 16, 30, 0, tzinfo=ET)   # Tuesday 4:30 PM ET
@@ -371,7 +370,6 @@ class ReportDateFixTests(unittest.TestCase):
 
     def test_send_report_email_not_called_with_hardcoded_date(self):
         """Report must not use a hardcoded or stale date from a previous run."""
-        from datetime import date as _date
         with tempfile.TemporaryDirectory() as td:
             sched = _import_scheduler(Path(td))
             # Simulate a different date — if hardcoded, the date would not match

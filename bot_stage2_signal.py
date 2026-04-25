@@ -21,7 +21,6 @@ score_signals(watchlist_symbols, regime, md, positions) -> dict
 from __future__ import annotations
 
 import json
-import logging
 from datetime import datetime
 from itertools import islice
 from pathlib import Path
@@ -131,7 +130,6 @@ def _format_l2_for_l3(sym: str, l2: dict, qual_entry: Optional[dict],
     conviction = l2.get("conviction", "low")
     signals   = (l2.get("signals") or [])[:6]
     conflicts = (l2.get("conflicts") or [])[:4]
-    orb_flag  = "yes" if l2.get("orb_candidate") else "no"
     eda       = l2.get("earnings_days_away")
     sig_str   = ", ".join(signals) if signals else "(none)"
     con_str   = ", ".join(conflicts) if conflicts else "(none)"

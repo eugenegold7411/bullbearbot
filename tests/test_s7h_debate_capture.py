@@ -15,7 +15,6 @@ import sys
 import tempfile
 import time
 import unittest
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -72,7 +71,6 @@ class TestBoundedDebateCapture(unittest.TestCase):
         from bot_options_stage3_debate import run_bounded_debate
         from schemas import A2CandidateSet, A2FeaturePack
 
-        fake_prompt = "=== MARKET CONTEXT ===\nVIX: 20.0\n"
         fake_raw = json.dumps({
             "selected_candidate_id": None,
             "confidence": confidence,

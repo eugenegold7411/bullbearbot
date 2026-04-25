@@ -26,7 +26,8 @@ from bot_clients import (  # noqa: F401 (_get_claude re-exported for callers)
 from bot_stage0_precycle import run_precycle
 from bot_stage1_regime import classify_regime, format_regime_summary
 from bot_stage2_5_scratchpad import run_scratchpad_stage
-from bot_stage2_signal import format_signal_scores, score_signals_layered as score_signals
+from bot_stage2_signal import format_signal_scores
+from bot_stage2_signal import score_signals_layered as score_signals
 from bot_stage3_decision import (
     _OVERNIGHT_DEFAULT,  # re-exported — test_core.py accesses bot._OVERNIGHT_DEFAULT  # noqa: F401
     _ask_claude_overnight,  # re-exported — test_core.py accesses bot._ask_claude_overnight

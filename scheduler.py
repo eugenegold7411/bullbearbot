@@ -1620,8 +1620,8 @@ def _maybe_refresh_qualitative_context(dry_run: bool = False) -> None:
 
     # ── Build snapshot inputs (cheap — just reads market_data cache) ──────
     try:
-        import watchlist_manager as _wm  # noqa: PLC0415
         import market_data as _md_mod  # noqa: PLC0415
+        import watchlist_manager as _wm  # noqa: PLC0415
 
         wl = _wm.get_active_watchlist()
         all_syms = [s["symbol"] for s in wl.get("all", []) if s.get("symbol")]

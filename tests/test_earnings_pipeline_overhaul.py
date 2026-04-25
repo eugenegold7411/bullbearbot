@@ -33,8 +33,7 @@ code lands. Tracked in audit dated 2026-04-24.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -139,7 +138,6 @@ class TestAVEarningsCalendar:
 
     def test_core_invariant_force_add(self, tmp_path, monkeypatch):
         """Core stock present in raw AV data but filtered out must be force-added."""
-        import data_warehouse as dw
 
         # Universe deliberately excludes GOOGL, but core includes it
         self._run_av(
@@ -317,7 +315,7 @@ class TestCoreSymbolsFromJson:
     """CORE_SYMBOLS regenerated from watchlist_core.json at import."""
 
     def test_core_symbols_matches_json(self):
-        from watchlist_manager import CORE_SYMBOLS, CORE_FILE
+        from watchlist_manager import CORE_FILE, CORE_SYMBOLS
         raw = json.loads(CORE_FILE.read_text())
         expected = {e["symbol"].upper() for e in raw["symbols"] if e.get("symbol")}
         assert CORE_SYMBOLS == expected
@@ -412,11 +410,11 @@ class TestSectorInference:
     """_infer_sector replaces hardcoded 'technology' label."""
 
     def test_falls_back_to_unknown(self, monkeypatch):
-        import earnings_rotation as er
-
         # Force portfolio_intelligence import to return empty map
         import sys
         import types
+
+        import earnings_rotation as er
         stub = types.ModuleType("portfolio_intelligence")
         stub._SYMBOL_SECTOR = {}
         monkeypatch.setitem(sys.modules, "portfolio_intelligence", stub)
@@ -424,10 +422,10 @@ class TestSectorInference:
         assert er._infer_sector("UNMAPPED") == "unknown"
 
     def test_reads_symbol_sector_map(self, monkeypatch):
-        import earnings_rotation as er
-
         import sys
         import types
+
+        import earnings_rotation as er
         stub = types.ModuleType("portfolio_intelligence")
         stub._SYMBOL_SECTOR = {"AAPL": "technology", "V": "financials"}
         monkeypatch.setitem(sys.modules, "portfolio_intelligence", stub)
@@ -699,6 +697,7 @@ class TestCullExtracted:
 
     def test_cull_removes_past_symbols(self, tmp_path, monkeypatch):
         import earnings_rotation as er
+
         import watchlist_manager as wm
 
         rotation_file = tmp_path / "rot.json"
@@ -735,6 +734,7 @@ class TestCullExtracted:
     def test_run_earnings_rotation_no_longer_culls(self, tmp_path, monkeypatch):
         """Sanity: run_earnings_rotation returns culled=0 even with stale entries."""
         import earnings_rotation as er
+
         import watchlist_manager as wm
 
         rotation_file = tmp_path / "rot.json"

@@ -220,6 +220,7 @@ class TestQtyRounding:
 # ── BP-aware margin sizing (Thing 1) ──────────────────────────────────────────
 
 import copy
+
 from risk_kernel import _effective_exposure_cap
 
 

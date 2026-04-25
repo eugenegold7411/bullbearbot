@@ -9,7 +9,19 @@ will still fail or be skipped if the package is absent.
 chromadb is intentionally excluded: trade_memory.py has its own graceful
 degradation (logs a WARNING and disables vector memory). Stubbing chromadb
 would bypass that degradation and produce confusing AttributeErrors instead.
+
+Test-isolation guards (must run before any production module import):
+  1. PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python — required for ChromaDB on
+     this protobuf 7.x install. Production systemd sets the same env var.
+  2. Production log RotatingFileHandler is suppressed so test output never
+     appears in logs/bot.log.
+  3. divergence.py runtime + log paths are redirected to a temp directory so
+     test fixtures never write to data/runtime/ or data/analytics/.
 """
+
+# ── PRE-IMPORT ENV: must run before any module that imports google.protobuf
+import os as _os
+_os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
 import sys
 import types
@@ -193,6 +205,63 @@ try:
         })
     elif not hasattr(_ant.Anthropic, "messages"):
         _ant.Anthropic.messages = types.SimpleNamespace(create=lambda *a, **kw: None)
+except Exception:
+    pass
+
+
+# ── Logging isolation ────────────────────────────────────────────────────────
+# log_setup._configure() is idempotent on a `_configured` flag. If we attach
+# a stderr handler to the root logger and set `_configured = True` BEFORE any
+# production module imports log_setup, _configure() returns early and never
+# attaches the RotatingFileHandler that points at logs/bot.log.
+
+import logging as _logging
+import logging.handlers as _logging_handlers   # noqa: F401  (binds for the strip below)
+
+_root_logger = _logging.getLogger()
+_root_logger.setLevel(_logging.WARNING)  # quiet during tests; caplog overrides per-test
+if not any(isinstance(h, _logging.StreamHandler) for h in _root_logger.handlers):
+    _stderr_handler = _logging.StreamHandler()
+    _stderr_handler.setLevel(_logging.WARNING)
+    _stderr_handler.setFormatter(_logging.Formatter("%(name)s: %(message)s"))
+    _root_logger.addHandler(_stderr_handler)
+
+try:
+    import log_setup as _log_setup
+    _log_setup._configured = True
+except Exception:
+    pass
+
+# Belt-and-suspenders: strip any FileHandler that snuck in via early imports.
+for _h in list(_root_logger.handlers):
+    if isinstance(_h, _logging.FileHandler):
+        _root_logger.removeHandler(_h)
+        try:
+            _h.close()
+        except Exception:
+            pass
+
+
+# ── Divergence state isolation ───────────────────────────────────────────────
+# divergence.py defines four module-level paths that point at data/runtime/
+# and data/analytics/. Test fixtures that exercise the divergence engine
+# would otherwise pollute production state files. Redirect to a temp dir
+# created once per pytest session.
+
+import tempfile as _tempfile
+from pathlib import Path as _Path
+
+_TEST_TMP = _Path(_tempfile.mkdtemp(prefix="bullbearbot_test_"))
+_TEST_RUNTIME_DIR = _TEST_TMP / "runtime"
+_TEST_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+(_TEST_TMP / "analytics").mkdir(parents=True, exist_ok=True)
+
+try:
+    import divergence as _div
+    _div.RUNTIME_DIR             = _TEST_RUNTIME_DIR
+    _div.DIVERGENCE_LOG          = _TEST_TMP / "analytics" / "divergence_log.jsonl"
+    _div.MODE_TRANSITION_LOG     = _TEST_RUNTIME_DIR / "mode_transitions.jsonl"
+    _div.DIVERGENCE_COUNTS_PATH  = _TEST_RUNTIME_DIR / "divergence_counts.json"
 except Exception:
     pass
 

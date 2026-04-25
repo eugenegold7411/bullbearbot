@@ -350,7 +350,7 @@ class TestPendingRotationPurge:
         }))
         monkeypatch.setattr(er, "_PENDING_PATH", pending_path)
 
-        monkeypatch.setattr(er, "_fetch_yfinance_earnings",
+        monkeypatch.setattr(er, "_fetch_earnings_candidates",
                            lambda t, lookforward=30: [])
         monkeypatch.setattr(er, "get_rotation", lambda: [])
         monkeypatch.setattr(er, "get_active_watchlist",
@@ -749,7 +749,7 @@ class TestCullExtracted:
         monkeypatch.setattr(wm, "ROTATION_FILE", rotation_file)
         monkeypatch.setattr(er, "_PENDING_PATH", tmp_path / "pending.json")
         monkeypatch.setattr(er, "_REPORTS_DIR",  tmp_path / "reports")
-        monkeypatch.setattr(er, "_fetch_yfinance_earnings", lambda t, lookforward=30: [])
+        monkeypatch.setattr(er, "_fetch_earnings_candidates", lambda t, lookforward=30: [])
         monkeypatch.setattr(er, "CORE_SYMBOLS", frozenset({"AAPL"}))
 
         result = er.run_earnings_rotation(config=None)
@@ -764,4 +764,155 @@ class TestCullExtracted:
         # Window check: 2 * 60 ≤ now_min ≤ 3 * 60
         assert "2 * 60" in src and "3 * 60" in src, (
             "Cull window must be 2:00-3:00 AM (2 * 60 minutes)"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Rotation reads AV calendar (no yfinance for discovery)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRotationUsesAVCalendar:
+    """Verify rotation reads AV calendar and never calls yfinance for discovery."""
+
+    def test_fetch_candidates_reads_av_not_yfinance(self, tmp_path, monkeypatch):
+        """_fetch_earnings_candidates reads AV calendar; yfinance must not be hit."""
+        import json as _json
+
+        import earnings_rotation as er
+
+        future = (date.today() + timedelta(days=10)).isoformat()
+        cal = {"source": "alphavantage", "calendar": [
+            {"symbol": "NVDA", "earnings_date": future},
+            {"symbol": "AAPL", "earnings_date": future},
+        ]}
+        cal_file = tmp_path / "earnings_calendar.json"
+        cal_file.write_text(_json.dumps(cal))
+        monkeypatch.setattr(er, "_CAL_PATH", cal_file)
+
+        # yfinance must not be called for discovery — patch to raise on any call
+        def _boom(s):
+            raise AssertionError(f"yfinance called for {s}")
+        monkeypatch.setattr("yfinance.Ticker", _boom)
+
+        result = er._fetch_earnings_candidates(["NVDA", "AAPL", "XLE"], lookforward=30)
+        syms = {r["symbol"] for r in result}
+        assert "NVDA" in syms
+        assert "AAPL" in syms
+        assert "XLE" not in syms          # not in AV calendar
+        assert all(r["source"] == "alphavantage" for r in result)
+
+    def test_fetch_candidates_respects_lookforward(self, tmp_path, monkeypatch):
+        """Symbols with earnings beyond lookforward window are excluded."""
+        import json as _json
+
+        import earnings_rotation as er
+
+        near = (date.today() + timedelta(days=10)).isoformat()
+        far  = (date.today() + timedelta(days=60)).isoformat()
+        cal = {"source": "alphavantage", "calendar": [
+            {"symbol": "NVDA", "earnings_date": near},
+            {"symbol": "AAPL", "earnings_date": far},
+        ]}
+        cal_file = tmp_path / "earnings_calendar.json"
+        cal_file.write_text(_json.dumps(cal))
+        monkeypatch.setattr(er, "_CAL_PATH", cal_file)
+
+        result = er._fetch_earnings_candidates(["NVDA", "AAPL"], lookforward=30)
+        syms = {r["symbol"] for r in result}
+        assert "NVDA" in syms
+        assert "AAPL" not in syms          # 60 days > lookforward=30
+
+    def test_fetch_candidates_missing_calendar_returns_empty(self, tmp_path, monkeypatch):
+        """Missing AV calendar returns empty list, does not raise."""
+        import earnings_rotation as er
+        monkeypatch.setattr(er, "_CAL_PATH", tmp_path / "nonexistent.json")
+        result = er._fetch_earnings_candidates(["NVDA"], lookforward=30)
+        assert result == []
+
+    def test_run_earnings_rotation_drops_etfs(self, tmp_path, monkeypatch):
+        """ETF symbols are never promoted to rotation even if in candidate list."""
+        import earnings_rotation as er
+        import watchlist_manager as wm
+
+        future = (date.today() + timedelta(days=10)).isoformat()
+        # Mock _fetch_earnings_candidates to return an ETF + a stock
+        monkeypatch.setattr(er, "_fetch_earnings_candidates",
+            lambda tickers, lookforward=30: [
+                {"symbol": "XLE",  "earnings_date": future, "source": "alphavantage"},
+                {"symbol": "NVDA", "earnings_date": future, "source": "alphavantage"},
+            ])
+        monkeypatch.setattr(er, "_passes_mkt_cap_floor", lambda s, **kw: True)
+
+        # Tempdir-isolated rotation file
+        rotation_file = tmp_path / "watchlist_rotation.json"
+        monkeypatch.setattr(wm, "ROTATION_FILE", rotation_file)
+        # Pending and reports also redirected so the run is fully sandboxed
+        monkeypatch.setattr(er, "_PENDING_PATH", tmp_path / "pending.json")
+        monkeypatch.setattr(er, "_REPORTS_DIR",  tmp_path / "reports")
+        # Make sure NVDA is not pre-empted by being in core or already-rotated
+        monkeypatch.setattr(er, "CORE_SYMBOLS", frozenset())
+        monkeypatch.setattr(er, "get_core",     lambda: [])
+        monkeypatch.setattr(er, "get_rotation", lambda: [])
+        # add_rotation_symbol also reads CORE_SYMBOLS directly from
+        # watchlist_manager, so blank that out too
+        import watchlist_manager as _wm_mod
+        monkeypatch.setattr(_wm_mod, "CORE_SYMBOLS", frozenset())
+        # Active watchlist with XLE present as an ETF
+        monkeypatch.setattr(er.wm, "get_active_watchlist", lambda: {
+            "all":      [{"symbol": "XLE", "type": "etf"},
+                         {"symbol": "NVDA", "type": "stock"}],
+            "stocks":   ["NVDA"],
+            "etfs":     ["XLE"],
+            "crypto":   [],
+            "core":     [],
+            "rotation": [],
+            "dynamic":  [],
+            "intraday": [],
+            "by_sector": {},
+        })
+        # Skip IV fast-track to keep test self-contained
+        import options_universe_manager as oum
+        monkeypatch.setattr(oum, "earnings_iv_fasttrack", lambda *a, **kw: True)
+
+        result = er.run_earnings_rotation()
+        assert "XLE" not in result["added"]
+        assert "NVDA" in result["added"]
+
+    def test_passes_mkt_cap_prefers_fundamentals_cache(self, tmp_path, monkeypatch):
+        """_passes_mkt_cap_floor reads cache; yfinance not called when cache present."""
+        import json as _json
+
+        import earnings_rotation as er
+
+        fund_dir = tmp_path / "fundamentals"
+        fund_dir.mkdir()
+        (fund_dir / "NVDA.json").write_text(_json.dumps({"market_cap": 5_000_000_000}))
+        monkeypatch.setattr(er, "_FUND_DIR", fund_dir)
+
+        def _boom(s):
+            raise AssertionError("yfinance must not be called")
+        monkeypatch.setattr("yfinance.Ticker", _boom)
+
+        assert er._passes_mkt_cap_floor("NVDA") is True              # 5B > 3B floor
+        assert er._passes_mkt_cap_floor("NVDA", floor_usd=10_000_000_000) is False
+
+    def test_passes_mkt_cap_fallback_when_cache_absent(self, tmp_path, monkeypatch):
+        """_passes_mkt_cap_floor falls back to yfinance when cache file missing."""
+        import earnings_rotation as er
+        monkeypatch.setattr(er, "_FUND_DIR", tmp_path / "empty_dir")
+
+        class _FakeFastInfo:
+            market_cap = 10_000_000_000
+
+        class _FakeTicker:
+            fast_info = _FakeFastInfo()
+
+        monkeypatch.setattr("yfinance.Ticker", lambda s: _FakeTicker())
+        assert er._passes_mkt_cap_floor("NEWCO") is True
+
+    def test_old_function_name_does_not_exist(self):
+        """_fetch_yfinance_earnings must not exist — name was wrong and has been removed."""
+        import earnings_rotation as er
+        assert not hasattr(er, "_fetch_yfinance_earnings"), (
+            "_fetch_yfinance_earnings still exists — rename to _fetch_earnings_candidates"
         )

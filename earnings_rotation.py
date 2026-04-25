@@ -31,6 +31,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+import watchlist_manager as wm
 from watchlist_manager import (
     CORE_SYMBOLS,
     add_rotation_symbol,
@@ -45,6 +46,8 @@ log = logging.getLogger(__name__)
 _BASE         = Path(__file__).parent
 _PENDING_PATH = _BASE / "data" / "market" / "pending_rotation.json"
 _REPORTS_DIR  = _BASE / "data" / "reports"
+_CAL_PATH     = _BASE / "data" / "market" / "earnings_calendar.json"
+_FUND_DIR     = _BASE / "data" / "fundamentals"
 
 # Universe extension beyond watchlist — symbols admissible for rotation
 _EXTRA_UNIVERSE: frozenset[str] = frozenset({
@@ -120,9 +123,26 @@ def _infer_sector(symbol: str) -> str:
 
 def _passes_mkt_cap_floor(symbol: str, floor_usd: float = 3_000_000_000.0) -> bool:
     """
-    True if symbol's market cap >= floor_usd.
-    FAIL-OPEN: missing / unparseable cap data returns True (never blocks).
+    Returns True if symbol's market cap >= floor_usd.
+    FAIL-OPEN: missing/unparseable cap data returns True (never blocks).
+
+    Source priority:
+      1. data/fundamentals/{SYM}.json:market_cap  (refreshed daily at 4 AM by
+         data_warehouse.refresh_fundamentals — runs strictly before this job).
+      2. yfinance.Ticker.fast_info.market_cap     (fallback for cache miss only).
+      3. True (fail-open).
     """
+    # 1. Fundamentals cache
+    fund_path = _FUND_DIR / f"{symbol}.json"
+    if fund_path.exists():
+        try:
+            cap = json.loads(fund_path.read_text()).get("market_cap")
+            if cap is not None:
+                return float(cap) >= floor_usd
+        except Exception:
+            pass
+
+    # 2. Live yfinance fallback — only for symbols not yet in cache
     try:
         import yfinance as yf  # noqa: PLC0415
         info = yf.Ticker(symbol).fast_info
@@ -132,46 +152,69 @@ def _passes_mkt_cap_floor(symbol: str, floor_usd: float = 3_000_000_000.0) -> bo
                 cap = info.get("market_cap")
             except Exception:
                 cap = None
-        if cap is None:
-            return True   # fail-open
-        return float(cap) >= floor_usd
+        if cap is not None:
+            return float(cap) >= floor_usd
     except Exception:
-        return True       # fail-open
+        pass
+
+    # 3. Fail-open
+    log.debug("[ROTATION] market_cap unavailable for %s — failing open", symbol)
+    return True
 
 
-# ── yfinance earnings discovery (rotation candidates only) ───────────────────
+# ── Earnings candidate discovery (AV calendar — no yfinance) ────────────────
 
-def _fetch_yfinance_earnings(tickers: list[str], lookforward: int = 30) -> list[dict]:
+def _fetch_earnings_candidates(
+    tickers: list[str], lookforward: int = 30
+) -> list[dict]:
     """
-    Per-symbol yfinance .calendar lookups, dict API.
-    Returns [{"symbol", "earnings_date" (date), "source": "yfinance"}] for
-    symbols whose earnings fall within (today, today + lookforward].
-    Non-fatal per-symbol.
+    Returns list of {symbol, earnings_date, source} for symbols with
+    earnings within the next `lookforward` days.
+
+    Source: AV earnings calendar (data/market/earnings_calendar.json),
+    refreshed weekly at Sunday 5 AM ET by data_warehouse.refresh_earnings_calendar_av.
+    No yfinance calls. The function name is retained for test-seam
+    compatibility; `tickers` is used only as an allow-list filter.
     """
-    import yfinance as yf  # noqa: PLC0415
+    if not _CAL_PATH.exists():
+        log.warning("[ROTATION] AV calendar not found at %s — no candidates", _CAL_PATH)
+        return []
+
+    try:
+        raw = json.loads(_CAL_PATH.read_text())
+        entries = raw.get("calendar", [])
+    except Exception as exc:
+        log.warning("[ROTATION] Failed to read AV calendar: %s", exc)
+        return []
+
     today  = date.today()
-    horizon = today + timedelta(days=lookforward)
-    out: list[dict] = []
-    for sym in tickers:
-        sym_u = (sym or "").upper()
-        if not sym_u or "/" in sym_u:
+    cutoff = today + timedelta(days=lookforward)
+    ticker_set = {(t or "").upper() for t in tickers if t}
+
+    candidates: list[dict] = []
+    for e in entries:
+        sym = (e.get("symbol") or "").upper()
+        ed_str = str(e.get("earnings_date") or "")
+        if not sym or not ed_str:
+            continue
+        if sym not in ticker_set:
             continue
         try:
-            cal = yf.Ticker(sym_u).calendar
-            if not cal:
-                continue
-            dates = cal.get("Earnings Date") if isinstance(cal, dict) else None
-            if not dates:
-                continue
-            d = dates[0]
-            if hasattr(d, "date"):
-                d = d.date()
-            if not (today < d <= horizon):
-                continue
-            out.append({"symbol": sym_u, "earnings_date": d, "source": "yfinance"})
-        except Exception as exc:
-            log.debug("[ROTATION] yfinance %s failed (non-fatal): %s", sym_u, exc)
-    return out
+            ed = date.fromisoformat(ed_str[:10])
+        except ValueError:
+            continue
+        if today <= ed <= cutoff:
+            candidates.append({
+                "symbol":        sym,
+                "earnings_date": ed_str[:10],
+                "source":        "alphavantage",
+            })
+
+    log.info(
+        "[ROTATION] AV calendar -> %d candidates within %d days (source=alphavantage)",
+        len(candidates), lookforward,
+    )
+    return candidates
 
 
 # ── Cull (extracted to 2 AM scheduler path) ───────────────────────────────────
@@ -216,8 +259,9 @@ def run_earnings_rotation(config: Optional[dict] = None) -> dict:
     Daily rotation run. Idempotent. Never raises.
 
     Steps:
-      1. Discover earnings candidates (next 30 days) via yfinance for the
-         admissible universe.
+      1. Discover earnings candidates (next 30 days) from the AV calendar
+         (data/market/earnings_calendar.json) for the admissible universe.
+         Drop ETFs explicitly — they have no earnings.
       2. Purge pending_rotation entries that are off-universe.
       3. For each candidate not already in core/rotation:
            - require _passes_mkt_cap_floor() (fail-open)
@@ -241,9 +285,22 @@ def run_earnings_rotation(config: Optional[dict] = None) -> dict:
     # ── Step 1: discover ──────────────────────────────────────────────────────
     candidates: list[dict] = []
     try:
-        candidates = _fetch_yfinance_earnings(sorted(universe), lookforward=lookforward)
+        candidates = _fetch_earnings_candidates(sorted(universe), lookforward=lookforward)
     except Exception as exc:
         log.warning("[ROTATION] discovery failed (non-fatal): %s", exc)
+
+    # Drop ETFs — they don't report earnings and must never enter rotation.
+    etf_syms = {
+        (s if isinstance(s, str) else s.get("symbol", "")).upper()
+        for s in wm.get_active_watchlist().get("etfs", [])
+    }
+    pre_filter = len(candidates)
+    candidates = [c for c in candidates if c["symbol"] not in etf_syms]
+    if pre_filter != len(candidates):
+        log.info(
+            "[ROTATION] ETF filter removed %d candidate(s)",
+            pre_filter - len(candidates),
+        )
 
     # ── Step 2: purge pending of off-universe entries ─────────────────────────
     pending = _load_pending()
@@ -276,15 +333,24 @@ def run_earnings_rotation(config: Optional[dict] = None) -> dict:
         if not _passes_mkt_cap_floor(sym):
             skipped_low_cap.append(sym)
             continue
-        ed = cand["earnings_date"]
-        cull_after = (ed + timedelta(days=post_hold_days)).isoformat()
+        ed_raw = cand["earnings_date"]
+        # _fetch_earnings_candidates emits ISO strings; tolerate date objects too
+        # (e.g. legacy mocks) by normalising both shapes.
+        if hasattr(ed_raw, "isoformat"):
+            ed_date = ed_raw
+        else:
+            try:
+                ed_date = date.fromisoformat(str(ed_raw)[:10])
+            except ValueError:
+                continue
+        cull_after = (ed_date + timedelta(days=post_hold_days)).isoformat()
         sector = _infer_sector(sym)
         ok = add_rotation_symbol(
             symbol=sym,
             sector=sector,
             cull_after=cull_after,
             source="earnings_rotation",
-            earnings_date=ed.isoformat(),
+            earnings_date=ed_date.isoformat(),
         )
         if ok:
             added.append(sym)
@@ -294,7 +360,7 @@ def run_earnings_rotation(config: Optional[dict] = None) -> dict:
                 from options_universe_manager import (
                     earnings_iv_fasttrack,  # noqa: PLC0415
                 )
-                earnings_iv_fasttrack(sym, ed)
+                earnings_iv_fasttrack(sym, ed_date)
             except Exception as exc:
                 log.debug("[ROTATION] iv_fasttrack(%s) failed (non-fatal): %s", sym, exc)
 

@@ -3697,14 +3697,19 @@ class TestSuite18Divergence(unittest.TestCase):
         import sys
         sys.path.insert(0, str(Path(__file__).parent.parent))
         import importlib
+        from datetime import date as _date
+        from datetime import timedelta as _td
         bo = importlib.import_module("bot_options")
 
         # _quick_liquidity_check expects chain["expirations"][date]["calls"]
-        # as a list of dicts with strike, openInterest, volume keys
+        # as a list of dicts with strike, openInterest, volume keys.
+        # Production skips expirations with dte < 2; use today+30 days so this
+        # test never goes stale as the calendar advances past the fixture date.
+        future_exp = (_date.today() + _td(days=30)).isoformat()
         chain = {
             "current_price": 100.0,
             "expirations": {
-                "2026-04-25": {
+                future_exp: {
                     "calls": [
                         {"strike": 100.0, "openInterest": 5, "volume": 1,
                          "bid": 1.0, "ask": 1.2},

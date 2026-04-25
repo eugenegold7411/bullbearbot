@@ -427,10 +427,15 @@ class TestParseBoundedDebateResponse(unittest.TestCase):
 
 class TestPersistDecisionRecord(unittest.TestCase):
 
-    def _make_record(self):
+    def _make_record(self, decision_id: str = "a2_dec_test_persist_001"):
+        # Note: persist_decision_record rewrites any decision_id that doesn't
+        # start with "a2_dec_" into the canonical "a2_dec_YYYYMMDD_HHMMSS"
+        # form, because every decision file MUST have a canonical ID for the
+        # glob / index / dedup logic to work. Tests must supply an ID already
+        # in canonical form when they want to verify it is preserved.
         from schemas import A2DecisionRecord
         return A2DecisionRecord(
-            decision_id="test_persist_001",
+            decision_id=decision_id,
             session_tier="market",
             candidate_sets=[],
             debate_input=None,
@@ -455,9 +460,29 @@ class TestPersistDecisionRecord(unittest.TestCase):
             files = list(Path(tmpdir).glob("a2_dec_*.json"))
             self.assertEqual(len(files), 1)
             data = json.loads(files[0].read_text())
-            self.assertEqual(data["decision_id"], "test_persist_001")
+            # Canonical "a2_dec_..." IDs are preserved verbatim.
+            self.assertEqual(data["decision_id"], "a2_dec_test_persist_001")
             self.assertEqual(data["execution_result"], "no_trade")
             self.assertEqual(data["schema_version"], 1)
+
+    def test_persist_rewrites_non_canonical_decision_id(self):
+        """A decision_id without the 'a2_dec_' prefix must be rewritten to canonical form."""
+        import tempfile
+
+        import bot_options_stage4_execution as s4
+        from bot_options_stage4_execution import persist_decision_record
+
+        rec = self._make_record(decision_id="legacy_freeform_id")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(s4, "_DECISIONS_DIR", Path(tmpdir)):
+                persist_decision_record(rec)
+            files = list(Path(tmpdir).glob("a2_dec_*.json"))
+            self.assertEqual(len(files), 1)
+            data = json.loads(files[0].read_text())
+            self.assertTrue(data["decision_id"].startswith("a2_dec_"),
+                            f"non-canonical ID was not rewritten: {data['decision_id']!r}")
+            # The rewritten ID is the canonical timestamp form, never the original.
+            self.assertNotEqual(data["decision_id"], "legacy_freeform_id")
 
     def test_persist_prunes_oldest_when_over_500(self):
         import tempfile

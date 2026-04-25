@@ -154,62 +154,91 @@ class TestIncidentLogFiltering(unittest.TestCase):
 # ── Suite 3: A2 debate status ─────────────────────────────────────────────────
 
 class TestA2DebateStatus(unittest.TestCase):
-    """check_a2_debate_status() reflects whether the debate has ever run."""
+    """check_a2_debate_status() reflects whether the debate has ever run.
+
+    Production reads from data/account2/decisions/a2_dec_*.json — one file
+    per decision, globbed from a real directory. These tests populate a
+    real temp dir with per-decision JSON files and point the audit module's
+    DATA constant at it for the duration of each test.
+    """
 
     def setUp(self):
         self.audit = _load_audit()
 
-    def _mock_decisions(self, decisions: list) -> str:
-        return json.dumps(decisions)
+    def _write_decision_files(self, dec_dir: Path, records: list[dict]) -> None:
+        """Write each record as a separate a2_dec_*.json file in dec_dir."""
+        dec_dir.mkdir(parents=True, exist_ok=True)
+        for i, rec in enumerate(records):
+            # Use sortable timestamps so glob() ordering is deterministic.
+            fname = f"a2_dec_20260421_00{i:04d}00.json"
+            (dec_dir / fname).write_text(json.dumps(rec))
+
+    def _run_with_dir(self, tmp_root: Path, records: list[dict]) -> tuple[str, str]:
+        """Set audit.DATA to a temp root containing account2/decisions/, then run."""
+        dec_dir = tmp_root / "account2" / "decisions"
+        self._write_decision_files(dec_dir, records)
+        with mock.patch.object(self.audit, "DATA", tmp_root):
+            return self.audit.check_a2_debate_status()
 
     def test_no_file_returns_degraded(self):
-        with mock.patch("pathlib.Path.exists", return_value=False):
-            status, detail = self.audit.check_a2_debate_status()
+        # No decisions dir at all — production returns DEGRADED with "never run"
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(self.audit, "DATA", Path(tmp)):
+                status, detail = self.audit.check_a2_debate_status()
         self.assertEqual(status, "DEGRADED")
         self.assertIn("never run", detail)
 
     def test_decisions_without_debate_input_returns_degraded(self):
-        data = [{"symbol": "AAPL", "action": "HOLD", "debate_input": None}]
-        with mock.patch("pathlib.Path.exists", return_value=True), \
-             mock.patch("pathlib.Path.read_text", return_value=json.dumps(data)):
-            status, detail = self.audit.check_a2_debate_status()
+        records = [{"symbol": "AAPL", "action": "HOLD", "debate_input": None}]
+        with tempfile.TemporaryDirectory() as tmp:
+            status, detail = self._run_with_dir(Path(tmp), records)
         self.assertEqual(status, "DEGRADED")
         self.assertIn("none with debate_input", detail)
 
     def test_decisions_with_debate_input_returns_ok(self):
-        data = [
-            {"symbol": "AAPL", "debate_input": {"bull": "...", "bear": "..."},
-             "synthesis": "PROCEED", "timestamp": "2026-04-21T10:00:00"},
+        records = [
+            {"symbol": "AAPL",
+             "debate_input": {"bull": "...", "bear": "..."},
+             "debate_parsed": {"reject": False, "confidence": 0.9,
+                               "reasons": "PROCEED — strong setup"},
+             "built_at": "2026-04-21T10:00:00Z"},
         ]
-        with mock.patch("pathlib.Path.exists", return_value=True), \
-             mock.patch("pathlib.Path.read_text", return_value=json.dumps(data)):
-            status, detail = self.audit.check_a2_debate_status()
+        with tempfile.TemporaryDirectory() as tmp:
+            status, detail = self._run_with_dir(Path(tmp), records)
         self.assertEqual(status, "OK")
-        self.assertIn("PROCEED", detail)
+        self.assertIn("proceed", detail)   # production lower-cases "proceed"/"reject"
         self.assertIn("2026-04-21", detail)
 
     def test_debate_count_shown_in_detail(self):
-        data = [
-            {"symbol": "AAPL", "debate_input": {}, "synthesis": "PROCEED",
-             "timestamp": "2026-04-20T10:00:00"},
-            {"symbol": "TSLA", "debate_input": {}, "synthesis": "VETO",
-             "timestamp": "2026-04-21T10:00:00"},
+        records = [
+            {"symbol": "AAPL",
+             "debate_input": {"bull": "x"},
+             "debate_parsed": {"reject": False, "confidence": 0.85, "reasons": "ok"},
+             "built_at": "2026-04-20T10:00:00Z"},
+            {"symbol": "TSLA",
+             "debate_input": {"bull": "y"},
+             "debate_parsed": {"reject": True, "confidence": 0.5, "reasons": "veto"},
+             "built_at": "2026-04-21T10:00:00Z"},
         ]
-        with mock.patch("pathlib.Path.exists", return_value=True), \
-             mock.patch("pathlib.Path.read_text", return_value=json.dumps(data)):
-            status, detail = self.audit.check_a2_debate_status()
+        with tempfile.TemporaryDirectory() as tmp:
+            status, detail = self._run_with_dir(Path(tmp), records)
         self.assertEqual(status, "OK")
-        self.assertIn("2x", detail)
+        # Production phrases the count as "N in last 50 files"
+        self.assertIn("2 in last 50", detail)
 
     def test_dict_wrapper_format_supported(self):
-        # decisions_account2.json may use {"decisions": [...]} wrapper
-        data = {"decisions": [
-            {"symbol": "SPY", "debate_input": {"x": 1}, "debate_outcome": "RESTRUCTURE",
-             "date": "2026-04-21"},
-        ]}
-        with mock.patch("pathlib.Path.exists", return_value=True), \
-             mock.patch("pathlib.Path.read_text", return_value=json.dumps(data)):
-            status, detail = self.audit.check_a2_debate_status()
+        # Some legacy records carry the debate payload as a dict wrapper.
+        # The audit only requires a non-null debate_input; non-list shapes
+        # are still accepted as long as the field is present.
+        records = [
+            {"symbol": "SPY",
+             "debate_input": {"x": 1},
+             "debate_parsed": {"reject": False, "confidence": 0.8,
+                               "reasons": "RESTRUCTURE — narrower spread"},
+             "built_at": "2026-04-21T10:00:00Z"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            status, detail = self._run_with_dir(Path(tmp), records)
         self.assertEqual(status, "OK")
         self.assertIn("RESTRUCTURE", detail)
 

@@ -220,6 +220,51 @@ def run_bootstrap_queue() -> dict:
     return result
 
 
+def earnings_iv_fasttrack(symbol: str, earnings_date) -> bool:
+    """
+    Fast-track IV history seeding for an earnings-rotation candidate.
+
+    Calls iv_history_seeder.seed_iv_history(min_open_interest=500) — a higher
+    OI floor than the regular bootstrap queue (50) to require earnings-period
+    liquidity. Promotes the symbol to the universe if it has sufficient IV
+    history afterwards. Non-fatal — never raises.
+
+    Returns True if the symbol is in the universe after the call.
+    """
+    sym = (symbol or "").upper()
+    if not sym:
+        return False
+    try:
+        universe = get_universe()
+        entry    = universe.get("symbols", {}).get(sym)
+        if entry and entry.get("bootstrap_complete") and _has_sufficient_iv_history(sym):
+            return True
+
+        from iv_history_seeder import seed_iv_history  # noqa: PLC0415
+        result = seed_iv_history([sym], target_days=25, min_open_interest=500)
+
+        if sym in result.get("seeded", []) and _has_sufficient_iv_history(sym):
+            universe   = get_universe()
+            syms_dict  = universe.setdefault("symbols", {})
+            syms_dict[sym] = {
+                "bootstrap_complete": True,
+                "added_at":           datetime.now(timezone.utc).isoformat(),
+                "source":             "earnings_fasttrack",
+                "earnings_date":      str(earnings_date) if earnings_date else "",
+            }
+            _save_universe(universe)
+            log.info("[UNIVERSE] %s: earnings_iv_fasttrack succeeded (earnings=%s)",
+                     sym, earnings_date)
+            return True
+
+        log.warning("[UNIVERSE] %s: earnings_iv_fasttrack failed — IV history insufficient", sym)
+        return False
+    except Exception as exc:
+        log.warning("[UNIVERSE] earnings_iv_fasttrack(%s) failed (non-fatal): %s",
+                    sym, exc)
+        return False
+
+
 def initialize_universe_from_existing_iv_history() -> None:
     """
     One-time setup: scan data/options/iv_history/ for existing _iv_history.json

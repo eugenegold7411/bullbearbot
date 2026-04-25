@@ -82,6 +82,7 @@ def _fetch_atm_iv_yfinance(
     symbol: str,
     target_dte_min: int = TARGET_DTE_MIN,
     target_dte_max: int = TARGET_DTE_MAX,
+    min_open_interest: Optional[int] = None,
 ) -> tuple[Optional[float], str, dict]:
     """
     Fetch current ATM IV for symbol via yfinance.
@@ -202,15 +203,42 @@ def _fetch_atm_iv_yfinance(
                 "quality_flags": metadata["quality_flags"],
             }
 
-        # OI gate
-        max_oi = max(call_oi, put_oi)
-        if max_oi < MIN_OPEN_INTEREST:
-            return None, best_exp, {
-                "error": f"oi_too_low: {max_oi} < {MIN_OPEN_INTEREST}",
-                "quality_flags": metadata["quality_flags"],
-            }
-        if max_oi < 200:
-            metadata["quality_flags"].append("low_oi")
+        # ── OI gate: aggregate ATM ±5% band when min_open_interest is given ──
+        # Default path (min_open_interest=None) preserves legacy single-strike check.
+        if min_open_interest is not None:
+            band_lo = spot * 0.95
+            band_hi = spot * 1.05
+            band_calls = [c for c in calls
+                          if band_lo <= float(c.get("strike", 0) or 0) <= band_hi]
+            band_puts  = [p for p in puts
+                          if band_lo <= float(p.get("strike", 0) or 0) <= band_hi]
+            agg_oi = sum(int(c.get("openInterest", 0) or 0) for c in band_calls) \
+                   + sum(int(p.get("openInterest", 0) or 0) for p in band_puts)
+            n_strikes = len(band_calls) + len(band_puts)
+            metadata["aggregate_oi"] = agg_oi
+            metadata["n_strikes"]    = n_strikes
+            metadata["min_oi_used"]  = min_open_interest
+            if agg_oi < min_open_interest:
+                return None, best_exp, {
+                    "error":         f"oi_too_low: aggregate={agg_oi} < {min_open_interest}",
+                    "quality_flags": metadata["quality_flags"],
+                    "aggregate_oi":  agg_oi,
+                    "n_strikes":     n_strikes,
+                    "min_oi_used":   min_open_interest,
+                }
+            if agg_oi < 200:
+                metadata["quality_flags"].append("low_oi")
+        else:
+            # Legacy single-strike check
+            max_oi = max(call_oi, put_oi)
+            if max_oi < MIN_OPEN_INTEREST:
+                return None, best_exp, {
+                    "error": f"oi_too_low: {max_oi} < {MIN_OPEN_INTEREST}",
+                    "quality_flags": metadata["quality_flags"],
+                }
+            if max_oi < 200:
+                metadata["quality_flags"].append("low_oi")
+            metadata["max_oi"]  = max_oi
 
         # Final bounds check
         if not (MIN_VALID_IV <= iv_val <= MAX_VALID_IV):
@@ -222,7 +250,6 @@ def _fetch_atm_iv_yfinance(
             "dte":     dte_used,
             "call_iv": call_iv,
             "put_iv":  put_iv,
-            "max_oi":  max_oi,
         })
 
         return iv_val, best_exp, metadata
@@ -429,6 +456,7 @@ def seed_iv_history(
     symbols: list[str],
     target_days: int = 25,
     dry_run: bool = False,
+    min_open_interest: Optional[int] = None,
 ) -> dict:
     """
     Seed IV history for given symbols using yfinance.
@@ -462,7 +490,7 @@ def seed_iv_history(
     for sym in symbols:
         print(f"  [{sym:6s}] fetching IV ...", end="", flush=True)
         try:
-            iv, expiry, meta = _fetch_atm_iv_yfinance(sym)
+            iv, expiry, meta = _fetch_atm_iv_yfinance(sym, min_open_interest=min_open_interest)
             if iv is None:
                 reason = meta.get("error", "unknown")
                 print(f" SKIP ({reason})")

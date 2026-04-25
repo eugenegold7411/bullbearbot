@@ -36,13 +36,7 @@ import json
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-pytestmark = pytest.mark.skip(
-    reason="Implementation pending — earnings pipeline overhaul (Changes 1-7) "
-    "shipped as tests-only in ee07274; production functions not yet in codebase. "
-    "See module docstring for the missing surface. Unskip when production lands."
-)
+import pytest  # noqa: F401
 
 
 # ═══════════════════════════════════════════════════════════════════════════

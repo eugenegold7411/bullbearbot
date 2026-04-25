@@ -296,6 +296,10 @@ _market_impact_backfill_date:  str = ""   # "YYYY-MM-DD" of last backfill
 _outcomes_backfill_date:       str = ""   # "YYYY-MM-DD" of last outcomes backfill
 _readiness_ran_date:           str = ""   # "YYYY-MM-DD" of last readiness check
 _econ_calendar_refresh_key:    str = ""   # "YYYY-MM-DD-HHMM" slot key
+_earnings_av_refresh_key:      str = ""   # ISO-week key — weekly AV calendar refresh
+_earnings_rotation_ran_date:   str = ""   # "YYYY-MM-DD" of last rotation run
+_earnings_cull_ran_date:       str = ""   # "YYYY-MM-DD" of last 2 AM cull
+_earnings_stale_check_date:    str = ""   # "YYYY-MM-DD" of last staleness check
 _zero_fill_alert_date:         str = ""   # "YYYY-MM-DD" of last zero-fill alert
 _last_qualitative_sweep_key:   str = ""   # "YYYY-MM-DD-HH" of last L1 sweep (hourly slot)
 _last_qualitative_news_hash:   str = ""   # news hash at last L1 sweep, for event-driven refresh
@@ -820,6 +824,152 @@ def _maybe_refresh_reddit_sentiment(dry_run: bool = False) -> None:
             log.debug("Reddit sentiment refresh failed (non-fatal)", exc_info=True)
 
     _reddit_refresh_key = slot_key
+
+
+def _maybe_refresh_earnings_calendar_av(dry_run: bool = False) -> None:
+    """
+    Weekly AV earnings calendar refresh.
+    Fires Sundays 5:00–6:00 AM ET, once per ISO week.
+    Non-fatal: failure leaves the existing file in place.
+    """
+    global _earnings_av_refresh_key
+    now_et  = datetime.now(ET)
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()  # Mon=0 ... Sun=6
+
+    if weekday != 6:                                  # Sunday only
+        return
+    if not (5 * 60 <= now_min <= 6 * 60):             # 5:00–6:00 AM ET
+        return
+
+    iso_year, iso_week, _ = now_et.isocalendar()
+    key = f"{iso_year}-W{iso_week:02d}"
+    if _earnings_av_refresh_key == key:
+        return
+
+    if dry_run:
+        log.info("[dry-run] Skipping AV earnings refresh (slot=%s)", key)
+        _earnings_av_refresh_key = key
+        return
+
+    try:
+        import data_warehouse as dw  # noqa: PLC0415
+        result = dw.refresh_earnings_calendar_av()
+        if result:
+            n = len(result.get("calendar", []))
+            log.info("[EARNINGS_AV] weekly refresh complete (entries=%d, week=%s)", n, key)
+            _earnings_av_refresh_key = key
+        else:
+            log.warning("[EARNINGS_AV] weekly refresh returned empty — will retry next eligible cycle")
+    except Exception as exc:
+        log.warning("[EARNINGS_AV] weekly refresh failed (non-fatal): %s", exc)
+
+
+def _maybe_run_earnings_rotation(dry_run: bool = False) -> None:
+    """
+    Daily rotation run — 4:15–5:00 AM ET weekdays, after premarket jobs.
+    Skips when AV calendar is not the current source (don't run on stale data).
+    """
+    global _earnings_rotation_ran_date
+    now_et  = datetime.now(ET)
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+    today   = _today()
+
+    if _earnings_rotation_ran_date == today:
+        return
+    if weekday >= 5:
+        return
+    if not (4 * 60 + 15 <= now_min <= 5 * 60):
+        return
+
+    if dry_run:
+        log.info("[dry-run] Skipping earnings rotation")
+        _earnings_rotation_ran_date = today
+        return
+
+    # Guard: only run when AV calendar is canonical
+    try:
+        import data_warehouse as dw  # noqa: PLC0415
+        cal = dw.load_earnings_calendar()
+        if cal.get("source") != "alphavantage":
+            log.warning(
+                "[ROTATION] skipping run — earnings_calendar source=%s (expected alphavantage)",
+                cal.get("source"),
+            )
+            return
+    except Exception:
+        pass
+
+    try:
+        import earnings_rotation as er  # noqa: PLC0415
+        result = er.run_earnings_rotation()
+        log.info("[ROTATION] daily run complete: added=%s size_after=%d",
+                 result.get("added", []), result.get("watchlist_size_after", 0))
+        _earnings_rotation_ran_date = today
+    except Exception as exc:
+        log.warning("[ROTATION] daily run failed (non-fatal): %s", exc)
+
+
+def _maybe_cull_post_earnings(dry_run: bool = False) -> None:
+    """
+    Nightly cull of post-earnings rotation symbols.
+    Fires weekdays 2:00–3:00 AM ET only (per spec).
+    """
+    global _earnings_cull_ran_date
+    now_et  = datetime.now(ET)
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+    today   = _today()
+
+    if _earnings_cull_ran_date == today:
+        return
+    if weekday >= 5:
+        return
+    if not (2 * 60 <= now_min <= 3 * 60):
+        return
+
+    if dry_run:
+        log.info("[dry-run] Skipping post-earnings cull")
+        _earnings_cull_ran_date = today
+        return
+
+    try:
+        import earnings_rotation as er  # noqa: PLC0415
+        culled = er._cull_post_earnings_symbols()
+        log.info("[ROTATION] 2 AM cull complete: %d symbols culled", len(culled))
+        _earnings_cull_ran_date = today
+    except Exception as exc:
+        log.warning("[ROTATION] 2 AM cull failed (non-fatal): %s", exc)
+
+
+def _maybe_check_earnings_calendar_staleness(dry_run: bool = False) -> None:
+    """
+    Daily earnings calendar staleness check.
+    Fires 8:00–9:00 AM ET, once per day. Surfaces in logs as [EARNINGS_STALE].
+    """
+    global _earnings_stale_check_date
+    now_et  = datetime.now(ET)
+    now_min = now_et.hour * 60 + now_et.minute
+    today   = _today()
+
+    if _earnings_stale_check_date == today:
+        return
+    if not (8 * 60 <= now_min <= 9 * 60):
+        return
+
+    if dry_run:
+        _earnings_stale_check_date = today
+        return
+
+    try:
+        import data_warehouse as dw  # noqa: PLC0415
+        status = dw._check_earnings_calendar_staleness()
+        if status == "ok":
+            log.info("[EARNINGS_STALE] calendar fresh")
+        _earnings_stale_check_date = today
+    except Exception as exc:
+        log.debug("[EARNINGS_STALE] check failed (non-fatal): %s", exc)
 
 
 def _maybe_refresh_form4_trades(dry_run: bool = False) -> None:
@@ -1355,7 +1505,11 @@ def run(dry_run: bool = False) -> None:
         instr_session = SESSION_MARKET if session == "pre_open" else session
 
         # Scheduled jobs (run before each cycle)
+        _maybe_cull_post_earnings(dry_run)
+        _maybe_refresh_earnings_calendar_av(dry_run)
         _maybe_run_premarket_jobs(dry_run)
+        _maybe_run_earnings_rotation(dry_run)
+        _maybe_check_earnings_calendar_staleness(dry_run)
         _maybe_refresh_macro_intelligence(dry_run)
         _maybe_refresh_iv_history(dry_run)
         _maybe_refresh_economic_calendar(dry_run)  # intraday econ slots

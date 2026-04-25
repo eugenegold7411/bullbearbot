@@ -24,9 +24,27 @@ BASE         = Path(__file__).parent
 CORE_FILE    = BASE / "watchlist_core.json"
 DYNAMIC_FILE = BASE / "watchlist_dynamic.json"
 INTRADAY_FILE= BASE / "watchlist_intraday.json"
+ROTATION_FILE= BASE / "watchlist_rotation.json"
 
 MAX_DYNAMIC  = 8
 MAX_INTRADAY = 10
+
+
+# ── CORE_SYMBOLS — derived from watchlist_core.json at import time ───────────
+
+def _build_core_symbols() -> frozenset[str]:
+    try:
+        raw = json.loads(CORE_FILE.read_text())
+        return frozenset(
+            (e.get("symbol") or "").upper()
+            for e in raw.get("symbols", [])
+            if e.get("symbol")
+        )
+    except Exception:
+        return frozenset()
+
+
+CORE_SYMBOLS: frozenset[str] = _build_core_symbols()
 
 # 8 PM ET in minutes-since-midnight
 _RESET_MINUTE = 20 * 60   # 8:00 PM
@@ -51,6 +69,89 @@ def _save(path: Path, data: dict) -> None:
 
 def get_core() -> list[dict]:
     return _load(CORE_FILE).get("symbols", [])
+
+
+# ── Rotation tier (earnings-driven, persists across 8 PM session reset) ──────
+
+def get_rotation() -> list[dict]:
+    """Return all earnings-rotation-added symbols. Persistent across session reset."""
+    return _load(ROTATION_FILE).get("symbols", [])
+
+
+def set_rotation(symbols: list[dict]) -> None:
+    """Replace rotation tier atomically. No cap (rotation grows with earnings season)."""
+    tmp = ROTATION_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({
+        "symbols":    list(symbols),
+        "updated_at": datetime.now(ET).isoformat(),
+    }, indent=2))
+    tmp.replace(ROTATION_FILE)
+
+
+def add_rotation_symbol(
+    symbol: str,
+    sector: str = "unknown",
+    cull_after: str = "",
+    source: str = "earnings",
+    *,
+    earnings_date: str = "",
+    extra: dict | None = None,
+) -> bool:
+    """
+    Add symbol to rotation tier. Idempotent — returns False if already in
+    core or already in rotation. Never adds core symbols (already protected).
+    """
+    sym = (symbol or "").upper()
+    if not sym:
+        return False
+    if sym in CORE_SYMBOLS:
+        log.debug("[ROTATION] %s already in CORE — skipping rotation add", sym)
+        return False
+
+    data = _load(ROTATION_FILE)
+    syms = data.get("symbols", [])
+    if any((s.get("symbol") or "").upper() == sym for s in syms):
+        return False
+
+    entry = {
+        "symbol":                     sym,
+        "type":                       "stock",
+        "tier":                       "rotation",
+        "sector":                     sector or "unknown",
+        "added_by":                   source,
+        "earnings_date":              earnings_date,
+        "post_earnings_cull_after":   cull_after,
+        "earnings_rotation_added_at": datetime.now(ET).isoformat(),
+        "added_on":                   datetime.now(ET).date().isoformat(),
+    }
+    if extra:
+        entry.update(extra)
+    syms.append(entry)
+    data["symbols"]    = syms
+    data["updated_at"] = datetime.now(ET).isoformat()
+    _save(ROTATION_FILE, data)
+    log.info("[ROTATION+] %s  earnings=%s  cull_after=%s",
+             sym, earnings_date or "?", cull_after or "?")
+    return True
+
+
+def remove_rotation_symbol(symbol: str) -> bool:
+    """Remove symbol from rotation. Never removes core. No-op if absent."""
+    sym = (symbol or "").upper()
+    if not sym or sym in CORE_SYMBOLS:
+        return False
+    data   = _load(ROTATION_FILE)
+    before = len(data.get("symbols", []))
+    data["symbols"] = [
+        s for s in data.get("symbols", [])
+        if (s.get("symbol") or "").upper() != sym
+    ]
+    if len(data["symbols"]) < before:
+        data["updated_at"] = datetime.now(ET).isoformat()
+        _save(ROTATION_FILE, data)
+        log.info("[ROTATION-] %s", sym)
+        return True
+    return False
 
 
 # ── Dynamic tier ──────────────────────────────────────────────────────────────
@@ -249,48 +350,60 @@ def _promote_from_text(text: str, reason: str) -> None:
 
 def get_active_watchlist() -> dict:
     """
-    Returns merged watchlist dict:
+    Returns merged watchlist dict with core-first ordering:
     {
-      "all":    [list of all unique symbol dicts, highest tier wins],
-      "stocks": [symbol strings, non-crypto],
-      "etfs":   [symbol strings],
-      "crypto": [symbol strings],
-      "core":   [symbol dicts],
-      "dynamic":[symbol dicts],
-      "intraday":[symbol dicts],
-      "by_sector": {sector: [symbol dicts]},
+      "all":      [core entries in JSON order] + [rotation] + [dynamic] + [intraday],
+      "stocks":   [core stocks first, then rotation/dynamic/intraday stocks],
+      "etfs":     [...],
+      "crypto":   [...],
+      "core":     [...],
+      "rotation": [...],
+      "dynamic":  [...],
+      "intraday": [...],
+      "by_sector":{sector: [...]},
     }
+    Core symbols always precede rotation/dynamic/intraday in the iteration order.
     """
     core     = get_core()
+    rotation = get_rotation()
     dynamic  = get_dynamic()
     intraday = get_intraday()
 
-    # Merge: highest tier wins on duplicate symbol
-    seen: dict[str, dict] = {}
-    for s in intraday:
-        seen[s["symbol"]] = s
-    for s in dynamic:
-        seen[s["symbol"]] = s          # dynamic overrides intraday
-    for s in core:
-        seen[s["symbol"]] = s          # core overrides all
+    # Build the merged ordered list: core first, then rotation, then dynamic,
+    # then intraday — skipping any duplicates so each symbol appears exactly
+    # once at its highest tier.
+    seen: set[str] = set()
+    ordered: list[dict] = []
 
-    all_symbols = list(seen.values())
+    def _take(lst: list[dict]) -> None:
+        for s in lst:
+            sym = (s.get("symbol") or "").upper()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            ordered.append(s)
 
-    stocks  = [s["symbol"] for s in all_symbols if s.get("type") == "stock"]
-    etfs    = [s["symbol"] for s in all_symbols if s.get("type") == "etf"]
-    crypto  = [s["symbol"] for s in all_symbols if s.get("type") == "crypto"]
+    _take(core)
+    _take(rotation)
+    _take(dynamic)
+    _take(intraday)
+
+    stocks  = [(s.get("symbol") or "") for s in ordered if s.get("type") == "stock"]
+    etfs    = [(s.get("symbol") or "") for s in ordered if s.get("type") == "etf"]
+    crypto  = [(s.get("symbol") or "") for s in ordered if s.get("type") == "crypto"]
 
     by_sector: dict[str, list] = {}
-    for s in all_symbols:
+    for s in ordered:
         sec = s.get("sector", "other")
         by_sector.setdefault(sec, []).append(s)
 
     return {
-        "all":       all_symbols,
+        "all":       ordered,
         "stocks":    stocks,
         "etfs":      etfs,
         "crypto":    crypto,
         "core":      core,
+        "rotation":  rotation,
         "dynamic":   dynamic,
         "intraday":  intraday,
         "by_sector": by_sector,

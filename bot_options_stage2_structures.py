@@ -38,6 +38,8 @@ _STRATEGY_FROM_STRUCTURE: dict[str, _OS] = {
 
 _A2_ROUTER_DEFAULTS: dict = {
     "earnings_dte_blackout": 5,
+    "earnings_dte_window":   14,   # RULE_EARNINGS active when blackout < dte ≤ window
+    "earnings_iv_rank_gate": 70,   # RULE_EARNINGS only fires when iv_rank < this
     "min_liquidity_score":   0.3,
     "macro_iv_gate_rank":    60,
     "iv_env_blackout":       [],  # S7-VOL: very_expensive now routes to credit spreads (RULE2_CREDIT)
@@ -63,6 +65,8 @@ def _route_strategy(pack, config: dict | None = None) -> list[str]:
     sym  = pack.symbol
     rcfg = _get_router_config(config)
     earnings_dte_blackout = int(rcfg["earnings_dte_blackout"])
+    earnings_dte_window   = int(rcfg.get("earnings_dte_window", 14))
+    earnings_iv_rank_gate = float(rcfg.get("earnings_iv_rank_gate", 70))
     min_liquidity_score   = float(rcfg["min_liquidity_score"])
     macro_iv_gate_rank    = float(rcfg["macro_iv_gate_rank"])
     iv_env_blackout       = list(rcfg["iv_env_blackout"])
@@ -90,6 +94,22 @@ def _route_strategy(pack, config: dict | None = None) -> list[str]:
         log.debug("[OPTS] _route_strategy %s: RULE4 macro_event + iv_rank=%.1f > %.1f → []",
                   sym, pack.iv_rank, macro_iv_gate_rank)
         return []
+
+    # Rule EARNINGS: direction-split when near (but not in blackout for) earnings
+    # AND iv_rank is not elevated. Elevated IV (>= gate) falls through to RULE6/7
+    # so we don't buy premium into expected vol crush.
+    if (pack.earnings_days_away is not None
+            and earnings_dte_blackout < pack.earnings_days_away <= earnings_dte_window
+            and pack.iv_rank < earnings_iv_rank_gate):
+        if pack.a1_direction == "bullish":
+            allowed = ["debit_call_spread", "straddle"]
+        elif pack.a1_direction == "bearish":
+            allowed = ["debit_put_spread", "straddle"]
+        else:  # neutral
+            allowed = ["straddle"]
+        log.debug("[OPTS] _route_strategy %s: RULE_EARNINGS dte=%s iv_rank=%.1f dir=%s → %s",
+                  sym, pack.earnings_days_away, pack.iv_rank, pack.a1_direction, allowed)
+        return allowed
 
     # Rule 2b: very expensive IV → route to credit structures (sell premium)
     if pack.iv_environment == "very_expensive":

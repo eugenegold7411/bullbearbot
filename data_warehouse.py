@@ -10,6 +10,8 @@ Usage:
 """
 
 import argparse
+import csv
+import io
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -17,6 +19,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import requests
 import yfinance as yf
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
@@ -331,59 +334,318 @@ def refresh_macro_snapshot() -> None:
     log.info("Macro snapshot saved")
 
 
+# ── Earnings calendar — Alpha Vantage exclusive writer ────────────────────────
+
 def refresh_earnings_calendar() -> None:
     """
-    Next 14 days of earnings from yfinance.
-
-    Guard: skip the yfinance refresh when an Alpha Vantage-sourced calendar
-    already exists and is < 7 days old. yfinance covers only the top 30
-    watchlist symbols vs AV's full universe (~80), so an unconditional
-    refresh would silently shrink the calendar. Falls through to yfinance
-    when no AV file is present, the AV file is older than 7 days, or the
-    file is malformed.
+    Deprecated no-op. The yfinance writer was removed when AV became the
+    exclusive source. This stub is kept so external callers and tests that
+    monkey-patch the symbol still work. Use refresh_earnings_calendar_av().
     """
+    log.debug("[EARNINGS] refresh_earnings_calendar() called — deprecated no-op (use AV writer)")
+    return None
+
+
+
+_EXTRA_TRACKED_UNIVERSE: frozenset[str] = frozenset({
+    # Names not in core watchlist but still tracked for rotation/A2 universe
+    "AAPL", "META", "GOOGL", "AMD", "NFLX", "CRM", "ORCL", "ADBE", "NOW",
+    "WDAY", "ZM", "V", "MA", "PYPL", "SQ", "AFRM", "UPST", "SOFI", "HOOD",
+    "BAC", "C", "WFC", "GE", "CAT", "DE", "BA", "UNH", "UBER", "LYFT",
+    "ABNB", "DASH", "COIN", "MSTR", "SHOP", "DDOG", "NET", "CRWD", "OKTA",
+    "ZS", "TEAM", "MDB", "ESTC", "U", "RBLX", "ARM", "SMCI", "MRVL", "QCOM",
+    "MU", "INTC", "TXN", "AMAT", "KLAC", "LRCX", "ONTO", "ENTG", "SNAP",
+    "SPOT", "RDFN", "Z", "OPEN", "CVNA", "RIVN", "LCID", "NIO", "XPEV",
+    "LI", "BIDU", "JD", "PDD", "BABA", "SE", "GRAB", "GOTO", "TSLA",
+})
+
+
+def _get_tracked_universe() -> set[str]:
+    """
+    Return the symbol set we filter the AV calendar against.
+    Union of: watchlist (core + rotation) + A2 universe + extras.
+    """
+    syms: set[str] = set()
+    try:
+        wl = wm.get_active_watchlist()
+        for s in wl.get("stocks", []) + wl.get("etfs", []):
+            if isinstance(s, str) and "/" not in s:
+                syms.add(s.upper())
+    except Exception as exc:
+        log.debug("[EARNINGS_AV] watchlist load failed (non-fatal): %s", exc)
+
+    # A2 options universe (whatever has IV history)
+    try:
+        from options_universe_manager import get_universe  # noqa: PLC0415
+        u = get_universe()
+        for k in (u.get("symbols") or {}):
+            syms.add(k.upper())
+    except Exception:
+        pass
+
+    syms |= _EXTRA_TRACKED_UNIVERSE
+    return syms
+
+
+def refresh_earnings_calendar_av() -> dict:
+    """
+    Fetch the 3-month earnings calendar from Alpha Vantage.
+    AV is the exclusive source — yfinance does NOT write earnings_calendar.json.
+
+    Filters to _get_tracked_universe() with a core invariant: any core stock
+    present in raw AV data is force-added even if outside the tracked universe.
+
+    Merge semantics:
+      - Past-date entries (< today) are dropped from any prior file.
+      - On reschedule (existing entry has a different date), preserves
+        prior_reported_date.
+
+    Returns the saved dict ({} on any error or empty CSV).
+    Non-fatal: HTTP failures leave any existing file in place.
+    """
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or ""
+    if not api_key:
+        log.warning("[EARNINGS_AV] ALPHA_VANTAGE_API_KEY not set — skipping refresh")
+        return {}
+
+    # ── Fetch ─────────────────────────────────────────────────────────────────
+    url = f"https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey={api_key}"
+    try:
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        body = resp.text or ""
+    except Exception as exc:
+        log.warning("[EARNINGS_AV] HTTP fetch failed (non-fatal): %s", exc)
+        return {}
+
+    # ── Parse CSV ─────────────────────────────────────────────────────────────
+    rows: list[dict] = []
+    try:
+        reader = csv.DictReader(io.StringIO(body))
+        for row in reader:
+            sym = (row.get("symbol") or "").strip().upper()
+            if not sym:
+                continue
+            rows.append(row)
+    except Exception as exc:
+        log.warning("[EARNINGS_AV] CSV parse failed (non-fatal): %s", exc)
+        return {}
+
+    if not rows:
+        log.warning("[EARNINGS_AV] CSV had 0 rows — leaving existing file in place")
+        return {}
+
+    # ── Filter to tracked universe + force-add core invariants ────────────────
+    tracked = _get_tracked_universe()
+    core_stocks: set[str] = set()
+    try:
+        for e in (wm.get_core() or []):
+            if isinstance(e, dict) and e.get("type") == "stock":
+                sym = (e.get("symbol") or "").upper()
+                if sym:
+                    core_stocks.add(sym)
+    except Exception:
+        pass
+
+    today = datetime.now().date()
+
+    def _parse_eps(v) -> float | None:
+        try:
+            return float(v) if v not in (None, "") else None
+        except Exception:
+            return None
+
+    # Load existing for prior_reported_date and past-date drop
     cal_path = MARKET_DIR / "earnings_calendar.json"
+    existing_by_sym: dict[str, dict] = {}
     if cal_path.exists():
         try:
-            existing = json.loads(cal_path.read_text())
-            if isinstance(existing, dict) and existing.get("source", "") == "alphavantage":
-                fetched = (existing.get("fetched_at")
-                           or existing.get("generated_at", "2000-01-01T00:00:00"))
-                # Strip timezone suffix to make the parse tz-naive-friendly
-                fetched_iso = fetched[:19] if isinstance(fetched, str) else "2000-01-01T00:00:00"
-                age = datetime.now() - datetime.fromisoformat(fetched_iso)
-                if age < timedelta(days=7):
-                    log.info(
-                        "[EARNINGS] Skipping yfinance refresh — AV calendar is %d days old (< 7); "
-                        "preserving %d entries",
-                        age.days,
-                        len(existing.get("calendar", [])),
-                    )
-                    return
-        except Exception as _exc:
-            log.debug("[EARNINGS] AV-guard check failed (%s) — falling through to yfinance", _exc)
+            prior = json.loads(cal_path.read_text())
+            for e in prior.get("calendar", []):
+                sym = (e.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                iso = str(e.get("earnings_date", ""))[:10]
+                # Drop past dates from prior
+                try:
+                    if iso and datetime.fromisoformat(iso).date() < today:
+                        continue
+                except Exception:
+                    continue
+                existing_by_sym[sym] = e
+        except Exception as exc:
+            log.debug("[EARNINGS_AV] prior file unreadable (%s) — proceeding fresh", exc)
 
-    watchlist = wm.get_active_watchlist()
-    all_syms  = [s for s in watchlist["stocks"] + watchlist["etfs"] if "/" not in s]
-    calendar  = []
+    confirmed_iso = datetime.now(timezone.utc).isoformat()
+    now_iso       = datetime.now(ET).isoformat()
+    new_entries:   list[dict] = []
+    seen_keys:     set[tuple[str, str]] = set()
 
-    for sym in all_syms[:30]:  # cap API calls
+    for row in rows:
+        sym = (row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        # Filter: tracked-universe OR core invariant
+        if sym not in tracked and sym not in core_stocks:
+            continue
+        iso = str(row.get("reportDate") or "")[:10]
+        if not iso:
+            continue
         try:
-            cal = yf.Ticker(sym).calendar
-            if cal is not None and not (hasattr(cal, "empty") and cal.empty):
-                if isinstance(cal, dict) and "Earnings Date" in cal:
-                    dates = cal["Earnings Date"]
-                    if dates:
-                        calendar.append({
-                            "symbol":       sym,
-                            "earnings_date": str(dates[0]) if hasattr(dates, "__iter__") else str(dates),
-                        })
+            d = datetime.fromisoformat(iso).date()
+            if d < today:
+                continue
         except Exception:
-            pass
+            continue
+        if (sym, iso) in seen_keys:
+            continue
+        seen_keys.add((sym, iso))
 
-    data = {"fetched_at": datetime.now(ET).isoformat(), "calendar": calendar, "source": "yfinance"}
-    _save_json(MARKET_DIR / "earnings_calendar.json", data)
-    log.info("Earnings calendar saved (%d events, source=yfinance)", len(calendar))
+        timing = (row.get("timeOfTheDay") or "").strip() or "unknown"
+        eps    = _parse_eps(row.get("estimate"))
+
+        entry = {
+            "symbol":              sym,
+            "earnings_date":       iso,
+            "timing":              timing,
+            "eps_estimate":        eps,
+            "source":              "alphavantage",
+            "source_confirmed_at": confirmed_iso,
+        }
+
+        # Reschedule detection
+        prior = existing_by_sym.get(sym)
+        if prior:
+            prior_iso = str(prior.get("earnings_date", ""))[:10]
+            if prior_iso and prior_iso != iso:
+                entry["prior_reported_date"] = prior_iso
+
+        new_entries.append(entry)
+
+    # Sort by date asc
+    new_entries.sort(key=lambda e: e.get("earnings_date", ""))
+
+    saved = {
+        "fetched_at": now_iso,
+        "source":     "alphavantage",
+        "calendar":   new_entries,
+    }
+
+    try:
+        MARKET_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = cal_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(saved, indent=2))
+        tmp.replace(cal_path)
+    except Exception as exc:
+        log.warning("[EARNINGS_AV] write failed (non-fatal): %s", exc)
+        return {}
+
+    n_wl = sum(1 for e in new_entries if e["symbol"] in core_stocks)
+    log.info(
+        "[EARNINGS_AV] Calendar saved: %d entries covering %d core stocks",
+        len(new_entries), n_wl,
+    )
+    return saved
+
+
+def refresh_earnings_calendar_yfinance_confirm(symbols: list[str]) -> dict:
+    """
+    Per-symbol yfinance reconciliation against the canonical AV calendar.
+    Updates the AV calendar in place when yfinance disagrees on the date.
+    NEVER writes a non-AV-tagged file — preserves source: 'alphavantage'.
+
+    Returns: {"updated": [syms], "unchanged": [syms], "missing": [syms]}.
+    Non-fatal — never raises.
+    """
+    cal_path = MARKET_DIR / "earnings_calendar.json"
+    out: dict[str, list[str]] = {"updated": [], "unchanged": [], "missing": []}
+
+    if not cal_path.exists():
+        return out
+    try:
+        cal = json.loads(cal_path.read_text())
+    except Exception:
+        return out
+    entries = cal.get("calendar", [])
+    by_sym  = {(e.get("symbol") or "").upper(): e for e in entries if isinstance(e, dict)}
+
+    for sym in symbols:
+        sym_u = (sym or "").upper()
+        if not sym_u:
+            continue
+        entry = by_sym.get(sym_u)
+        if not entry:
+            out["missing"].append(sym_u)
+            continue
+        try:
+            yf_cal = yf.Ticker(sym_u).calendar
+            yf_dates = (yf_cal or {}).get("Earnings Date", []) if isinstance(yf_cal, dict) else None
+            if not yf_dates:
+                out["missing"].append(sym_u)
+                continue
+            yf_d = yf_dates[0]
+            yf_iso = yf_d.isoformat() if hasattr(yf_d, "isoformat") else str(yf_d)[:10]
+            current_iso = str(entry.get("earnings_date", ""))[:10]
+            if yf_iso and yf_iso != current_iso:
+                entry["prior_reported_date"] = current_iso
+                entry["earnings_date"]       = yf_iso
+                out["updated"].append(sym_u)
+            else:
+                out["unchanged"].append(sym_u)
+        except Exception as exc:
+            log.debug("[EARNINGS_YF_CONFIRM] %s failed (non-fatal): %s", sym_u, exc)
+            out["missing"].append(sym_u)
+
+    # Write back if anything updated
+    if out["updated"]:
+        try:
+            tmp = cal_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(cal, indent=2))
+            tmp.replace(cal_path)
+            log.info("[EARNINGS_YF_CONFIRM] Updated %d symbols: %s",
+                     len(out["updated"]), out["updated"])
+        except Exception as exc:
+            log.warning("[EARNINGS_YF_CONFIRM] write failed (non-fatal): %s", exc)
+
+    return out
+
+
+def _check_earnings_calendar_staleness() -> str:
+    """
+    Inspect data/market/earnings_calendar.json and emit a WARNING-level log
+    if the calendar is stale (> 14 days) or wrong source.
+    Returns one of: 'ok' | 'stale_warn' | 'stale_critical' | 'missing'.
+    """
+    cal_path = MARKET_DIR / "earnings_calendar.json"
+    if not cal_path.exists():
+        log.warning("[EARNINGS_STALE] calendar file missing")
+        return "missing"
+    try:
+        d = json.loads(cal_path.read_text())
+    except Exception as exc:
+        log.warning("[EARNINGS_STALE] calendar unreadable: %s", exc)
+        return "missing"
+
+    src = d.get("source", "")
+    if src != "alphavantage":
+        log.warning("[EARNINGS_STALE] calendar source=%s (expected alphavantage)", src)
+        return "stale_critical"
+
+    fetched = (d.get("fetched_at") or "")[:19]
+    try:
+        fetched_dt = datetime.fromisoformat(fetched)
+    except Exception:
+        log.warning("[EARNINGS_STALE] calendar fetched_at unparseable: %s", fetched)
+        return "stale_critical"
+
+    age_days = (datetime.now() - fetched_dt).days
+    if age_days > 28:
+        log.warning("[EARNINGS_STALE] calendar age=%dd > 28d (CRITICAL)", age_days)
+        return "stale_critical"
+    if age_days > 14:
+        log.warning("[EARNINGS_STALE] calendar age=%dd > 14d (DEGRADED)", age_days)
+        return "stale_warn"
+    return "ok"
 
 
 def refresh_premarket_movers() -> None:
@@ -697,7 +959,9 @@ def run_full_refresh(target_symbol: str | None = None) -> None:
     refresh_news(stock_etfs)
     refresh_sector_performance()
     refresh_macro_snapshot()
-    refresh_earnings_calendar()
+    # NOTE: earnings calendar is owned exclusively by AV
+    # (refresh_earnings_calendar_av) called weekly by the scheduler.
+    # yfinance no longer writes earnings_calendar.json.
     refresh_premarket_movers()
     refresh_global_indices()
 

@@ -179,7 +179,7 @@ def fetch_form4_insider_trades(symbols: list[str], days_back: int = 30) -> list[
     start_dt = end_dt - timedelta(days=days_back + 5)
     all_trades: list[dict] = []
 
-    for symbol in symbols[:25]:
+    for symbol in symbols:
         if "/" in symbol:
             continue
         try:

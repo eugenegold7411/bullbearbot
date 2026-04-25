@@ -16,6 +16,7 @@ Usage:
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -87,11 +88,28 @@ _claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL   = "claude-haiku-4-5-20251001"
 
 # ── RSS Sources ───────────────────────────────────────────────────────────────
+# Investing.com dropped 2026-04-25: floods feed with Form 13G/144 filing press
+# releases that score 0 and crowd out real macro signal.
 RSS_FEEDS = [
-    ("BBC",      "https://feeds.bbci.co.uk/news/business/rss.xml"),
-    ("NYTimes",  "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"),
-    ("Investing","https://www.investing.com/rss/news.rss"),
+    ("BBC",          "https://feeds.bbci.co.uk/news/business/rss.xml"),
+    ("NYTimes",      "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"),
+    ("CNBC-Econ",    "https://www.cnbc.com/id/20910258/device/rss/rss.html"),
+    ("MarketWatch",  "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines"),
+    ("WSJ",          "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"),
+    ("FT",           "https://www.ft.com/world?format=rss"),
+    ("Yahoo",        "https://finance.yahoo.com/news/rssindex"),
 ]
+
+
+# ── Filing-noise rejection filter ─────────────────────────────────────────────
+# Drops Form 13G/13D/144/144A press releases, earnings call transcripts, and
+# the "31 Sloths Acquired/Died/Born" class of pseudo-news that fires the
+# critical keyword tier (via "died", "acquired") without any market relevance.
+_FILING_NOISE_RE = re.compile(
+    r'^Form\s+\d+|^SC\s+13[GD]\b|^Amendment\s+to\s+Form|'
+    r'Earnings\s+call\s+transcript:|^\d+\s+\w+\s+(Acquired|Died|Born)\b',
+    re.IGNORECASE,
+)
 
 # ── Keyword tiers ─────────────────────────────────────────────────────────────
 KEYWORD_TIERS = {
@@ -221,6 +239,9 @@ def fetch_macro_wire() -> list:
 
                 if not headline or headline in seen_headlines:
                     continue
+                # Reject filing/transcript/animal-life-event pseudo-news before scoring
+                if _FILING_NOISE_RE.match(headline):
+                    continue
                 seen_headlines.add(headline)
 
                 published_ts = None
@@ -282,6 +303,26 @@ def classify_articles(articles: list) -> list:
         for i, a in enumerate(to_classify)
     )
 
+    # Inject the current portfolio symbol set so Haiku can populate
+    # affected_symbols with names we actually trade rather than guessing.
+    try:
+        import watchlist_manager as _wm  # noqa: PLC0415
+        _wl = _wm.get_active_watchlist()
+        _wl_syms = sorted({
+            (s if isinstance(s, str) else s.get("symbol", ""))
+            for v in _wl.values() if isinstance(v, list)
+            for s in v
+            if "/" not in (s if isinstance(s, str) else s.get("symbol", ""))
+        })
+        _wl_syms = [s for s in _wl_syms if s]
+        _watchlist_hint = (
+            f"\n\nTracked portfolio symbols: {', '.join(_wl_syms)}\n"
+            "Prefer these when populating affected_symbols; emit other tickers "
+            "only if directly named in the headline."
+        ) if _wl_syms else ""
+    except Exception:
+        _watchlist_hint = ""
+
     system_prompt = (
         "You are a financial market news classifier. "
         "Given news headlines and summaries, classify each one. "
@@ -291,6 +332,7 @@ def classify_articles(articles: list) -> list:
         '"affected_sectors":["energy",...],"affected_symbols":["XLE",...],'
         '"urgency":"immediate"|"today"|"this_week"|"background",'
         '"one_line_summary":"<under 10 words>"}'
+        + _watchlist_hint
     )
 
     try:

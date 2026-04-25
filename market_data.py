@@ -1109,12 +1109,12 @@ def fetch_all(symbols_stock: list, symbols_crypto: list, session_tier: str,
                     signals_by_sym[last_sym] += "\n" + line
 
         watchlist_signals = stock_str
-        news_syms         = [s for s in symbols_stock if "/" not in s][:20]
+        news_syms         = [s for s in symbols_stock if "/" not in s]
         breaking_news     = get_news(news_syms, limit=5, since_minutes=15)
         sector_news       = get_news(news_syms, limit=10)
 
     elif session_tier == "extended":
-        news_syms   = [s for s in symbols_stock if "/" not in s][:20]
+        news_syms   = [s for s in symbols_stock if "/" not in s]
         breaking_news = get_news(news_syms, limit=5, since_minutes=15)
         sector_news   = get_news(news_syms, limit=5)
         watchlist_signals = "  (extended session — stock bars not fetched)"

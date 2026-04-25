@@ -1868,22 +1868,16 @@ def _maybe_refresh_qualitative_context(dry_run: bool = False) -> None:
 
 def _maybe_refresh_macro_wire(dry_run: bool = False) -> None:
     """
-    Refresh macro wire RSS feeds.
-    Market hours: every cycle (~5 min)
-    Extended:     every 15 min
-    Overnight:    every 30 min
-    Minimum 60 seconds between fetches (enforced inside macro_wire.py).
+    Refresh macro wire RSS feeds on a fixed 15-minute slot key — independent
+    of the session interval. The 60-second module-level throttle inside
+    macro_wire.fetch_macro_wire() is the floor; this 15-min slot is the
+    ceiling for unique fetches per hour.
     """
     global _macro_wire_refresh_key
     now_et  = datetime.now(ET)
-    now_et.hour * 60 + now_et.minute
-    now_et.weekday()
 
-    _, interval_sec = get_session_and_interval(now_et)
-
-    # Compute last-fetch window key based on session interval
-    slot_min = interval_sec // 60
-    slot_key = now_et.strftime("%Y-%m-%d-%H:") + str(now_et.minute // max(slot_min, 1))
+    # Fixed 15-minute slot regardless of session
+    slot_key = now_et.strftime("%Y-%m-%d-%H-") + str(now_et.minute // 15)
     if _macro_wire_refresh_key == slot_key:
         return
 

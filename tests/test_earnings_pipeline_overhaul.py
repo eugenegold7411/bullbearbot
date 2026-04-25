@@ -315,9 +315,14 @@ class TestCoreSymbolsFromJson:
         assert CORE_SYMBOLS == expected
 
     def test_drift_symbols_absent(self):
-        """AMD, AVGO, TSLA, PANW, HD, SNOW were hardcoded drift — must be absent."""
+        """Symbols hardcoded as drift (never officially promoted) must stay
+        out of CORE_SYMBOLS. Updated 2026-04-26: TSLA removed from this set
+        after intentional core promotion in commit b03f6f4 (alongside GOOGL,
+        META, AAPL, NFLX, V — those weren't in the drift set, so no further
+        changes needed). The remaining symbols here have never been added
+        to watchlist_core.json and remain drift sentinels."""
         from watchlist_manager import CORE_SYMBOLS
-        drift = {"AMD", "AVGO", "TSLA", "PANW", "HD", "SNOW"}
+        drift = {"AMD", "AVGO", "PANW", "HD", "SNOW"}
         assert not (drift & CORE_SYMBOLS)
 
 

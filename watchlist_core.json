@@ -49,6 +49,12 @@
     {"symbol": "EWM",   "sector": "international", "type": "etf",   "tier": "core"},
     {"symbol": "ECH",   "sector": "international", "type": "etf",   "tier": "core"},
     {"symbol": "BE",    "sector": "utilities",     "type": "stock", "tier": "core"},
-    {"symbol": "COPX",  "sector": "commodities",   "type": "etf",   "tier": "core"}
+    {"symbol": "COPX",  "sector": "commodities",   "type": "etf",   "tier": "core"},
+    {"symbol": "GOOGL", "sector": "technology", "type": "stock", "tier": "core"},
+{"symbol": "META", "sector": "technology", "type": "stock", "tier": "core"},
+{"symbol": "AAPL", "sector": "technology", "type": "stock", "tier": "core"},
+{"symbol": "TSLA", "sector": "consumer_discretionary", "type": "stock", "tier": "core"},
+{"symbol": "NFLX", "sector": "communication_services", "type": "stock", "tier": "core"},
+{"symbol": "V", "sector": "financials", "type": "stock", "tier": "core"}
   ]
 }

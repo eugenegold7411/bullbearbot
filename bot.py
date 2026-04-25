@@ -35,6 +35,7 @@ from bot_stage3_decision import (
     ask_claude,  # re-exported — test_core.py mocks bot.ask_claude
     build_compact_prompt,
     build_user_prompt,
+    is_claude_trading_window,
 )
 from bot_stage4_execution import debate_trade, fundamental_check
 from log_setup import get_logger, log_trade
@@ -303,22 +304,33 @@ def run_cycle(
         _gate_state  = _gate.load_gate_state()
         _gate_full_cfg = state.cfg if isinstance(state.cfg, dict) else {}
         _tba_list      = state.cfg.get("time_bound_actions", []) if isinstance(state.cfg, dict) else []
-        _run_sonnet, _gate_reasons, _gate_state = _gate.should_run_sonnet(
-            session_tier=session_tier,
-            regime=regime_str,
-            vix=_vix,
-            signal_scores=signal_scores_obj,
-            positions=state.positions,
-            recon_diff=state.recon_diff,
-            breaking_news=state.md.get("breaking_news", ""),
-            time_bound_actions=_tba_list,
-            current_time_et=_dt.now(_ZI("America/New_York")),
-            gate_state=_gate_state,
-            config=_gate_full_cfg,
-            equity=state.equity,
-            buying_power=state.buying_power_float,
-        )
-        _gate.save_gate_state(_gate_state)
+
+        # Hard trading-window gate: outside 9:25 AM–4:15 PM ET (weekdays),
+        # never fire Stage 3 Sonnet. Stage 0/1/2/2.5 already ran above;
+        # overnight Haiku path is unaffected (handled in the if/else above).
+        _gate_reasons = []
+        _now_et = _dt.now(_ZI("America/New_York"))
+        if not is_claude_trading_window(now_et=_now_et, cfg=_gate_full_cfg):
+            log.info("[GATE] WINDOW closed (%s ET) — Sonnet suppressed",
+                     _now_et.strftime("%I:%M %p"))
+            _run_sonnet = False
+        else:
+            _run_sonnet, _gate_reasons, _gate_state = _gate.should_run_sonnet(
+                session_tier=session_tier,
+                regime=regime_str,
+                vix=_vix,
+                signal_scores=signal_scores_obj,
+                positions=state.positions,
+                recon_diff=state.recon_diff,
+                breaking_news=state.md.get("breaking_news", ""),
+                time_bound_actions=_tba_list,
+                current_time_et=_now_et,
+                gate_state=_gate_state,
+                config=_gate_full_cfg,
+                equity=state.equity,
+                buying_power=state.buying_power_float,
+            )
+            _gate.save_gate_state(_gate_state)
 
         if not _run_sonnet:
             _log_skip_cycle(_gate_state)

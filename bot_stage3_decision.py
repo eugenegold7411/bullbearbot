@@ -18,6 +18,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import portfolio_intelligence as pi
 from bot_clients import MODEL, MODEL_FAST, _get_claude
@@ -27,6 +28,44 @@ log = get_logger(__name__)
 
 PROMPTS_DIR   = Path(__file__).parent / "prompts"
 _CAPTURES_DIR = Path(__file__).parent / "data" / "captures"
+
+_ET = ZoneInfo("America/New_York")
+_TRADING_WINDOW_START_DEFAULT = 9 * 60 + 25    # 9:25 AM ET
+_TRADING_WINDOW_END_DEFAULT   = 16 * 60 + 15   # 4:15 PM ET
+
+
+def is_claude_trading_window(now_et: datetime | None = None,
+                             cfg: dict | None = None) -> bool:
+    """
+    Returns True only during 9:25 AM–4:15 PM ET on weekdays — the window
+    when Stage 3 Sonnet trading-decision calls are authorized.
+
+    When `feature_flags.hard_gate_claude_to_trading_window` is False the
+    gate is disabled and this function always returns True.
+
+    Window boundaries are read from `feature_flags.trading_window_start_et`
+    and `trading_window_end_et` ("HH:MM"); defaults are 09:25 / 16:15.
+    """
+    flags = (cfg or {}).get("feature_flags", {}) if isinstance(cfg, dict) else {}
+    if not flags.get("hard_gate_claude_to_trading_window", True):
+        return True
+
+    if now_et is None:
+        now_et = datetime.now(_ET)
+    if now_et.weekday() >= 5:
+        return False
+
+    def _parse_hhmm(s: str, fallback: int) -> int:
+        try:
+            h, m = s.split(":")
+            return int(h) * 60 + int(m)
+        except Exception:
+            return fallback
+
+    start_min = _parse_hhmm(flags.get("trading_window_start_et", ""), _TRADING_WINDOW_START_DEFAULT)
+    end_min   = _parse_hhmm(flags.get("trading_window_end_et",   ""), _TRADING_WINDOW_END_DEFAULT)
+    now_min   = now_et.hour * 60 + now_et.minute
+    return start_min <= now_min <= end_min
 
 _OVERNIGHT_SYS = (
     "You are a crypto position manager for an overnight trading session. "

@@ -61,6 +61,55 @@ _MARKET_END     = 20 * 60         # 8:00 PM ET
 _EXTENDED_START =  4 * 60         # 4:00 AM ET
 _EXTENDED_END   = 23 * 60         # 11:00 PM ET
 
+# Trading-window gate: hard-stops Claude trading-decision calls outside
+# 9:25 AM–4:15 PM ET on weekdays. Drives ~$130/month savings by
+# suppressing post-close Sonnet drift.
+_TRADING_WINDOW_START = 9 * 60 + 25    # 9:25 AM ET
+_TRADING_WINDOW_END   = 16 * 60 + 15   # 4:15 PM ET
+
+
+def _is_claude_trading_window(now_et: datetime | None = None,
+                              cfg: dict | None = None) -> bool:
+    """
+    Returns True only during the window when Claude API calls for trading
+    decisions are authorized. 9:25 AM–4:15 PM ET inclusive, weekdays only.
+
+    When the feature flag `hard_gate_claude_to_trading_window` is False,
+    this function always returns True (gate disabled).
+
+    Reads start/end from `feature_flags.trading_window_start_et` /
+    `trading_window_end_et` ("HH:MM") if provided in cfg.
+    """
+    flags = (cfg or {}).get("feature_flags", {}) if isinstance(cfg, dict) else {}
+    if not flags.get("hard_gate_claude_to_trading_window", True):
+        return True
+
+    if now_et is None:
+        now_et = datetime.now(ET)
+    if now_et.weekday() >= 5:   # Saturday=5, Sunday=6
+        return False
+
+    def _parse_hhmm(s: str, fallback: int) -> int:
+        try:
+            h, m = s.split(":")
+            return int(h) * 60 + int(m)
+        except Exception:
+            return fallback
+
+    start_min = _parse_hhmm(flags.get("trading_window_start_et", ""), _TRADING_WINDOW_START)
+    end_min   = _parse_hhmm(flags.get("trading_window_end_et",   ""), _TRADING_WINDOW_END)
+    now_min   = now_et.hour * 60 + now_et.minute
+    return start_min <= now_min <= end_min
+
+
+def _load_strategy_config_safe() -> dict:
+    """Read strategy_config.json; return {} on failure. Used by gate helpers."""
+    try:
+        cfg_path = Path(__file__).parent / "strategy_config.json"
+        return json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
 REPORT_HOUR_ET   = 16   # 4 PM ET
 REPORT_MINUTE_ET = 30   # 4:30 PM ET — after market close, before extended session
 
@@ -1263,15 +1312,25 @@ def run(dry_run: bool = False) -> None:
                     next_cycle_time=next_str,
                 )
 
-                # Account 2 — options bot (90s offset, market hours only)
-                if session in ("market", "pre_open"):
+                # Account 2 — options bot (90s offset, market hours only).
+                # Also gated by the hard trading window so A2 cannot bleed into
+                # post-4:00 PM ET via the 90 s offset or close-window cycles.
+                if session in ("market", "pre_open") and _is_claude_trading_window(
+                    cfg=_load_strategy_config_safe()
+                ):
                     try:
                         time.sleep(90)
-                        import bot_options as _bot_opts  # noqa: PLC0415
-                        _bot_opts.run_options_cycle(
-                            session_tier=session,
-                            next_cycle_time=next_str,
-                        )
+                        # Re-check after sleep — 90 s may push us past 4:15 PM
+                        if not _is_claude_trading_window(
+                            cfg=_load_strategy_config_safe()
+                        ):
+                            log.info("[A2] window closed during 90s offset — skipping debate")
+                        else:
+                            import bot_options as _bot_opts  # noqa: PLC0415
+                            _bot_opts.run_options_cycle(
+                                session_tier=session,
+                                next_cycle_time=next_str,
+                            )
                     except Exception as _opts_exc:
                         log.error("[OPTS] Account 2 cycle error (non-fatal): %s", _opts_exc,
                                   exc_info=True)
@@ -1309,6 +1368,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_refresh_crypto_sentiment(dry_run)
         _maybe_refresh_macro_wire(dry_run)
         _maybe_refresh_qualitative_context(dry_run)
+        _maybe_run_options_close_check(dry_run)
         _check_intraday_momentum(dry_run)
         _maybe_run_preopen_cycle(dry_run)
         _maybe_send_daily_report()
@@ -1543,14 +1603,14 @@ def _maybe_refresh_qualitative_context(dry_run: bool = False) -> None:
     weekday = now_et.weekday()
     now_min = now_et.hour * 60 + now_et.minute
 
-    # Build a "slot" key — scheduled windows are 2/6/10 AM ET weekdays.
+    # Build a "slot" key — scheduled windows are 6/10 AM ET weekdays.
+    # The 2 AM slot was removed for cost (~$0.07/day) — 6 AM sweep is
+    # sufficient warm-up for the 4:15 AM morning brief and 9:30 AM open.
     # Anything outside those windows can only be triggered by event-driven
-    # refresh (news hash changed + last sweep > 30 min).
+    # refresh (news hash changed + last sweep > 30 min) inside 4 AM–8 PM ET.
     scheduled_slot: str | None = None
     if weekday < 5:
-        if 2 * 60 <= now_min < 3 * 60:
-            scheduled_slot = now_et.strftime("%Y-%m-%d-02")
-        elif 6 * 60 <= now_min < 7 * 60:
+        if 6 * 60 <= now_min < 7 * 60:
             scheduled_slot = now_et.strftime("%Y-%m-%d-06")
         elif 10 * 60 <= now_min < 11 * 60:
             scheduled_slot = now_et.strftime("%Y-%m-%d-10")
@@ -1602,6 +1662,10 @@ def _maybe_refresh_qualitative_context(dry_run: bool = False) -> None:
         log.debug("[L1] snapshot assembly failed: %s", exc)
         return
 
+    # Event-driven and age-fallback paths are both confined to the
+    # 4 AM–8 PM ET weekday window so we never wake at 3 AM on a news blip.
+    _event_window = (weekday < 5) and (4 * 60 <= now_min < 20 * 60)
+
     # Decide whether to fire
     fire = False
     reason = ""
@@ -1615,16 +1679,15 @@ def _maybe_refresh_qualitative_context(dry_run: bool = False) -> None:
             age_min = context_age_minutes()
         except Exception:
             age_min = 1e9
-        if news_hash and news_hash != _last_qualitative_news_hash and age_min > 30:
+        if (news_hash and news_hash != _last_qualitative_news_hash
+                and age_min > 30 and _event_window):
             fire = True
             reason = f"news_hash_change age={age_min:.0f}m"
-        elif age_min > 240 and news_hash:
+        elif age_min > 240 and news_hash and _event_window:
             # Hard fallback: 4h age gate ensures we don't go stale even on
-            # quiet news days. Only applies during weekday market-extended
-            # session to avoid overnight over-refresh.
-            if weekday < 5 and 4 * 60 <= now_min < 20 * 60:
-                fire = True
-                reason = f"age_gate age={age_min:.0f}m"
+            # quiet news days. Same 4 AM–8 PM ET window.
+            fire = True
+            reason = f"age_gate age={age_min:.0f}m"
 
     if not fire:
         return
@@ -1845,6 +1908,39 @@ def _maybe_backfill_decision_outcomes(dry_run: bool = False) -> None:
             log.warning("[OUTCOMES] Daily backfill failed (non-fatal)", exc_info=True)
 
     _outcomes_backfill_date = today
+
+
+def _maybe_run_options_close_check(dry_run: bool = False) -> None:
+    """
+    Run the A2 close-check loop outside the 9:25 AM–4:15 PM ET window.
+
+    Claude-free — only checks open structures for expiry/stop/roll conditions
+    and submits limit closes via Alpaca. Inside the trading window the inline
+    `bot_options.run_options_cycle()` path handles close-check at the end of
+    each A2 debate cycle, so this function is a no-op then.
+
+    Weekday-only — A2 has no positions to manage on weekends (no expiry rolls,
+    no theta urgency until Monday's pre-market check).
+    """
+    now_et = datetime.now(ET)
+    if now_et.weekday() >= 5:
+        return
+    cfg = _load_strategy_config_safe()
+    if _is_claude_trading_window(now_et=now_et, cfg=cfg):
+        return  # handled inline by run_options_cycle during the window
+
+    if dry_run:
+        log.info("[A2_CLOSE_CHECK] [dry-run] would run off-hours close-check")
+        return
+
+    try:
+        # close_check_loop lives in bot_options_stage4_execution; bot_options.py
+        # also exposes it via the orchestrator's run path.
+        from bot_options import _get_alpaca  # noqa: PLC0415
+        from bot_options_stage4_execution import close_check_loop  # noqa: PLC0415
+        close_check_loop(_get_alpaca())
+    except Exception as exc:
+        log.warning("[A2_CLOSE_CHECK] off-hours check failed (non-fatal): %s", exc)
 
 
 def _maybe_run_readiness_check(dry_run: bool = False) -> None:

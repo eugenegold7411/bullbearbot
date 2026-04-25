@@ -239,7 +239,10 @@
     "enable_divergence_summarizer": true,
     "enable_experience_library": false,
     "vector_memory_ab_logging": true,
-    "vector_memory_ab_sample_rate": 0.1
+    "vector_memory_ab_sample_rate": 0.1,
+    "hard_gate_claude_to_trading_window": true,
+    "trading_window_start_et": "09:25",
+    "trading_window_end_et": "16:15"
   },
   "shadow_flags": {
     "enable_replay_fork_debugger": false,

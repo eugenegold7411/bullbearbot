@@ -38,7 +38,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest  # noqa: F401
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Change 1 — Alpha Vantage earnings calendar
 # ═══════════════════════════════════════════════════════════════════════════
@@ -696,7 +695,6 @@ class TestCullExtracted:
 
     def test_cull_removes_past_symbols(self, tmp_path, monkeypatch):
         import earnings_rotation as er
-
         import watchlist_manager as wm
 
         rotation_file = tmp_path / "rot.json"
@@ -733,7 +731,6 @@ class TestCullExtracted:
     def test_run_earnings_rotation_no_longer_culls(self, tmp_path, monkeypatch):
         """Sanity: run_earnings_rotation returns culled=0 even with stale entries."""
         import earnings_rotation as er
-
         import watchlist_manager as wm
 
         rotation_file = tmp_path / "rot.json"

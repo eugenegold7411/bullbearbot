@@ -12,9 +12,6 @@ Covers:
 from __future__ import annotations
 
 import inspect
-import re
-from unittest.mock import MagicMock, patch
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Change 1A — Alpaca news no-symbol-cap
@@ -24,6 +21,7 @@ class TestAlpacaNewsCap:
     def test_no_twenty_symbol_cap_in_market_data(self):
         """market_data.fetch_all builds news_syms without [:20]."""
         import inspect as _i
+
         import market_data as md
         src = _i.getsource(md.fetch_all)
         # The two news_syms assignments must not slice [:20]
@@ -35,6 +33,7 @@ class TestAlpacaNewsCap:
     def test_crypto_symbols_excluded_from_news_syms(self):
         """The news_syms list still filters out '/' (crypto)."""
         import inspect as _i
+
         import market_data as md
         src = _i.getsource(md.fetch_all)
         # We still strip crypto symbols

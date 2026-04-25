@@ -10,8 +10,7 @@ Covers:
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
+from unittest.mock import MagicMock
 
 _FIXTURE_FORM4_XML = """<?xml version="1.0"?>
 <ownershipDocument>

@@ -291,7 +291,9 @@ def run_earnings_rotation(config: Optional[dict] = None) -> dict:
             new_count += 1
             # Best-effort IV fast-track
             try:
-                from options_universe_manager import earnings_iv_fasttrack  # noqa: PLC0415
+                from options_universe_manager import (
+                    earnings_iv_fasttrack,  # noqa: PLC0415
+                )
                 earnings_iv_fasttrack(sym, ed)
             except Exception as exc:
                 log.debug("[ROTATION] iv_fasttrack(%s) failed (non-fatal): %s", sym, exc)

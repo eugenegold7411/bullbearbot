@@ -13,8 +13,11 @@ All public functions degrade gracefully — return [] / empty string on any erro
 """
 
 import json
+import time as _time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 import requests
 
@@ -33,6 +36,14 @@ _SEC_HEADERS = {
     "User-Agent":       "trading-bot research@tradingbot.ai",
     "Accept-Encoding":  "gzip, deflate",
 }
+
+# Pacing for the per-filing XML fetch loop. SEC EDGAR's documented rate limit
+# is 10 req/sec. We pace at ~8 req/sec to stay well under.
+_XML_PACING_SEC = 0.12
+
+# Threshold (USD) above which an open-market officer purchase is flagged
+# high_conviction. Grants/RSU vests (transactionCode=A or M) never qualify.
+_HIGH_CONVICTION_USD = 10_000.0
 
 
 # ── Cache helpers ──────────────────────────────────────────────────────────────
@@ -164,6 +175,116 @@ def _parse_congressional(raw) -> list[dict]:
 
 # ── SEC Form 4 Insider Trades ──────────────────────────────────────────────────
 
+def _parse_form4_xml(xml_text: str) -> dict:
+    """
+    Parse Form 4 XML and return enriched fields. Returns {} on parse error.
+    Public for testability — the network-fetcher delegates here.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return {}
+
+    def _text(tag: str) -> Optional[str]:
+        el = root.find(f".//{tag}")
+        if el is None or el.text is None:
+            return None
+        s = el.text.strip()
+        return s or None
+
+    def _float(path: str) -> Optional[float]:
+        v = _text(path)
+        try:
+            return float(v) if v else None
+        except Exception:
+            return None
+
+    return {
+        "issuer_trading_symbol": _text("issuerTradingSymbol"),
+        "issuer_name":           _text("issuerName"),
+        "transaction_shares":    _float("transactionShares/value"),
+        "transaction_price":     _float("transactionPricePerShare/value"),
+        "acquired_disposed":     _text("transactionAcquiredDisposedCode/value"),
+        "transaction_code":      _text("transactionCode"),
+        "is_director":           _text("isDirector") == "1",
+        "is_officer":            _text("isOfficer") == "1",
+        "is_ten_percent_owner":  _text("isTenPercentOwner") == "1",
+        "officer_title":         _text("officerTitle"),
+        "shares_after":          _float("sharesOwnedFollowingTransaction/value"),
+    }
+
+
+def _fetch_form4_xml(cik: str, accession_no: str) -> dict:
+    """
+    Fetch and parse a Form 4 XML filing from SEC EDGAR.
+
+    Process:
+      1. GET index.json to discover the actual XML filename (filenames vary
+         per filer: "form4.xml", "wk-form4_NNN.xml", "form4-MMDDYYYY_NNN.xml").
+      2. GET the discovered XML file.
+      3. Parse and return enriched fields.
+
+    Returns {} on any failure. Always sleeps _XML_PACING_SEC at the end for
+    SEC rate-limit compliance.
+    """
+    if not cik or not accession_no:
+        return {}
+    try:
+        cik_int = int(str(cik).lstrip("0") or "0")
+        adsh = str(accession_no).replace("-", "")
+        if not cik_int or not adsh:
+            return {}
+
+        idx_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{adsh}/index.json"
+        r = requests.get(idx_url, headers=_SEC_HEADERS, timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return {}
+        items = (r.json().get("directory", {}) or {}).get("item", []) or []
+        xml_files = [it.get("name", "") for it in items
+                     if it.get("name", "").lower().endswith(".xml")]
+        if not xml_files:
+            return {}
+        # Prefer files whose name contains 'form4'; else first .xml
+        primary = next(
+            (n for n in xml_files if "form4" in n.lower()),
+            xml_files[0],
+        )
+
+        xml_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{adsh}/{primary}"
+        r2 = requests.get(xml_url, headers=_SEC_HEADERS, timeout=_TIMEOUT)
+        if r2.status_code != 200:
+            return {}
+        return _parse_form4_xml(r2.text)
+    except Exception as exc:
+        log.debug("[INSIDER] _fetch_form4_xml(%s,%s) failed: %s",
+                  cik, accession_no, exc)
+        return {}
+    finally:
+        _time.sleep(_XML_PACING_SEC)
+
+
+def is_high_conviction_trade(trade: dict) -> bool:
+    """
+    Structured high_conviction predicate.
+    True iff:
+      - is_officer is True, AND
+      - transaction_code == "P" (open-market purchase), AND
+      - transaction_shares * transaction_price > _HIGH_CONVICTION_USD.
+    Grants ("A"), exercises ("M"), tax withholdings ("F") are never high
+    conviction even by senior officers.
+    """
+    if not trade.get("is_officer"):
+        return False
+    if trade.get("transaction_code") != "P":
+        return False
+    shares = trade.get("transaction_shares") or 0
+    price  = trade.get("transaction_price") or 0
+    try:
+        return float(shares) * float(price) > _HIGH_CONVICTION_USD
+    except Exception:
+        return False
+
+
 def fetch_form4_insider_trades(symbols: list[str], days_back: int = 30) -> list[dict]:
     """
     Fetch SEC Form 4 insider purchase filings via EDGAR EFTS.
@@ -218,7 +339,10 @@ def _fetch_edgar_form4(symbol: str, start_dt: str, end_dt: str) -> list[dict]:
             filing_date = src.get("period_of_report") or src.get("file_date") or ""
             names       = src.get("display_names", [])
             entity_name = names[0] if names else src.get("entity_name", "Unknown")
-            category    = src.get("category", "insider")
+            # EDGAR FTS returns the accession_no under 'adsh' (no underscore form).
+            adsh        = src.get("adsh") or src.get("accession_no") or ""
+            ciks        = src.get("ciks") or []
+            reporter_cik = ciks[0] if ciks else ""
 
             days_ago = 999
             if filing_date:
@@ -227,23 +351,41 @@ def _fetch_edgar_form4(symbol: str, start_dt: str, end_dt: str) -> list[dict]:
                 except ValueError:
                     pass
 
-            # Only keep recent purchases by named insiders
-            # We mark high_conviction for CEO/CFO/President roles
-            role_lower = category.lower()
-            is_csuite  = any(k in role_lower for k in ("chief", "ceo", "cfo", "president", "coo"))
+            # Per-filing XML enrichment — best-effort, non-fatal.
+            xml_data = _fetch_form4_xml(reporter_cik, adsh) if (reporter_cik and adsh) else {}
 
-            trades.append({
-                "ticker":            symbol,
-                "insider_name":      entity_name,
-                "role":              category,
-                "shares_purchased":  None,   # not parsed at filing index level
-                "price":             None,
-                "value_usd":         None,
-                "filing_date":       filing_date[:10] if filing_date else "",
-                "days_since_filing": days_ago,
-                "high_conviction":   is_csuite,
-                "accession_number":  src.get("accession_no", ""),
-            })
+            shares = xml_data.get("transaction_shares")
+            price  = xml_data.get("transaction_price")
+            value_usd = (
+                round(shares * price, 2)
+                if (shares is not None and price is not None and shares and price)
+                else None
+            )
+
+            trade = {
+                "ticker":             symbol,
+                "insider_name":       entity_name,
+                "role":               xml_data.get("officer_title") or "insider",
+                "officer_title":      xml_data.get("officer_title"),
+                "is_officer":         xml_data.get("is_officer", False),
+                "is_director":        xml_data.get("is_director", False),
+                "is_ten_percent_owner": xml_data.get("is_ten_percent_owner", False),
+                "issuer_trading_symbol": xml_data.get("issuer_trading_symbol"),
+                "transaction_code":   xml_data.get("transaction_code"),
+                "acquired_disposed":  xml_data.get("acquired_disposed"),
+                "transaction_shares": shares,
+                "transaction_price":  price,
+                "shares_after":       xml_data.get("shares_after"),
+                # Legacy aliases (kept for any existing readers)
+                "shares_purchased":   shares,
+                "price":              price,
+                "value_usd":          value_usd,
+                "filing_date":        filing_date[:10] if filing_date else "",
+                "days_since_filing":  days_ago,
+                "accession_number":   adsh,
+            }
+            trade["high_conviction"] = is_high_conviction_trade(trade)
+            trades.append(trade)
         except Exception:
             continue
 
@@ -326,8 +468,17 @@ def build_insider_intelligence_section(symbols: list[str]) -> str:
 
         if score["triple_signal"] or score["high_conviction_flag"]:
             parts = [f"{sym}:"]
+            # high_conviction trades are open-market officer purchases (code=P)
+            # — exclude grants/RSU vests/option exercises from this block.
             for t in [x for x in sym_form4 if x.get("high_conviction")][:1]:
-                parts.append(f"Insider {t.get('role','?')} filed Form 4 on {t.get('filing_date','?')}")
+                title = t.get("officer_title") or t.get("insider_name", "?")
+                value = t.get("value_usd") or 0
+                shares = t.get("transaction_shares") or 0
+                desc = (
+                    f"{title} open-market purchase {int(shares):,} sh "
+                    f"=${value:,.0f} on {t.get('filing_date','?')}"
+                )
+                parts.append(desc)
             for t in [x for x in sym_cong if x.get("action") == "buy"][:1]:
                 parts.append(
                     f"{t.get('politician','?')} ({t.get('committee','') or t.get('chamber','?')}) "
@@ -342,9 +493,22 @@ def build_insider_intelligence_section(symbols: list[str]) -> str:
                     f"bought {t.get('amount_range','?')} on {t.get('filing_date','?')}"
                 )
             for t in sym_form4[:1]:
+                code = t.get("transaction_code") or "?"
+                code_label = {
+                    "P": "purchase", "S": "sale", "A": "grant",
+                    "M": "option exercise", "F": "tax-withholding",
+                    "G": "gift", "D": "disposition",
+                }.get(code, f"code={code}")
+                title = t.get("officer_title") or t.get("role", "insider")
+                shares = t.get("transaction_shares")
+                price  = t.get("transaction_price")
+                if shares and price:
+                    detail = f" {int(shares):,} sh @ ${price:.2f} = ${shares*price:,.0f}"
+                else:
+                    detail = ""
                 form4_lines.append(
-                    f"  {sym}: {t.get('insider_name','?')} ({t.get('role','?')}) "
-                    f"filed Form 4 on {t.get('filing_date','?')} "
+                    f"  {sym}: {t.get('insider_name','?')} ({title}) "
+                    f"{code_label}{detail} on {t.get('filing_date','?')} "
                     f"({t.get('days_since_filing','?')} days ago)"
                 )
 

@@ -173,9 +173,8 @@ def _load_context() -> str:
     try:
         from datetime import date as _date  # noqa: PLC0415
 
-        from earnings_calendar_lookup import format_earnings_line  # noqa: PLC0415
-
         from data_warehouse import load_earnings_calendar
+        from earnings_calendar_lookup import format_earnings_line  # noqa: PLC0415
         ec = load_earnings_calendar()
         today_dt = _date.today()
         today_str = today_dt.isoformat()

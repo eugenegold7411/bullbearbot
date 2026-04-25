@@ -332,7 +332,37 @@ def refresh_macro_snapshot() -> None:
 
 
 def refresh_earnings_calendar() -> None:
-    """Next 14 days of earnings from yfinance."""
+    """
+    Next 14 days of earnings from yfinance.
+
+    Guard: skip the yfinance refresh when an Alpha Vantage-sourced calendar
+    already exists and is < 7 days old. yfinance covers only the top 30
+    watchlist symbols vs AV's full universe (~80), so an unconditional
+    refresh would silently shrink the calendar. Falls through to yfinance
+    when no AV file is present, the AV file is older than 7 days, or the
+    file is malformed.
+    """
+    cal_path = MARKET_DIR / "earnings_calendar.json"
+    if cal_path.exists():
+        try:
+            existing = json.loads(cal_path.read_text())
+            if isinstance(existing, dict) and existing.get("source", "") == "alphavantage":
+                fetched = (existing.get("fetched_at")
+                           or existing.get("generated_at", "2000-01-01T00:00:00"))
+                # Strip timezone suffix to make the parse tz-naive-friendly
+                fetched_iso = fetched[:19] if isinstance(fetched, str) else "2000-01-01T00:00:00"
+                age = datetime.now() - datetime.fromisoformat(fetched_iso)
+                if age < timedelta(days=7):
+                    log.info(
+                        "[EARNINGS] Skipping yfinance refresh — AV calendar is %d days old (< 7); "
+                        "preserving %d entries",
+                        age.days,
+                        len(existing.get("calendar", [])),
+                    )
+                    return
+        except Exception as _exc:
+            log.debug("[EARNINGS] AV-guard check failed (%s) — falling through to yfinance", _exc)
+
     watchlist = wm.get_active_watchlist()
     all_syms  = [s for s in watchlist["stocks"] + watchlist["etfs"] if "/" not in s]
     calendar  = []
@@ -351,9 +381,9 @@ def refresh_earnings_calendar() -> None:
         except Exception:
             pass
 
-    data = {"fetched_at": datetime.now(ET).isoformat(), "calendar": calendar}
+    data = {"fetched_at": datetime.now(ET).isoformat(), "calendar": calendar, "source": "yfinance"}
     _save_json(MARKET_DIR / "earnings_calendar.json", data)
-    log.info("Earnings calendar saved (%d events)", len(calendar))
+    log.info("Earnings calendar saved (%d events, source=yfinance)", len(calendar))
 
 
 def refresh_premarket_movers() -> None:

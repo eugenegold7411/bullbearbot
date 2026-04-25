@@ -635,6 +635,16 @@ def _maybe_run_premarket_jobs(dry_run: bool = False) -> None:
             log.info("Pre-market scanner complete")
         except Exception:
             log.error("Scanner failed", exc_info=True)
+
+        # ChromaDB tier-promotion maintenance — once per day at premarket so
+        # short→medium (>7d) and medium→long (>90d) promotions happen
+        # regardless of save cadence. Lazy per-save promotion in trade_memory
+        # remains as belt-and-suspenders.
+        try:
+            import trade_memory  # noqa: PLC0415
+            trade_memory.run_promotion_maintenance()
+        except Exception:
+            log.warning("Tier promotion maintenance failed (non-fatal)", exc_info=True)
     else:
         log.info("[dry-run] Skipping data warehouse + scanner")
         _warehouse_ok = True

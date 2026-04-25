@@ -45,7 +45,10 @@ _STUBS = {
     "alpaca.data.enums":           None,
     "pandas":                      None,
     "yfinance":                    None,
-    "chromadb":                    None,
+    # chromadb deliberately omitted: stubbing it with MagicMock poisons
+    # trade_memory's lazy init for the rest of the pytest session and breaks
+    # test_scratchpad_memory.py. trade_memory has graceful degradation if
+    # chromadb is genuinely absent.
 }
 for _name in _STUBS:
     if _name not in sys.modules:

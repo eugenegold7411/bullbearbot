@@ -237,7 +237,9 @@
     "enable_abstention_contract": false,
     "enable_model_tiering": false,
     "enable_divergence_summarizer": true,
-    "enable_experience_library": false
+    "enable_experience_library": false,
+    "vector_memory_ab_logging": true,
+    "vector_memory_ab_sample_rate": 0.1
   },
   "shadow_flags": {
     "enable_replay_fork_debugger": false,

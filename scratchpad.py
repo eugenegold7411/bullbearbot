@@ -179,10 +179,22 @@ def run_scratchpad(
             extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
 
-        # Cost tracking (non-fatal)
+        # Cost tracking (non-fatal) — both the cost_tracker and the unified
+        # cost_attribution spine. The spine is what weekly review and
+        # ops-monitoring tooling reads.
         try:
-            from cost_tracker import get_tracker
+            from cost_tracker import get_tracker  # noqa: PLC0415
             get_tracker().record_api_call(MODEL_FAST, resp.usage, caller="scratchpad")
+        except Exception:
+            pass
+        try:
+            from cost_attribution import log_claude_call_to_spine  # noqa: PLC0415
+            log_claude_call_to_spine(
+                module_name="scratchpad",
+                model=MODEL_FAST,
+                purpose="scratchpad_synthesis",
+                usage=resp.usage,
+            )
         except Exception:
             pass
 

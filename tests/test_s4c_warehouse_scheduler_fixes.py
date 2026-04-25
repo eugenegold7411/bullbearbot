@@ -39,7 +39,10 @@ _THIRD_PARTY_STUBS = {
     "alpaca.data.timeframe":           None,
     "pandas":                          None,
     "yfinance":                        None,
-    "chromadb":                        None,
+    # chromadb deliberately omitted: stubbing it with MagicMock poisons
+    # trade_memory's lazy init for the rest of the pytest session and breaks
+    # test_scratchpad_memory.py. trade_memory has graceful degradation if
+    # chromadb is genuinely absent.
 }
 for _stub_name, _stub_val in _THIRD_PARTY_STUBS.items():
     if _stub_name not in sys.modules:

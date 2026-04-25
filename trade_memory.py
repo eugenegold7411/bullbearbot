@@ -277,6 +277,73 @@ def _build_conditions_query(market_conditions: dict, session_tier: str) -> str:
 # Auto-promotion helpers
 # ---------------------------------------------------------------------------
 
+def run_promotion_maintenance() -> dict:
+    """
+    Public daily-maintenance entry point. Runs both trade and scratchpad tier
+    promotion regardless of save activity. Wired into scheduler's premarket
+    job (4 AM ET) so promotions happen even on days with low write activity.
+
+    Returns a dict with before/after counts for each tier so the caller can
+    log a summary line. Never raises — all internal failures swallowed.
+    """
+    summary: dict = {
+        "trade": {"before": {}, "after": {}, "promoted_short_to_medium": 0,
+                  "promoted_medium_to_long": 0},
+        "scratchpad": {"before": {}, "after": {}, "promoted_short_to_medium": 0,
+                       "promoted_medium_to_long": 0},
+    }
+    try:
+        s, m, l = _get_collections()
+        if all([s, m, l]):
+            summary["trade"]["before"] = {
+                "short": s.count(), "medium": m.count(), "long": l.count(),
+            }
+            _maybe_promote_aged_records()
+            summary["trade"]["after"] = {
+                "short": s.count(), "medium": m.count(), "long": l.count(),
+            }
+            summary["trade"]["promoted_short_to_medium"] = (
+                summary["trade"]["before"]["short"] - summary["trade"]["after"]["short"]
+            )
+            summary["trade"]["promoted_medium_to_long"] = (
+                summary["trade"]["after"]["long"] - summary["trade"]["before"]["long"]
+            )
+    except Exception as exc:
+        log.warning("trade_memory: trade promotion maintenance failed: %s", exc)
+    try:
+        ss, sm, sl = _get_scratchpad_collections()
+        if all([ss, sm, sl]):
+            summary["scratchpad"]["before"] = {
+                "short": ss.count(), "medium": sm.count(), "long": sl.count(),
+            }
+            _maybe_promote_aged_scratchpad_records()
+            summary["scratchpad"]["after"] = {
+                "short": ss.count(), "medium": sm.count(), "long": sl.count(),
+            }
+            summary["scratchpad"]["promoted_short_to_medium"] = (
+                summary["scratchpad"]["before"]["short"]
+                - summary["scratchpad"]["after"]["short"]
+            )
+            summary["scratchpad"]["promoted_medium_to_long"] = (
+                summary["scratchpad"]["after"]["long"]
+                - summary["scratchpad"]["before"]["long"]
+            )
+    except Exception as exc:
+        log.warning("trade_memory: scratchpad promotion maintenance failed: %s", exc)
+
+    log.info(
+        "trade_memory: promotion maintenance done — "
+        "trade s/m/l=%s/%s/%s  scratchpad s/m/l=%s/%s/%s",
+        summary["trade"].get("after", {}).get("short", "?"),
+        summary["trade"].get("after", {}).get("medium", "?"),
+        summary["trade"].get("after", {}).get("long", "?"),
+        summary["scratchpad"].get("after", {}).get("short", "?"),
+        summary["scratchpad"].get("after", {}).get("medium", "?"),
+        summary["scratchpad"].get("after", {}).get("long", "?"),
+    )
+    return summary
+
+
 def _maybe_promote_aged_records() -> None:
     """
     Check short and medium collections for aged records and promote them.

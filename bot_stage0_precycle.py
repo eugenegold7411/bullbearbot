@@ -218,6 +218,32 @@ def run_precycle(
              vm_stats["status"], vm_stats.get("total", 0),
              len(similar_scenarios), vm_stats.get("scr_total", 0))
 
+    # A/B logging — emit a structured log line so we can compare cycles with
+    # vs without retrieved vector context. Sampled by config to keep volume low.
+    # cfg isn't loaded yet at this point in the function, so read flags inline.
+    try:
+        import random as _random  # noqa: PLC0415
+        _ab_path = Path(__file__).parent / "strategy_config.json"
+        _ab_flags: dict = {}
+        if _ab_path.exists():
+            try:
+                _ab_flags = json.loads(_ab_path.read_text()).get("feature_flags", {})
+            except Exception:
+                _ab_flags = {}
+        _ab_enabled = bool(_ab_flags.get("vector_memory_ab_logging", False))
+        _ab_rate    = float(_ab_flags.get("vector_memory_ab_sample_rate", 0.1))
+        if _ab_enabled and _random.random() < _ab_rate:
+            _vm_entry_count = len(similar_scenarios) + len(_sim_scratchpads)
+            _vm_token_estimate = len(vector_memories) // 4   # ~4 chars per token
+            log.info(
+                "[VECTOR_MEMORY_AB] session=%s entries_retrieved=%d "
+                "estimated_tokens=%d had_vector_context=%s",
+                session_tier, _vm_entry_count, _vm_token_estimate,
+                _vm_entry_count > 0,
+            )
+    except Exception as _ab_exc:
+        log.debug("[VECTOR_MEMORY_AB] sampler failed (non-fatal): %s", _ab_exc)
+
     # 4c. Strategy config note (for prompt injection — loaded via Stage 3 helper)
     strategy_config_note = "  (strategy_config.json not yet generated — using system prompt defaults)"
     try:

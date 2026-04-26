@@ -52,7 +52,10 @@ deploy:
 		--exclude '.env' \
 		--exclude '.git/' \
 		. tradingbot:/home/trading-bot/
+	@echo "Syncing server git index to origin/main (no working-tree changes)..."
+	ssh tradingbot 'cd /home/trading-bot && git fetch origin --quiet && git reset origin/main --quiet'
 	ssh tradingbot 'systemctl restart trading-bot && sleep 3 && systemctl status trading-bot --no-pager | head -5'
+	@echo "Deploy complete. Server git index now at origin/main."
 
 deploy-env:
 	ssh tradingbot 'cp /home/trading-bot/.env /home/trading-bot/.env.backup.$(shell date +%Y%m%d_%H%M%S)'

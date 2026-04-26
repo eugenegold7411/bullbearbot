@@ -71,3 +71,24 @@ data/weekly_reports/
 
 # Runtime rolling memory (changes every cycle)
 memory/*.json
+
+# Audit artifacts (one-shot reports, never tracked)
+CURRENT_STATE_AUDIT_PACKAGE.md
+CURRENT_STATE_AUDIT_SUMMARY.json
+SCHEDULER_COST_AUDIT.md
+audit_bundle_*/
+audit_bundle_*.tar.gz
+
+# Runtime untracked files (tracked baselines kept via !exceptions below)
+data/options/
+data/captures/
+data/forensic/
+data/runtime/*
+data/status/*
+watchlist_rotation.json
+
+# Keep tracked runtime baselines
+!data/runtime/sev1_clean_days.json
+!data/status/failure_mode_register.json
+!data/status/preflight_log.jsonl
+!data/status/system_status_snapshot.json

@@ -718,10 +718,13 @@ def _maybe_reset_session_watchlist() -> None:
     if _session_reset_done == today:
         return
     if now_min >= 20 * 60:   # 8 PM ET
-        import watchlist_manager as wm
-        wm.reset_session_tiers()
-        _session_reset_done = today
-        log.info("8 PM session reset: dynamic/intraday watchlist cleared")
+        try:
+            import watchlist_manager as wm
+            wm.reset_session_tiers()
+            _session_reset_done = today
+            log.info("8 PM session reset: dynamic/intraday watchlist cleared")
+        except Exception as exc:
+            log.warning("Session watchlist reset failed (non-fatal): %s", exc, exc_info=True)
 
 
 def _maybe_refresh_global_indices(dry_run: bool = False) -> None:

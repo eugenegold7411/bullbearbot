@@ -140,7 +140,11 @@ def _check_vix_halt() -> CheckResult:
         if not snap_path.exists():
             return CheckResult("vix_gate", True, "soft", "macro_snapshot absent — skipped")
         data = json.loads(snap_path.read_text())
-        vix = float(data.get("vix", 0) or 0)
+        vix_raw = data.get("vix", 0) or 0
+        # macro_snapshot may store VIX as {"price": N, "chg_pct": M} dict
+        if isinstance(vix_raw, dict):
+            vix_raw = vix_raw.get("price", 0) or 0
+        vix = float(vix_raw)
         if vix > 35:
             return CheckResult("vix_gate", False, "soft",
                                f"VIX={vix:.1f} > 35 — crisis regime flag")

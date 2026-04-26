@@ -281,6 +281,8 @@ def run_cycle(
 
     # Stage 3 — build prompt and call Claude
     _cap_sys = _cap_user = _cap_raw = None  # set only when Sonnet fires
+    from datetime import datetime as _dt  # noqa: PLC0415
+    from zoneinfo import ZoneInfo as _ZI  # noqa: PLC0415
     if session_tier == "overnight":
         decision = _ask_claude_overnight(
             positions=state.positions,
@@ -300,8 +302,6 @@ def run_cycle(
             regime_str = _bias
 
         # Sonnet gate — skip if no material state change since last call
-        from datetime import datetime as _dt  # noqa: PLC0415
-        from zoneinfo import ZoneInfo as _ZI  # noqa: PLC0415
         _use_compact = False
         _gate_state  = _gate.load_gate_state()
         _gate_full_cfg = state.cfg if isinstance(state.cfg, dict) else {}

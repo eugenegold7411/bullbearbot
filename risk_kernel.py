@@ -432,6 +432,22 @@ def size_position(
             f"(not enough for 1 share/unit)"
         )
 
+    # ── max_position_pct_equity hard cap ─────────────────────────────────────
+    max_pos_pct = _params(config).get("max_position_pct_equity")
+    if max_pos_pct is not None:
+        max_pos_dollars = equity * float(max_pos_pct)
+        if max_dollars > max_pos_dollars:
+            log.debug(
+                "[RISK] %s: budget $%.0f capped to $%.0f by max_position_pct_equity=%.0f%%",
+                idea.symbol, max_dollars, max_pos_dollars, float(max_pos_pct) * 100,
+            )
+            max_dollars = max_pos_dollars
+        if max_dollars < current_price:
+            return (
+                f"budget ${max_dollars:,.0f} < price ${current_price:,.2f} "
+                f"after max_position_pct_equity cap"
+            )
+
     # ── Qty ──────────────────────────────────────────────────────────────────
     raw_qty = max_dollars / current_price
     if crypto:

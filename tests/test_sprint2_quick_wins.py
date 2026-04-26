@@ -8,11 +8,8 @@ SQ-3: is_claude_trading_window consistent across scheduler and bot_stage3_decisi
 
 import json
 import sys
-import warnings
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 _BOT_DIR = Path(__file__).resolve().parent.parent
 if str(_BOT_DIR) not in sys.path:
@@ -25,10 +22,12 @@ if str(_BOT_DIR) not in sys.path:
 
 def test_is_claude_trading_window_consistent_across_modules():
     """Both modules must produce identical results for the same inputs."""
-    from scheduler import _is_claude_trading_window as sched_gate
-    from bot_stage3_decision import is_claude_trading_window as dec_gate
     from datetime import datetime
     from zoneinfo import ZoneInfo
+
+    from bot_stage3_decision import is_claude_trading_window as dec_gate
+    from scheduler import _is_claude_trading_window as sched_gate
+
     ET = ZoneInfo("America/New_York")
 
     test_times = [
@@ -50,7 +49,9 @@ def test_is_claude_trading_window_consistent_across_modules():
 def test_scheduler_gate_delegates_to_stage3():
     """scheduler._is_claude_trading_window must delegate to bot_stage3_decision."""
     import inspect
+
     from scheduler import _is_claude_trading_window
+
     source = inspect.getsource(_is_claude_trading_window)
     # The wrapper must reference bot_stage3_decision's canonical function
     assert "bot_stage3_decision" in source or "is_claude_trading_window" in source, (
@@ -263,7 +264,7 @@ def test_save_drawdown_state_writes_generated_at(tmp_path, monkeypatch):
         f"generated_at missing from drawdown_state.json: {list(data.keys())}"
     )
     # Must be a valid ISO 8601 string
-    from datetime import datetime, timezone
+    from datetime import datetime
     ts = data["generated_at"]
     assert isinstance(ts, str), f"generated_at must be a string, got {type(ts)}"
     # Parse it — raises ValueError if not valid ISO format

@@ -181,6 +181,18 @@ def _parse_ts(ts_str: str) -> datetime:
         return datetime.now(timezone.utc) - timedelta(days=1)
 
 
+def _matches_keyword(kw: str, text: str) -> bool:
+    """
+    Word-boundary match for single-word keywords; substring for multi-word phrases.
+    Prevents 'war' matching 'Warsh/warehouse/warns' and 'QE' matching 'Marqeta'.
+    Multi-word phrases (e.g. 'rate cut') are already specific so substring is fine.
+    """
+    kw_lower = kw.lower()
+    if " " in kw_lower:
+        return kw_lower in text
+    return bool(re.search(r"\b" + re.escape(kw_lower) + r"\b", text))
+
+
 def _score_article(headline: str, summary: str) -> tuple:
     """Returns (score, highest_tier, keywords_matched)."""
     text = (headline + " " + summary).lower()
@@ -190,8 +202,13 @@ def _score_article(headline: str, summary: str) -> tuple:
     highest_tier = "none"
 
     for tier in tier_order:
+        # Word-boundary match for critical/high (false-positive prone single
+        # words like "war", "QE", "Fed"). Medium/low keep substring — they're
+        # broad by design and only contribute 0.5-1.0 each.
+        use_word_boundary = tier in ("critical", "high")
         for kw in KEYWORD_TIERS[tier]:
-            if kw.lower() in text:
+            hit = _matches_keyword(kw, text) if use_word_boundary else (kw.lower() in text)
+            if hit:
                 score += TIER_SCORES[tier]
                 matched.append(kw)
                 if highest_tier == "none" or tier_order.index(tier) < tier_order.index(highest_tier):
@@ -382,6 +399,50 @@ def classify_articles(articles: list) -> list:
     return articles
 
 
+# ── Watchlist cache + trigger gate ────────────────────────────────────────────
+
+_wl_symbols_cache: set = set()
+_wl_symbols_ts: float = 0.0
+_WL_CACHE_TTL: float = 300.0  # 5 minutes
+
+
+def _watchlist_symbols() -> set:
+    """Active watchlist symbol set, cached 5 minutes. Excludes crypto pairs."""
+    global _wl_symbols_cache, _wl_symbols_ts
+    now = time.monotonic()
+    if now - _wl_symbols_ts > _WL_CACHE_TTL or not _wl_symbols_cache:
+        try:
+            import watchlist_manager as _wm  # noqa: PLC0415
+            wl = _wm.get_active_watchlist()
+            _wl_symbols_cache = {
+                (s if isinstance(s, str) else s.get("symbol", ""))
+                for v in wl.values() if isinstance(v, list)
+                for s in v
+                if "/" not in (s if isinstance(s, str) else s.get("symbol", ""))
+            }
+            _wl_symbols_cache.discard("")
+        except Exception:
+            pass
+        _wl_symbols_ts = now
+    return _wl_symbols_cache
+
+
+def _should_trigger_cycle(score: float, tier: str, affected_symbols: list) -> bool:
+    """
+    Cycle-trigger gate. Fires when:
+      1. High-confidence genuine macro event (score >= 8 AND tier in critical/high), OR
+      2. Critical-tier event that explicitly mentions a watchlist symbol (any score)
+    Tightened from the legacy `score >= 8 OR tier == "critical"` which fired on
+    benign critical-tier substring matches like "war" inside "Warsh".
+    """
+    if score >= 8.0 and tier in ("critical", "high"):
+        return True
+    if tier == "critical" and affected_symbols:
+        if set(affected_symbols) & _watchlist_symbols():
+            return True
+    return False
+
+
 # ── Storage ───────────────────────────────────────────────────────────────────
 
 def save_live_cache(articles: list) -> None:
@@ -457,8 +518,14 @@ def save_significant_events(articles: list) -> None:
                     f.write(json.dumps(rec) + "\n")
                     existing_headlines.add(headline)
                     new_count += 1
-                    # Trigger an immediate scheduler cycle for critical/high-impact events
-                    if score >= 8.0 or tier == "critical":
+                    # Trigger an immediate scheduler cycle when the gate says so
+                    affected = a.get("affected_symbols") or []
+                    if _should_trigger_cycle(score, tier, affected):
+                        watchlist_hit = bool(set(affected) & _watchlist_symbols()) if affected else False
+                        log.info(
+                            "[MACRO_WIRE] trigger fired — score=%.1f tier=%s watchlist_hit=%s headline=%s",
+                            score, tier, watchlist_hit, headline[:60],
+                        )
                         try:
                             import scheduler as _sched  # noqa: PLC0415
                             _sched.trigger_cycle(

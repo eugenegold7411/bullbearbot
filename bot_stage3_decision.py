@@ -71,19 +71,25 @@ _OVERNIGHT_SYS = (
     "You are a crypto position manager for an overnight trading session. "
     "Only BTC/USD and ETH/USD are tradeable. JSON only, no markdown.\n"
     "Output: "
-    '{"reasoning":"<1 sentence>","regime":"normal"|"caution"|"halt",'
-    '"actions":[{"action":"hold"|"close","symbol":"BTC/USD"|"ETH/USD",'
-    '"qty":<float>,"order_type":"market","stop_loss":<float>,'
-    '"take_profit":<float>,"tier":"core","catalyst":"<reason>",'
-    '"confidence":"low"|"medium"|"high"}],'
-    '"notes":"<flag anything unusual>"}'
+    '{"reasoning":"<1 sentence>","regime_view":"normal"|"caution"|"halt",'
+    '"ideas":[{"intent":"close","symbol":"BTC/USD"|"ETH/USD",'
+    '"conviction":0.7,"tier":"core","catalyst":"<reason>",'
+    '"direction":"neutral","concerns":""}],'
+    '"holds":["<symbol of position to hold — omit if closing>"],'
+    '"notes":"<flag anything unusual>","concerns":""}'
+    "\n"
+    "Use intent='close' for positions to exit. "
+    "Put held symbol strings in the holds[] array (not in ideas[]). "
+    "Empty ideas[] and empty holds[] means no action."
 )
 
 _OVERNIGHT_DEFAULT: dict = {
     "reasoning": "Overnight default — hold all positions.",
-    "regime": "normal",
-    "actions": [],
+    "regime_view": "normal",
+    "ideas": [],
+    "holds": [],
     "notes": "",
+    "concerns": "",
 }
 
 _compact_template_cache: str = ""

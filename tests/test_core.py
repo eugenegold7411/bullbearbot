@@ -604,10 +604,11 @@ class TestOvernightGateC3(unittest.TestCase):
     def test_overnight_default_is_hold_all(self):
         """_OVERNIGHT_DEFAULT must be a hold-all response (safe fallback structure)."""
         default = self.bot._OVERNIGHT_DEFAULT
-        self.assertEqual(default["regime"], "normal",
-                         "_OVERNIGHT_DEFAULT regime must be 'normal'")
-        self.assertEqual(default["actions"], [],
-                         "_OVERNIGHT_DEFAULT actions must be empty list (hold-all)")
+        # SQ-1: schema normalized — key is now regime_view (intent-based format)
+        self.assertEqual(default["regime_view"], "normal",
+                         "_OVERNIGHT_DEFAULT regime_view must be 'normal'")
+        self.assertEqual(default["ideas"], [],
+                         "_OVERNIGHT_DEFAULT ideas must be empty list (hold-all)")
         self.assertIn("reasoning", default,
                       "_OVERNIGHT_DEFAULT must have reasoning field")
 
@@ -631,11 +632,14 @@ class TestOvernightGateC3(unittest.TestCase):
 
     def test_ask_claude_not_called_for_overnight(self):
         """Mock _ask_claude_overnight and ask_claude; verify only overnight path is called."""
+        # SQ-1: schema normalized — use intent-based format (regime_view + ideas)
         _hold_all = {
             "reasoning": "test",
-            "regime": "normal",
-            "actions": [],
+            "regime_view": "normal",
+            "ideas": [],
+            "holds": [],
             "notes": "",
+            "concerns": "",
         }
 
         # Patch _ask_claude_overnight to return hold-all; patch ask_claude to fail if called
@@ -654,8 +658,9 @@ class TestOvernightGateC3(unittest.TestCase):
             # ask_claude (Sonnet) was NOT called via the overnight path
             mock_sonnet.assert_not_called()
 
-        self.assertEqual(result["regime"], "normal")
-        self.assertEqual(result["actions"], [])
+        # SQ-1: schema normalized — check intent-based fields
+        self.assertEqual(result["regime_view"], "normal")
+        self.assertEqual(result["ideas"], [])
 
 
 # ═════════════════════════════════════════════════════════════════════════════

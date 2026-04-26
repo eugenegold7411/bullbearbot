@@ -71,35 +71,15 @@ _TRADING_WINDOW_END   = 16 * 60 + 15   # 4:15 PM ET
 def _is_claude_trading_window(now_et: datetime | None = None,
                               cfg: dict | None = None) -> bool:
     """
-    Returns True only during the window when Claude API calls for trading
-    decisions are authorized. 9:25 AM–4:15 PM ET inclusive, weekdays only.
+    Thin wrapper — delegates to the canonical implementation in
+    bot_stage3_decision.is_claude_trading_window().
 
-    When the feature flag `hard_gate_claude_to_trading_window` is False,
-    this function always returns True (gate disabled).
-
-    Reads start/end from `feature_flags.trading_window_start_et` /
-    `trading_window_end_et` ("HH:MM") if provided in cfg.
+    SQ-3: consolidation — one implementation, one update point.
+    (bot_stage3_decision is the canonical module because it owns the public
+    name and is re-exported through bot.py for all callers.)
     """
-    flags = (cfg or {}).get("feature_flags", {}) if isinstance(cfg, dict) else {}
-    if not flags.get("hard_gate_claude_to_trading_window", True):
-        return True
-
-    if now_et is None:
-        now_et = datetime.now(ET)
-    if now_et.weekday() >= 5:   # Saturday=5, Sunday=6
-        return False
-
-    def _parse_hhmm(s: str, fallback: int) -> int:
-        try:
-            h, m = s.split(":")
-            return int(h) * 60 + int(m)
-        except Exception:
-            return fallback
-
-    start_min = _parse_hhmm(flags.get("trading_window_start_et", ""), _TRADING_WINDOW_START)
-    end_min   = _parse_hhmm(flags.get("trading_window_end_et",   ""), _TRADING_WINDOW_END)
-    now_min   = now_et.hour * 60 + now_et.minute
-    return start_min <= now_min <= end_min
+    from bot_stage3_decision import is_claude_trading_window as _canonical
+    return _canonical(now_et=now_et, cfg=cfg)
 
 
 def _load_strategy_config_safe() -> dict:

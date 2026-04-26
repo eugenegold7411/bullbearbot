@@ -7,6 +7,7 @@ Run via scheduler for 24/7 mode:  python scheduler.py
 import json
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -145,6 +146,7 @@ def _save_drawdown_state() -> None:
         _DRAWDOWN_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = _DRAWDOWN_STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps({
+            "generated_at":        datetime.now(timezone.utc).isoformat(),
             "peak_equity":         _peak_equity,
             "last_drawdown_alert": _last_drawdown_alert,
         }, indent=2))

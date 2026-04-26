@@ -210,7 +210,7 @@ class TestStageDelegation:
             patch.object(bot, "_check_drawdown", return_value=False),
             patch.object(bot, "classify_regime", return_value={}) as mock_regime,
             patch.object(bot, "score_signals", return_value={}),
-            patch.object(bot, "_ask_claude_overnight", return_value={"reasoning": "overnight", "regime": "normal", "actions": [], "notes": ""}),
+            patch.object(bot, "_ask_claude_overnight", return_value={"reasoning": "overnight", "regime_view": "normal", "ideas": [], "holds": [], "notes": "", "concerns": ""}),
             patch("bot.trade_memory.save_trade_memory", return_value=None),
             patch("bot.mem.save_decision"),
             patch("bot.wm.run_feedback_loop"),

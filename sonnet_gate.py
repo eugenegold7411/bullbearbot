@@ -335,16 +335,25 @@ def should_run_sonnet(
         except (ValueError, TypeError, AttributeError):
             pass
 
-    # T-11: Scheduled window (post-ORB, pre-close setup, pre-close execution)
+    # T-11: Scheduled window (post-ORB, pre-close setup, pre-close execution).
+    # Accepts two config shapes:
+    #   {"start": "HH:MM", "end": "HH:MM"}   ← canonical, range
+    #   {"hour": 9, "minute": 30}            ← legacy point-in-time (1-min window)
     cur_min = current_time_et.hour * 60 + current_time_et.minute
     for win in scheduled_windows:
         try:
-            sh, sm = map(int, win.get("start", "00:00").split(":"))
-            eh, em = map(int, win.get("end",   "00:00").split(":"))
+            if isinstance(win, dict) and "start" in win and "end" in win:
+                sh, sm = map(int, str(win["start"]).split(":"))
+                eh, em = map(int, str(win["end"]).split(":"))
+            elif isinstance(win, dict) and "hour" in win and "minute" in win:
+                sh = int(win["hour"]); sm = int(win["minute"])
+                eh, em = sh, sm  # 1-minute point-in-time window
+            else:
+                continue
             if (sh * 60 + sm) <= cur_min <= (eh * 60 + em):
                 trigger_reasons.append(TriggerReason.SCHEDULED_WINDOW)
                 break
-        except (ValueError, KeyError, AttributeError):
+        except (ValueError, KeyError, AttributeError, TypeError):
             pass
 
     # T-12: Recon anomaly (missing stops or orphaned duplicate orders)
@@ -381,10 +390,12 @@ def should_run_sonnet(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def should_use_compact_prompt(
-    reasons:       list[TriggerReason],
-    positions:     list,
-    signal_scores: dict,
+    reasons:        list[TriggerReason],
+    positions:      list,
+    signal_scores:  dict,
     recon_diff,
+    trigger_reason: str = "",
+    config:         Optional[dict] = None,
 ) -> bool:
     """
     Returns True if the compact 6-block prompt should be used.
@@ -392,8 +403,20 @@ def should_use_compact_prompt(
 
     Compact is the default for low-information cycles.
     Full is reserved for high-information cycles with actionable new state.
+
+    `trigger_reason` is the scheduler-side trigger string (e.g. "macro wire: ...
+    (score=8.8, tier=critical)"). Macro-wire-driven cycles always force full
+    prompt — the news context is the entire reason the cycle ran early.
+
+    `config` carries strategy_config.json so the SIGNAL_THRESHOLD peak threshold
+    is configurable via `sonnet_gate.signal_peak_full_threshold` (default 75).
     """
     reason_set = set(reasons)
+
+    # Macro-wire-triggered cycle → always full (news section is the whole point)
+    if trigger_reason and "macro wire" in trigger_reason.lower():
+        log.info("[GATE] macro_wire trigger → forcing full prompt")
+        return False
 
     # Hard override triggers → full context always
     if TriggerReason.HARD_OVERRIDE in reason_set:
@@ -415,18 +438,28 @@ def should_use_compact_prompt(
     if TriggerReason.RISK_ANOMALY in reason_set:
         return False
 
-    # Signal threshold: full if score >= 75
+    # Signal threshold: full only when peak score crosses the configured threshold;
+    # below the threshold we fall through to the position-count / window heuristics
+    # rather than always returning False (the prior code's dead branch).
     if TriggerReason.SIGNAL_THRESHOLD in reason_set:
+        peak_threshold = 75.0
+        if isinstance(config, dict):
+            peak_threshold = float(
+                config.get("sonnet_gate", {}).get("signal_peak_full_threshold", 75)
+            )
         scored = signal_scores.get("scored_symbols", {}) if isinstance(signal_scores, dict) else {}
         if scored:
             peak = max(
                 (float(v.get("score", 0)) if isinstance(v, dict) else 0.0)
                 for v in scored.values()
             )
-            if peak >= 75:
+            if peak >= peak_threshold:
+                log.info(
+                    "[GATE] SIGNAL_THRESHOLD peak=%.1f >= %.1f → full prompt",
+                    peak, peak_threshold,
+                )
                 return False
-        # score < 75 SIGNAL_THRESHOLD → still full (meaningful setup developing)
-        return False
+        # peak < threshold → fall through (don't unconditionally force full)
 
     # recon_diff has CRITICAL actions → full
     if recon_diff is not None:
@@ -438,5 +471,5 @@ def should_use_compact_prompt(
     if len(positions) >= 3:
         return False
 
-    # Only COOLDOWN_EXPIRED / SCHEDULED_WINDOW triggered, < 3 positions → compact
+    # Only COOLDOWN_EXPIRED / SCHEDULED_WINDOW / sub-threshold SIGNAL → compact
     return True

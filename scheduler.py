@@ -1430,8 +1430,18 @@ def run(dry_run: bool = False) -> None:
     log.info("Scheduler starting (24/7 mode)  dry_run=%s", dry_run)
     print("[scheduler] 24/7 mode active. Press Ctrl+C to stop.\n")
 
-    def _run_one_cycle(session: str, instr_session: str, label: str) -> None:
-        """Execute one full trading cycle (Account 1 + Account 2). Updates shared state."""
+    def _run_one_cycle(
+        session: str,
+        instr_session: str,
+        label: str,
+        trigger_reason: str = "",
+    ) -> None:
+        """Execute one full trading cycle (Account 1 + Account 2). Updates shared state.
+
+        `trigger_reason` is the scheduler-side reason string (e.g. "macro wire: ...").
+        Empty for scheduled cycles; populated for triggered cycles. Forwarded to
+        bot.run_cycle so the sonnet gate can force a full prompt on macro-wire triggers.
+        """
         nonlocal open_order_ids
         now_et  = datetime.now(ET)
         now_str = now_et.strftime("%a %b %d  %I:%M %p ET")
@@ -1460,6 +1470,7 @@ def run(dry_run: bool = False) -> None:
                     session_tier=session,
                     session_instruments=SESSION_INSTRUMENTS[instr_session],
                     next_cycle_time=next_str,
+                    trigger_reason=trigger_reason,
                 )
 
                 # Account 2 — options bot (90s offset, market hours only).
@@ -1596,6 +1607,7 @@ def run(dry_run: bool = False) -> None:
                 _run_one_cycle(
                     session_now, instr_now,
                     f"TRIGGER #{trigger_cycle_num} ({combined[:60]})",
+                    trigger_reason=combined,
                 )
                 _last_cycle_end_time = time.monotonic()
 

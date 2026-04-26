@@ -196,6 +196,7 @@ def run_cycle(
     session_tier:        str = "market",
     session_instruments: str = "stocks, ETFs, crypto",
     next_cycle_time:     str = "?",
+    trigger_reason:      str = "",
 ) -> None:
     t_start = time.monotonic()
     log.info("── Cycle start  session=%s ─────────────────────────────", session_tier)
@@ -345,7 +346,9 @@ def run_cycle(
             }
         else:
             _use_compact = _gate.should_use_compact_prompt(
-                _gate_reasons, state.positions, signal_scores_obj, state.recon_diff
+                _gate_reasons, state.positions, signal_scores_obj, state.recon_diff,
+                trigger_reason=trigger_reason,
+                config=_gate_full_cfg,
             )
             if _use_compact:
                 log.info("[GATE] SONNET triggered (%s) — COMPACT",

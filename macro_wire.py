@@ -20,6 +20,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -549,6 +550,146 @@ def save_significant_events(articles: list) -> None:
 
     if new_count:
         log.info("Macro wire: saved %d new significant events", new_count)
+
+
+def write_overnight_digest(window_hours: int = 12) -> Optional[dict]:
+    """
+    Synthesise overnight macro intelligence into a structured digest for the
+    morning brief (or end-of-day digest at 4:15 PM).
+
+    Reads significant_events.jsonl for the last `window_hours` hours, filters
+    to events with `impact_score >= 6` OR `affected_symbols ∩ watchlist`, then
+    makes a single Haiku call to produce a compact JSON digest. Writes to
+    `data/macro_wire/overnight_digest_YYYY-MM-DD.json`.
+
+    Returns the digest dict, or None when no qualifying events / Haiku failure
+    (non-fatal in both cases — the morning brief has a graceful fallback).
+    """
+    MACRO_DIR.mkdir(parents=True, exist_ok=True)
+
+    now_utc = datetime.now(timezone.utc)
+    cutoff  = now_utc - timedelta(hours=window_hours)
+
+    # ── Step 1: read events within the rolling window ───────────────────────
+    events: list = []
+    if SIG_EVENTS.exists():
+        for line in SIG_EVENTS.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                e = json.loads(line)
+                ts_str = e.get("ts", "")
+                if not ts_str:
+                    continue
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts >= cutoff:
+                    events.append(e)
+            except Exception:
+                continue
+
+    if not events:
+        log.info("[OVERNIGHT_DIGEST] no events in last %dh — skipping", window_hours)
+        return None
+
+    # ── Step 2: filter to high-signal events ────────────────────────────────
+    wl_syms = _watchlist_symbols()
+    qualifying = [
+        e for e in events
+        if e.get("impact_score", 0) >= 6
+        or bool(set(e.get("affected_symbols", []) or []) & wl_syms)
+    ]
+    if not qualifying:
+        log.info(
+            "[OVERNIGHT_DIGEST] %d events but none qualify (score<6, no watchlist hit)",
+            len(events),
+        )
+        return None
+
+    # ── Step 3: build Haiku prompt (top 15 events, sorted by score desc) ────
+    top = sorted(
+        qualifying, key=lambda x: x.get("impact_score", 0), reverse=True,
+    )[:15]
+    events_text = "\n".join(
+        f"[{e.get('impact_score', 0):.1f}][{e.get('keyword_tier', '?')}] "
+        f"{e.get('headline', '?')} "
+        f"(affected: {', '.join(e.get('affected_symbols', []) or ['none'])})"
+        for e in top
+    )
+    wl_list = ", ".join(sorted(wl_syms)[:30])
+
+    system_prompt = (
+        "You are a macro intelligence analyst. Given a list of overnight "
+        "market-moving events, produce a structured JSON digest for a morning "
+        "trading brief. Be concise and actionable. Return ONLY valid JSON, "
+        "no markdown, no explanation."
+    )
+    user_prompt = (
+        f"Overnight macro events (last {window_hours}h):\n\n"
+        f"{events_text}\n\n"
+        f"Tracked portfolio symbols: {wl_list}\n\n"
+        "Produce a JSON digest with these fields:\n"
+        "{\n"
+        '  "regime_shift": true/false,\n'
+        '  "regime_note": "one sentence if regime_shift, else null",\n'
+        '  "top_events": [\n'
+        '    {"headline": "...", "impact": "high/medium", '
+        '"affected_symbols": [...], "direction": "bullish/bearish/neutral"}\n'
+        "  ],\n"
+        '  "watchlist_catalysts": {\n'
+        '    "SYMBOL": "one-line catalyst description"\n'
+        "  },\n"
+        '  "macro_themes": ["theme1", "theme2"],\n'
+        '  "risk_flags": ["flag1"],\n'
+        '  "overnight_summary": "2-3 sentence summary for morning brief"\n'
+        "}"
+    )
+
+    try:
+        resp = _claude.messages.create(
+            model=MODEL,
+            max_tokens=800,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        # Strip markdown fences if Haiku wrapped the JSON
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            if raw.startswith("json"):
+                raw = raw[4:].lstrip()
+        digest = json.loads(raw)
+    except Exception as exc:
+        log.warning("[OVERNIGHT_DIGEST] Haiku call failed (non-fatal): %s", exc)
+        return None
+
+    # ── Step 4: stamp metadata + write to disk ──────────────────────────────
+    digest["generated_at"]      = now_utc.isoformat()
+    digest["window_hours"]      = window_hours
+    digest["events_considered"] = len(events)
+    digest["events_qualifying"] = len(qualifying)
+
+    date_str = now_utc.strftime("%Y-%m-%d")
+    out_path = MACRO_DIR / f"overnight_digest_{date_str}.json"
+    try:
+        out_path.write_text(json.dumps(digest, indent=2))
+        log.info(
+            "[OVERNIGHT_DIGEST] wrote %d qualifying events → %s",
+            len(qualifying), out_path.name,
+        )
+    except Exception as exc:
+        log.warning("[OVERNIGHT_DIGEST] write failed (non-fatal): %s", exc)
+        return None
+
+    # Cost tracking via existing macro_wire pattern
+    try:
+        from cost_tracker import get_tracker  # noqa: PLC0415
+        get_tracker().record_api_call(MODEL, resp.usage, caller="overnight_digest")
+    except Exception:
+        pass
+
+    return digest
 
 
 def write_daily_digest() -> None:

@@ -292,6 +292,8 @@ _iv_refresh_ran_date:          str = ""   # "YYYY-MM-DD" of last IV history refr
 _orb_scan_ran_date:            str = ""   # "YYYY-MM-DD" of last ORB scan
 _preopen_ran_date:             str = ""   # "YYYY-MM-DD" of last pre-open cycle
 _daily_digest_written_date:    str = ""   # "YYYY-MM-DD" of last daily digest
+_overnight_digest_written_date:str = ""   # "YYYY-MM-DD" of last 4 AM overnight digest
+_eod_digest_written_date:      str = ""   # "YYYY-MM-DD" of last 4:15 PM EOD digest
 _market_impact_backfill_date:  str = ""   # "YYYY-MM-DD" of last backfill
 _outcomes_backfill_date:       str = ""   # "YYYY-MM-DD" of last outcomes backfill
 _readiness_ran_date:           str = ""   # "YYYY-MM-DD" of last readiness check
@@ -1524,6 +1526,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_refresh_macro_intelligence(dry_run)
         _maybe_refresh_iv_history(dry_run)
         _maybe_refresh_economic_calendar(dry_run)  # intraday econ slots
+        _maybe_write_overnight_digest(dry_run)
         _maybe_run_morning_brief(dry_run)
         _maybe_run_orb_scan(dry_run)
         _maybe_run_readiness_check(dry_run)
@@ -1540,6 +1543,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_send_zero_fill_alert(dry_run)
         _maybe_reset_session_watchlist()
         _maybe_write_daily_digest(dry_run)
+        _maybe_write_eod_digest(dry_run)
         _maybe_backfill_market_impact(dry_run)
         _maybe_backfill_decision_outcomes(dry_run)
         _maybe_generate_weekly_summary()
@@ -1986,6 +1990,70 @@ def _maybe_run_preopen_cycle(dry_run: bool = False) -> None:
         log.info("[dry-run] Skipping pre-open cycle")
 
     _preopen_ran_date = today
+
+
+def _maybe_write_overnight_digest(dry_run: bool = False) -> None:
+    """
+    Write Haiku overnight digest at 4:00 AM ET on weekdays, before the
+    morning brief at 4:15 AM. Window: last 12 hours (≈ yesterday close → 4 AM).
+    Once-per-day; non-fatal.
+    """
+    global _overnight_digest_written_date
+    now_et  = datetime.now(ET)
+    today   = _today()
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+
+    if _overnight_digest_written_date == today:
+        return
+    if weekday >= 5:
+        return
+    if not (4 * 60 <= now_min < 4 * 60 + 10):  # 4:00–4:10 AM ET window
+        return
+
+    if dry_run:
+        log.info("[OVERNIGHT_DIGEST] [dry-run] would write overnight digest")
+        _overnight_digest_written_date = today
+        return
+
+    try:
+        from macro_wire import write_overnight_digest  # noqa: PLC0415
+        write_overnight_digest(window_hours=12)
+        _overnight_digest_written_date = today
+    except Exception as exc:
+        log.warning("[OVERNIGHT_DIGEST] failed (non-fatal): %s", exc)
+
+
+def _maybe_write_eod_digest(dry_run: bool = False) -> None:
+    """
+    End-of-day digest at 4:15 PM ET on weekdays. Window: last 8 hours
+    (≈ 8:15 AM → 4:15 PM ET) — captures the trading-day macro stream.
+    Once-per-day; non-fatal.
+    """
+    global _eod_digest_written_date
+    now_et  = datetime.now(ET)
+    today   = _today()
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+
+    if _eod_digest_written_date == today:
+        return
+    if weekday >= 5:
+        return
+    if not (16 * 60 + 15 <= now_min < 16 * 60 + 25):  # 4:15–4:25 PM ET window
+        return
+
+    if dry_run:
+        log.info("[EOD_DIGEST] [dry-run] would write EOD digest")
+        _eod_digest_written_date = today
+        return
+
+    try:
+        from macro_wire import write_overnight_digest  # noqa: PLC0415
+        write_overnight_digest(window_hours=8)
+        _eod_digest_written_date = today
+    except Exception as exc:
+        log.warning("[EOD_DIGEST] failed (non-fatal): %s", exc)
 
 
 def _maybe_write_daily_digest(dry_run: bool = False) -> None:

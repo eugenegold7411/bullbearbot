@@ -71,9 +71,81 @@ Return ONLY valid JSON in this exact format:
 }"""
 
 
+def _load_overnight_digest() -> str:
+    """
+    Load the most recent Haiku overnight digest and format it for injection
+    into the morning brief context. Returns the empty string if no digest
+    exists or if the most recent digest is older than 14 hours (stale gate
+    matches the morning_brief 24h gate but tighter — overnight digest must be
+    same-night).
+    """
+    digest_dir = _BASE_DIR / "data" / "macro_wire"
+    if not digest_dir.exists():
+        return ""
+    digests = sorted(digest_dir.glob("overnight_digest_*.json"), reverse=True)
+    if not digests:
+        return ""
+
+    try:
+        d = json.loads(digests[0].read_text())
+    except Exception:
+        return ""
+
+    generated = d.get("generated_at", "")
+    if generated:
+        try:
+            ts = datetime.fromisoformat(generated.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+            if age_hours > 14:
+                return ""
+        except Exception:
+            pass
+
+    lines = ["=== OVERNIGHT MACRO DIGEST ==="]
+    summary = d.get("overnight_summary", "")
+    if summary:
+        lines.append(f"Summary: {summary}")
+    if d.get("regime_shift"):
+        note = d.get("regime_note") or ""
+        lines.append(f"REGIME SHIFT: {note}")
+    themes = d.get("macro_themes") or []
+    if themes:
+        lines.append(f"Themes: {', '.join(themes)}")
+    catalysts = d.get("watchlist_catalysts") or {}
+    if catalysts:
+        lines.append("Watchlist catalysts:")
+        for sym, note in list(catalysts.items())[:8]:
+            lines.append(f"  {sym}: {note}")
+    risk_flags = d.get("risk_flags") or []
+    if risk_flags:
+        lines.append(f"Risk flags: {', '.join(risk_flags)}")
+    top = d.get("top_events") or []
+    if top:
+        lines.append("Top events:")
+        for e in top[:5]:
+            syms = ", ".join((e.get("affected_symbols") or [])[:3])
+            head = e.get("headline", "?")
+            impact = (e.get("impact") or "?").upper()
+            suffix = f" ({syms})" if syms else ""
+            lines.append(f"  [{impact}] {head}{suffix}")
+    lines.append(
+        f"[{d.get('events_qualifying', 0)} qualifying events, "
+        f"window={d.get('window_hours', '?')}h]"
+    )
+    return "\n".join(lines)
+
+
 def _load_context() -> str:
     """Assemble all available overnight intelligence into a context string."""
     parts = []
+
+    # Overnight Haiku digest (if generated at 4:00 AM by the scheduler) —
+    # placed first so Sonnet sees synthesized macro intel before raw indices.
+    overnight = _load_overnight_digest()
+    if overnight:
+        parts.append(overnight)
 
     # Global session handoff
     try:

@@ -120,9 +120,9 @@ class TestTriggerCondition:
 
 class TestWatchlistCache:
     def test_watchlist_symbols_returns_set(self):
+        import macro_wire as mw
         from macro_wire import _watchlist_symbols
         # Reset cache to force a fresh load
-        import macro_wire as mw
         mw._wl_symbols_ts = 0.0
         mw._wl_symbols_cache = set()
         syms = _watchlist_symbols()

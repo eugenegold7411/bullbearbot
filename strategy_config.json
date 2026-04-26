@@ -6,10 +6,10 @@
   "backtest_results": {},
   "position_sizing": {
     "core_tier_pct": 0.15,
-    "dynamic_tier_pct": 0.10,
+    "dynamic_tier_pct": 0.1,
     "intraday_tier_pct": 0.05,
     "max_total_exposure_pct": 0.75,
-    "_max_total_exposure_pct_note": "unused — do not rely on this field. Only consumed by portfolio_intelligence.compute_dynamic_sizes() for prompt display; not enforced by risk_kernel or order_executor.",
+    "_max_total_exposure_pct_note": "unused \u2014 do not rely on this field. Only consumed by portfolio_intelligence.compute_dynamic_sizes() for prompt display; not enforced by risk_kernel or order_executor.",
     "cash_reserve_pct": 0.15
   },
   "parameters": {
@@ -30,7 +30,7 @@
     ],
     "stop_loss_pct_overnight": 0.02,
     "max_position_pct_equity": 0.07,
-    "_max_position_pct_equity_note": "unused — do not rely on this field. No reads in risk_kernel or order_executor.",
+    "_max_position_pct_equity_note": "Enforced by risk_kernel.size_position() as single-name cap upper bound. Updated Sprint 1 2026-04-26.",
     "max_daily_drawdown_pct": 0.025,
     "max_weekly_drawdown_pct": 0.035,
     "max_day_trades_rolling_5day": 3,
@@ -50,7 +50,7 @@
     "margin_sizing_multiplier": 3.0,
     "margin_sizing_conviction_thresholds": {
       "high": 0.75,
-      "medium": 0.50
+      "medium": 0.5
     },
     "catalyst_tag_required_for_entry": true,
     "catalyst_tag_disallowed_values": [
@@ -155,7 +155,7 @@
     "liquidity_gates": {
       "min_open_interest": 150,
       "min_volume": 20,
-      "max_spread_pct": 0.10,
+      "max_spread_pct": 0.1,
       "min_mid_price": 0.05,
       "pre_debate_oi_floor": 75,
       "pre_debate_volume_floor": 10
@@ -183,8 +183,8 @@
   },
   "signal_weights": {
     "momentum_weight": 0.35,
-    "mean_reversion_weight": 0.20,
-    "news_sentiment_weight": 0.30,
+    "mean_reversion_weight": 0.2,
+    "news_sentiment_weight": 0.3,
     "cross_sector_weight": 0.15,
     "recalibration_trigger": "n>=30 closed trades"
   },
@@ -276,7 +276,7 @@
     "max_loss_pct": 0.05,
     "min_dte": 5,
     "min_expected_value": 0.0,
-    "_tuned": "2026-04-21 — widened max_bid_ask_spread_pct from 0.05 to 0.15 after observing GS (9.1%), TSM (11.8%), AMZN (5.6%) vetoed every cycle; OI/theta/DTE/EV thresholds held at v1 values (not over-firing). 2026-04-21 — added max_loss_pct=0.05 (raised from hardcoded 0.03): V4 was hardcoded and not config-driven unlike all other rules. options_intelligence.py sizes contracts to equity*0.05 budget cap, so V4 at 0.03 created an internal contradiction where the sizer built candidates that V4 always vetoed for high-priced stocks (TSM $367: max_loss=4740 > 0.03*100K=3000). Setting max_loss_pct to match the budget cap (0.05) resolves the contradiction without loosening absolute position size control — contract count is still bounded by the budget."
+    "_tuned": "2026-04-21 \u2014 widened max_bid_ask_spread_pct from 0.05 to 0.15 after observing GS (9.1%), TSM (11.8%), AMZN (5.6%) vetoed every cycle; OI/theta/DTE/EV thresholds held at v1 values (not over-firing). 2026-04-21 \u2014 added max_loss_pct=0.05 (raised from hardcoded 0.03): V4 was hardcoded and not config-driven unlike all other rules. options_intelligence.py sizes contracts to equity*0.05 budget cap, so V4 at 0.03 created an internal contradiction where the sizer built candidates that V4 always vetoed for high-priced stocks (TSM $367: max_loss=4740 > 0.03*100K=3000). Setting max_loss_pct to match the budget cap (0.05) resolves the contradiction without loosening absolute position size control \u2014 contract count is still bounded by the budget."
   },
   "a2_rollback": {
     "disable_candidate_generation": false,

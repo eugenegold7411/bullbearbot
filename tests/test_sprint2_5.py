@@ -91,9 +91,12 @@ class TestAggressiveConfig:
         assert val >= 20_000, f"Expected val >= $20K with 0.25 cap, got ${val:,.0f}"
 
     def test_validate_config_passes_no_failures(self):
+        server_dir = Path("/home/trading-bot")
+        if not server_dir.exists():
+            pytest.skip("Server-only test — /home/trading-bot not present in CI")
         result = subprocess.run(
             [".venv/bin/python3", "validate_config.py"],
-            capture_output=True, text=True, cwd="/home/trading-bot",
+            capture_output=True, text=True, cwd=str(server_dir),
         )
         assert "0 failures" in result.stdout, (
             f"validate_config failures found:\n{result.stdout[-2000:]}"

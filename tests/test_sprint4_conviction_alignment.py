@@ -9,8 +9,11 @@ Verifies all four risk_kernel fixes:
 """
 import copy
 import subprocess
+from pathlib import Path
 
 import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 from risk_kernel import (
     PDT_FLOOR,
@@ -165,7 +168,7 @@ class TestFloatToConviction:
         """
         result = subprocess.run(
             ["grep", "-rn", "_float_to_conviction",
-             "/home/trading-bot", "--include=*.py"],
+             str(_REPO_ROOT), "--include=*.py"],
             capture_output=True, text=True
         )
         callers = [
@@ -410,7 +413,7 @@ class TestSizingComparisonTable:
         result = subprocess.run(
             ["git", "diff", "--name-only", "HEAD~1", "HEAD"],
             capture_output=True, text=True,
-            cwd="/home/trading-bot",
+            cwd=str(_REPO_ROOT),
         )
         changed = result.stdout.strip().splitlines()
         a2_execution = [f for f in changed if f in (

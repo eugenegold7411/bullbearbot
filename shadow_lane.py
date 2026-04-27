@@ -76,6 +76,11 @@ def log_shadow_event(
         NEAR_MISS_LOG.parent.mkdir(parents=True, exist_ok=True)
         with NEAR_MISS_LOG.open("a") as fh:
             fh.write(json.dumps(record) + "\n")
+        try:
+            from cost_attribution import _rotate_jsonl  # noqa: PLC0415
+            _rotate_jsonl(NEAR_MISS_LOG, max_lines=10_000)
+        except Exception:  # noqa: BLE001
+            pass
 
         log.debug(
             "[SHADOW] %s %s decision_id=%r",

@@ -511,6 +511,44 @@ _NUMERIC_PARAM_FIELDS: frozenset = frozenset({
     "momentum_weight", "mean_reversion_weight", "news_sentiment_weight", "cross_sector_weight",
 })
 
+# Safe operational bounds for each numeric parameter (inclusive).
+# Values outside these ranges are rejected before disk write.
+_PARAM_RANGES: dict[str, tuple[float, float]] = {
+    "stop_loss_pct_core":                          (0.005, 0.10),
+    "stop_loss_pct_intraday":                      (0.005, 0.10),
+    "stop_loss_pct_overnight":                     (0.005, 0.10),
+    "take_profit_multiple":                        (0.5,   5.0),
+    "vix_threshold_caution":                       (15.0,  50.0),
+    "max_position_pct_equity":                     (0.01,  0.20),
+    "max_daily_drawdown_pct":                      (0.005, 0.15),
+    "max_weekly_drawdown_pct":                     (0.01,  0.25),
+    "max_sector_exposure_pct":                     (0.05,  0.50),
+    "max_single_name_pct":                         (0.01,  0.20),
+    "max_overnight_position_pct_equity":           (0.01,  0.20),
+    "max_crypto_exposure_pct":                     (0.01,  0.30),
+    "max_daily_drawdown_position_gate":            (0.005, 0.10),
+    "min_dollar_risk_per_trade":                   (1.0,   1000.0),
+    "backtest_minimum_sample_before_recalibration":(5,     500),
+    "max_positions":                               (1,     50),
+    "data_outage_escalation_cycles":               (1,     20),
+    "data_outage_hard_disable_cycles":             (1,     50),
+    "momentum_weight":                             (0.0,   1.0),
+    "mean_reversion_weight":                       (0.0,   1.0),
+    "news_sentiment_weight":                       (0.0,   1.0),
+    "cross_sector_weight":                         (0.0,   1.0),
+}
+
+
+def _compute_config_diff(old_params: dict, new_params: dict) -> dict:
+    """Return {key: {"old": v, "new": v}} for parameters that changed."""
+    diff: dict = {}
+    for key in set(old_params) | set(new_params):
+        old_v = old_params.get(key)
+        new_v = new_params.get(key)
+        if old_v != new_v:
+            diff[key] = {"old": old_v, "new": new_v}
+    return diff
+
 
 def _extract_all_json_blocks(text: str) -> list[dict]:
     """
@@ -652,6 +690,21 @@ def _extract_and_validate_agent6_json(text: str, caller: str = "Agent6") -> dict
 
         for k in keys_to_remove:
             del param_adj[k]
+
+        # Range validation — reject values outside safe operational bounds
+        range_rejected: list[str] = []
+        for k in list(param_adj.keys()):
+            if k in _PARAM_RANGES:
+                lo, hi = _PARAM_RANGES[k]
+                v = param_adj[k]
+                if not (lo <= v <= hi):
+                    range_rejected.append(k)
+                    del param_adj[k]
+        if range_rejected:
+            log.warning(
+                "[REVIEW] %s rejected parameter_adjustments keys (out of range, not merged): %s",
+                caller, range_rejected,
+            )
 
         if accepted:
             log.info("[REVIEW] %s accepted parameter_adjustments keys: %s", caller, accepted)
@@ -2933,20 +2986,12 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
     agent6_output = _call_claude(_SYSTEM_AGENT6, agent6_input, "6-StrategyDirector",
                                 module_name="weekly_review_agent_6_director", max_tokens=4500)
 
-    # ── Save director memo to rolling history ─────────────────────────────────
-    try:
-        _save_director_memo({
-            "week":                       today_str,
-            "memo_summary":               agent6_output[:500],
-            "config_changes":             {},
-            "key_recommendations":        _extract_recommendations(
-                agent6_output, week_str=today_str,
-            ),
-            "regime_view":                _extract_regime_view(agent6_output),
-            "real_money_readiness_score": _extract_cto_score(agent5_cto_output),
-        })
-    except Exception as _memo_exc:
-        log.warning("Director memo save failed (non-fatal): %s", _memo_exc)
+    # ── Parse Agent 6 JSON ────────────────────────────────────────────────────
+    params_update = _extract_and_validate_agent6_json(agent6_output, "Agent6-draft")
+    if params_update:
+        log.info("[REVIEW] Agent 6 draft JSON parsed and validated — strategy_config.json will be updated")
+    else:
+        log.warning("[REVIEW] Agent 6 draft JSON parse failed — strategy_config.json will not be updated from draft")
 
     # ── Apply recommendation verdict updates from Agent 6 output ──────────────
     try:
@@ -2971,16 +3016,10 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
     except Exception as _ru_err:
         log.warning("[REVIEW] recommendation update failed: %s", _ru_err)
 
-    # ── Parse Agent 6 JSON ────────────────────────────────────────────────────
-    params_update = _extract_and_validate_agent6_json(agent6_output, "Agent6-draft")
-    if params_update:
-        log.info("[REVIEW] Agent 6 draft JSON parsed and validated — strategy_config.json will be updated")
-    else:
-        log.warning("[REVIEW] Agent 6 draft JSON parse failed — strategy_config.json will not be updated from draft")
-
     # ── Update strategy_config.json ───────────────────────────────────────────
-    active_strategy  = None
-    director_notes   = None
+    active_strategy   = None
+    director_notes    = None
+    _draft_config_diff: dict = {}
 
     if params_update:
         active_strategy  = params_update.get("active_strategy")
@@ -2991,6 +3030,8 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
         config = _load_strategy_config()
         if "parameters" not in config or not isinstance(config.get("parameters"), dict):
             config["parameters"] = {}
+
+        _old_params = dict(config.get("parameters", {}))
 
         config["generated_at"]  = datetime.now().isoformat()
         config["generated_by"]  = "weekly_review"
@@ -3021,6 +3062,8 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
                 "(not merged): %s", _unknown,
             )
 
+        _draft_config_diff = _compute_config_diff(_old_params, config.get("parameters", {}))
+
         # Save signal source weights if provided (categorical: congressional, form4_insider, etc.)
         signal_weights = params_update.get("signal_weights_recommended", {})
         if signal_weights:
@@ -3045,6 +3088,22 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
         config["generated_at"] = datetime.now().isoformat()
         config["generated_by"] = "weekly_review"
         # Intentionally NOT written to disk — Phase 3b is the single authoritative write.
+
+    # ── Save director memo to rolling history ─────────────────────────────────
+    try:
+        _save_director_memo({
+            "week":                       today_str,
+            "memo_summary":               agent6_output[:500],
+            "config_changes":             _draft_config_diff,
+            "key_recommendations":        _extract_recommendations(
+                agent6_output, week_str=today_str,
+            ),
+            "regime_view":                _extract_regime_view(agent6_output),
+            "real_money_readiness_score": _extract_cto_score(agent5_cto_output),
+        })
+    except Exception as _memo_exc:
+        log.warning("Director memo save failed (non-fatal): %s", _memo_exc)
+
     # agent6_output is the Strategy Director draft (referenced below in all_outputs)
 
 

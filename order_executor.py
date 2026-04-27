@@ -14,7 +14,7 @@ Risk rules enforced:
 
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from alpaca.trading.client import TradingClient
@@ -691,7 +691,7 @@ def _check_pending_fills() -> None:
                     "symbol":     info["symbol"],
                     "action":     info.get("action", ""),
                     "reason":     status,
-                    "timestamp":  datetime.utcnow().isoformat(),
+                    "timestamp":  datetime.now(timezone.utc).isoformat(),
                 })
                 del _pending_fill_checks[oid]
             # Still pending (accepted, partially_filled, etc.) — leave for next cycle

@@ -148,6 +148,11 @@ def log_outcome_event(record: DecisionOutcomeRecord) -> None:
         d["_logged_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         with open(OUTCOMES_LOG, "a") as fh:
             fh.write(json.dumps(d) + "\n")
+        try:
+            from cost_attribution import _rotate_jsonl  # noqa: PLC0415
+            _rotate_jsonl(OUTCOMES_LOG, max_lines=10_000)
+        except Exception:  # noqa: BLE001
+            pass
         log.info("[OUTCOMES] logged %s  %s  status=%s", record.decision_id, record.symbol, record.status)
     except Exception as exc:  # noqa: BLE001
         log.warning("[OUTCOMES] log_outcome_event failed: %s", exc)

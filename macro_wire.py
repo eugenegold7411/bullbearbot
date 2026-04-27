@@ -550,6 +550,11 @@ def save_significant_events(articles: list) -> None:
 
     if new_count:
         log.info("Macro wire: saved %d new significant events", new_count)
+        try:
+            from cost_attribution import _rotate_jsonl  # noqa: PLC0415
+            _rotate_jsonl(SIG_EVENTS, max_lines=10_000)
+        except Exception:
+            pass
 
 
 def write_overnight_digest(window_hours: int = 12) -> Optional[dict]:

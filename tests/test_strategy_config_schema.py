@@ -273,25 +273,38 @@ class TestRiskManagerGates(unittest.TestCase):
                              f"T-014 FAIL: max_positions ({mp}) × max_position_pct_equity ({mpe}) = {gross:.0%}")
 
     # ── T-016: PDT day-trade limit ────────────────────────────────────────────
+    # PDT rules only apply below $25K equity. Accounts above $25K use 999 as a
+    # PDT-exempt sentinel. Values 1-3 are valid for standard PDT accounts.
 
     def test_t016_passes_when_limit_is_3(self):
         cfg = self._cfg(max_day_trades_rolling_5day=3)
-        self.assertLessEqual(cfg["parameters"]["max_day_trades_rolling_5day"], 3)
+        mdt = cfg["parameters"]["max_day_trades_rolling_5day"]
+        self.assertTrue(1 <= mdt <= 3 or mdt == 999, f"T-016: unexpected value {mdt}")
 
-    def test_t016_fails_when_limit_exceeds_3(self):
+    def test_t016_passes_when_exempt_sentinel_999(self):
+        """999 is the PDT-exempt sentinel for accounts with equity > $25K."""
+        cfg = self._cfg(max_day_trades_rolling_5day=999)
+        self.assertEqual(cfg["parameters"]["max_day_trades_rolling_5day"], 999)
+
+    def test_t016_fails_when_limit_is_invalid(self):
+        """Values other than 1-3 or 999 are not valid."""
         cfg = self._cfg(max_day_trades_rolling_5day=4)
-        self.assertGreater(cfg["parameters"]["max_day_trades_rolling_5day"], 3,
-                           "Limit > 3 should trigger FAIL gate")
+        mdt = cfg["parameters"]["max_day_trades_rolling_5day"]
+        self.assertFalse(1 <= mdt <= 3 or mdt == 999,
+                         "Value 4 should be invalid (not in 1-3 or exempt 999)")
 
     def test_t016_live_config_passes(self):
-        """Live strategy_config.json must have max_day_trades_rolling_5day ≤ 3."""
+        """Live strategy_config.json must have max_day_trades_rolling_5day of 1-3 or 999 (exempt)."""
         if not CONFIG_PATH.exists():
             self.skipTest("strategy_config.json not found")
         cfg = json.loads(CONFIG_PATH.read_text())
         mdt = cfg.get("parameters", {}).get("max_day_trades_rolling_5day")
         self.assertIsNotNone(mdt, "max_day_trades_rolling_5day missing from live config")
-        self.assertLessEqual(int(mdt), 3,
-                             f"T-016 FAIL: max_day_trades_rolling_5day={mdt} exceeds 3")
+        mdt_int = int(mdt)
+        self.assertTrue(
+            1 <= mdt_int <= 3 or mdt_int == 999,
+            f"T-016 FAIL: max_day_trades_rolling_5day={mdt} must be 1-3 (PDT) or 999 (PDT-exempt)"
+        )
 
     # ── T-017: sector_rotation_bias_expiry ───────────────────────────────────
 

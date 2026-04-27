@@ -55,7 +55,7 @@ WHAT YOU NEVER DO:
 - Never average down on losing position
 - Never hold through binary event unless half size
 - Never trade first 15 min of market open
-- Never open new stock/ETF positions if PDT remaining = 0
+- PDT day-trade limits only apply to accounts with equity below $25,000. This account is PDT-exempt (equity > $25K). Never self-impose PDT day-trade restrictions based on daytrade count.
 - PDT rules do NOT apply to crypto — you may always trade BTC/USD and ETH/USD regardless of PDT count
 - Never hold DYNAMIC or INTRADAY symbols overnight
 

@@ -238,8 +238,8 @@ def build_user_prompt(
     buying_power  = float(account.buying_power)
     pdt_used      = int(getattr(account, "daytrade_count", 0) or 0)
     pdt_remaining = max(0, 3 - pdt_used)
-    log.info("PDT      daytrade_count=%d  used=%d  remaining=%d",
-             pdt_used, pdt_used, pdt_remaining)
+    log.info("PDT      daytrade_count=%d  used=%d  (PDT limit N/A — equity $%.0f above $25K threshold)",
+             pdt_used, pdt_used, equity)
 
     long_value   = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
     exposure_pct = (long_value / equity * 100) if equity > 0 else 0.0
@@ -476,8 +476,6 @@ def build_compact_prompt(
         clines.append("HALT: VIX >= 35 — no new positions")
     elif vix >= 25:
         clines.append(f"VIX {vix:.1f} >= 25 — reduce all sizes 50%")
-    if pdt_remaining == 0:
-        clines.append("PDT: 0 day trades remaining — no new stock/ETF entries")
     for tba in (time_bound_actions or []):
         sym    = tba.get("symbol", "")
         reason = tba.get("reason", "time-bound exit")

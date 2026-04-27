@@ -134,20 +134,24 @@ if cfg:
                          f"max_positions ({_mp}) × max_position_pct_equity ({_mpe}) "
                          f"= {_gross:.0%} (≤ 100%)"))
 
-    # T-016: PDT day-trade limit gate (regulatory ceiling for any account; 3 is the PDT threshold)
-    # ENFORCEMENT DISCREPANCY: max_day_trades_rolling_5day from config is NOT enforced in code.
-    # bot_stage3_decision.py hardcodes `pdt_remaining = max(0, 3 - pdt_used)` and never reads
-    # this config key. This caused 3 day trades to execute when the config said 2 — the config
-    # value was informational-only. Enforcement must be added to bot_stage3_decision.py
-    # (compute pdt_remaining using config value) and risk_kernel.py/order_executor.py.
+    # T-016: PDT day-trade limit gate.
+    # FINRA PDT rules only apply to accounts below $25,000 equity. Accounts above $25K are
+    # PDT-exempt and should use the sentinel value 999 to disable the day-trade count constraint.
+    # Standard PDT accounts should use values 1-3.
+    # Note: bot_stage3_decision.py computes pdt_remaining from daytrade_count; this config key
+    # is informational for validate_config but does not directly gate trades in code.
     _mdt = cfg.get("parameters", {}).get("max_day_trades_rolling_5day")
     if _mdt is not None:
-        if int(_mdt) <= 3:
+        _mdt_int = int(_mdt)
+        if _mdt_int == 999:
+            check(PASS, (f"strategy_config.json: T-016 max_day_trades_rolling_5day=999 "
+                         f"(PDT-exempt sentinel — account equity above $25K threshold)"))
+        elif 1 <= _mdt_int <= 3:
             check(PASS, (f"strategy_config.json: T-016 max_day_trades_rolling_5day={_mdt} "
-                         f"(≤ 3 regulatory ceiling)"))
+                         f"(within PDT regulatory ceiling)"))
         else:
             check(FAIL, (f"strategy_config.json: T-016 max_day_trades_rolling_5day={_mdt} "
-                         f"exceeds 3 — regulatory ceiling for standard PDT accounts"))
+                         f"— must be 1-3 (PDT accounts) or 999 (PDT-exempt sentinel)"))
     else:
         check(FAIL, "strategy_config.json: T-016 max_day_trades_rolling_5day missing")
 

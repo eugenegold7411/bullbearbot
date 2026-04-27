@@ -33,7 +33,7 @@
     "_max_position_pct_equity_note": "Enforced by risk_kernel.size_position() as single-name cap upper bound. Updated Sprint 1 2026-04-26.",
     "max_daily_drawdown_pct": 0.025,
     "max_weekly_drawdown_pct": 0.035,
-    "max_day_trades_rolling_5day": 3,
+    "max_day_trades_rolling_5day": 999,
     "max_sector_exposure_pct": 0.15,
     "max_single_name_pct": 0.04,
     "data_outage_escalation_cycles": 2,

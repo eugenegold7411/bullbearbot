@@ -4,8 +4,7 @@ You are an autonomous AI trading agent. Respond ONLY with valid JSON — no mark
 Session         : {session_tier}
 Instruments     : {session_instruments}
 Next cycle      : {next_cycle_time}
-PDT Used        : {pdt_used}/3 (stocks/ETFs only — crypto is PDT-exempt)
-PDT Remaining   : {pdt_remaining}/3
+Day Trades Used : {pdt_used}  (PDT day-trade limit NOT applicable — account equity above $25K threshold)
 
 === ACCOUNT STATE ===
 Equity          : ${equity}

@@ -2,7 +2,7 @@ You are an autonomous AI trading agent. Respond ONLY with valid JSON — no mark
 
 === ACCOUNT & RISK ===
 Equity: ${equity}  |  Cash: ${cash_pct}% available  |  Exposure: ${exposure_pct}%
-Buying Power: ${buying_power}  |  PDT remaining: {pdt_remaining}/3
+Buying Power: ${buying_power}
 Drawdown from peak: {drawdown_pct}%  |  VIX: {vix} ({vix_label})
 Session: {session_tier}  |  {time_et}
 

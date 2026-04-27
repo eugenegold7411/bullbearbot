@@ -54,9 +54,12 @@ def _make_mock_structure():
     )
 
 
-def test_dtbp_zero_guard_skips_submission(monkeypatch):
+def test_dtbp_zero_guard_skips_submission(tmp_path, monkeypatch):
     """When DTBP=0 and options_buying_power>0, submission is skipped with warning."""
     import order_executor_options as oe
+
+    # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
+    monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
 
     structure = _make_mock_structure()
 
@@ -92,10 +95,13 @@ def test_dtbp_zero_guard_skips_submission(monkeypatch):
     assert mock_client.submit_order.call_count == 0, "No order should be submitted"
 
 
-def test_dtbp_nonzero_proceeds_normally(monkeypatch):
+def test_dtbp_nonzero_proceeds_normally(tmp_path, monkeypatch):
     """When DTBP>0, submission proceeds past the DTBP guard."""
     import order_executor_options as oe
     import options_executor
+
+    # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
+    monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
 
     structure = _make_mock_structure()
 
@@ -122,10 +128,13 @@ def test_dtbp_nonzero_proceeds_normally(monkeypatch):
     )
 
 
-def test_dtbp_check_failure_fails_open(monkeypatch):
+def test_dtbp_check_failure_fails_open(tmp_path, monkeypatch):
     """If DTBP account fetch raises, submission proceeds normally (fail open)."""
     import order_executor_options as oe
     import options_executor
+
+    # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
+    monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
 
     structure = _make_mock_structure()
 

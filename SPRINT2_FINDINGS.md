@@ -235,5 +235,99 @@ the intent-based schema migration. The overnight log was silently showing `regim
 | `data/market/signal_scores.json` intact | ✅ |
 | `strategy_config.json` intact | ✅ |
 | Bot service running | ✅ active (running) |
-| catalyst_type in live signal_scores | ⏳ Verify Monday morning |
+| catalyst_type in live signal_scores | ✅ Verified 2026-04-27: 75 symbols, 40/75 non-unknown |
 | DTBP_ZERO log trigger | ⏳ Requires Alpaca paper account broken state |
+
+---
+
+## Sprint 2 Follow-up (2026-04-27) — Test Artifacts, Stale TBAs, OCC Regression
+
+**Follow-up baseline:** 1449 → **1469 passing** (+20 new tests, 0 regressions)
+
+### Follow-up Fix 1 — DTBP test artifacts cleaned from options_log.jsonl
+
+**Root cause:** The 3 DTBP tests in `tests/test_sprint2_items.py` called
+`oe.submit_options_order()` without monkeypatching `order_executor_options._LOG_PATH`.
+The test runner wrote to the real production `data/account2/positions/options_log.jsonl`.
+Each test was run multiple times during development, producing 15 test artifact entries
+(`structure_id=test-struct-001`, statuses: dtbp_zero, submitted×2) in the production log.
+
+**Fix:** Added `tmp_path` fixture to all 3 DTBP test signatures and added
+`monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")` at the start
+of each test body — before any call to `submit_options_order`.
+
+**Cleanup:** 15 test artifacts removed from production `options_log.jsonl`
+(149 → 134 entries). Cleanup script matched on `structure_id.startswith('test-')` and
+`order_id in ('order-xyz', 'order-abc')`.
+
+**Tests:** `TestDTBPTestsDoNotContaminateProductionLog` (3 tests in F1 suite):
+- `test_dtbp_tests_use_tmp_path` — asserts tmp_path in all 3 signatures
+- `test_dtbp_zero_test_monkeypatches_log_path` — asserts monkeypatch present in source
+- `test_dtbp_zero_writes_to_tmp_not_production` — integration: verifies log goes to tmp
+
+### Follow-up Fix 2 — Remove stale TBAs + wire executor close path
+
+**Part A — Stale TBA removal:**
+Confirmed via Alpaca API: AMZN, XBI, QQQ, MSFT all closed (current A1 positions:
+CAT, GOOGL, MA, V, XLE). All 4 stale TBA entries (deadlines 2026-04-22/23) removed
+from `strategy_config.json` → `time_bound_actions: []`.
+
+**Part B — Wire `remove_backstop()` into `order_executor.execute_all()`:**
+Added non-fatal hook after successful `sell`/`close` action submission in `execute_all()`.
+The hook uses inline imports (`from reconciliation import remove_backstop`) to avoid
+any top-level circular import risk (reconciliation.py imports exit_manager at module level).
+
+```python
+if act in ("sell", "close"):
+    try:
+        from pathlib import Path as _Path
+        from reconciliation import remove_backstop as _rb
+        _rb(symbol, _Path(__file__).parent / "strategy_config.json")
+    except Exception as _rb_exc:
+        log.debug("[EXECUTOR] remove_backstop failed (non-fatal): %s", _rb_exc)
+```
+
+**exit_manager.py — SKIPPED (documented):**
+`run_exit_manager()` manages stop ORDER placement/refresh only. Actual position closes
+happen when Alpaca fills a stop order — Alpaca executes the close, not the bot. There is
+no terminal exit point in exit_manager.py. Adding the hook would require wiring into
+Alpaca's async fill notification, which is out of scope.
+
+**Tests:** `TestRemoveBackstopWiredInExecutor` (5 tests in F2 suite):
+- `test_remove_backstop_called_on_sell`
+- `test_remove_backstop_called_on_close`
+- `test_remove_backstop_not_called_on_buy`
+- `test_remove_backstop_failure_is_non_fatal`
+- `test_time_bound_actions_now_empty`
+
+### Follow-up Fix 3 — OCC double-space investigation + regression tests
+
+**Finding — No code bug:** Both `options_executor.build_occ_symbol` and
+`options_builder._build_occ_symbol` produce correct OCC symbols. Verified live on server:
+```
+NVDA260522P00205000  ✓
+NVDA260522C00205000  ✓
+TSM260508P00160000   ✓
+V260428P00300000     ✓
+SPY260508P00500000   ✓
+```
+
+**Root cause of "NVDA  260522P00205000" in error log:** The Alpaca API response's
+`"message"` field displays the symbol with the legacy 6-char padded format in its
+error text, even when the request used the unpadded format. The actual rejection was
+because Alpaca's paper environment did not have a tradeable contract at that specific
+strike/expiry (42210000 = "asset not found"), not an OCC format issue.
+
+**Regression tests added:** `TestOCCSymbolFormatRegression` (13 tests in F3 suite):
+- executor put/call/TSM/V/SPY symbols — no spaces, correct format
+- builder put/call/TSM symbols — no spaces, correct format
+- `build_legs` put_credit_spread and call_debit_spread — leg OCC symbols clean
+- both builders produce identical symbols for same inputs
+
+**Files changed in follow-up:**
+| File | Change |
+|------|--------|
+| `tests/test_sprint2_items.py` | `tmp_path` + `_LOG_PATH` monkeypatch in 3 DTBP tests |
+| `tests/test_sprint2_followup.py` | NEW — 20 tests (F1/F2/F3 suites) |
+| `order_executor.py` | `remove_backstop()` hook on sell/close in `execute_all()` |
+| `strategy_config.json` | `time_bound_actions: []` (4 stale entries removed) |

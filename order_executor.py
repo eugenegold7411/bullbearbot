@@ -975,6 +975,14 @@ def execute_all(
 
             log.info("SUBMITTED %s %s [%s]  qty=%s  order_id=%s  fill_price=%s",
                      act.upper(), symbol, tier, action.get("qty"), oid, _fp)
+            # Remove stale time_bound_action entry when position is sold/closed.
+            if act in ("sell", "close"):
+                try:
+                    from pathlib import Path as _Path  # noqa: PLC0415
+                    from reconciliation import remove_backstop as _rb  # noqa: PLC0415
+                    _rb(symbol, _Path(__file__).parent / "strategy_config.json")
+                except Exception as _rb_exc:
+                    log.debug("[EXECUTOR] remove_backstop failed (non-fatal): %s", _rb_exc)
             # T-010: successful buy resets the consecutive-rejection counter
             if act == "buy":
                 _consecutive_rejections.pop(symbol, None)

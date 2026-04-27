@@ -83,32 +83,7 @@
     "priority": "critical"
   },
   "launch_date": "2026-04-13",
-  "time_bound_actions": [
-    {
-      "symbol": "AMZN",
-      "exit_by": "2026-04-22T19:45:00+00:00",
-      "deadline_et": "2026-04-22 15:45",
-      "reason": "backstop_exit: max_hold_7d"
-    },
-    {
-      "symbol": "XBI",
-      "exit_by": "2026-04-22T19:45:00+00:00",
-      "deadline_et": "2026-04-22 15:45",
-      "reason": "backstop_exit: max_hold_7d"
-    },
-    {
-      "symbol": "QQQ",
-      "exit_by": "2026-04-23T19:45:00+00:00",
-      "reason": "backstop_exit: max_hold_7d",
-      "deadline_et": "2026-04-23 15:45"
-    },
-    {
-      "symbol": "MSFT",
-      "exit_by": "2026-04-23T19:45:00+00:00",
-      "reason": "backstop_exit: max_hold_7d",
-      "deadline_et": "2026-04-23 15:45"
-    }
-  ],
+  "time_bound_actions": [],
   "exit_management": {
     "trail_stop_enabled": true,
     "trail_trigger_r": 1.0,

@@ -25,11 +25,9 @@ from schemas import (
     BrokerSnapshot,
     Conviction,
     Direction,
-    NormalizedPosition,
     Tier,
     TradeIdea,
 )
-
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 

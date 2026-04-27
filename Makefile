@@ -15,7 +15,7 @@ test:
 	pytest tests/
 
 test-ci:
-	pytest tests/ -m "not requires_chromadb" -v --tb=short
+	pytest tests/ -m "not requires_chromadb"
 
 ci-local:
 	$(PYTHON) -m py_compile $(shell find . -name "*.py" -not -path "./.venv/*" -not -path "./__pycache__/*")

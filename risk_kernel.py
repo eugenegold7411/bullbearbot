@@ -148,11 +148,15 @@ def _max_stop_pct(tier: str, asset_class: str) -> float:
     return _MAX_STOP_PCT.get(asset_class, _MAX_STOP_PCT["stocks"]).get(tier, 0.05)
 
 
-def _float_to_conviction(v: float) -> Conviction:
+def _float_to_conviction(v: float, config: dict | None = None) -> Conviction:
     """Convert conviction float (0.0-1.0) to Conviction enum for BrokerAction/OptionsAction."""
-    if v >= 0.75:
+    cfg = config or {}
+    thresholds = _params(cfg).get("margin_sizing_conviction_thresholds", {})
+    high_t = float(thresholds.get("high", 0.75))
+    med_t  = float(thresholds.get("medium", 0.50))
+    if v >= high_t:
         return Conviction.HIGH
-    if v >= 0.50:
+    if v >= med_t:
         return Conviction.MEDIUM
     return Conviction.LOW
 
@@ -166,7 +170,7 @@ def _compute_sizing_basis(
     Returns the dollar basis used for per-position sizing.
 
     HIGH   (>= thresholds["high"], default 0.75) → min(buying_power, equity × multiplier)
-    MEDIUM (>= thresholds["medium"], default 0.50) → min(buying_power, equity × min(multiplier, 1.5))
+    MEDIUM (>= thresholds["medium"], default 0.50) → min(buying_power, equity × (multiplier / 2.0))
     LOW   / margin_authorized=False              → equity only
 
     Always floors at equity (via bp safety floor) so sizing never goes below
@@ -186,29 +190,44 @@ def _compute_sizing_basis(
     if margin_ok and conviction >= float(thresholds.get("high", 0.75)):
         return min(bp, equity * mult)
     if margin_ok and conviction >= float(thresholds.get("medium", 0.50)):
-        return min(bp, equity * min(mult, 1.5))
+        return min(bp, equity * (mult / 2.0))
     return equity
 
 
-def _effective_exposure_cap(snapshot: BrokerSnapshot, conviction: float) -> float:
+def _effective_exposure_cap(
+    snapshot: BrokerSnapshot,
+    conviction: float,
+    config: dict | None = None,
+) -> float:
     """
     Max total portfolio exposure allowed for this conviction level.
 
-    Mirrors order_executor.py margin cap logic exactly:
-      >= 0.75 (HIGH)   → 3.0× equity (full margin — matches MARGIN_HIGH_CONVICTION)
-      >= 0.50 (MEDIUM) → 1.5× equity (partial margin)
-      < 0.50  (LOW)    → 1.0× equity (no margin)
-    Hard ceiling: never exceed 3× equity regardless of buying_power.
+    Reads conviction thresholds and margin multiplier from config:
+      >= high_thresh   → mult × equity (full margin)
+      >= medium_thresh → (mult / 2.0) × equity (partial margin)
+      < medium_thresh  → 1.0× equity (no margin)
+    Hard ceiling: never exceed mult × equity or buying_power.
+
+    Defaults (when config absent): high=0.75, medium=0.50, mult=3.0
+    — preserving the original hardcoded behavior.
     """
+    cfg  = config or {}
     equity = snapshot.equity
     bp     = max(snapshot.buying_power, equity)  # safety floor
-    if conviction >= 0.75:
-        cap = equity * 3.0
-    elif conviction >= 0.50:
-        cap = equity * 1.5
+
+    thresholds = _params(cfg).get("margin_sizing_conviction_thresholds", {})
+    high_t = float(thresholds.get("high", 0.75))
+    med_t  = float(thresholds.get("medium", 0.50))
+    mult   = float(_params(cfg).get("margin_sizing_multiplier", 3.0))
+
+    if conviction >= high_t:
+        cap = equity * mult
+    elif conviction >= med_t:
+        cap = equity * (mult / 2.0)
     else:
         cap = equity * 1.0
-    return min(cap, equity * 3.0, bp)
+
+    return min(cap, equity * mult, bp)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -407,7 +426,10 @@ def size_position(
     tier_pct = float(
         _sizing(config).get(f"{tier_str}_tier_pct", _TIER_MAX_PCT.get(tier_str, 0.08))
     )
-    if idea.conviction >= 0.75 and idea.tier == Tier.CORE:
+    _high_thresh = float(
+        _params(config).get("margin_sizing_conviction_thresholds", {}).get("high", 0.75)
+    )
+    if idea.conviction >= _high_thresh and idea.tier == Tier.CORE:
         tier_pct = _CORE_HIGH_CONVICTION_PCT  # 20%
 
     # ── VIX scaling ───────────────────────────────────────────────────────────
@@ -417,7 +439,7 @@ def size_position(
     max_dollars = sizing_basis * tier_pct * size_mult
 
     # ── Exposure headroom ─────────────────────────────────────────────────────
-    eff_cap  = _effective_exposure_cap(snapshot, idea.conviction)
+    eff_cap  = _effective_exposure_cap(snapshot, idea.conviction, config)
     headroom = eff_cap - snapshot.exposure_dollars
     if headroom <= 0:
         return (
@@ -584,7 +606,7 @@ def process_idea(
             qty=0,
             order_type="market",
             tier=idea.tier,
-            conviction=_float_to_conviction(idea.conviction),
+            conviction=_float_to_conviction(idea.conviction, config),
             catalyst=idea.catalyst or "hold",
             sector_signal=idea.sector_signal,
             source_idea=idea,
@@ -609,7 +631,7 @@ def process_idea(
             qty=qty,
             order_type="market",
             tier=idea.tier,
-            conviction=_float_to_conviction(idea.conviction),
+            conviction=_float_to_conviction(idea.conviction, config),
             catalyst=idea.catalyst or f"{act.value} {symbol}",
             sector_signal=idea.sector_signal,
             source_idea=idea,
@@ -658,7 +680,7 @@ def process_idea(
             qty=qty,
             order_type=order_type,
             tier=idea.tier,
-            conviction=_float_to_conviction(idea.conviction),
+            conviction=_float_to_conviction(idea.conviction, config),
             catalyst=idea.catalyst,
             stop_loss=stop_loss,
             take_profit=take_profit,
@@ -740,7 +762,7 @@ def process_idea(
             qty=qty,               # entry qty
             order_type=idea.order_type or "market",
             tier=idea.tier,
-            conviction=_float_to_conviction(idea.conviction),
+            conviction=_float_to_conviction(idea.conviction, config),
             catalyst=idea.catalyst,
             stop_loss=stop_loss,
             take_profit=take_profit,
@@ -1011,7 +1033,7 @@ def process_options_idea(
             contracts=0,
             max_cost_usd=0.0,
             tier=idea.tier,
-            conviction=_float_to_conviction(idea.conviction),
+            conviction=_float_to_conviction(idea.conviction, config),
             catalyst=idea.catalyst or "hold",
             direction=idea.direction,
             reason=f"action={idea.action.value}",
@@ -1115,7 +1137,7 @@ def process_options_idea(
         contracts=contracts,
         max_cost_usd=max_cost,
         tier=idea.tier,
-        conviction=_float_to_conviction(idea.conviction),
+        conviction=_float_to_conviction(idea.conviction, config),
         catalyst=idea.catalyst,
         direction=idea.direction,
         iv_rank=float(iv_rank) if iv_rank is not None else None,

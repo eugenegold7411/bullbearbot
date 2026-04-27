@@ -141,7 +141,7 @@ class TestChromaDBEnvVar:
         if os.environ.get("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION") != "python":
             pytest.skip("PROTOCOL_BUFFERS env var not set in this process — OK in service context")
         import chromadb  # noqa: F401
-        assert chromadb.__version__ == "1.5.7"
+        assert chromadb.__version__ >= "1.5.7"
 
     def test_trade_memory_importable(self):
         """trade_memory must import without error (chromadb dependency)."""

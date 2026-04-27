@@ -330,7 +330,6 @@ class TestEnrichWithGreeks(unittest.TestCase):
 
         called_with = []
 
-        original = od.fetch_option_greeks
 
         def _capture(occ_sym):
             called_with.append(occ_sym)

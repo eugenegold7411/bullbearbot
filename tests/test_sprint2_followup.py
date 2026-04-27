@@ -52,9 +52,16 @@ class TestDTBPTestsDoNotContaminateProductionLog(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             tmp_log = Path(td) / "options_log.jsonl"
-            import order_executor_options as oe
-            from schemas import OptionsLeg, OptionsStructure, OptionStrategy, StructureLifecycle, Tier
             from datetime import datetime, timezone
+
+            import order_executor_options as oe
+            from schemas import (
+                OptionsLeg,
+                OptionsStructure,
+                OptionStrategy,
+                StructureLifecycle,
+                Tier,
+            )
 
             leg = OptionsLeg(
                 occ_symbol="GLD261219C00435000",
@@ -104,8 +111,9 @@ class TestRemoveBackstopWiredInExecutor(unittest.TestCase):
 
     def _run_execute_sell(self, act: str, monkeypatch_fn=None):
         """Helper: run execute_all with a sell or close action, intercept remove_backstop."""
-        import order_executor as oe
         from unittest.mock import MagicMock, patch
+
+        import order_executor as oe
 
         action = {
             "symbol": "XLE",
@@ -376,8 +384,8 @@ class TestOCCSymbolFormatRegression(unittest.TestCase):
 
     def test_both_builders_produce_identical_symbols(self):
         """options_executor.build_occ_symbol and options_builder._build_occ_symbol agree."""
-        from options_executor import build_occ_symbol as exec_build
         from options_builder import _build_occ_symbol as builder_build
+        from options_executor import build_occ_symbol as exec_build
 
         cases = [
             ("NVDA", "2026-05-22", "put",  205.0),

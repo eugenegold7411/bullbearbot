@@ -164,6 +164,8 @@ def _ensure_account_modes_initialized() -> None:
     reconcile_only. This guard runs once at scheduler startup to prevent that.
     """
     try:
+        from datetime import timezone  # noqa: PLC0415
+
         from divergence import (  # noqa: PLC0415
             AccountMode,
             DivergenceScope,
@@ -171,7 +173,6 @@ def _ensure_account_modes_initialized() -> None:
             get_mode_path,
             save_account_mode,
         )
-        from datetime import timezone  # noqa: PLC0415
         now_iso = datetime.now(timezone.utc).isoformat()
         for account in ("A1", "A2"):
             path = get_mode_path(account)

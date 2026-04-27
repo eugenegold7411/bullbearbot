@@ -208,7 +208,13 @@ class TestRiskKernelPDTFloorIntact(unittest.TestCase):
     def test_eligibility_check_rejects_below_floor(self):
         """risk_kernel.eligibility_check must reject entries when equity < PDT_FLOOR."""
         import risk_kernel as rk
-        from schemas import TradeIdea, BrokerSnapshot, AccountAction, Tier, Conviction, Direction
+        from schemas import (
+            AccountAction,
+            BrokerSnapshot,
+            Direction,
+            Tier,
+            TradeIdea,
+        )
 
         low_equity_snapshot = BrokerSnapshot(
             equity=25_000.0,
@@ -232,7 +238,13 @@ class TestRiskKernelPDTFloorIntact(unittest.TestCase):
     def test_eligibility_check_approves_above_floor(self):
         """risk_kernel.eligibility_check must NOT reject entries based on equity being above floor."""
         import risk_kernel as rk
-        from schemas import TradeIdea, BrokerSnapshot, AccountAction, Tier, Conviction, Direction
+        from schemas import (
+            AccountAction,
+            BrokerSnapshot,
+            Direction,
+            Tier,
+            TradeIdea,
+        )
 
         high_equity_snapshot = BrokerSnapshot(
             equity=102_000.0,

@@ -647,7 +647,10 @@ def check_iv_history_ready(symbols: list[str]) -> dict:
 def _make_options_data_client():
     """Factory for Alpaca OptionHistoricalDataClient. Monkeypatched in tests."""
     import os  # noqa: PLC0415
-    from alpaca.data.historical.option import OptionHistoricalDataClient  # noqa: PLC0415
+
+    from alpaca.data.historical.option import (
+        OptionHistoricalDataClient,  # noqa: PLC0415
+    )
     return OptionHistoricalDataClient(
         os.getenv("ALPACA_API_KEY"),
         os.getenv("ALPACA_SECRET_KEY"),

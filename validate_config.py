@@ -144,8 +144,8 @@ if cfg:
     if _mdt is not None:
         _mdt_int = int(_mdt)
         if _mdt_int == 999:
-            check(PASS, (f"strategy_config.json: T-016 max_day_trades_rolling_5day=999 "
-                         f"(PDT-exempt sentinel — account equity above $25K threshold)"))
+            check(PASS, ("strategy_config.json: T-016 max_day_trades_rolling_5day=999 "
+                         "(PDT-exempt sentinel — account equity above $25K threshold)"))
         elif 1 <= _mdt_int <= 3:
             check(PASS, (f"strategy_config.json: T-016 max_day_trades_rolling_5day={_mdt} "
                          f"(within PDT regulatory ceiling)"))

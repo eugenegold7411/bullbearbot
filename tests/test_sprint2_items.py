@@ -13,7 +13,6 @@ Item 8: Overnight logging field names corrected
 
 import json
 import sys
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -30,7 +29,13 @@ if str(_BOT_DIR) not in sys.path:
 
 def _make_mock_structure():
     """Build a minimal OptionsStructure mock for executor tests."""
-    from schemas import OptionsLeg, OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+    from schemas import (
+        OptionsLeg,
+        OptionsStructure,
+        OptionStrategy,
+        StructureLifecycle,
+        Tier,
+    )
     leg = OptionsLeg(
         occ_symbol="GLD261219C00435000",
         underlying="GLD",
@@ -97,8 +102,8 @@ def test_dtbp_zero_guard_skips_submission(tmp_path, monkeypatch):
 
 def test_dtbp_nonzero_proceeds_normally(tmp_path, monkeypatch):
     """When DTBP>0, submission proceeds past the DTBP guard."""
-    import order_executor_options as oe
     import options_executor
+    import order_executor_options as oe
 
     # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
     monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
@@ -130,8 +135,8 @@ def test_dtbp_nonzero_proceeds_normally(tmp_path, monkeypatch):
 
 def test_dtbp_check_failure_fails_open(tmp_path, monkeypatch):
     """If DTBP account fetch raises, submission proceeds normally (fail open)."""
-    import order_executor_options as oe
     import options_executor
+    import order_executor_options as oe
 
     # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
     monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
@@ -224,7 +229,6 @@ def test_persist_decision_record_writes_json_file(tmp_path, monkeypatch):
 
 def test_decisions_directory_created_at_startup(tmp_path, monkeypatch):
     """Startup initialization creates data/account2/decisions/ alongside mode files."""
-    from pathlib import Path as _Path
 
     decisions_dir = tmp_path / "account2" / "decisions"
     assert not decisions_dir.exists()
@@ -255,8 +259,13 @@ def test_decisions_directory_created_at_startup(tmp_path, monkeypatch):
 def _make_active_structure(structure_id: str, underlying: str, occ_symbol: str,
                             lifecycle_value: str) -> dict:
     """Build a minimal structure dict for duplicate-check tests."""
-    from schemas import OptionsLeg, OptionsStructure, OptionStrategy, Tier
-    from schemas import StructureLifecycle
+    from schemas import (
+        OptionsLeg,
+        OptionsStructure,
+        OptionStrategy,
+        StructureLifecycle,
+        Tier,
+    )
 
     lc_map = {
         "submitted": StructureLifecycle.SUBMITTED,
@@ -310,7 +319,6 @@ def test_duplicate_submission_blocked(monkeypatch):
         expiration="2026-12-19",
     )
 
-    import importlib
     import sys
     # Temporarily inject mock options_state into module namespace
     mock_os = MagicMock()
@@ -517,8 +525,9 @@ def test_remove_backstop_called_on_position_close(tmp_path, monkeypatch):
 
 def test_remove_backstop_failure_does_not_block_close(monkeypatch):
     """remove_backstop failure is non-fatal — close proceeds regardless."""
-    import reconciliation as r
     from pathlib import Path
+
+    import reconciliation as r
 
     # Point _CONFIG_PATH at a non-existent file (remove_backstop will fail silently)
     monkeypatch.setattr(r, "_CONFIG_PATH", Path("/nonexistent/path.json"))
@@ -546,7 +555,13 @@ def test_remove_backstop_failure_does_not_block_close(monkeypatch):
 def _make_fully_filled_structure(structure_id: str, order_id: str,
                                    filled_price: Optional[float] = None):
     """Build a fully_filled OptionsStructure with configurable filled_price."""
-    from schemas import OptionsLeg, OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+    from schemas import (
+        OptionsLeg,
+        OptionsStructure,
+        OptionStrategy,
+        StructureLifecycle,
+        Tier,
+    )
 
     leg = OptionsLeg(
         occ_symbol="GLD261219C00435000",
@@ -606,7 +621,13 @@ def test_fill_update_skips_structures_without_order_id(monkeypatch):
     import bot_options_stage4_execution as m
 
     # Structure with no order_id on leg
-    from schemas import OptionsLeg, OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+    from schemas import (
+        OptionsLeg,
+        OptionsStructure,
+        OptionStrategy,
+        StructureLifecycle,
+        Tier,
+    )
     leg = OptionsLeg(
         occ_symbol="GLD261219C00435000",
         underlying="GLD",
@@ -688,6 +709,7 @@ def test_trading_window_constants_removed():
 def test_overnight_log_uses_regime_view_not_regime():
     """_ask_claude_overnight must log using regime_view and ideas, not regime/actions."""
     import inspect
+
     import bot_stage3_decision
 
     source = inspect.getsource(bot_stage3_decision._ask_claude_overnight)

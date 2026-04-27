@@ -979,6 +979,7 @@ def execute_all(
             if act in ("sell", "close"):
                 try:
                     from pathlib import Path as _Path  # noqa: PLC0415
+
                     from reconciliation import remove_backstop as _rb  # noqa: PLC0415
                     _rb(symbol, _Path(__file__).parent / "strategy_config.json")
                 except Exception as _rb_exc:

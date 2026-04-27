@@ -321,7 +321,9 @@ def _run_l3_synthesis(
                     row["earnings_days_away"] = l2.get("earnings_days_away")
                 # Wire catalyst_type taxonomy from primary_catalyst text (T2-7)
                 try:
-                    from semantic_labels import classify_catalyst as _cc  # noqa: PLC0415
+                    from semantic_labels import (
+                        classify_catalyst as _cc,  # noqa: PLC0415
+                    )
                     row["catalyst_type"] = _cc(
                         row.get("primary_catalyst", "") or ""
                     ).value

@@ -74,7 +74,6 @@ class TestEnsureAccountModesCreate(unittest.TestCase):
             mock_dt.now.return_value = mock.MagicMock()
             mock_dt.now.return_value.isoformat.return_value = "2026-04-27T00:00:00+00:00"
             # Patch get_mode_path to use our temp dir
-            original_get_mode_path = div.get_mode_path
             with mock.patch.object(div, "get_mode_path",
                                    lambda a: runtime_dir / f"{a.lower()}_mode.json"):
                 scheduler._ensure_account_modes_initialized()

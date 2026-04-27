@@ -160,6 +160,44 @@ def _handle_sigterm(signum, frame) -> None:
     raise KeyboardInterrupt
 
 
+def _ensure_account_modes_initialized() -> None:
+    """Create a1_mode.json and a2_mode.json with NORMAL mode if absent. Idempotent.
+
+    Mode files are gitignored and excluded from rsync, so they must be created
+    at runtime. They are only written by divergence events during normal operation,
+    meaning a fresh server or reboot leaves them absent — blocking preflight with
+    reconcile_only. This guard runs once at scheduler startup to prevent that.
+    """
+    try:
+        from divergence import (  # noqa: PLC0415
+            AccountMode,
+            DivergenceScope,
+            OperatingMode,
+            get_mode_path,
+            save_account_mode,
+        )
+        from datetime import timezone  # noqa: PLC0415
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for account in ("A1", "A2"):
+            path = get_mode_path(account)
+            if not path.exists():
+                save_account_mode(AccountMode(
+                    account=account,
+                    mode=OperatingMode.NORMAL,
+                    scope=DivergenceScope.ACCOUNT,
+                    scope_id="",
+                    reason_code="",
+                    reason_detail=f"{account} mode file absent on startup — initialized to NORMAL",
+                    entered_at=now_iso,
+                    entered_by="system_init",
+                    recovery_condition="one_clean_cycle",
+                    last_checked_at=now_iso,
+                ))
+                log.info("[INIT] %s mode file created with NORMAL mode", account)
+    except Exception as exc:
+        log.warning("[INIT] _ensure_account_modes_initialized failed (non-fatal): %s", exc)
+
+
 # ── ORB formation tracking ────────────────────────────────────────────────────
 _orb_high:   dict[str, float] = {}   # symbol → formation-window high
 _orb_low:    dict[str, float] = {}   # symbol → formation-window low
@@ -1412,6 +1450,7 @@ def run(dry_run: bool = False) -> None:
     trigger_cycle_num = 0
     open_order_ids: set = set()   # for stop-fill detection
 
+    _ensure_account_modes_initialized()
     log.info("Scheduler starting (24/7 mode)  dry_run=%s", dry_run)
     print("[scheduler] 24/7 mode active. Press Ctrl+C to stop.\n")
 

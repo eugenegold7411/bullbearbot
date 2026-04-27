@@ -632,8 +632,8 @@ def _ask_claude_overnight(
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         result = json.loads(raw)
-        log.info("[OVERNIGHT] Haiku decision: regime=%s  actions=%d",
-                 result.get("regime", "?"), len(result.get("actions", [])))
+        log.info("[OVERNIGHT] Haiku decision: regime=%s  ideas=%d",
+                 result.get("regime_view", "?"), len(result.get("ideas", [])))
         return result
 
     except Exception as _exc:

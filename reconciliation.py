@@ -57,6 +57,8 @@ from schemas import (
 
 log = logging.getLogger(__name__)
 
+_CONFIG_PATH = Path(__file__).parent / "strategy_config.json"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Data types
 # ─────────────────────────────────────────────────────────────────────────────
@@ -618,6 +620,12 @@ def _close_position(
     results.append(
         f"[RECON] CLOSED {symbol} qty={qty} reason={reason} order={order.id}"
     )
+    # Remove stale time_bound_action entry now that the position is closed.
+    try:
+        remove_backstop(symbol, _CONFIG_PATH)
+        log.debug("[RECON] Removed time_bound_action for closed position %s", symbol)
+    except Exception as _rb_exc:
+        log.debug("[RECON] remove_backstop failed (non-fatal): %s", _rb_exc)
 
 
 def _execute_deadline_exit(

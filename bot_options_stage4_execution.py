@@ -43,6 +43,47 @@ def _get_strategy_map() -> dict:
     return _STRATEGY_FROM_STRUCTURE
 
 
+# ── Duplicate-submission guard (T2-1) ─────────────────────────────────────────
+
+def _is_duplicate_submission(symbol: str, legs: list) -> bool:
+    """
+    Returns True if a structure for the same underlying with any matching leg
+    OCC symbol already exists in submitted, partially_filled, or fully_filled state.
+    Prevents duplicate submissions like the XLE double-submit from 2026-04-23.
+    """
+    try:
+        import options_state  # noqa: PLC0415
+        _ACTIVE = {"submitted", "partially_filled", "fully_filled"}
+        new_occs = {
+            leg.occ_symbol
+            for leg in legs
+            if getattr(leg, "occ_symbol", None)
+        }
+        if not new_occs:
+            return False
+        for s in options_state.load_structures():
+            if s.underlying != symbol:
+                continue
+            if (s.lifecycle.value if hasattr(s.lifecycle, "value") else str(s.lifecycle)) not in _ACTIVE:
+                continue
+            existing_occs = {
+                leg.occ_symbol
+                for leg in s.legs
+                if getattr(leg, "occ_symbol", None)
+            }
+            if new_occs & existing_occs:
+                log.warning(
+                    "[OPTS] DUPLICATE_SUBMIT blocked: %s already has active structure "
+                    "with overlapping OCC symbols %s (structure_id=%s lifecycle=%s)",
+                    symbol, new_occs & existing_occs, s.structure_id,
+                    s.lifecycle.value if hasattr(s.lifecycle, "value") else s.lifecycle,
+                )
+                return True
+    except Exception as _exc:
+        log.debug("[OPTS] Duplicate check failed (non-fatal): %s", _exc)
+    return False
+
+
 # ── Open positions ─────────────────────────────────────────────────────────────
 
 def _get_open_options_positions(alpaca_client) -> list:
@@ -205,6 +246,12 @@ def submit_selected_candidate(
                 decision_record.no_trade_reason = "execution_rejected"
                 return "rejected"
 
+            # Per-symbol submission lock — block duplicates (T2-1)
+            if _is_duplicate_submission(sym, structure.legs):
+                decision_record.execution_result = "no_trade"
+                decision_record.no_trade_reason = "duplicate_submission_blocked"
+                return "no_trade"
+
             options_state.save_structure(structure)
             _effective_obs = obs_mode or (not pf_allow_live_orders)
             if not pf_allow_live_orders:
@@ -332,6 +379,53 @@ def _log_attribution(decision_record, execution_results: list[dict]) -> None:
         log.debug("[OPTS] Attribution failed (non-fatal): %s", _exc)
 
 
+# ── Fill-price ingestion ──────────────────────────────────────────────────────
+
+def _update_fill_prices(structures: list, trading_client) -> bool:
+    """
+    For structures with legs that have an order_id but null filled_price,
+    fetch the fill data from Alpaca and update in place. Saves each updated
+    structure atomically via options_state. Returns True if any updates were made.
+
+    Targets SUBMITTED, PARTIALLY_FILLED, and FULLY_FILLED lifecycles —
+    close_structure() gates on filled_price so populating this field
+    enables proper cost-basis tracking and P&L computation.
+    """
+    import options_state  # noqa: PLC0415
+
+    _ELIGIBLE = {"submitted", "partially_filled", "fully_filled"}
+    updated_any = False
+    for s in structures:
+        lc = s.lifecycle.value if hasattr(s.lifecycle, "value") else str(s.lifecycle)
+        if lc not in _ELIGIBLE:
+            continue
+        structure_updated = False
+        for leg in s.legs:
+            if leg.order_id and leg.filled_price is None:
+                try:
+                    order = trading_client.get_order_by_id(leg.order_id)
+                    fap = getattr(order, "filled_avg_price", None)
+                    fqty = getattr(order, "filled_qty", None)
+                    if fap is not None:
+                        leg.filled_price = float(fap)
+                        if fqty is not None:
+                            leg.filled_qty = float(fqty)
+                        structure_updated = True
+                        log.info(
+                            "[FILL] %s leg %s: filled_price=%.4f filled_qty=%s",
+                            s.underlying, leg.order_id, leg.filled_price, leg.filled_qty,
+                        )
+                except Exception as _exc:
+                    log.debug("[FILL] fetch failed for order_id=%s: %s", leg.order_id, _exc)
+        if structure_updated:
+            try:
+                options_state.save_structure(s)
+                updated_any = True
+            except Exception as _se:
+                log.debug("[FILL] save_structure failed for %s: %s", s.structure_id, _se)
+    return updated_any
+
+
 # ── Close-check loop ──────────────────────────────────────────────────────────
 
 def close_check_loop(alpaca_client) -> None:
@@ -345,6 +439,9 @@ def close_check_loop(alpaca_client) -> None:
     try:
         _strategy_cfg = _load_strategy_config()
         open_structs  = options_state.get_open_structures()
+        # Backfill fill prices for any submitted/filled structures missing them.
+        _all_structs = options_state.load_structures()
+        _update_fill_prices(_all_structs, alpaca_client)
         if open_structs:
             for struct in open_structs:
                 should_close, close_reason = options_executor.should_close_structure(

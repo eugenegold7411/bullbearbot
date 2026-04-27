@@ -61,11 +61,6 @@ _MARKET_END     = 20 * 60         # 8:00 PM ET
 _EXTENDED_START =  4 * 60         # 4:00 AM ET
 _EXTENDED_END   = 23 * 60         # 11:00 PM ET
 
-# Trading-window gate: hard-stops Claude trading-decision calls outside
-# 9:25 AM–4:15 PM ET on weekdays. Drives ~$130/month savings by
-# suppressing post-close Sonnet drift.
-_TRADING_WINDOW_START = 9 * 60 + 25    # 9:25 AM ET
-_TRADING_WINDOW_END   = 16 * 60 + 15   # 4:15 PM ET
 
 
 def _is_claude_trading_window(now_et: datetime | None = None,
@@ -194,6 +189,17 @@ def _ensure_account_modes_initialized() -> None:
                     last_checked_at=now_iso,
                 ))
                 log.info("[INIT] %s mode file created with NORMAL mode", account)
+
+        # Ensure A2 decisions directory exists (gitignored, excluded from rsync).
+        # persist_decision_record() also mkdir-on-writes, but creating it here
+        # guarantees it is present before the first A2 cycle fires.
+        try:
+            from pathlib import Path as _Path  # noqa: PLC0415
+            _decisions_dir = _Path(__file__).parent / "data" / "account2" / "decisions"
+            _decisions_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as _de:
+            log.warning("[INIT] Failed to pre-create A2 decisions directory (non-fatal): %s", _de)
+
     except Exception as exc:
         log.warning("[INIT] _ensure_account_modes_initialized failed (non-fatal): %s", exc)
 

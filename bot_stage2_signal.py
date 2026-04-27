@@ -319,6 +319,14 @@ def _run_l3_synthesis(
                 # Keep L2's earnings_days_away passthrough
                 if "earnings_days_away" not in row and l2.get("earnings_days_away") is not None:
                     row["earnings_days_away"] = l2.get("earnings_days_away")
+                # Wire catalyst_type taxonomy from primary_catalyst text (T2-7)
+                try:
+                    from semantic_labels import classify_catalyst as _cc  # noqa: PLC0415
+                    row["catalyst_type"] = _cc(
+                        row.get("primary_catalyst", "") or ""
+                    ).value
+                except Exception:
+                    row["catalyst_type"] = "unknown"
                 merged_symbols[sym] = row
             else:
                 # L3 dropped this symbol — use L2 anchor
@@ -362,6 +370,7 @@ def _l2_to_signal_score(sym: str, l2: dict) -> dict:
             "score": 50.0, "direction": "neutral", "conviction": "low",
             "signals": [], "conflicts": ["l2_missing"],
             "primary_catalyst": "",
+            "catalyst_type": "unknown",
             "orb_candidate": False, "pattern_watchlist": False,
             "tier": "dynamic",
             "l2_score": 50.0, "l3_adjustment": 0.0,
@@ -374,6 +383,7 @@ def _l2_to_signal_score(sym: str, l2: dict) -> dict:
         "signals":           list(l2.get("signals", []) or []),
         "conflicts":         list(l2.get("conflicts", []) or []),
         "primary_catalyst":  "",
+        "catalyst_type":     "unknown",
         "orb_candidate":     bool(l2.get("orb_candidate")),
         "pattern_watchlist": l2.get("pattern_watchlist") or False,
         "tier":              "core" if sym else "dynamic",

@@ -333,6 +333,48 @@ def _quick_liquidity_check(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _enrich_with_greeks(candidate: dict) -> None:
+    """
+    Enrich a surviving candidate with Alpaca option snapshot greeks when
+    chain data did not provide them. Modifies candidate dict in place.
+    Non-fatal — silently skips on any error.
+
+    Adds/updates: delta, theta, vega (if None in candidate)
+    Adds:         gamma, rho (not in candidate dict by default)
+    """
+    try:
+        import options_data as _od  # noqa: PLC0415
+        sym        = candidate.get("symbol", "")
+        expiry     = candidate.get("expiry", "")
+        long_stk   = candidate.get("long_strike")
+        struct_type = candidate.get("structure_type", "")
+        if not (sym and expiry and long_stk):
+            return
+        # Build OCC symbol in Alpaca format (no ticker padding)
+        _date_obj = date.fromisoformat(expiry)
+        _ticker   = sym.replace("/", "").upper()
+        _cp       = "C" if "call" in struct_type else "P"
+        _strike_i = int(round(float(long_stk) * 1000))
+        occ_sym   = f"{_ticker}{_date_obj.strftime('%y%m%d')}{_cp}{_strike_i:08d}"
+        g = _od.fetch_option_greeks(occ_sym)
+        if not g:
+            return
+        if candidate.get("delta") is None:
+            candidate["delta"] = g.get("delta")
+        if candidate.get("theta") is None:
+            candidate["theta"] = g.get("theta")
+        if candidate.get("vega") is None:
+            candidate["vega"] = g.get("vega")
+        candidate.setdefault("gamma", g.get("gamma"))
+        candidate.setdefault("rho",   g.get("rho"))
+        log.debug("[OPTS] %s: greeks enriched from Alpaca snapshot (%s) "
+                  "delta=%s theta=%s vega=%s",
+                  sym, occ_sym, g.get("delta"), g.get("theta"), g.get("vega"))
+    except Exception as _exc:
+        log.debug("[OPTS] %s: greeks enrichment failed (non-fatal): %s",
+                  candidate.get("symbol", "?"), _exc)
+
+
 def build_candidate_structures(
     pack,
     equity: float,
@@ -382,6 +424,10 @@ def build_candidate_structures(
                 _sample_reason = vetoed[0]["reason"] if vetoed else "no_structures"
                 log.info("[OPTS] %s: all %d structures vetoed (%s) — skipping",
                          pack.symbol, len(generated), _sample_reason)
+            # Enrich surviving candidates with Alpaca greeks where chain data was absent
+            for c in surviving:
+                if c.get("delta") is None or c.get("theta") is None:
+                    _enrich_with_greeks(c)
     except Exception as _exc:
         log.debug("[OPTS] %s: build_candidate_structures failed (non-fatal): %s",
                   pack.symbol, _exc)

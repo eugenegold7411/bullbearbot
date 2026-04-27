@@ -638,3 +638,53 @@ def check_iv_history_ready(symbols: list[str]) -> dict:
             "ready_count":  0,
             "total_count":  len(symbols),
         }
+
+
+# ---------------------------------------------------------------------------
+# Alpaca option greeks
+# ---------------------------------------------------------------------------
+
+def _make_options_data_client():
+    """Factory for Alpaca OptionHistoricalDataClient. Monkeypatched in tests."""
+    import os  # noqa: PLC0415
+    from alpaca.data.historical.option import OptionHistoricalDataClient  # noqa: PLC0415
+    return OptionHistoricalDataClient(
+        os.getenv("ALPACA_API_KEY"),
+        os.getenv("ALPACA_SECRET_KEY"),
+    )
+
+
+def fetch_option_greeks(occ_symbol: str) -> "dict | None":
+    """
+    Fetch greeks for a single option contract via Alpaca snapshot.
+
+    Returns dict with delta, gamma, theta, vega, rho, implied_volatility,
+    or None on any failure (non-fatal — caller fills in None greeks).
+
+    Requires OCC symbol in Alpaca format (no ticker padding):
+    e.g. 'NVDA260522P00205000' not 'NVDA  260522P00205000'.
+    """
+    try:
+        from alpaca.data.requests import OptionSnapshotRequest  # noqa: PLC0415
+        client = _make_options_data_client()
+        req = OptionSnapshotRequest(symbol_or_symbols=occ_symbol)
+        snap = client.get_option_snapshot(req)
+        if not snap or occ_symbol not in snap:
+            log.debug("[OPTIONS_DATA] greeks: no snapshot returned for %s", occ_symbol)
+            return None
+        data = snap[occ_symbol]
+        greeks = getattr(data, "greeks", None)
+        if not greeks:
+            log.debug("[OPTIONS_DATA] greeks: greeks=None for %s", occ_symbol)
+            return None
+        return {
+            "delta":              getattr(greeks, "delta", None),
+            "gamma":              getattr(greeks, "gamma", None),
+            "theta":              getattr(greeks, "theta", None),
+            "vega":               getattr(greeks, "vega", None),
+            "rho":                getattr(greeks, "rho", None),
+            "implied_volatility": getattr(data, "implied_volatility", None),
+        }
+    except Exception as exc:
+        log.debug("[OPTIONS_DATA] greeks fetch failed for %s: %s", occ_symbol, exc)
+        return None

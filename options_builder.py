@@ -719,9 +719,9 @@ def build_legs(
     Leg ordering rule (per OptionsStructure docstring):
       Long leg is always first in the list to avoid naked-short risk at any point.
 
-    OCC symbol format:
-      {TICKER_padded_6chars}{YYMMDD}{C|P}{STRIKE×1000_padded_8digits}
-      e.g. GLD   251219C00435000  →  "GLD   251219C00435000" (6-char ticker, padded)
+    OCC symbol format (Alpaca):
+      {TICKER}{YYMMDD}{C|P}{STRIKE×1000_padded_8digits}
+      e.g. GLD251219C00435000  (no ticker padding — Alpaca rejects OCC paper space format)
     """
     option_type  = strikes_data.get("option_type", "call")
     long_data    = strikes_data.get("long_leg_data")
@@ -773,15 +773,16 @@ def build_legs(
 
 
 def _build_occ_symbol(symbol: str, expiry: str, option_type: str, strike: float) -> str:
-    """
-    Build OCC option symbol.
+    r"""
+    Build OCC option symbol in Alpaca format (no ticker padding).
 
-    Format: {6-char ticker padded with spaces}{YYMMDD}{C|P}{8-digit strike×1000}
+    Format: {TICKER}{YYMMDD}{C|P}{8-digit strike×1000}
+    Alpaca regex: ^[A-Z]{1,5}\d{6}[CP]\d{8}$
     Examples:
-      GLD,    2025-12-19, call, 435.0  → "GLD   251219C00435000"
-      NVDA,   2026-04-25, put,  800.0  → "NVDA  260425P00800000"
+      GLD,    2025-12-19, call, 435.0  -> "GLD251219C00435000"
+      NVDA,   2026-04-25, put,  800.0  -> "NVDA260425P00800000"
     """
-    ticker = symbol.replace("/", "").ljust(6)[:6]
+    ticker = symbol.replace("/", "").upper()
     date_obj = date.fromisoformat(expiry)
     date_str = date_obj.strftime("%y%m%d")
     cp       = "C" if option_type == "call" else "P"

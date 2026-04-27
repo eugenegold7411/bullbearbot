@@ -166,7 +166,8 @@ def _stub_alpaca_tree() -> None:
     _dr_mod = sys.modules["alpaca.data.requests"]
     for _name in ("CryptoBarsRequest", "CryptoLatestTradeRequest",
                   "CryptoLatestQuoteRequest", "NewsRequest",
-                  "StockBarsRequest", "StockLatestQuoteRequest"):
+                  "StockBarsRequest", "StockLatestQuoteRequest",
+                  "OptionSnapshotRequest", "OptionLatestQuoteRequest"):
         setattr(_dr_mod, _name, _cls(_name))
 
     class _StockLatestTradeRequest:

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ─── Item 1 — Aggressive Trading Config ──────────────────────────────────────
 
 class TestAggressiveConfig:
@@ -56,8 +55,15 @@ class TestAggressiveConfig:
         """risk_kernel.size_position() must cap at 0.25 × equity, not 0.07."""
         import json as _json
         from pathlib import Path as _Path
-        from schemas import BrokerSnapshot, Conviction, Direction, Tier, TradeIdea, AccountAction
+
         import risk_kernel as rk
+        from schemas import (
+            AccountAction,
+            BrokerSnapshot,
+            Direction,
+            Tier,
+            TradeIdea,
+        )
 
         cfg = _json.loads(_Path("strategy_config.json").read_text())
         snap = BrokerSnapshot(
@@ -161,8 +167,9 @@ class TestCostSpineTaxonomy:
 
     def test_emit_spine_record_uses_caller_fallback(self):
         """_emit_spine_record falls back to event.get('caller') when module_tags has no module."""
-        from attribution import _emit_spine_record
         import inspect
+
+        from attribution import _emit_spine_record
         src = inspect.getsource(_emit_spine_record)
         assert 'event.get("caller")' in src, (
             "_emit_spine_record does not read caller from event dict"

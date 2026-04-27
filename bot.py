@@ -446,6 +446,7 @@ def run_cycle(
             symbol="portfolio",
             module_tags=_module_tags,
             trigger_flags=_trigger_flags,
+            extra={"caller": "bot_decision"},
         )
     except Exception as _attr_exc:
         log.debug("Attribution block failed (non-fatal): %s", _attr_exc)
@@ -776,7 +777,7 @@ def run_cycle(
                         module_tags=_module_tags,
                         trigger_flags=_trigger_flags,
                         trade_id=str(r.order_id) if r.order_id else None,
-                        extra={"fill_price": r.fill_price, "filled_qty": r.filled_qty},
+                        extra={"fill_price": r.fill_price, "filled_qty": r.filled_qty, "caller": "bot_order_submitted"},
                     )
                 except Exception as _oa_exc:
                     log.debug("Attribution order_submitted failed (non-fatal): %s", _oa_exc)

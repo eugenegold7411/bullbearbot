@@ -8,13 +8,13 @@
     "core_tier_pct": 0.15,
     "dynamic_tier_pct": 0.1,
     "intraday_tier_pct": 0.05,
-    "max_total_exposure_pct": 0.75,
+    "max_total_exposure_pct": 0.95,
     "_max_total_exposure_pct_note": "unused \u2014 do not rely on this field. Only consumed by portfolio_intelligence.compute_dynamic_sizes() for prompt display; not enforced by risk_kernel or order_executor.",
-    "cash_reserve_pct": 0.15
+    "cash_reserve_pct": 0.05
   },
   "parameters": {
     "min_confidence_threshold": "medium",
-    "max_positions": 14,
+    "max_positions": 20,
     "preferred_sessions": [
       "market",
       "extended"
@@ -29,8 +29,8 @@
       "dynamic"
     ],
     "stop_loss_pct_overnight": 0.02,
-    "max_position_pct_equity": 0.07,
-    "_max_position_pct_equity_note": "Enforced by risk_kernel.size_position() as single-name cap upper bound. Updated Sprint 1 2026-04-26.",
+    "max_position_pct_equity": 0.25,
+    "_max_position_pct_equity_note": "Enforced by risk_kernel.size_position() as single-name cap upper bound. Raised to 0.25 in Sprint 2.5 2026-04-27 for aggressive paper trading (was 0.07).",
     "max_daily_drawdown_pct": 0.025,
     "max_weekly_drawdown_pct": 0.035,
     "max_day_trades_rolling_5day": 999,
@@ -47,9 +47,9 @@
     "session_tag_capture_point": "signal_generation",
     "session_tag_assert_non_unknown_before_route": true,
     "margin_authorized": true,
-    "margin_sizing_multiplier": 3.0,
+    "margin_sizing_multiplier": 4.0,
     "margin_sizing_conviction_thresholds": {
-      "high": 0.75,
+      "high": 0.65,
       "medium": 0.5
     },
     "catalyst_tag_required_for_entry": true,
@@ -128,7 +128,7 @@
     "debate_confidence_floor": 0.65,
     "max_open_positions": 8,
     "liquidity_gates": {
-      "min_open_interest": 150,
+      "min_open_interest": 100,
       "min_volume": 20,
       "max_spread_pct": 0.1,
       "min_mid_price": 0.05,

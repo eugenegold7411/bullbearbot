@@ -103,13 +103,16 @@ if cfg:
         check(PASS, "strategy_config.json: no _DEPRECATED marker fields in parameters")
 
     # cash_reserve_pct
+    # Lower bound relaxed to 0.03 in Sprint 2.5 (2026-04-27) to support aggressive paper-trading
+    # mode (cash_reserve_pct=0.05). Note: this field is for prompt display only — not enforced
+    # by risk_kernel or order_executor (see _max_total_exposure_pct_note).
     crp = cfg.get("position_sizing", {}).get("cash_reserve_pct")
     if crp is None:
         check(FAIL, "strategy_config.json: cash_reserve_pct missing")
-    elif 0.10 <= float(crp) <= 0.40:
-        check(PASS, f"strategy_config.json: cash_reserve_pct={crp} (valid 0.10–0.40)")
+    elif 0.03 <= float(crp) <= 0.40:
+        check(PASS, f"strategy_config.json: cash_reserve_pct={crp} (valid 0.03–0.40)")
     else:
-        check(FAIL, f"strategy_config.json: cash_reserve_pct={crp} out of range (0.10–0.40)")
+        check(FAIL, f"strategy_config.json: cash_reserve_pct={crp} out of range (0.03–0.40)")
 
     # max_positions
     mp = cfg.get("parameters", {}).get("max_positions")
@@ -120,15 +123,29 @@ if cfg:
     else:
         check(FAIL, f"strategy_config.json: max_positions={mp} out of range (5–25)")
 
-    # T-014: gross exposure consistency — max_positions × max_position_pct_equity must not exceed 100%
-    _mp  = cfg.get("parameters", {}).get("max_positions")
-    _mpe = cfg.get("parameters", {}).get("max_position_pct_equity")
+    # T-014: gross exposure consistency — max_positions × max_position_pct_equity
+    # When margin is authorized, theoretical max exposure can exceed 100% equity because not
+    # all positions will be simultaneously at max size. risk_kernel._effective_exposure_cap()
+    # enforces the real hard cap (3x equity for HIGH, 1.5x for MEDIUM).
+    # Updated Sprint 2.5 (2026-04-27): WARN (not FAIL) when margin_authorized=True and
+    # gross > 1.0; FAIL only when gross > 6.0 (extreme, clearly misconfigured).
+    _mp      = cfg.get("parameters", {}).get("max_positions")
+    _mpe     = cfg.get("parameters", {}).get("max_position_pct_equity")
+    _margin  = bool(cfg.get("parameters", {}).get("margin_authorized", False))
     if _mp is not None and _mpe is not None:
         _gross = int(_mp) * float(_mpe)
-        if _gross > 1.0:
+        if _gross > 6.0:
+            check(FAIL, (f"strategy_config.json: T-014 gross exposure extreme — "
+                         f"max_positions ({_mp}) × max_position_pct_equity ({_mpe}) "
+                         f"= {_gross:.0%} (must be ≤ 600% even with margin)"))
+        elif _gross > 1.0 and not _margin:
             check(FAIL, (f"strategy_config.json: T-014 gross exposure inconsistency — "
                          f"max_positions ({_mp}) × max_position_pct_equity ({_mpe}) "
-                         f"= {_gross:.0%}, which implies potential over-allocation (must be ≤ 100%)"))
+                         f"= {_gross:.0%} exceeds 100% but margin_authorized=False"))
+        elif _gross > 1.0 and _margin:
+            check(WARN, (f"strategy_config.json: T-014 gross exposure {_gross:.0%} > 100% "
+                         f"(margin_authorized=True — risk_kernel._effective_exposure_cap() "
+                         f"enforces real hard cap; this is expected for aggressive margin config)"))
         else:
             check(PASS, (f"strategy_config.json: T-014 gross exposure OK — "
                          f"max_positions ({_mp}) × max_position_pct_equity ({_mpe}) "

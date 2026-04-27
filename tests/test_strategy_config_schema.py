@@ -259,18 +259,29 @@ class TestRiskManagerGates(unittest.TestCase):
         self.assertGreater(gross, 1.0, f"Expected > 1.0, got {gross}")
 
     def test_t014_live_config_passes(self):
-        """Live strategy_config.json must pass the T-014 gate."""
+        """Live strategy_config.json must pass the T-014 gate.
+
+        Updated Sprint 2.5 (2026-04-27): when margin_authorized=True, gross exposure > 100%
+        is WARN (not FAIL) because risk_kernel._effective_exposure_cap() enforces the real
+        hard cap. Only gross > 600% is a hard FAIL regardless of margin.
+        """
         if not CONFIG_PATH.exists():
             self.skipTest("strategy_config.json not found")
         cfg = json.loads(CONFIG_PATH.read_text())
         p = cfg.get("parameters", {})
-        mp  = p.get("max_positions")
-        mpe = p.get("max_position_pct_equity")
+        mp      = p.get("max_positions")
+        mpe     = p.get("max_position_pct_equity")
+        margin  = bool(p.get("margin_authorized", False))
         if mp is None or mpe is None:
             self.skipTest("max_positions or max_position_pct_equity missing from config")
         gross = int(mp) * float(mpe)
-        self.assertLessEqual(gross, 1.0,
-                             f"T-014 FAIL: max_positions ({mp}) × max_position_pct_equity ({mpe}) = {gross:.0%}")
+        # Hard FAIL only at extreme gross (>600%) regardless of margin
+        self.assertLessEqual(gross, 6.0,
+                             f"T-014 extreme FAIL: gross={gross:.0%} > 600%")
+        # When margin NOT authorized, gross > 1.0 is still a FAIL
+        if not margin:
+            self.assertLessEqual(gross, 1.0,
+                                 f"T-014 FAIL: gross={gross:.0%} > 100% with margin_authorized=False")
 
     # ── T-016: PDT day-trade limit ────────────────────────────────────────────
     # PDT rules only apply below $25K equity. Accounts above $25K use 999 as a

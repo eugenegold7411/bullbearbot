@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-# ── Internal helper ───────────────────────────────────────────────────────────
+# ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _maybe_float(v) -> Optional[float]:
     """Convert v to float, returning None if v is None or unconvertible."""
@@ -41,6 +41,21 @@ def _maybe_float(v) -> Optional[float]:
         return float(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _occ_to_underlying(occ: str) -> str:
+    """
+    Extract the underlying ticker from an OCC symbol string.
+
+    Works for both standard (`NVDA260508C00200000`) and space-padded
+    (`NVDA  260522P00205000`) Alpaca formats.  Returns "" on failure.
+    """
+    import re
+    if not occ:
+        return ""
+    clean = occ.replace(" ", "").upper()
+    m = re.match(r"^([A-Z]+)", clean)
+    return m.group(1) if m else ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -680,6 +695,11 @@ class OptionsStructure:
     rolled_to_structure_id:  Optional[str]  = None   # set when new structure is linked
     initiated_by:            Optional[str]  = None   # "auto_rule" | method name
 
+    @property
+    def symbol(self) -> str:
+        """Canonical underlying ticker — alias for self.underlying."""
+        return self.underlying
+
     def is_terminal(self) -> bool:
         """True if structure has reached a final, non-reversible state."""
         return self.lifecycle in (
@@ -731,6 +751,9 @@ class OptionsStructure:
         d["strategy"]  = self.strategy.value
         d["lifecycle"] = self.lifecycle.value
         d["tier"]      = self.tier.value
+        # Emit symbol as a convenience alias for underlying so consumers
+        # that use the raw dict can read either key.
+        d["symbol"] = self.underlying
         return d
 
     @classmethod
@@ -739,7 +762,7 @@ class OptionsStructure:
         legs = [
             OptionsLeg(
                 occ_symbol=leg["occ_symbol"],
-                underlying=leg["underlying"],
+                underlying=leg.get("underlying") or _occ_to_underlying(leg.get("occ_symbol", "")),
                 side=leg["side"],
                 qty=int(leg["qty"]),
                 option_type=leg["option_type"],
@@ -768,9 +791,19 @@ class OptionsStructure:
             tier = Tier(d.get("tier", "core"))
         except ValueError:
             tier = Tier.CORE
+        # Accept both "underlying" and "symbol" keys; fall back to OCC parsing.
+        raw_underlying = (
+            d.get("underlying")
+            or d.get("symbol")
+            or next(
+                (_occ_to_underlying(leg.get("occ_symbol", "")) for leg in d.get("legs", [])
+                 if leg.get("occ_symbol")),
+                "",
+            )
+        )
         return cls(
             structure_id=d["structure_id"],
-            underlying=normalize_symbol(d["underlying"]),
+            underlying=normalize_symbol(raw_underlying),
             strategy=strategy,
             lifecycle=lifecycle,
             legs=legs,

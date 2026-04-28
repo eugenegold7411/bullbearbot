@@ -580,8 +580,8 @@ def _maybe_refresh_earnings_intel(dry_run: bool = False) -> None:
 
     if not dry_run:
         try:
-            import watchlist_manager as _wm          # noqa: PLC0415
-            import earnings_intel_fetcher as _eif    # noqa: PLC0415
+            import earnings_intel_fetcher as _eif  # noqa: PLC0415
+            import watchlist_manager as _wm  # noqa: PLC0415
             wl   = _wm.get_active_watchlist()
             syms = [s["symbol"] for s in wl.get("all", [])]
             _eif.refresh_earnings_analyst_intel(syms)

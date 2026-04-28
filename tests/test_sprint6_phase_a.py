@@ -33,9 +33,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
-
+from unittest.mock import patch
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -420,6 +418,7 @@ class TestSchedulerEarningsIntel:
     def test_pa621_main_loop_calls_maybe_refresh_earnings_intel(self):
         """scheduler module source must reference _maybe_refresh_earnings_intel in the main loop."""
         import inspect
+
         import scheduler
         src = inspect.getsource(scheduler)
         assert "_maybe_refresh_earnings_intel" in src, \

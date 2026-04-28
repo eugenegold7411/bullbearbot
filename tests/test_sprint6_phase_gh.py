@@ -2,8 +2,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 
 def _make_config(tiers=None, flat_mult=None, crypto_cap=None):
     cfg = {
@@ -108,7 +106,7 @@ class TestSizingLadder:
         )
 
     def _make_idea(self, conviction, symbol="NVDA"):
-        from schemas import TradeIdea, AccountAction, Tier, Direction
+        from schemas import AccountAction, Direction, Tier, TradeIdea
         return TradeIdea(
             symbol=symbol,
             action=AccountAction.BUY,

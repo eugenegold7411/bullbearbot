@@ -137,6 +137,49 @@ def _load_overnight_digest() -> str:
     return "\n".join(lines)
 
 
+def _build_pre_earnings_intel_section() -> str:
+    """
+    Return a formatted '=== PRE-EARNINGS INTELLIGENCE ===' section for symbols
+    with earnings ≤ 5 days away. Calls earnings_intel.get_earnings_intel_section()
+    per symbol. Capped at 3 symbols to control cost/time. Non-fatal.
+    """
+    try:
+        from datetime import date as _date
+        from data_warehouse import load_earnings_calendar
+        from earnings_intel import get_earnings_intel_section
+
+        ec = load_earnings_calendar()
+        today_dt = _date.today()
+        today_str = today_dt.isoformat()
+
+        near_earnings = []
+        for e in ec.get("calendar", []):
+            iso = str(e.get("earnings_date", ""))[:10]
+            if not iso or iso < today_str:
+                continue
+            try:
+                n_days = (_date.fromisoformat(iso) - today_dt).days
+            except Exception:
+                continue
+            if n_days <= 5:
+                near_earnings.append((e.get("symbol", ""), n_days))
+
+        if not near_earnings:
+            return ""
+
+        lines = ["\n=== PRE-EARNINGS INTELLIGENCE ==="]
+        for sym, n_days in near_earnings[:3]:
+            if not sym:
+                continue
+            section = get_earnings_intel_section(sym, n_days)
+            lines.append(section)
+
+        return "\n".join(lines)
+    except Exception as exc:
+        log.debug("[MORNING] pre-earnings intel section failed: %s", exc)
+        return ""
+
+
 def _load_context() -> str:
     """Assemble all available overnight intelligence into a context string."""
     parts = []
@@ -266,6 +309,11 @@ def _load_context() -> str:
                 parts.append("  " + format_earnings_line(sym, n_days, iso))
     except Exception:
         pass
+
+    # Pre-earnings intelligence (transcript analysis for symbols ≤ 5 days away)
+    _pre_earnings_section = _build_pre_earnings_intel_section()
+    if _pre_earnings_section:
+        parts.append(_pre_earnings_section)
 
     # Congressional + insider activity (last 48h)
     try:

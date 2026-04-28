@@ -191,10 +191,13 @@ SOCIAL SENTIMENT (Reddit/WSB):
 
 EARNINGS INTELLIGENCE (near-earnings only):
 - If a symbol is within 3 days of earnings, do NOT open a new full-size position.
-  Max half-size (50% of tier limit). The earnings intel section shows the last-quarter
-  signal (bullish/bearish/neutral) — use it to set directional bias, not as a trade trigger.
+  Max half-size (50% of tier limit).
+- The morning brief PRE-EARNINGS INTELLIGENCE section includes last-quarter transcript
+  analysis (signal, management tone, guidance detail, key risks) for symbols ≤ 5 days
+  from earnings. Use this to set directional bias, not as a trade trigger.
 - Raised guidance + confident tone from last quarter = bullish bias into earnings.
   Lowered guidance or defensive tone = avoid entirely unless you have a specific catalyst.
+- catalyst_type for these setups should be "earnings_pending".
 
 SIGNAL CONVERGENCE RULE:
 When 3+ of these streams align for the same symbol (morning brief pick + insider buy +

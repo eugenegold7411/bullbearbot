@@ -650,7 +650,52 @@ def place_stops(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. Main entry point — Account 1
+# 4. Tier cap — Option C: Claude can request core, capped if signal score < threshold
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TIER_CAP_SCORE_THRESHOLD: float = 65.0
+
+
+def apply_tier_cap(ideas: list, signal_scores_obj: dict) -> None:
+    """Cap Tier.CORE → Tier.DYNAMIC for BUY ideas whose signal score < 65.
+
+    Mutates ideas in place. If the symbol is not in signal_scores_obj, the
+    tier is left unchanged (can't validate without a score). Only BUY actions
+    are subject to the cap — holds/closes are unaffected.
+
+    Called from bot.py before the kernel loop.
+    """
+    if not signal_scores_obj or not ideas:
+        return
+    scored = signal_scores_obj.get("scored_symbols", {})
+    for idea in ideas:
+        if not hasattr(idea, "tier") or not hasattr(idea, "action"):
+            continue
+        if idea.tier != Tier.CORE or idea.action != AccountAction.BUY:
+            continue
+        sym = getattr(idea, "symbol", "")
+        sig = scored.get(sym) or scored.get(sym.replace("/", ""))
+        if sig is None:
+            continue  # symbol absent from scorer — cannot validate, leave as-is
+        score = float(sig.get("score", 50.0))
+        if score < _TIER_CAP_SCORE_THRESHOLD:
+            scorer_tier_raw = sig.get("tier", "dynamic")
+            try:
+                capped = Tier(scorer_tier_raw)
+            except ValueError:
+                capped = Tier.DYNAMIC
+            if capped == Tier.CORE:
+                capped = Tier.DYNAMIC  # don't let scorer also claim core on a weak score
+            log.warning(
+                "[TIER_CAP] %s requested core but signal score %.1f < %.1f — "
+                "capping to %s (scorer tier: %s)",
+                sym, score, _TIER_CAP_SCORE_THRESHOLD, capped.value, scorer_tier_raw,
+            )
+            idea.tier = capped
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Main entry point — Account 1
 # ─────────────────────────────────────────────────────────────────────────────
 
 def process_idea(

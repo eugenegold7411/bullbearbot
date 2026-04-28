@@ -486,6 +486,29 @@ def run_cycle(
         except Exception:
             pass
 
+        # Cap Tier.CORE → Tier.DYNAMIC when signal score < 65
+        risk_kernel.apply_tier_cap(claude_decision.ideas, signal_scores_obj)
+
+        # Scratchpad soft gate: BUY on off-watching symbols requires override
+        _watching_syms = set(scratchpad_result.get("watching", []))
+        if _watching_syms:
+            _filtered_ideas = []
+            for _idea in claude_decision.ideas:
+                _sym_norm = normalize_symbol(_idea.symbol)
+                if (
+                    _idea.action.value in ("buy", "reallocate")
+                    and _sym_norm not in _watching_syms
+                    and not _idea.override_scratchpad
+                ):
+                    log.warning(
+                        "[SCRATCHPAD_GATE] REJECTED %s — not in scratchpad watching list "
+                        "and no override_scratchpad flag. Watching: %s",
+                        _sym_norm, sorted(_watching_syms),
+                    )
+                else:
+                    _filtered_ideas.append(_idea)
+            claude_decision.ideas[:] = _filtered_ideas
+
         for _idea in claude_decision.ideas:
             _sym   = normalize_symbol(_idea.symbol)
             _price = _prices.get(_sym) or _prices.get(_idea.symbol)

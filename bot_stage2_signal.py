@@ -466,7 +466,7 @@ def _l2_to_signal_score(sym: str, l2: dict) -> dict:
         "catalyst_type":     "unknown",
         "orb_candidate":     bool(l2.get("orb_candidate")),
         "pattern_watchlist": l2.get("pattern_watchlist") or False,
-        "tier":              "core" if sym else "dynamic",
+        "tier":              "dynamic",
         "l2_score":          float(l2.get("score", 50.0)),
         "l3_adjustment":     0.0,
         "adjustment_reason": "l3_unavailable_or_skip",

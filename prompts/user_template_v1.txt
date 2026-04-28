@@ -124,7 +124,9 @@ Respond with ONLY this JSON:
       "advisory_stop_pct": <float e.g. 0.035, or null>,
       "advisory_target_r": <float e.g. 2.5, or null>,
       "option_strategy_hint": "call_debit_spread" | "put_debit_spread" | "call_credit_spread" |
-                              "put_credit_spread" | "single_call" | "single_put" | "straddle" | null
+                              "put_credit_spread" | "single_call" | "single_put" | "straddle" | null,
+      "override_scratchpad": false,
+      "override_reason": ""
     }}
   ],
   "holds": ["<TICKER>"],
@@ -134,3 +136,5 @@ Respond with ONLY this JSON:
 
 For reallocation (move capital from X to Y): add "exit_symbol": "<X>" and "entry_symbol": "<Y>" to the enter_long idea.
 If no action is warranted, return empty ideas[] and populate holds[] with current positions.
+
+SCRATCHPAD GATE: If Stage 2.5 produced a watching list and you are proposing to enter_long or reallocate into a symbol NOT on that list, you MUST set "override_scratchpad": true and provide a specific, concrete reason in "override_reason". Without both fields the kernel will reject the idea. This gate does not apply to close, reduce, hold, or monitor actions.

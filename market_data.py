@@ -500,7 +500,8 @@ def get_stock_signals(
             rsi_str  = f"RSI={rsi:.1f}" if rsi is not None else "RSI=?"
             macd_str = (f"MACD={macd:+.2f}/sig={msig:+.2f}"
                         if macd is not None and msig is not None else "MACD=?")
-            vol_str  = f"Vol={vrat:.1f}x avg" if vrat is not None else "Vol=?"
+            # d1_vol = prior-day close volume vs 20-day daily average (NOT intraday)
+            vol_str  = f"d1_vol={vrat:.1f}x vs 20d" if vrat is not None else "d1_vol=?"
             lines.append(f"  {'':6}  {rsi_str}  {macd_str}  {vol_str}  {vwap_str}")
             lines.append(f"  {'':6}  {ema9_str}  {ema21_str}  {cross_str}")
 
@@ -517,6 +518,9 @@ def get_stock_signals(
                 _id_parts = [p for p in [_id_rsi, _id_macd, _id_mom, _id_vol] if p]
                 if _id_parts:
                     lines.append(f"  {'':6}  {' '.join(_id_parts)}")
+            else:
+                # Explicit no-live-data state so Sonnet doesn't infer from d1_vol
+                lines.append(f"  {'':6}  ivol=N/A(no live data)")
 
         except Exception:
             continue
@@ -779,7 +783,8 @@ def get_crypto_signals(symbols: list) -> tuple[str, dict, dict]:
             rsi_str  = f"RSI={rsi:.1f}" if rsi is not None else "RSI=?"
             macd_str = (f"MACD={macd:+.2f}/sig={msig:+.2f}"
                         if macd is not None and msig is not None else "MACD=?")
-            vol_str  = f"Vol={vrat:.1f}x avg" if vrat is not None else "Vol=?"
+            # d1_vol = prior-day close volume vs 20-day daily average (NOT intraday)
+            vol_str  = f"d1_vol={vrat:.1f}x vs 20d" if vrat is not None else "d1_vol=?"
             lines.append(f"  {'':9}  {rsi_str}  {macd_str}  {vol_str}  {vwap_str}")
             lines.append(f"  {'':9}  {ema9_cs}  {ema21_cs}  Cross={ecross_c}")
         except Exception as exc:

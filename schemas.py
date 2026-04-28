@@ -325,6 +325,9 @@ class TradeIdea:
     # Reallocate fields
     exit_symbol:          Optional[str]   = None
     entry_symbol:         Optional[str]   = None
+    # Scratchpad gate override — Claude must set both when buying off-watching symbols
+    override_scratchpad:  bool            = False
+    override_reason:      str             = ""
 
 
 @dataclass
@@ -1086,6 +1089,8 @@ def validate_claude_decision(data: dict) -> "ClaudeDecision":
                 option_strategy_hint=opt_hint,
                 exit_symbol=raw.get("exit_symbol"),
                 entry_symbol=raw.get("entry_symbol"),
+                override_scratchpad=bool(raw.get("override_scratchpad", False)),
+                override_reason=str(raw.get("override_reason", "")),
             ))
         except Exception as _exc:
             _log.warning("[SCHEMA] Skipping unparseable idea %r: %s", raw, _exc)

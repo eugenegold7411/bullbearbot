@@ -352,6 +352,25 @@ def format_positions_with_health(positions: list, equity: float) -> str:
         elif health["health"] == "WARNING":
             flag = "  !! WARNING: drawdown approaching stop threshold"
 
+        acct_pct = health["account_pct"]
+        if acct_pct > 20.0:
+            oversize_flag = (
+                f"\n             !! OVERSIZE — {acct_pct:.1f}% exceeds max tier ceiling 20%"
+                f" — TRIM or close regardless of tier"
+            )
+        elif acct_pct > 15.0:
+            oversize_flag = (
+                f"\n             !! OVERSIZE — {acct_pct:.1f}% exceeds standard core max 15%"
+                f" — confirm HIGH conviction core or TRIM"
+            )
+        elif acct_pct > 8.0:
+            oversize_flag = (
+                f"\n             !! OVERSIZE for dynamic/intraday tier — {acct_pct:.1f}% exceeds 8%"
+                f" — TRIM or confirm core tier intended"
+            )
+        else:
+            oversize_flag = ""
+
         rows.append(
             f"  {p.symbol:<9} qty={float(p.qty):>8.4f}  "
             f"entry=${float(p.avg_entry_price):>10.2f}  "
@@ -360,6 +379,7 @@ def format_positions_with_health(positions: list, equity: float) -> str:
             f"             account_pct={health['account_pct']:.1f}%  "
             f"drawdown={health['drawdown_pct']:.1f}%  health={health['health']}"
             + flag
+            + oversize_flag
         )
     return "\n".join(rows)
 
@@ -863,6 +883,11 @@ def format_thesis_ranking_section(
             "exit_consider":  "EXIT CONSIDER — weakest thesis",
         }
         lines.append(f"   Action: {action_map.get(action, action)}")
+        eda = ts.get("earnings_days_away")
+        if eda is not None and eda == 0:
+            lines.append("   *** [CATALYST CONSUMED — re-evaluate fresh] ***")
+        elif eda is not None and eda == 1:
+            lines.append("   ⚠ [EARNINGS TOMORROW — apply binary event exposure rule]")
         lines.append("")
 
     # Reallocation candidates — surface ALL positions scoring ≤4
@@ -1060,6 +1085,13 @@ def build_portfolio_intelligence(
             days_held=days_held,
             strategy_config=config,
         )
+        try:
+            from earnings_calendar_lookup import (
+                earnings_days_away as _eda,  # noqa: PLC0415
+            )
+            ts["earnings_days_away"] = _eda(pos.symbol)
+        except Exception:
+            ts["earnings_days_away"] = None
         thesis_scores.append(ts)
 
     return {

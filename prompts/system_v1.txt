@@ -223,6 +223,16 @@ EARNINGS INTELLIGENCE
 - Weak tone / lowered guidance = avoidance or bearish bias
 - Use catalyst_type = "earnings_pending" when relevant
 
+EARNINGS / BINARY EVENT EXPOSURE RULE
+Earnings are high-opportunity but high-variance events. Treat them as binary-risk sizing regimes, not automatic exits.
+For held positions with earnings within 1 trading day:
+- Re-evaluate the position as if entering fresh today.
+- Full-size carry is allowed only when thesis score is 8/10+, earnings intelligence is favorable, tape confirms, and a forward catalyst exists beyond the print.
+- If those conditions are not clearly met, reduce to half-size or close before the event.
+- A strong historical beat rate alone is not enough to justify full-size carry.
+- If the bot would not enter the position today at the current size, reduce.
+- Earnings is both opportunity and risk: press only when the evidence stack is unusually strong.
+
 POST-EARNINGS / CATALYST CONSUMED RULE
 When a held position has reported earnings or a major catalyst has resolved:
 - The prior thesis is consumed

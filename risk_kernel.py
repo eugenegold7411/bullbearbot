@@ -161,17 +161,59 @@ def _float_to_conviction(v: float, config: dict | None = None) -> Conviction:
     return Conviction.LOW
 
 
+def _get_margin_multiplier(conviction: float, symbol: str, config: dict) -> float:
+    """
+    Return margin multiplier for a given conviction score.
+
+    Tiers (from strategy_config.json margin_sizing_multiplier_tiers):
+        MEDIUM:      0.50 - 0.6499 → 1x
+        HIGH:        0.65 - 0.7249 → 2x
+        STRONG HIGH: 0.725 - 0.7999 → 3x
+        VERY HIGH:   0.80+          → 4x
+
+    Crypto cap: max_crypto_margin_multiplier (default 2.0)
+    Fallback: margin_sizing_multiplier (flat, default 4.0) when tiers absent.
+    _compute_sizing_basis applies the legacy HIGH/MEDIUM split on the fallback path.
+    """
+    params = _params(config)
+    tiers  = params.get("margin_sizing_multiplier_tiers")
+    if not tiers:
+        return float(params.get("margin_sizing_multiplier", 4.0))
+
+    multiplier = 1.0  # default — no boost for sub-medium
+    for _tier_name, tier_cfg in tiers.items():
+        tier_min = float(tier_cfg.get("min", 0))
+        tier_max = float(tier_cfg.get("max", 1))
+        tier_mult = float(tier_cfg.get("multiplier", 1.0))
+        if tier_min <= conviction <= tier_max:
+            multiplier = tier_mult
+            break
+
+    _CRYPTO_SYMBOLS = {"BTC/USD", "ETH/USD", "BTCUSD", "ETHUSD"}
+    if symbol.upper() in _CRYPTO_SYMBOLS:
+        crypto_cap = float(params.get("max_crypto_margin_multiplier", 2.0))
+        multiplier = min(multiplier, crypto_cap)
+
+    return multiplier
+
+
 def _compute_sizing_basis(
     snapshot: BrokerSnapshot,
     conviction: float,
     config: dict,
+    symbol: str = "",
 ) -> float:
     """
     Returns the dollar basis used for per-position sizing.
 
-    HIGH   (>= thresholds["high"], default 0.75) → min(buying_power, equity × multiplier)
-    MEDIUM (>= thresholds["medium"], default 0.50) → min(buying_power, equity × (multiplier / 2.0))
-    LOW   / margin_authorized=False              → equity only
+    When margin_sizing_multiplier_tiers present (tiered path):
+      conviction >= medium_thresh → min(bp, equity × _get_margin_multiplier())
+      conviction < medium_thresh  → equity
+
+    Legacy path (no tiers):
+      HIGH   (>= thresholds["high"], default 0.75) → min(buying_power, equity × multiplier)
+      MEDIUM (>= thresholds["medium"], default 0.50) → min(buying_power, equity × (multiplier / 2.0))
+      LOW   / margin_authorized=False              → equity only
 
     Always floors at equity (via bp safety floor) so sizing never goes below
     cash-account behavior. Used by size_position (per-position dollar budget).
@@ -179,18 +221,28 @@ def _compute_sizing_basis(
     equity = snapshot.equity
     bp     = max(snapshot.buying_power, equity)  # safety floor — never below equity
 
-    params     = config.get("parameters", {}) if config else {}
-    margin_ok  = bool(params.get("margin_authorized", False))
-    mult       = float(params.get("margin_sizing_multiplier", 1.0))
+    params    = config.get("parameters", {}) if config else {}
+    margin_ok = bool(params.get("margin_authorized", False))
     thresholds = params.get(
         "margin_sizing_conviction_thresholds",
         {"high": 0.75, "medium": 0.50},
     )
+    high_t = float(thresholds.get("high", 0.75))
+    med_t  = float(thresholds.get("medium", 0.50))
 
-    if margin_ok and conviction >= float(thresholds.get("high", 0.75)):
-        return min(bp, equity * mult)
-    if margin_ok and conviction >= float(thresholds.get("medium", 0.50)):
-        return min(bp, equity * (mult / 2.0))
+    if params.get("margin_sizing_multiplier_tiers"):
+        # Tiered path: per-conviction multiplier from _get_margin_multiplier()
+        if margin_ok and conviction >= med_t:
+            mult = _get_margin_multiplier(conviction, symbol, config)
+            return min(bp, equity * mult)
+    else:
+        # Legacy flat path: HIGH gets full mult, MEDIUM gets mult/2
+        flat = float(params.get("margin_sizing_multiplier", 1.0))
+        if margin_ok and conviction >= high_t:
+            return min(bp, equity * flat)
+        if margin_ok and conviction >= med_t:
+            return min(bp, equity * (flat / 2.0))
+
     return equity
 
 
@@ -218,7 +270,11 @@ def _effective_exposure_cap(
     thresholds = _params(cfg).get("margin_sizing_conviction_thresholds", {})
     high_t = float(thresholds.get("high", 0.75))
     med_t  = float(thresholds.get("medium", 0.50))
-    mult   = float(_params(cfg).get("margin_sizing_multiplier", 3.0))
+    _tiers = _params(cfg).get("margin_sizing_multiplier_tiers", {})
+    if _tiers:
+        mult = max(float(t.get("multiplier", 1.0)) for t in _tiers.values())
+    else:
+        mult = float(_params(cfg).get("margin_sizing_multiplier", 3.0))
 
     if conviction >= high_t:
         cap = equity * mult
@@ -411,7 +467,7 @@ def size_position(
 
     tier_str     = idea.tier.value
     equity       = snapshot.equity                                    # PDT/log/aggregate cap
-    sizing_basis = _compute_sizing_basis(snapshot, idea.conviction, config)
+    sizing_basis = _compute_sizing_basis(snapshot, idea.conviction, config, idea.symbol)
     crypto       = is_crypto(idea.symbol)
 
     log.info(

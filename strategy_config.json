@@ -48,6 +48,13 @@
     "session_tag_assert_non_unknown_before_route": true,
     "margin_authorized": true,
     "margin_sizing_multiplier": 4.0,
+    "margin_sizing_multiplier_tiers": {
+      "medium":      {"min": 0.50, "max": 0.6499, "multiplier": 1.0},
+      "high":        {"min": 0.65, "max": 0.7249, "multiplier": 2.0},
+      "strong_high": {"min": 0.725, "max": 0.7999, "multiplier": 3.0},
+      "very_high":   {"min": 0.80, "max": 1.0,    "multiplier": 4.0}
+    },
+    "max_crypto_margin_multiplier": 2.0,
     "margin_sizing_conviction_thresholds": {
       "high": 0.65,
       "medium": 0.5

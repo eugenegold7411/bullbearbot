@@ -64,7 +64,7 @@ _PA_DEFAULTS: dict = {
     "trim_score_threshold":            4,       # S7-F: raw thesis_score ceiling for TRIM (1–10 scale)
     "weight_deadband":                 0.02,    # 2% — min weight gap to trigger action
     "min_rebalance_notional":          500.0,   # $500 minimum to recommend
-    "max_recommendations_per_cycle":   3,
+    "max_recommendations_per_cycle":   5,
     "same_symbol_daily_cooldown_enabled": True,
     "same_day_replace_block_hours":    6.0,
 }
@@ -79,6 +79,20 @@ def _get_pa_config(cfg: dict) -> dict:
             merged[k] = v
     merged["enable_live"] = False   # hard-override: live disabled this sprint
     return merged
+
+
+def _trim_pct_for_score(score: int, pa_cfg: dict) -> float:
+    """Return trim fraction for thesis_score using trim_severity config table.
+
+    Iterates tiers in order; uses first tier where score <= score_max.
+    Falls back to flat 25% if trim_severity key is absent from pa_cfg.
+    """
+    severity = pa_cfg.get("trim_severity")
+    if severity:
+        for tier in severity:
+            if score <= int(tier["score_max"]):
+                return float(tier["trim_pct"])
+    return 0.25  # default fallback — flat 25%
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -330,14 +344,16 @@ def _decide_actions(
         # threshold: thesis_score <= trim_thresh (normalized <= 40 at default 4),
         # representing "exit_consider" or "reduce" territory in portfolio_intelligence
         if score <= trim_thresh and mv > min_notional:
-            trim_notional = round(mv * 0.25, 2)   # trim ~25% of position
+            # S7-I: graduated trim — severity scales with how weak the thesis is
+            _frac = _trim_pct_for_score(score, pa_cfg)
+            trim_notional = round(mv * _frac, 2)
             if trim_notional >= min_notional:
                 proposed.append({
                     "action":           "TRIM",
                     "symbol":           sym,
                     "reason":           (
                         f"thesis_score={score}/10 (normalized={norm}) — weak thesis; "
-                        f"consider trimming ~25% (${trim_notional:,.0f})"
+                        f"consider trimming ~{_frac:.0%} (${trim_notional:,.0f})"
                     ),
                     "score_gap":        None,
                     "target_weight_pct": tier_max,
@@ -354,7 +370,7 @@ def _decide_actions(
                 "action":           "ADD",
                 "symbol":           sym,
                 "reason":           (
-                    f"thesis_score={score}/10 — strong; room to add "
+                    f"thesis_score={score}/10 (conviction={norm/100:.2f}) — strong; room to add "
                     f"(acct_pct={acct_pct:.1%} < tier_max={tier_max:.0%}), "
                     f"available_for_new=${available_for_new:,.0f}"
                 ),

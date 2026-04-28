@@ -938,7 +938,7 @@ class TestConfigAndFlags:
         assert pa_cfg["trim_score_drop"]        == 10.0
         assert pa_cfg["weight_deadband"]        == 0.02
         assert pa_cfg["min_rebalance_notional"] == 500.0
-        assert pa_cfg["max_recommendations_per_cycle"] == 3
+        assert pa_cfg["max_recommendations_per_cycle"] == 5  # S7-G: raised from 3
         assert pa_cfg["same_symbol_daily_cooldown_enabled"] is True
         assert pa_cfg["same_day_replace_block_hours"] == 6.0
 

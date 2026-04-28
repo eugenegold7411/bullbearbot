@@ -69,6 +69,8 @@
     "min_dollar_risk_per_trade": 5.0,
     "vector_memory_status": "disabled \u2014 restore before confidence calibration is meaningful",
     "backtest_minimum_sample_before_recalibration": 30,
+    "add_conviction_gate": 0.65,
+    "_add_conviction_gate_note": "S7-H: minimum conviction required to ADD to an existing position. BUY on already-held symbol rejected below this threshold.",
     "research_pipeline_candidates": [
       {
         "name": "TradingAgents Multi-Agent LLM Framework",
@@ -273,9 +275,14 @@
     "trim_score_drop": 10,
     "weight_deadband": 0.02,
     "min_rebalance_notional": 500,
-    "max_recommendations_per_cycle": 3,
+    "max_recommendations_per_cycle": 5,
     "same_symbol_daily_cooldown_enabled": true,
     "same_day_replace_block_hours": 6,
-    "_note": "S6-ALLOCATOR: shadow mode only. enable_live must remain false until trim-only promotion sprint."
+    "trim_severity": [
+      {"score_max": 2, "trim_pct": 0.75},
+      {"score_max": 4, "trim_pct": 0.50},
+      {"score_max": 6, "trim_pct": 0.25}
+    ],
+    "_note": "S6-ALLOCATOR: shadow mode only. enable_live must remain false until trim-only promotion sprint. trim_severity added S7-I."
   }
 }

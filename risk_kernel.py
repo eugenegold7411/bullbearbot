@@ -435,6 +435,19 @@ def eligibility_check(
         if cat in blocked:
             return "buy requires a named catalyst (catalyst_tag_required_for_entry)"
 
+    # ── 7. ADD conviction gate ─────────────────────────────────────────────────
+    if act == AccountAction.BUY:
+        add_gate = float(_params(config).get("add_conviction_gate", 0.65))
+        existing = any(
+            p.symbol == normalize_symbol(idea.symbol) and p.qty > 0
+            for p in snapshot.positions
+        )
+        if existing and idea.conviction < add_gate:
+            return (
+                f"add to existing {idea.symbol} requires conviction >= {add_gate:.2f} "
+                f"(got {idea.conviction:.2f})"
+            )
+
     return None  # all checks passed
 
 

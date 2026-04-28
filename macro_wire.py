@@ -91,6 +91,8 @@ MODEL   = "claude-haiku-4-5-20251001"
 # ── RSS Sources ───────────────────────────────────────────────────────────────
 # Investing.com dropped 2026-04-25: floods feed with Form 13G/144 filing press
 # releases that score 0 and crowd out real macro signal.
+# Yahoo dropped 2026-04-27: consistently returns articles 30-32h old (outside
+# the 24h cutoff). Replaced with Bloomberg (0.5h fresh) and CNBC-Top (1.6h).
 RSS_FEEDS = [
     ("BBC",          "https://feeds.bbci.co.uk/news/business/rss.xml"),
     ("NYTimes",      "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"),
@@ -98,8 +100,15 @@ RSS_FEEDS = [
     ("MarketWatch",  "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines"),
     ("WSJ",          "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"),
     ("FT",           "https://www.ft.com/world?format=rss"),
-    ("Yahoo",        "https://finance.yahoo.com/news/rssindex"),
+    ("Bloomberg",    "https://feeds.bloomberg.com/markets/news.rss"),
+    ("CNBC-Top",     "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
 ]
+
+# Feeds that report syndicated/cached timestamps (can be 2–455 days stale).
+# Any article whose feed-reported age exceeds this threshold gets timestamp=now
+# so it passes the 24h recency cutoff instead of being silently discarded.
+# Affected: CNBC-Econ (~3d), MarketWatch (~320d), WSJ (~455d).
+_STALE_FEED_HOURS = 48
 
 
 # ── Filing-noise rejection filter ─────────────────────────────────────────────
@@ -269,13 +278,18 @@ def fetch_macro_wire() -> list:
                         published_ts = datetime(*pub_struct[:6], tzinfo=timezone.utc)
                     except Exception:
                         pass
+                _now = datetime.now(timezone.utc)
                 if published_ts is None:
-                    published_ts = datetime.now(timezone.utc)
+                    published_ts = _now
+                _ts_source = "feed"
+                if (_now - published_ts).total_seconds() / 3600 > _STALE_FEED_HOURS:
+                    published_ts = _now
+                    _ts_source   = "fallback_now"
 
                 if published_ts < cutoff:
                     continue
 
-                age_minutes = int((datetime.now(timezone.utc) - published_ts).total_seconds() / 60)
+                age_minutes = int((_now - published_ts).total_seconds() / 60)
                 score, tier, keywords = _score_article(headline, summary)
 
                 articles.append({
@@ -285,6 +299,7 @@ def fetch_macro_wire() -> list:
                     "link":             link,
                     "published_at":     published_ts.isoformat(),
                     "age_minutes":      age_minutes,
+                    "timestamp_source": _ts_source,
                     "impact_score":     score,
                     "keyword_tier":     tier,
                     "keywords_matched": keywords,

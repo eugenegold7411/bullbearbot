@@ -438,6 +438,10 @@ def get_earnings_intel_section(symbol: str, days_to_earnings: int) -> str:
         if not transcript:
             return f"  {symbol}: No earnings transcript available — monitor for guidance."
 
+        if len(transcript) < 5000:
+            log.debug("[EARNINGS] %s: short filing (%d chars) — skipping Claude analysis", symbol, len(transcript))
+            return f"  {symbol}: Short press release only — full transcript not yet available."
+
         analysis = analyze_earnings_transcript(symbol, transcript)
         if not analysis:
             return f"  {symbol}: Transcript fetched but analysis failed."

@@ -88,8 +88,16 @@ class TestMacroWireFeeds:
     def test_new_feeds_present(self):
         from macro_wire import RSS_FEEDS
         sources = {name for name, _ in RSS_FEEDS}
-        for expected in ("CNBC-Econ", "MarketWatch", "WSJ", "FT", "Yahoo"):
+        # CNBC-Econ/MarketWatch/WSJ/FT retained; Bloomberg+CNBC-Top added 2026-04-27
+        for expected in ("CNBC-Econ", "MarketWatch", "WSJ", "FT", "Bloomberg", "CNBC-Top"):
             assert expected in sources, f"{expected} missing from RSS_FEEDS"
+
+    def test_yahoo_general_removed(self):
+        """Yahoo general feed dropped 2026-04-27 — consistently 30-32h stale."""
+        from macro_wire import RSS_FEEDS
+        urls = [u for _, u in RSS_FEEDS]
+        assert not any("finance.yahoo.com/news/rssindex" in u for u in urls), \
+            "Yahoo general news RSS must be removed from RSS_FEEDS"
 
     def test_legacy_feeds_retained(self):
         from macro_wire import RSS_FEEDS

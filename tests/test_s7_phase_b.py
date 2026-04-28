@@ -9,7 +9,6 @@ S7-F: Trim score threshold reads from config instead of hardcoded
 import unittest
 from unittest.mock import MagicMock
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # S7-P — Position Cap Headroom Fix
 # ─────────────────────────────────────────────────────────────────────────────
@@ -350,7 +349,6 @@ class TestAllocatorSectionWiring(unittest.TestCase):
     def test_build_user_prompt_receives_allocator_section(self):
         """build_user_prompt() accepts allocator_section and injects it into FULL prompt."""
         from bot_stage3_decision import build_user_prompt
-        from unittest.mock import MagicMock
 
         acct = MagicMock()
         acct.equity         = 100_000.0
@@ -375,7 +373,6 @@ class TestAllocatorSectionWiring(unittest.TestCase):
         """When allocator_section is the fallback string, it still appears in FULL prompt."""
         from bot_stage3_decision import build_user_prompt
         from portfolio_allocator import format_allocator_section
-        from unittest.mock import MagicMock
 
         acct = MagicMock()
         acct.equity         = 100_000.0

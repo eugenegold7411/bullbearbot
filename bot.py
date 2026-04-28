@@ -43,8 +43,8 @@ from bot_stage3_decision import (
     is_claude_trading_window,
 )
 from bot_stage4_execution import debate_trade, fundamental_check
-from portfolio_allocator import format_allocator_section as _format_allocator_section
 from log_setup import get_logger, log_trade
+from portfolio_allocator import format_allocator_section as _format_allocator_section
 from schemas import (
     BrokerAction as _BrokerAction,
 )

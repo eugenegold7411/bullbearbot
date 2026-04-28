@@ -138,21 +138,42 @@ def _load_overnight_digest() -> str:
 
 
 def _get_held_symbols() -> set[str]:
-    """Return set of symbols currently held, from the most recent decision record."""
+    """Return set of symbols currently held in Account 1.
+
+    Strategy:
+    1. Scan the last 50 decisions for any that contain hold entries
+       (market-session decisions track holds; extended/overnight do not).
+    2. If none found (e.g. at 4 AM before the first market cycle), fall back
+       to reading live Alpaca positions — non-fatal.
+    """
+    # Try decisions.json first (no network call)
     try:
         dec_path = _BASE_DIR / "memory" / "decisions.json"
-        if not dec_path.exists():
-            return set()
-        data = json.loads(dec_path.read_text())
-        if not isinstance(data, list) or not data:
-            return set()
-        last = data[-1]
-        held: set[str] = set()
-        for h in last.get("holds", []):
-            sym = h.get("symbol", "") if isinstance(h, dict) else str(h)
-            if sym:
-                held.add(sym)
-        return held
+        if dec_path.exists():
+            data = json.loads(dec_path.read_text())
+            if isinstance(data, list) and data:
+                for d in reversed(data[-50:]):
+                    holds = d.get("holds", [])
+                    if holds:
+                        return {
+                            (h.get("symbol", "") if isinstance(h, dict) else str(h))
+                            for h in holds
+                            if h
+                        }
+    except Exception:
+        pass
+
+    # Fallback: live Alpaca positions (non-fatal; used at 4 AM when no recent market decisions)
+    try:
+        from dotenv import load_dotenv as _lde  # noqa: PLC0415
+        _lde()
+        from alpaca.trading.client import TradingClient  # noqa: PLC0415
+        _a1 = TradingClient(
+            os.getenv("ALPACA_API_KEY"),
+            os.getenv("ALPACA_SECRET_KEY"),
+            paper=True,
+        )
+        return {p.symbol for p in _a1.get_all_positions()}
     except Exception:
         return set()
 

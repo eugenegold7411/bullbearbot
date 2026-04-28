@@ -91,6 +91,9 @@ def _send_sms(message: str) -> None:
         log.error("SMS failed: %s", exc)
 
 
+from notifications import build_order_email_html as _build_order_email_html
+
+
 def _send_email_alert(subject: str, body: str) -> None:
     """Send an alert email via SendGrid. No-op if not configured. Non-fatal."""
     api_key    = os.getenv("SENDGRID_API_KEY")
@@ -755,22 +758,36 @@ def run_cycle(
         for r in results:
             print(r)
             if r.status == "submitted":
-                _send_sms(
-                    f"BOT ORDER: {r.action.upper()} {r.symbol}  "
-                    f"order_id={r.order_id}"
+                _exec_action = next(
+                    (a for a in actions if a.get("symbol") == r.symbol), {}
                 )
-                _order_html = (
-                    "<html><body style='font-family:Arial,sans-serif;max-width:700px'>"
-                    f"<h2>Order Submitted: {r.action.upper()} {r.symbol}</h2>"
-                    "<table style='border-collapse:collapse;width:100%'>"
-                    f"<tr><td style='padding:4px 8px'><strong>Action</strong></td><td>{r.action.upper()}</td></tr>"
-                    f"<tr><td style='padding:4px 8px'><strong>Symbol</strong></td><td>{r.symbol}</td></tr>"
-                    f"<tr><td style='padding:4px 8px'><strong>Order ID</strong></td><td>{r.order_id}</td></tr>"
-                    f"<tr><td style='padding:4px 8px'><strong>Fill price</strong></td><td>{r.fill_price}</td></tr>"
-                    "</table>"
-                    "</body></html>"
+                _idea_conviction: float | None = None
+                if claude_decision:
+                    _idea = next(
+                        (i for i in (claude_decision.ideas or [])
+                         if getattr(i, "symbol", None) == r.symbol), None
+                    )
+                    if _idea is not None:
+                        _idea_conviction = getattr(_idea, "conviction", None)
+
+                _order_html = _build_order_email_html(
+                    r, _exec_action, signal_scores_obj,
+                    _idea_conviction, state.equity, reasoning,
                 )
                 _send_email_alert(f"BullBearBot Order: {r.action.upper()} {r.symbol}", _order_html)
+                if publisher:
+                    try:
+                        publisher.send_trade_alert(
+                            action=r.action,
+                            symbol=r.symbol,
+                            qty=r.qty,
+                            price=r.fill_price,
+                            conviction=_idea_conviction,
+                            catalyst=_exec_action.get("catalyst"),
+                            equity=state.equity,
+                        )
+                    except Exception as _ta_exc:
+                        log.debug("send_trade_alert failed (non-fatal): %s", _ta_exc)
                 try:
                     from attribution import (
                         log_attribution_event as _log_attr,  # noqa: PLC0415

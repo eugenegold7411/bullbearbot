@@ -1268,6 +1268,67 @@ Rules:
 
     # ── Direct alert ─────────────────────────────────────────────────────────
 
+    _trade_alert_cache: dict[str, float] = {}
+    _TRADE_ALERT_DEDUP_SECS: float = 30 * 60
+
+    _TRADE_EMOJI: dict[str, str] = {
+        "buy":  "🟢",
+        "sell": "🔴",
+        "trim": "🟡",
+        "add":  "🔵",
+    }
+
+    def send_trade_alert(
+        self,
+        action: str,
+        symbol: str,
+        qty: float | None,
+        price: float | None,
+        conviction: float | None,
+        catalyst: str | None,
+        equity: float | None,
+    ) -> bool:
+        """Send a concise WhatsApp trade execution alert. Returns True on success.
+
+        Deduplicates per symbol within _TRADE_ALERT_DEDUP_SECS (independent of
+        halt alert dedup).
+        """
+        now = time.time()
+        last = self._trade_alert_cache.get(symbol, 0.0)
+        if now - last < self._TRADE_ALERT_DEDUP_SECS:
+            log.debug(
+                "trade_publisher: send_trade_alert dedup — %s suppressed (%.0fs ago)",
+                symbol, now - last,
+            )
+            return False
+
+        emoji = self._TRADE_EMOJI.get(action.lower(), "⚪")
+        qty_str   = f"{int(qty)} shares" if qty is not None else "n/a shares"
+        price_str = f"@ ${price:.2f}" if price is not None else "@ n/a"
+        conv_str  = f"conviction={conviction:.2f}" if conviction is not None else "conviction=n/a"
+
+        thesis = ""
+        if catalyst:
+            # Trim to one sentence (first sentence, max 120 chars)
+            first_sentence = catalyst.split(";")[0].split(".")[0].strip()
+            thesis = f" | thesis: {first_sentence[:120]}"
+
+        size_str = ""
+        if qty is not None and price is not None and equity:
+            size_usd = qty * price
+            pct      = size_usd / equity * 100
+            size_str = f" | ${size_usd:,.0f} ({pct:.1f}% portfolio)"
+
+        msg = (
+            f"{emoji} {action.upper()} {symbol} | {qty_str} {price_str} | "
+            f"{conv_str}{thesis}{size_str}"
+        )
+
+        ok = self.send_alert(msg)
+        if ok:
+            self._trade_alert_cache[symbol] = now
+        return ok
+
     def send_alert(self, message: str) -> bool:
         """Send a WhatsApp alert message directly via Twilio. Returns True on success.
 

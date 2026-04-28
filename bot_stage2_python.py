@@ -115,10 +115,18 @@ def _prepare_cycle_cache() -> None:
         log.debug("[L2] orb_candidates read failed: %s", exc)
         _CYCLE_CACHE["orb_by_sym"] = {}
 
-    # Earnings calendar → days-away map
+    # Earnings calendar → {sym: days_away_int} map
+    # load_calendar_map() returns {sym: entry_dict}; convert to int so score_symbol_python
+    # can compare eda <= 2 directly (guards against dict-vs-int TypeError).
     try:
-        from earnings_calendar_lookup import load_calendar_map  # noqa: PLC0415
-        _CYCLE_CACHE["earnings_map"] = load_calendar_map()
+        from earnings_calendar_lookup import (  # noqa: PLC0415
+            earnings_days_away,
+            load_calendar_map,
+        )
+        raw_cal = load_calendar_map()
+        _CYCLE_CACHE["earnings_map"] = {
+            sym: earnings_days_away(sym, raw_cal) for sym in raw_cal
+        }
     except Exception as exc:
         log.debug("[L2] earnings_map read failed: %s", exc)
         _CYCLE_CACHE["earnings_map"] = {}

@@ -340,6 +340,15 @@ def backfill_forward_returns(days_back: int = 30) -> int:
                                 rec["correct_3d"] = bt_rec.get("correct_3d")
                                 rec["correct_5d"] = bt_rec.get("correct_5d")
                                 updated += 1
+                                # Mirror resolved outcome to ChromaDB vector store
+                                if (rec.get("correct_1d") is not None
+                                        and rec.get("return_1d") is not None
+                                        and rec.get("decision_id")):
+                                    _update_chroma_outcome(
+                                        rec["decision_id"],
+                                        bool(rec["correct_1d"]),
+                                        float(rec["return_1d"]),
+                                    )
                         except Exception:
                             pass
                 records.append(rec)
@@ -587,3 +596,53 @@ def _maybe_float(v) -> Optional[float]:
         return float(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ChromaDB outcome bridge
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DECISIONS_FILE = Path("memory/decisions.json")
+
+def _build_decision_to_vector_lookup() -> dict[str, str]:
+    """
+    Read memory/decisions.json and return {decision_id: vector_id} mapping.
+
+    Used by _update_chroma_outcome() to bridge attribution IDs to ChromaDB IDs.
+    Returns {} on any failure — always non-fatal.
+    """
+    try:
+        if not _DECISIONS_FILE.exists():
+            return {}
+        records = json.loads(_DECISIONS_FILE.read_text())
+        return {
+            r["decision_id"]: r["vector_id"]
+            for r in records
+            if r.get("decision_id") and r.get("vector_id")
+        }
+    except Exception as exc:
+        log.debug("[OUTCOMES] _build_decision_to_vector_lookup failed: %s", exc)
+        return {}
+
+
+def _update_chroma_outcome(decision_id: str, correct: bool, return_val: float) -> None:
+    """
+    Update the ChromaDB vector record's outcome + pnl when a forward return is resolved.
+
+    Looks up decision_id → vector_id in memory/decisions.json, then calls
+    trade_memory.update_trade_outcome(). Non-fatal.
+    """
+    try:
+        import trade_memory as tm  # noqa: PLC0415
+        lookup = _build_decision_to_vector_lookup()
+        vector_id = lookup.get(decision_id)
+        if not vector_id:
+            return
+        outcome = "win" if correct else "loss"
+        tm.update_trade_outcome(vector_id, outcome, float(return_val))
+        log.debug(
+            "[OUTCOMES] ChromaDB outcome updated: %s → %s outcome=%s pnl=%.4f",
+            decision_id, vector_id, outcome, return_val,
+        )
+    except Exception as exc:
+        log.debug("[OUTCOMES] _update_chroma_outcome failed (non-fatal): %s", exc)

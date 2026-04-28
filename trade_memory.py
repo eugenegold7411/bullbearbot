@@ -468,9 +468,12 @@ def save_trade_memory(
         decision_id = datetime.now(timezone.utc).strftime("trade_%Y%m%d_%H%M%S_%f")
         document    = _build_document(decision, market_conditions, session_tier)
 
-        actions_list = decision.get("actions", [])
-        symbols_str  = ",".join(
-            a.get("symbol", "") for a in actions_list if a.get("symbol")
+        # Support both new format (ideas[]) and legacy format (actions[])
+        ideas_list = decision.get("ideas") or decision.get("actions") or []
+        symbols_str = ",".join(
+            a.get("symbol") or a.get("ticker") or ""
+            for a in ideas_list
+            if a.get("symbol") or a.get("ticker")
         )
 
         vix_raw = market_conditions.get("vix", 0.0)
@@ -482,8 +485,12 @@ def save_trade_memory(
         metadata = {
             "ts":        datetime.now(timezone.utc).isoformat(),
             "session":   session_tier,
-            "regime":    str(decision.get("regime", "unknown")),
-            "n_actions": int(len(actions_list)),
+            "regime":    str(
+                decision.get("regime_view")
+                or decision.get("regime")
+                or "unknown"
+            ),
+            "n_actions": int(len(ideas_list)),
             "vix":       vix_float,
             "outcome":   "pending",
             "pnl":       0.0,
@@ -496,7 +503,7 @@ def save_trade_memory(
             metadatas=[metadata],
             ids=[decision_id],
         )
-        log.debug("trade_memory: saved %s to short tier (%d actions)", decision_id, len(actions_list))
+        log.debug("trade_memory: saved %s to short tier (%d actions)", decision_id, len(ideas_list))
 
         # Lazily promote aged records across tiers
         _maybe_promote_aged_records()

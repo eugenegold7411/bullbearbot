@@ -677,6 +677,12 @@ def detect_protection_divergence(
             raw_type = str(getattr(o, "order_type", "")).lower()
             order_type = raw_type.split(".")[-1]
             if order_type in ("stop", "stop_limit", "trailing_stop"):
+                # PENDING_REPLACE = in-flight replacement, not an independent stop.
+                # Counting it causes false duplicate_exit events when the trail-stop
+                # replace() call fails and exit_manager places a new stop alongside it.
+                raw_status = str(getattr(o, "status", "")).lower().split(".")[-1]
+                if raw_status == "pending_replace":
+                    continue
                 sym = o.symbol
                 if sym not in stop_map:
                     stop_map[sym] = []
@@ -718,28 +724,39 @@ def detect_protection_divergence(
                 events.append(evt)
 
             elif len(pos_stops) > 1:
-                # Duplicate stops
-                severity, scope, recoverability = classify_divergence(
-                    "duplicate_exit", sym, account,
-                    position_size_usd=size_usd,
+                # Multiple stops — only flag as duplicate if total stop qty
+                # over-covers the position. Split-lot stops (e.g. two orders for
+                # different tranches whose qty sums to the position qty) are valid.
+                total_stop_qty = sum(
+                    float(getattr(s, "qty", 0) or 0) for s in pos_stops
                 )
-                evt = DivergenceEvent(
-                    event_id=generate_event_id(),
-                    timestamp=now,
-                    account=account,
-                    symbol=sym,
-                    event_type="duplicate_exit",
-                    severity=severity,
-                    scope=scope,
-                    scope_id=sym,
-                    paper_expected={"stop_count": 1},
-                    live_observed={"stop_count": len(pos_stops)},
-                    delta={"extra_stops": len(pos_stops) - 1},
-                    recoverability=recoverability,
-                    risk_impact="low",
-                )
-                log_divergence_event(evt)
-                events.append(evt)
+                position_qty = float(getattr(pos, "qty", 0) or 0)
+                if total_stop_qty <= position_qty:
+                    # Stops partition the position — not a duplicate
+                    pass
+                else:
+                    # Genuine over-coverage
+                    severity, scope, recoverability = classify_divergence(
+                        "duplicate_exit", sym, account,
+                        position_size_usd=size_usd,
+                    )
+                    evt = DivergenceEvent(
+                        event_id=generate_event_id(),
+                        timestamp=now,
+                        account=account,
+                        symbol=sym,
+                        event_type="duplicate_exit",
+                        severity=severity,
+                        scope=scope,
+                        scope_id=sym,
+                        paper_expected={"stop_count": 1},
+                        live_observed={"stop_count": len(pos_stops)},
+                        delta={"extra_stops": len(pos_stops) - 1},
+                        recoverability=recoverability,
+                        risk_impact="low",
+                    )
+                    log_divergence_event(evt)
+                    events.append(evt)
 
     except Exception as e:
         log.warning("[DIV] detect_protection_divergence failed: %s", e)

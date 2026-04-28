@@ -74,21 +74,23 @@ log = get_logger(__name__)
 # ── Twilio SMS ────────────────────────────────────────────────────────────────
 
 def _send_sms(message: str) -> None:
+    # TWILIO_FROM_NUMBER (+66 Thai number) caused error 21659 (country mismatch).
+    # Route through WhatsApp instead — WHATSAPP_FROM/WHATSAPP_TO are confirmed working.
     sid   = os.getenv("TWILIO_ACCOUNT_SID")
     token = os.getenv("TWILIO_AUTH_TOKEN")
-    from_ = os.getenv("TWILIO_FROM_NUMBER")
-    to    = os.getenv("TWILIO_TO_NUMBER")
+    from_ = os.getenv("WHATSAPP_FROM")
+    to    = os.getenv("WHATSAPP_TO")
 
     if not all([sid, token, from_, to]):
-        log.warning("Twilio not configured — SMS skipped: %s", message)
+        log.warning("Twilio not configured — alert skipped: %s", message)
         return
 
     try:
         from twilio.rest import Client
         Client(sid, token).messages.create(body=message, from_=from_, to=to)
-        log.info("SMS sent: %s", message)
+        log.info("WhatsApp alert sent: %s", message)
     except Exception as exc:
-        log.error("SMS failed: %s", exc)
+        log.error("WhatsApp alert failed: %s", exc)
 
 
 from notifications import build_order_email_html as _build_order_email_html

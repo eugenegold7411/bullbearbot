@@ -150,25 +150,31 @@ def save_decision(claude_decision: dict, session_tier: str,
     """
     decisions = _load_decisions()
 
-    actions = claude_decision.get("actions", [])
+    # Support both new format (ideas[]) and legacy format (actions[])
+    _raw_ideas = claude_decision.get("ideas") or claude_decision.get("actions") or []
     _strategy = _get_active_strategy()
+    # Map new-format intent values to legacy action strings for outcome tracking
+    _INTENT_TO_ACTION = {
+        "enter_long": "buy", "enter_short": "sell",
+        "close": "sell", "reduce": "sell",
+    }
     record = {
         "ts":          datetime.now(timezone.utc).isoformat(),
         "session":     session_tier,
         "regime":      claude_decision.get("regime_view") or claude_decision.get("regime", "unknown"),
         "regime_score": claude_decision.get("regime_score"),  # T-007: from Stage 1 via bot.py injection
         "reasoning":   claude_decision.get("reasoning", ""),
-        "n_actions":   len(actions),
+        "n_actions":   len(_raw_ideas),
         "vector_id":   vector_id,       # links to ChromaDB record for outcome updates
         "decision_id": decision_id,     # links to attribution log
         "actions": [
             {
-                "action":        a.get("action"),
+                "action":        _INTENT_TO_ACTION.get(a.get("intent", ""), a.get("action")),
                 "symbol":        a.get("symbol"),
                 "qty":           a.get("qty"),
                 "stop_loss":     a.get("stop_loss"),
                 "take_profit":   a.get("take_profit"),
-                "tier":          a.get("tier", "core"),
+                "tier":          a.get("tier_preference") or a.get("tier", "core"),
                 "catalyst":      a.get("catalyst"),
                 "catalyst_type": classify_catalyst(a.get("catalyst") or "").value,  # T-022
                 "sector_signal": a.get("sector_signal"),
@@ -176,7 +182,7 @@ def save_decision(claude_decision: dict, session_tier: str,
                 "strategy":      _strategy,                                   # T-008
                 "sector":        _SECTOR_MAP.get(a.get("symbol", ""), "unknown"),  # T-008
                 # options fields
-                "option_strategy": a.get("option_strategy"),
+                "option_strategy": a.get("option_strategy_hint") or a.get("option_strategy"),
                 "expiration":    a.get("expiration"),
                 "long_strike":   a.get("long_strike"),
                 "short_strike":  a.get("short_strike"),
@@ -184,7 +190,7 @@ def save_decision(claude_decision: dict, session_tier: str,
                 "outcome":       None,
                 "pnl":           None,
             }
-            for a in actions
+            for a in _raw_ideas
         ],
     }
     decisions.append(record)

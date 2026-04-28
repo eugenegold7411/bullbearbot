@@ -82,8 +82,110 @@ lxml requirement: lxml>=4.9,<6 in requirements.txt
 
 ---
 
-## Phase B — catalyst_type alignment (PENDING)
+## Phase B — catalyst_type alignment (COMPLETE 2026-04-27)
 
-## Phase C — Yahoo symbol RSS + Finnhub news cache (PENDING)
+### Changes Made
 
-## Phase D — Morning brief earnings integration (PENDING)
+**`semantic_labels.py`:**
+- `SEMANTIC_LABELS_VERSION` bumped 1 → 2
+- `EARNINGS_PENDING = "earnings_pending"` added to `CatalystType` enum (after `CITRINI_THESIS`, before `UNKNOWN`)
+- Total: 20 values — exactly at hard cap
+
+**`docs/taxonomy_v1.0.0.md`:**
+- Version bumped to v1.1.0 with changelog line
+- Full `EARNINGS_PENDING` definition block added (definition, 3 positive examples, 2 boundary examples, 1 not-this example)
+- `earnings_pending` row added to Dimension 1 table
+
+**`catalyst_normalizer.py`:**
+- Added `CatalystType.EARNINGS_PENDING.value` synonyms: `["earnings pending", "earnings in", "pre-earnings", "pre earnings", "reports earnings", "earnings upcoming", "earnings week", "earnings tomorrow"]`
+
+**`bot_stage2_signal.py`:**
+- `_L3_SYSTEM` updated: `catalyst_type` field added to JSON schema with all 20 valid taxonomy values and instruction 5 (self-classify using ONLY the taxonomy list)
+- Added `_get_macro_wire_hits_for_symbol(sym)` — reads `data/macro_wire/live_cache.json`, filters by `affected_symbols`, returns ≤2 headlines
+- Updated `_format_l2_for_l3()` to inject `MACRO_WIRE: headline1 | headline2` line
+- Updated `_run_l3_synthesis()`: uses Haiku's returned `catalyst_type` directly if valid known value; falls back to `classify_catalyst()` only when Haiku returns `"unknown"` or field missing
+
+**`tests/test_sprint5_phase_b.py` (new):**
+- 19 tests (PB-01 through PB-10)
+
+### Verification
+
+```
+tests/test_sprint5_phase_b.py: 19/19 PASS
+Full suite: 1575 PASS (was 1545, +30 combining B+partial C)
+```
+
+---
+
+## Phase C — Yahoo symbol RSS + Finnhub news cache (COMPLETE 2026-04-27)
+
+### Changes Made
+
+**`data_warehouse.py`:**
+- Added `_YAHOO_SYMBOL_RSS = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={SYMBOL}&region=US&lang=en-US"` constant
+- Added `_SYMBOL_NEWS_TTL_MIN = 30` constant (30-minute per-symbol cache TTL)
+- Added `refresh_yahoo_symbol_news(symbols)`: skips crypto (`/` in symbol), respects 30-min TTL, saves `data/news/{SYM}_yahoo_news.json` with `{symbol, fetched_at, articles[{headline, source}]}`
+- Added `refresh_finnhub_news(symbols)`: gated by `feature_flags.is_enabled("enable_finnhub_news")`, saves `{SYM}_finnhub_news.json`
+- `run_full_refresh()`: gains non-fatal `refresh_yahoo_symbol_news(stock_etfs)` call
+
+**`bot_stage2_signal.py`:**
+- Added `_load_cached_symbol_news(sym)`: reads `{sym}_yahoo_news.json` + `{sym}_finnhub_news.json` from `data/news/`, caps combined output at 3 headlines
+- Updated `_format_l2_for_l3()`: injects `SYMBOL_NEWS: headline1 | headline2` line when cache non-empty; omits line when empty
+
+**`tests/test_sprint5_phase_c.py` (new):**
+- 11 tests (PC-01 through PC-10)
+
+### Verification
+
+```
+tests/test_sprint5_phase_c.py: 11/11 PASS
+Full suite: 1600 PASS (was 1575)
+```
+
+---
+
+## Phase D — Morning brief earnings integration (COMPLETE 2026-04-27)
+
+### Changes Made
+
+**`morning_brief.py`:**
+- Added `_build_pre_earnings_intel_section()` helper:
+  - Loads earnings calendar via `load_earnings_calendar()`
+  - Filters to symbols with `days_to_earnings ≤ 5`
+  - Calls `get_earnings_intel_section(sym, n_days)` per symbol (from `earnings_intel.py`)
+  - Caps at 3 symbols to control cost/latency
+  - Non-fatal — returns `""` on any exception
+- Wired into `_load_context()`: `_build_pre_earnings_intel_section()` result appended as `=== PRE-EARNINGS INTELLIGENCE ===` section (placed before insider activity, after earnings calendar)
+
+**`prompts/system_v1.txt`:**
+- `EARNINGS INTELLIGENCE` section (lines 192-198) updated:
+  - References the morning brief `PRE-EARNINGS INTELLIGENCE` section explicitly
+  - Notes it contains transcript analysis (signal, management tone, guidance detail, key risks) for symbols ≤ 5 days from earnings
+  - Added: `catalyst_type for these setups should be "earnings_pending"`
+
+**`tests/test_sprint5_phase_d.py` (new):**
+- 10 tests (PD-01 through PD-10)
+
+### Verification
+
+```
+tests/test_sprint5_phase_d.py: 10/10 PASS
+All Sprint 5 phases (A+B+C+D): 40/40 PASS
+Full suite (server): 1600 PASS — 0 regressions
+Service: Active (running) — confirmed post-deploy
+```
+
+---
+
+## Summary
+
+| Phase | Focus | Tests added | Status |
+|-------|-------|-------------|--------|
+| A | RSS stale fallback, feed rotation, earnings_intel guard | 11 | ✅ COMPLETE |
+| B | Haiku catalyst_type self-classification, EARNINGS_PENDING enum, macro wire injection | 19 | ✅ COMPLETE |
+| C | Yahoo symbol RSS cache, Finnhub news cache, SYMBOL_NEWS in L3 | 11 | ✅ COMPLETE |
+| D | Pre-earnings transcript analysis in morning brief | 10 | ✅ COMPLETE |
+| **Total** | | **51** | ✅ |
+
+**Final test count: 1600** (was 1575 pre-Sprint 5)
+**Git HEAD:** `9441117`

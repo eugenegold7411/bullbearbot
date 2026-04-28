@@ -268,6 +268,135 @@ def refresh_news(symbols: list[str]) -> None:
             log.warning("News refresh batch error: %s", exc)
 
 
+# ── Symbol-specific news caches ───────────────────────────────────────────────
+
+_YAHOO_SYMBOL_RSS = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+_SYMBOL_NEWS_TTL_MIN = 30  # minutes — skip re-fetch if cache is fresher than this
+
+
+def refresh_yahoo_symbol_news(symbols: list[str]) -> None:
+    """Fetch Yahoo Finance RSS headlines per symbol, save to data/news/{SYM}_yahoo_news.json.
+
+    Respects a 30-minute TTL so repeated intra-day calls are cheap.
+    Skips crypto ("/") symbols. Non-fatal per symbol.
+    """
+    import feedparser  # noqa: PLC0415 — optional, same dep as macro_wire
+
+    NEWS_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    cutoff_stale = now - timedelta(minutes=_SYMBOL_NEWS_TTL_MIN)
+
+    for sym in symbols:
+        if "/" in sym:
+            continue
+        out_path = NEWS_DIR / f"{sym}_yahoo_news.json"
+        # TTL check — skip if cache is fresh enough
+        try:
+            if out_path.exists():
+                cached = json.loads(out_path.read_text())
+                fetched_at_str = cached.get("fetched_at", "")
+                if fetched_at_str:
+                    fetched_at = datetime.fromisoformat(fetched_at_str)
+                    if fetched_at.tzinfo is None:
+                        fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+                    if fetched_at > cutoff_stale:
+                        continue
+        except Exception:
+            pass
+
+        try:
+            url  = _YAHOO_SYMBOL_RSS.format(symbol=sym)
+            feed = feedparser.parse(url)
+            articles = []
+            for entry in feed.entries[:20]:
+                headline = (entry.get("title") or "").strip()
+                if not headline:
+                    continue
+                pub = entry.get("published_parsed") or entry.get("updated_parsed")
+                pub_str = ""
+                if pub:
+                    try:
+                        pub_str = datetime(*pub[:6], tzinfo=timezone.utc).isoformat()
+                    except Exception:
+                        pass
+                articles.append({
+                    "headline":    headline,
+                    "url":         entry.get("link", ""),
+                    "published_at": pub_str,
+                    "source":      "yahoo_rss",
+                })
+            _save_json(out_path, {
+                "symbol":     sym,
+                "fetched_at": now.isoformat(),
+                "articles":   articles,
+            })
+            log.debug("Yahoo symbol news: %s → %d articles", sym, len(articles))
+        except Exception as exc:
+            log.debug("Yahoo symbol news fetch failed for %s: %s", sym, exc)
+
+
+def refresh_finnhub_news(symbols: list[str]) -> None:
+    """Fetch Finnhub company news per symbol, save to data/news/{SYM}_finnhub_news.json.
+
+    Gated by feature flag `enable_finnhub_news` (default False).
+    Requires FINNHUB_API_KEY. Non-fatal per symbol.
+    """
+    try:
+        from feature_flags import is_enabled  # noqa: PLC0415
+        if not is_enabled("enable_finnhub_news"):
+            log.debug("refresh_finnhub_news: feature flag enable_finnhub_news is off — skipping")
+            return
+    except Exception:
+        return
+
+    finnhub_key = os.getenv("FINNHUB_API_KEY")
+    if not finnhub_key:
+        log.debug("refresh_finnhub_news: FINNHUB_API_KEY not set — skipping")
+        return
+
+    NEWS_DIR.mkdir(parents=True, exist_ok=True)
+    today      = datetime.now(ET).date()
+    from_date  = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+    to_date    = today.strftime("%Y-%m-%d")
+
+    for sym in symbols:
+        if "/" in sym:
+            continue
+        try:
+            url  = "https://finnhub.io/api/v1/company-news"
+            resp = requests.get(
+                url,
+                params={"symbol": sym, "from": from_date, "to": to_date, "token": finnhub_key},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                log.debug("Finnhub news %s: HTTP %d", sym, resp.status_code)
+                continue
+            raw = resp.json()
+            if not isinstance(raw, list):
+                continue
+            articles = [
+                {
+                    "headline":    a.get("headline", ""),
+                    "url":         a.get("url", ""),
+                    "published_at": datetime.fromtimestamp(
+                        a.get("datetime", 0), tz=timezone.utc
+                    ).isoformat() if a.get("datetime") else "",
+                    "source":      "finnhub",
+                }
+                for a in raw[:50]
+                if a.get("headline")
+            ]
+            _save_json(NEWS_DIR / f"{sym}_finnhub_news.json", {
+                "symbol":     sym,
+                "fetched_at": datetime.now(ET).isoformat(),
+                "articles":   articles,
+            })
+            log.debug("Finnhub news: %s → %d articles", sym, len(articles))
+        except Exception as exc:
+            log.debug("Finnhub news fetch failed for %s: %s", sym, exc)
+
+
 # ── Market snapshots ──────────────────────────────────────────────────────────
 
 def refresh_sector_performance() -> None:
@@ -957,6 +1086,10 @@ def run_full_refresh(target_symbol: str | None = None) -> None:
         log.warning("Economic calendar refresh failed (non-fatal): %s", _ec_exc)
     refresh_fundamentals(stock_etfs)
     refresh_news(stock_etfs)
+    try:
+        refresh_yahoo_symbol_news(stock_etfs)
+    except Exception as _ysn_exc:
+        log.warning("Yahoo symbol news refresh failed (non-fatal): %s", _ysn_exc)
     refresh_sector_performance()
     refresh_macro_snapshot()
     # NOTE: earnings calendar is owned exclusively by AV

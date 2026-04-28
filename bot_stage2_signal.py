@@ -153,6 +153,32 @@ def _get_macro_wire_hits_for_symbol(sym: str) -> list[str]:
         return []
 
 
+def _load_cached_symbol_news(sym: str) -> list[str]:
+    """Return ≤3 recent headlines from per-symbol news caches (Yahoo RSS + Finnhub).
+
+    Reads data/news/{SYM}_yahoo_news.json and data/news/{SYM}_finnhub_news.json.
+    Cache is populated by data_warehouse.refresh_yahoo_symbol_news() (4 AM + on-demand).
+    Returns [] if no cache exists. Non-fatal.
+    """
+    news_dir = _BASE / "data" / "news"
+    headlines: list[str] = []
+    for suffix in ("_yahoo_news.json", "_finnhub_news.json"):
+        try:
+            path = news_dir / f"{sym}{suffix}"
+            if not path.exists():
+                continue
+            data = json.loads(path.read_text())
+            for a in (data.get("articles") or []):
+                h = (a.get("headline") or "").strip()
+                if h and h not in headlines:
+                    headlines.append(h[:80])
+                    if len(headlines) >= 3:
+                        return headlines
+        except Exception:
+            pass
+    return headlines
+
+
 def _format_l2_for_l3(sym: str, l2: dict, qual_entry: Optional[dict],
                       l2_price: Optional[float]) -> str:
     """Build the compact per-symbol block that Haiku sees."""
@@ -191,6 +217,11 @@ def _format_l2_for_l3(sym: str, l2: dict, qual_entry: Optional[dict],
     wire_hits = _get_macro_wire_hits_for_symbol(sym)
     if wire_hits:
         lines.append(f"  MACRO_WIRE: " + " | ".join(wire_hits))
+
+    # Inject per-symbol news headlines from Yahoo/Finnhub cache (Phase C)
+    sym_news = _load_cached_symbol_news(sym)
+    if sym_news:
+        lines.append("  SYMBOL_NEWS: " + " | ".join(sym_news))
 
     return "\n".join(lines)
 

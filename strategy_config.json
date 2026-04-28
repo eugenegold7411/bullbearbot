@@ -217,7 +217,8 @@
     "vector_memory_ab_sample_rate": 0.1,
     "hard_gate_claude_to_trading_window": true,
     "trading_window_start_et": "09:25",
-    "trading_window_end_et": "16:15"
+    "trading_window_end_et": "16:15",
+    "enable_finnhub_news": true
   },
   "shadow_flags": {
     "enable_replay_fork_debugger": false,

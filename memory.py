@@ -16,6 +16,7 @@ from pathlib import Path
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest
+
 try:
     from dotenv import load_dotenv as _load_dotenv_mem
     _load_dotenv_mem()

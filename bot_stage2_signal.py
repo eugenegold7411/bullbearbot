@@ -216,7 +216,7 @@ def _format_l2_for_l3(sym: str, l2: dict, qual_entry: Optional[dict],
     # Inject any macro wire hits for this symbol (Phase B — reduces unknown rate)
     wire_hits = _get_macro_wire_hits_for_symbol(sym)
     if wire_hits:
-        lines.append(f"  MACRO_WIRE: " + " | ".join(wire_hits))
+        lines.append("  MACRO_WIRE: " + " | ".join(wire_hits))
 
     # Inject per-symbol news headlines from Yahoo/Finnhub cache (Phase C)
     sym_news = _load_cached_symbol_news(sym)

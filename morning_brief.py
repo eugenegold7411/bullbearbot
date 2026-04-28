@@ -137,41 +137,112 @@ def _load_overnight_digest() -> str:
     return "\n".join(lines)
 
 
+def _get_held_symbols() -> set[str]:
+    """Return set of symbols currently held, from the most recent decision record."""
+    try:
+        dec_path = _BASE_DIR / "memory" / "decisions.json"
+        if not dec_path.exists():
+            return set()
+        data = json.loads(dec_path.read_text())
+        if not isinstance(data, list) or not data:
+            return set()
+        last = data[-1]
+        held: set[str] = set()
+        for h in last.get("holds", []):
+            sym = h.get("symbol", "") if isinstance(h, dict) else str(h)
+            if sym:
+                held.add(sym)
+        return held
+    except Exception:
+        return set()
+
+
+def _load_analyst_intel(sym: str):
+    """Load cached analyst intel for sym. Returns None if not cached or on failure."""
+    try:
+        import earnings_intel_fetcher as eif  # noqa: PLC0415
+        return eif.load_analyst_intel_cached(sym)
+    except Exception:
+        return None
+
+
 def _build_pre_earnings_intel_section() -> str:
     """
-    Return a formatted '=== PRE-EARNINGS INTELLIGENCE ===' section for symbols
-    with earnings ≤ 5 days away. Calls earnings_intel.get_earnings_intel_section()
-    per symbol. Capped at 3 symbols to control cost/time. Non-fatal.
+    Return a formatted '=== PRE-EARNINGS INTELLIGENCE ===' section using a
+    tiered priority ordering that guarantees held positions are always included:
+
+      T0 — held + ≤ 2 days  (uncapped)
+      T1 — held + 3–5 days  (uncapped)
+      T2 — not held + ≤ 1 day  (max 3)
+      T3 — not held + 2–5 days (max 2)
+      T4 — > 5 days         (excluded)
+
+    Each entry includes analyst intel (beat history + consensus) from the
+    24h-cached earnings_intel_fetcher data, plus the EDGAR transcript analysis
+    from earnings_intel.get_earnings_intel_section().
+    Non-fatal — returns '' on any exception.
     """
     try:
-        from datetime import date as _date
+        from datetime import date as _date  # noqa: PLC0415
 
-        from data_warehouse import load_earnings_calendar
-        from earnings_intel import get_earnings_intel_section
+        from data_warehouse import load_earnings_calendar  # noqa: PLC0415
+        from earnings_intel import get_earnings_intel_section  # noqa: PLC0415
 
         ec = load_earnings_calendar()
         today_dt = _date.today()
         today_str = today_dt.isoformat()
+        held = _get_held_symbols()
 
-        near_earnings = []
+        # Bucket into tiers
+        t0: list[tuple[str, int]] = []  # held + ≤2d
+        t1: list[tuple[str, int]] = []  # held + 3–5d
+        t2: list[tuple[str, int]] = []  # !held + ≤1d
+        t3: list[tuple[str, int]] = []  # !held + 2–5d
+
         for e in ec.get("calendar", []):
+            sym = e.get("symbol", "")
             iso = str(e.get("earnings_date", ""))[:10]
-            if not iso or iso < today_str:
+            if not sym or not iso or iso < today_str:
                 continue
             try:
                 n_days = (_date.fromisoformat(iso) - today_dt).days
             except Exception:
                 continue
-            if n_days <= 5:
-                near_earnings.append((e.get("symbol", ""), n_days))
+            if n_days > 5:
+                continue
+            is_held = sym in held
+            if is_held and n_days <= 2:
+                t0.append((sym, n_days))
+            elif is_held:
+                t1.append((sym, n_days))
+            elif n_days <= 1:
+                t2.append((sym, n_days))
+            else:
+                t3.append((sym, n_days))
 
-        if not near_earnings:
+        # Apply caps: T0/T1 uncapped; T2 max 3; T3 max 2
+        to_process = t0 + t1 + t2[:3] + t3[:2]
+        if not to_process:
             return ""
 
         lines = ["\n=== PRE-EARNINGS INTELLIGENCE ==="]
-        for sym, n_days in near_earnings[:3]:
-            if not sym:
-                continue
+        for sym, n_days in to_process:
+            held_tag = " [HELD]" if sym in held else ""
+            header = f"  {sym}{held_tag} (earnings in {n_days}d):"
+            lines.append(header)
+
+            # Analyst intel (from 24h cache — no network call)
+            intel = _load_analyst_intel(sym)
+            if intel:
+                try:
+                    import earnings_intel_fetcher as eif  # noqa: PLC0415
+                    ai_text = eif.format_analyst_intel_text(intel)
+                    if ai_text:
+                        lines.append(f"    {ai_text}")
+                except Exception:
+                    pass
+
+            # EDGAR transcript / earnings analysis
             section = get_earnings_intel_section(sym, n_days)
             lines.append(section)
 

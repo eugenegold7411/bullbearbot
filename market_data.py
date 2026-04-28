@@ -1174,6 +1174,25 @@ def fetch_all(symbols_stock: list, symbols_crypto: list, session_tier: str,
             for sym in near_earnings[:5]:
                 intel_lines.append(get_earnings_intel_section(sym, days_map[sym]))
             earnings_intel_section = "\n".join(intel_lines)
+
+            # Merge analyst intel (beat history + consensus) from 24h cache — no network call
+            try:
+                import earnings_intel_fetcher as eif  # noqa: PLC0415
+                analyst_extras: list[str] = []
+                for sym in near_earnings[:5]:
+                    cached = eif.load_analyst_intel_cached(sym)
+                    if cached:
+                        ai_text = eif.format_analyst_intel_text(cached)
+                        if ai_text:
+                            analyst_extras.append(f"  {sym}: {ai_text}")
+                if analyst_extras:
+                    earnings_intel_section = (
+                        earnings_intel_section
+                        + "\n--- Analyst Intel ---\n"
+                        + "\n".join(analyst_extras)
+                    )
+            except Exception:
+                pass
     except Exception:
         pass
 

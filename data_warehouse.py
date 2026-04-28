@@ -1090,6 +1090,10 @@ def run_full_refresh(target_symbol: str | None = None) -> None:
         refresh_yahoo_symbol_news(stock_etfs)
     except Exception as _ysn_exc:
         log.warning("Yahoo symbol news refresh failed (non-fatal): %s", _ysn_exc)
+    try:
+        refresh_finnhub_news(stock_etfs)
+    except Exception as _fhn_exc:
+        log.warning("Finnhub news refresh failed (non-fatal): %s", _fhn_exc)
     refresh_sector_performance()
     refresh_macro_snapshot()
     # NOTE: earnings calendar is owned exclusively by AV

@@ -327,6 +327,7 @@ _earnings_av_refresh_key:      str = ""   # ISO-week key — weekly AV calendar 
 _earnings_rotation_ran_date:   str = ""   # "YYYY-MM-DD" of last rotation run
 _earnings_cull_ran_date:       str = ""   # "YYYY-MM-DD" of last 2 AM cull
 _earnings_stale_check_date:    str = ""   # "YYYY-MM-DD" of last staleness check
+_earnings_intel_ran_date:      str = ""   # "YYYY-MM-DD" of last analyst intel refresh
 _zero_fill_alert_date:         str = ""   # "YYYY-MM-DD" of last zero-fill alert
 _last_qualitative_sweep_key:   str = ""   # "YYYY-MM-DD-HH" of last L1 sweep (hourly slot)
 _last_qualitative_news_hash:   str = ""   # news hash at last L1 sweep, for event-driven refresh
@@ -556,6 +557,41 @@ def _maybe_refresh_macro_intelligence(dry_run: bool = False) -> None:
         log.info("[dry-run] Skipping macro intelligence pre-fetch")
 
     _macro_intel_refresh_key = key
+
+
+def _maybe_refresh_earnings_intel(dry_run: bool = False) -> None:
+    """Refresh per-symbol analyst intel cache at 4:00–5:30 AM ET on weekdays.
+    Runs once per day (daily guard). Feeds morning brief and market_data
+    with beat history + analyst consensus before the first market cycle.
+    Non-fatal — never blocks the scheduler loop.
+    """
+    global _earnings_intel_ran_date
+    now_et  = datetime.now(ET)
+    weekday = now_et.weekday()
+    today   = now_et.strftime("%Y-%m-%d")
+    now_min = now_et.hour * 60 + now_et.minute
+
+    if _earnings_intel_ran_date == today:
+        return
+    if weekday >= 5:
+        return
+    if now_min < 4 * 60 or now_min > 5 * 60 + 30:   # 4:00–5:30 AM window
+        return
+
+    if not dry_run:
+        try:
+            import watchlist_manager as _wm          # noqa: PLC0415
+            import earnings_intel_fetcher as _eif    # noqa: PLC0415
+            wl   = _wm.get_active_watchlist()
+            syms = [s["symbol"] for s in wl.get("all", [])]
+            _eif.refresh_earnings_analyst_intel(syms)
+            log.info("Earnings analyst intel cache refreshed (%d symbols)", len(syms))
+        except Exception:
+            log.debug("Earnings intel refresh failed (non-fatal)", exc_info=True)
+    else:
+        log.info("[dry-run] Skipping earnings analyst intel refresh")
+
+    _earnings_intel_ran_date = today
 
 
 def _maybe_refresh_iv_history(dry_run: bool = False) -> None:
@@ -1553,6 +1589,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_run_earnings_rotation(dry_run)
         _maybe_check_earnings_calendar_staleness(dry_run)
         _maybe_refresh_macro_intelligence(dry_run)
+        _maybe_refresh_earnings_intel(dry_run)
         _maybe_refresh_iv_history(dry_run)
         _maybe_refresh_economic_calendar(dry_run)  # intraday econ slots
         _maybe_write_overnight_digest(dry_run)

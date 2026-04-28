@@ -16,14 +16,16 @@ from pathlib import Path
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv as _load_dotenv_mem
+    _load_dotenv_mem()
+except ImportError:
+    pass
 
 import trade_memory
 from semantic_labels import classify_catalyst
 
 log = logging.getLogger(__name__)
-
-load_dotenv()
 
 MEMORY_DIR      = Path(__file__).parent / "memory"
 DECISIONS_FILE  = MEMORY_DIR / "decisions.json"

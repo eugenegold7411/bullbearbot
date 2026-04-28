@@ -29,12 +29,14 @@ from alpaca.data.requests import (
     StockBarsRequest,
 )
 from alpaca.data.timeframe import TimeFrame
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv()
+except ImportError:
+    pass
 
 import watchlist_manager as wm
 from log_setup import get_logger
-
-load_dotenv()
 log = get_logger(__name__)
 ET  = ZoneInfo("America/New_York")
 

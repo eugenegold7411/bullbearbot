@@ -31,11 +31,15 @@ import pytest
 
 # Load .env early so test_t012's module-level load_dotenv stub (a no-op) doesn't
 # prevent API keys from reaching os.environ when memory.py is imported later.
+# If dotenv is absent, install a no-op stub so all production `from dotenv import
+# load_dotenv` calls succeed without raising ImportError.
 try:
     from dotenv import load_dotenv as _load_dotenv
     _load_dotenv()
 except ImportError:
-    pass
+    _dotenv_stub = types.ModuleType("dotenv")
+    _dotenv_stub.load_dotenv = lambda *a, **kw: None  # type: ignore[attr-defined]
+    sys.modules.setdefault("dotenv", _dotenv_stub)
 
 
 # ── Optional-dependency stubs ─────────────────────────────────────────────────
@@ -191,8 +195,37 @@ _stub_if_absent("anthropic")
 _stub_if_absent("twilio", ["rest"])
 _stub_if_absent("pandas_ta")
 _stub_if_absent("yfinance")
+# Ensure yfinance.Ticker exists so monkeypatch.setattr("yfinance.Ticker", ...) works
+try:
+    import yfinance as _yf_stub
+    if not hasattr(_yf_stub, "Ticker"):
+        _yf_stub.Ticker = type("Ticker", (), {"__init__": lambda self, s: None})
+except Exception:
+    pass
 _stub_if_absent("pandas", ["core", "core.frame"])
+# Ensure pandas.DataFrame exists so pd.DataFrame(...) in tests works
+try:
+    import pandas as _pd_stub
+    if not hasattr(_pd_stub, "DataFrame"):
+        class _DataFrame:
+            def __init__(self, data=None, *a, **kw):
+                self._data = data or []
+            @property
+            def empty(self):
+                return not self._data
+            def to_dict(self, orient=None):
+                return self._data
+        _pd_stub.DataFrame = _DataFrame
+except Exception:
+    pass
 _stub_if_absent("requests")
+# Ensure requests.get exists so monkeypatch.setattr("requests.get", ...) works
+try:
+    import requests as _req_stub
+    if not hasattr(_req_stub, "get"):
+        _req_stub.get = lambda *a, **kw: None
+except Exception:
+    pass
 _stub_if_absent("pydantic")
 _stub_if_absent("sendgrid", ["helpers", "helpers.mail"])
 

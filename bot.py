@@ -10,7 +10,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv as _load_dotenv_bot
+except ImportError:
+    _load_dotenv_bot = None  # type: ignore
 
 import memory as mem
 import order_executor
@@ -62,7 +65,8 @@ try:
 except Exception:
     publisher = None  # type: ignore
 
-load_dotenv()
+if _load_dotenv_bot:
+    _load_dotenv_bot()
 
 log = get_logger(__name__)
 

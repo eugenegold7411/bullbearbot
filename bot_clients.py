@@ -9,9 +9,11 @@ import os
 
 import anthropic
 from alpaca.trading.client import TradingClient
-from dotenv import load_dotenv
-
-load_dotenv()
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv()
+except ImportError:
+    pass
 
 MODEL      = "claude-sonnet-4-6"
 MODEL_FAST = "claude-haiku-4-5-20251001"

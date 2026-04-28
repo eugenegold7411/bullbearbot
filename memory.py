@@ -329,9 +329,9 @@ def get_recent_decisions_str(n: int = PROMPT_WINDOW) -> str:
         lines.append(f"  [{ts}] regime={regime}  actions={n_act}  \"{reasoning}\"")
 
         for a in d.get("actions", []):
-            sym      = a.get("symbol", "?")
-            act      = a.get("action", "?")
-            tier     = a.get("tier", "?")
+            sym      = a.get("symbol") or "?"
+            act      = a.get("action") or "UNKNOWN"
+            tier     = a.get("tier") or "?"
             outcome  = a.get("outcome") or "pending"
             pnl_str  = f"  pnl=${a['pnl']:+.0f}" if a.get("pnl") is not None else ""
             opt_tag  = f"  [{a['option_strategy']}]" if a.get("option_strategy") else ""

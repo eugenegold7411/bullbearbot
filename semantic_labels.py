@@ -2,7 +2,7 @@
 semantic_labels.py — Single canonical module for all label enums used across v2.
 All other modules import from here. No duplicated enums anywhere else.
 
-Labels align exactly with docs/taxonomy_v1.0.0.md (LOCKED v1.0.0).
+Labels align exactly with docs/taxonomy_v1.0.0.md (LOCKED v1.1.0).
 Do not add or rename values without a taxonomy version bump.
 
 SEMANTIC_LABELS_VERSION tracks this module's schema version.
@@ -15,7 +15,7 @@ from enum import Enum
 
 log = logging.getLogger(__name__)
 
-SEMANTIC_LABELS_VERSION = 1
+SEMANTIC_LABELS_VERSION = 2
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -23,7 +23,7 @@ SEMANTIC_LABELS_VERSION = 1
 # ─────────────────────────────────────────────────────────────────────────────
 
 class CatalystType(str, Enum):
-    """DIMENSION 1 — catalyst_type (taxonomy_v1.0.0.md)"""
+    """DIMENSION 1 — catalyst_type (taxonomy_v1.1.0)"""
     EARNINGS_BEAT          = "earnings_beat"
     EARNINGS_MISS          = "earnings_miss"
     GUIDANCE_RAISE         = "guidance_raise"
@@ -42,6 +42,7 @@ class CatalystType(str, Enum):
     SECTOR_ROTATION        = "sector_rotation"
     SOCIAL_SENTIMENT       = "social_sentiment"
     CITRINI_THESIS         = "citrini_thesis"
+    EARNINGS_PENDING       = "earnings_pending"
     UNKNOWN                = "unknown"
 
 

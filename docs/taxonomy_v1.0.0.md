@@ -1,9 +1,10 @@
 # BullBearBot Semantic Taxonomy
-# Version: v1.0.0
+# Version: v1.1.0
 # Owner: semantic platform owner
-# Last updated: 2026-04-16
+# Last updated: 2026-04-27
 # Status: LOCKED — changes require version bump and schema owner approval
 # Depends on: nothing (this is the root governance document)
+# Changelog: v1.1.0 — added earnings_pending (pre-earnings setup label)
 
 ---
 
@@ -63,9 +64,21 @@
 | `sector_rotation` | Capital visibly rotating into or out of sector |
 | `social_sentiment` | Reddit/WSB unusual mention spike coinciding with price momentum |
 | `citrini_thesis` | Position aligned with active Citrini Research macro trade |
+| `earnings_pending` | Symbol has earnings in ≤5 trading days; pre-earnings setup is the primary trigger |
 | `unknown` | Catalyst unclear or not verifiable — always valid |
 
-**Boundary examples:**
+**earnings_pending definition (added v1.1.0):**
+- Definition: The primary trigger for considering this trade is that the company has an earnings report due within 5 trading days, and the pre-earnings setup (momentum, positioning, options skew) is the reason for entry — not a result that has already been reported.
+- Positive examples:
+  1. NVDA reports Q2 in 3 days; entering on pre-earnings momentum and consistent beat history
+  2. AAPL earnings in 2 days; taking a pre-announcement position based on channel-check data
+  3. MSFT has earnings tomorrow; entering on AI-driven setup ahead of the report
+- Boundary examples:
+  1. Earnings happened yesterday and beat → use `earnings_beat`, not `earnings_pending` (result already known)
+  2. Earnings in 10 days but analyst upgrade drove the entry → use `analyst_revision` (earnings too far out to be the proximate trigger)
+- Not this: do not use for positions entered DURING the earnings window based on the actual EPS/guidance result — use `earnings_beat`, `earnings_miss`, `guidance_raise`, or `guidance_cut` instead.
+
+**Boundary examples (dimension-wide):**
 - Beat + raise → primary: `earnings_beat`, secondary: `guidance_raise`
 - Analyst upgrade on earnings day → primary: `earnings_beat`
 - Stock up on sector sympathy → `sector_rotation`, not `earnings_beat`

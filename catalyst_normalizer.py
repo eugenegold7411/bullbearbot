@@ -45,6 +45,7 @@ _CATALYST_KEYWORDS: dict[str, list[str]] = {
     CatalystType.SECTOR_ROTATION.value:      ["rotation", "sector", "flows", "capital rotation", "rotating into", "rotating out"],
     CatalystType.SOCIAL_SENTIMENT.value:     ["reddit", "wsb", "wallstreetbets", "social", "mentions", "viral", "trending"],
     CatalystType.CITRINI_THESIS.value:       ["citrini", "citrini thesis", "macro overlay"],
+    CatalystType.EARNINGS_PENDING.value:     ["earnings pending", "earnings in", "pre-earnings", "pre earnings", "reports earnings", "earnings upcoming", "earnings week", "earnings tomorrow"],
 }
 
 # Proper nouns / named events that indicate is_named=True

@@ -61,7 +61,10 @@ _L3_SYSTEM = (
     "  3. If you adjust by more than 5 points, cite the reason in "
     "adjustment_reason. Otherwise leave adjustment_reason empty.\n"
     "  4. Emit primary_catalyst as a ≤12-word phrase. Use only L1 context and "
-    "L2 signals — do NOT quote prose from elsewhere.\n\n"
+    "L2 signals — do NOT quote prose from elsewhere.\n"
+    "  5. Emit catalyst_type using ONLY the taxonomy labels listed in the schema. "
+    "Use 'earnings_pending' when earnings_days_away ≤ 5. "
+    "Use 'unknown' when no clear catalyst. Never invent new label values.\n\n"
     "HARD RULES:\n"
     "- Never use 'today', 'tonight', or 'this week' for earnings timing. L2 "
     "provides earnings_days_away as an integer; write 'earnings in N days' "
@@ -74,6 +77,11 @@ _L3_SYSTEM = (
     '"conviction":"high"|"medium"|"low"|"avoid",'
     '"signals":[<strings>],"conflicts":[<strings>],'
     '"primary_catalyst":"<≤12 words>",'
+    '"catalyst_type":"earnings_beat"|"earnings_miss"|"guidance_raise"|"guidance_cut"'
+    '|"macro_print"|"fed_signal"|"geopolitical"|"policy_change"|"insider_buy"'
+    '|"congressional_buy"|"analyst_revision"|"corporate_action"|"technical_breakout"'
+    '|"momentum_continuation"|"mean_reversion"|"sector_rotation"|"social_sentiment"'
+    '|"citrini_thesis"|"earnings_pending"|"unknown",'
     '"orb_candidate":true|false,'
     '"pattern_watchlist":false|"<caution note>",'
     '"tier":"core"|"dynamic",'
@@ -122,6 +130,29 @@ def _load_qualitative_context() -> dict:
         return {}
 
 
+def _get_macro_wire_hits_for_symbol(sym: str) -> list[str]:
+    """Return ≤2 recent macro wire headlines that mention this symbol.
+
+    Reads live_cache.json (populated by macro_wire.classify_articles).
+    Non-fatal — returns [] on any error.
+    """
+    try:
+        cache_path = _BASE / "data" / "macro_wire" / "live_cache.json"
+        if not cache_path.exists():
+            return []
+        articles = json.loads(cache_path.read_text())
+        if not isinstance(articles, list):
+            return []
+        hits = [
+            a["headline"][:80]
+            for a in articles
+            if isinstance(a, dict) and sym in (a.get("affected_symbols") or [])
+        ]
+        return hits[:2]
+    except Exception:
+        return []
+
+
 def _format_l2_for_l3(sym: str, l2: dict, qual_entry: Optional[dict],
                       l2_price: Optional[float]) -> str:
     """Build the compact per-symbol block that Haiku sees."""
@@ -155,6 +186,12 @@ def _format_l2_for_l3(sym: str, l2: dict, qual_entry: Optional[dict],
     price_str = f"Price: ${l2_price:.2f}" if l2_price else "Price: ?"
     eda_str   = f"  earnings_days_away={eda}" if eda is not None else ""
     lines.append(f"  {price_str}{eda_str}")
+
+    # Inject any macro wire hits for this symbol (Phase B — reduces unknown rate)
+    wire_hits = _get_macro_wire_hits_for_symbol(sym)
+    if wire_hits:
+        lines.append(f"  MACRO_WIRE: " + " | ".join(wire_hits))
+
     return "\n".join(lines)
 
 
@@ -319,14 +356,22 @@ def _run_l3_synthesis(
                 # Keep L2's earnings_days_away passthrough
                 if "earnings_days_away" not in row and l2.get("earnings_days_away") is not None:
                     row["earnings_days_away"] = l2.get("earnings_days_away")
-                # Wire catalyst_type taxonomy from primary_catalyst text (T2-7)
+                # Use Haiku's self-classified catalyst_type (Phase B, Sprint 5).
+                # Validate against known taxonomy; fall back to classify_catalyst()
+                # on text-match only when Haiku returned unknown/missing.
+                _haiku_ct = (row.get("catalyst_type") or "").strip().lower().replace("-", "_")
                 try:
-                    from semantic_labels import (
-                        classify_catalyst as _cc,  # noqa: PLC0415
+                    from semantic_labels import (  # noqa: PLC0415
+                        CatalystType as _CT,
+                        classify_catalyst as _cc,
                     )
-                    row["catalyst_type"] = _cc(
-                        row.get("primary_catalyst", "") or ""
-                    ).value
+                    _known = {e.value for e in _CT}
+                    if _haiku_ct and _haiku_ct in _known and _haiku_ct != "unknown":
+                        row["catalyst_type"] = _haiku_ct
+                    elif row.get("primary_catalyst"):
+                        row["catalyst_type"] = _cc(row.get("primary_catalyst", "") or "").value
+                    else:
+                        row["catalyst_type"] = "unknown"
                 except Exception:
                     row["catalyst_type"] = "unknown"
                 merged_symbols[sym] = row

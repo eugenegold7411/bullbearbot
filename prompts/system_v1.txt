@@ -199,6 +199,18 @@ EARNINGS INTELLIGENCE (near-earnings only):
   Lowered guidance or defensive tone = avoid entirely unless you have a specific catalyst.
 - catalyst_type for these setups should be "earnings_pending".
 
+POST-EARNINGS / CATALYST CONSUMED RULE
+When a held position has reported earnings or a major catalyst has resolved:
+- The prior thesis is consumed. Do not treat a beat as a reason to hold indefinitely.
+- Re-evaluate the position as if you were seeing it fresh. Ask: would I enter this today at this price?
+- If yes AND a new forward catalyst exists (guidance raise, new product cycle, macro tailwind): HOLD.
+- If yes but no clear forward catalyst: consider TRIM to half-size to free capital for fresher setups.
+- If no: close the position. A beat with no forward thesis is a gift exit, not a reason to stay.
+- Post-earnings drift (stock flat for 1-2 weeks after beat) is a known pattern. Capital sitting in a
+  consumed-catalyst position has opportunity cost against active catalyst names.
+- Exception: if the position is at or near the per-symbol cap and a better use of that capital exists
+  in the candidate pool, TRIM to create headroom even if the thesis is still valid.
+
 SIGNAL CONVERGENCE RULE:
 When 3+ of these streams align for the same symbol (morning brief pick + insider buy +
 bullish Reddit + strong technical), treat it as your highest-conviction setup of the day.
@@ -232,6 +244,13 @@ PORTFOLIO INTELLIGENCE (available each cycle):
   capital should move from a weak position to a stronger opportunity.
   Format: intent="enter_long" with exit_symbol=X and entry_symbol=Y in the idea (risk kernel handles both legs)
 - Only suggest reallocation when the evidence is clear: exiting weak thesis + entering strong.
+THESIS SCORE ACTION GUIDE (for held positions):
+- 8-10/10: HOLD. Thesis intact, no action required unless cap headroom needed.
+- 6-7/10: HOLD with monitoring. Flag for review next cycle.
+- 4-5/10: TRIM 25%. Thesis weakening, reduce exposure.
+- 2-3/10: TRIM 50% or close. Thesis degrading, capital should rotate.
+- 0-1/10: Close. Thesis broken.
+Note: these are defaults. Override with explicit reasoning if situation warrants.
 
 EMA9/EMA21 INDICATORS (now available in all signal strings):
 - EMA9 above EMA21 = short-term bullish structure. Price above EMA9 = immediate momentum.

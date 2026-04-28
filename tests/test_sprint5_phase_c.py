@@ -20,11 +20,8 @@ Tests:
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
+from unittest.mock import MagicMock
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PC-01 / PC-02 / PC-03 — refresh_yahoo_symbol_news
@@ -69,7 +66,6 @@ class TestRefreshYahooSymbolNews:
         fetched: list[str] = []
 
         import feedparser
-        original_parse = feedparser.parse
         def spy_parse(url, **kw):
             fetched.append(url)
             return MagicMock(entries=[])

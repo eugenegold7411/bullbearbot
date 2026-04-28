@@ -13,11 +13,9 @@ Tests:
 """
 from __future__ import annotations
 
-import struct
 import time
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
-
+from unittest.mock import MagicMock
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -34,6 +32,7 @@ def _run_fetch_macro_wire_with_single_entry(monkeypatch, pub_dt: datetime):
     return the list of articles that fetch_macro_wire() produces.
     """
     import feedparser as fp
+
     import macro_wire as mw
 
     fake_entry = {
@@ -47,7 +46,6 @@ def _run_fetch_macro_wire_with_single_entry(monkeypatch, pub_dt: datetime):
 
     # Bypass throttle and seen_ids so the article always processes
     monkeypatch.setattr(mw, "_last_fetch_ts", 0.0)
-    original_load = mw._load_seen_ids
     monkeypatch.setattr(mw, "_load_seen_ids", lambda: set())
     monkeypatch.setattr(mw, "_save_seen_ids", lambda s: None)
     monkeypatch.setattr(fp, "parse", lambda url, **kw: fake_feed)

@@ -20,11 +20,9 @@ Tests:
 """
 from __future__ import annotations
 
-import json
 from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
+from unittest.mock import patch
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -98,7 +96,7 @@ class TestBuildPreEarningsIntelSection:
 
         with patch("data_warehouse.load_earnings_calendar", return_value=cal), \
              patch("earnings_intel.get_earnings_intel_section", side_effect=fake_intel):
-            result = mb._build_pre_earnings_intel_section()
+            mb._build_pre_earnings_intel_section()
 
         assert len(calls) <= 3, f"Called intel for {len(calls)} symbols, expected ≤ 3"
 

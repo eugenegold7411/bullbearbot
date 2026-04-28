@@ -145,6 +145,7 @@ def _build_pre_earnings_intel_section() -> str:
     """
     try:
         from datetime import date as _date
+
         from data_warehouse import load_earnings_calendar
         from earnings_intel import get_earnings_intel_section
 

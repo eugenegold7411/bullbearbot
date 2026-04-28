@@ -394,6 +394,8 @@ def _run_l3_synthesis(
                 try:
                     from semantic_labels import (  # noqa: PLC0415
                         CatalystType as _CT,
+                    )
+                    from semantic_labels import (
                         classify_catalyst as _cc,
                     )
                     _known = {e.value for e in _CT}

@@ -314,7 +314,14 @@ def _load_context() -> str:
     try:
         from data_warehouse import load_macro_snapshot
         macro = load_macro_snapshot()
-        vix = macro.get("vix", {})
+        # T1-3: macro snapshot may store vix as {"price": N, "chg_pct": M} dict OR float
+        _vix_snap = macro.get("vix", {})
+        if isinstance(_vix_snap, dict) and _vix_snap:
+            vix = _vix_snap
+        elif isinstance(_vix_snap, (int, float)) and _vix_snap:
+            vix = {"price": round(float(_vix_snap), 2), "chg_pct": 0}
+        else:
+            vix = {}
         if vix:
             parts.append(f"\nVIX: {vix.get('price','?')} ({vix.get('chg_pct',0):+.1f}%)")
         oil = macro.get("oil", {})

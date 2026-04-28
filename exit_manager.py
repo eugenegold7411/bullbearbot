@@ -15,6 +15,7 @@ Logs at INFO level with [EXIT_MGR] and [TRAIL_STOP] prefixes.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -99,6 +100,22 @@ def _has_take_profit_order(symbol: str, open_orders: list) -> bool:
         if order_side == "sell" and order_type == "limit":
             return True
     return False
+
+
+# ── Per-ticker lock — prevents duplicate exit-order submissions ───────────────
+# Guards the check-and-submit sequence in refresh_exits_for_position() so that
+# two concurrent callers for the same symbol cannot both pass the
+# "is_unprotected" gate and both submit a stop order.
+_ticker_locks: dict[str, threading.Lock] = {}
+_ticker_locks_guard = threading.Lock()
+
+
+def _get_ticker_lock(symbol: str) -> threading.Lock:
+    """Return (or lazily create) the threading.Lock for a given ticker symbol."""
+    with _ticker_locks_guard:
+        if symbol not in _ticker_locks:
+            _ticker_locks[symbol] = threading.Lock()
+        return _ticker_locks[symbol]
 
 
 # ── Config defaults (overridden by strategy_config["exit_management"]) ────────
@@ -311,9 +328,6 @@ def refresh_exits_for_position(
     Cancels the stale stop order first if one exists.
     Returns True if a new stop was successfully submitted.
     """
-    from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import LimitOrderRequest, StopOrderRequest
-
     em_cfg = _em_config(strategy_config)
     sym    = position.symbol
     qty    = _position_qty(position)
@@ -322,6 +336,37 @@ def refresh_exits_for_position(
     if qty <= 0:
         log.warning("[EXIT_MGR] %s: qty=%s — skipping (zero qty, check position)", sym, qty)
         return False
+
+    # Acquire per-ticker lock (non-blocking). If a concurrent call is already
+    # processing this symbol, skip rather than submitting a duplicate order.
+    _lock = _get_ticker_lock(sym)
+    if not _lock.acquire(blocking=False):
+        log.debug("[EXIT_MGR] %s: concurrent exit submission in progress — skipping", sym)
+        return False
+
+    try:
+        return _refresh_exits_locked(
+            position, alpaca_client, strategy_config, conviction, exit_info,
+            sym, qty, price, em_cfg,
+        )
+    finally:
+        _lock.release()
+
+
+def _refresh_exits_locked(
+    position,
+    alpaca_client,
+    strategy_config: dict,
+    conviction: str,
+    exit_info: Optional[dict],
+    sym: str,
+    qty: float,
+    price: float,
+    em_cfg: dict,
+) -> bool:
+    """Inner implementation of refresh_exits_for_position, called under per-ticker lock."""
+    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest, StopOrderRequest
 
     ei = exit_info if exit_info is not None else (
         get_active_exits([position], alpaca_client).get(sym, {})

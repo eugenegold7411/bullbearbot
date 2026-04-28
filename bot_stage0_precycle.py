@@ -13,7 +13,9 @@ Public API:
 """
 
 import json
+import time as _time_mod
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,65 @@ from schemas import BrokerSnapshot
 from schemas import NormalizedPosition as _NP
 
 log = get_logger(__name__)
+
+# ── S7-B: halt alert dedup ────────────────────────────────────────────────────
+# In-memory only — no persistence. Resets on process restart (intentional).
+_halt_alert_cache: dict[str, float] = {}   # {account: unix_time_of_last_alert}
+_HALT_ALERT_DEDUP_SECS: float = 30 * 60   # 30 minutes between repeat alerts
+
+
+def _maybe_send_halt_alert(
+    account: str,
+    div_events: list,
+    publisher,
+    positions: list,
+) -> None:
+    """
+    Send a WhatsApp alert when A1 enters HALTED mode.
+    Suppressed if an alert for this account was sent within the last 30 minutes.
+    Non-fatal: all exceptions logged and swallowed.
+    """
+    try:
+        now = _time_mod.time()
+        if now - _halt_alert_cache.get(account, 0) < _HALT_ALERT_DEDUP_SECS:
+            log.debug("[DIV] halt alert suppressed — within dedup window (%s)", account)
+            return
+
+        symbols = ", ".join(sorted({
+            getattr(e, "symbol", "") for e in div_events
+            if getattr(e, "symbol", "")
+        })) or "account"
+        reasons = ", ".join(sorted({
+            getattr(e, "event_type", "") for e in div_events
+            if getattr(e, "event_type", "")
+        })) or "unknown"
+
+        # Include position size for the affected symbol(s) if available.
+        size_parts = []
+        symbol_set = {getattr(e, "symbol", "") for e in div_events}
+        pos_map = {getattr(p, "symbol", ""): p for p in (positions or [])}
+        for sym in sorted(symbol_set):
+            p = pos_map.get(sym)
+            if p:
+                try:
+                    mv = float(getattr(p, "market_value", 0))
+                    size_parts.append(f"{sym} ${mv:,.0f}")
+                except Exception:
+                    size_parts.append(sym)
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        size_str = (f" held: {', '.join(size_parts)}." if size_parts else "")
+        msg = (
+            f"[{account} HALTED] {reasons} on {symbols}.{size_str} "
+            f"Manual review required. {ts}"
+        )
+        if publisher.send_alert(msg):
+            _halt_alert_cache[account] = now
+            log.info("[DIV] Halt alert sent (%s): %s", account, msg[:120])
+        else:
+            log.warning("[DIV] Halt alert send failed (%s)", account)
+    except Exception as _exc:
+        log.warning("[DIV] _maybe_send_halt_alert error (non-fatal): %s", _exc)
 
 
 @dataclass
@@ -146,7 +207,7 @@ def run_precycle(
         next_cycle_time=next_cycle_time,
     )
     log.info("Market   status=%s  vix=%.2f  time=%s",
-             md["market_status"], md["vix"], md["time_et"])
+             md.get("market_status"), md.get("vix", 20.0), md.get("time_et"))
 
     # ORB range update (no-op outside 9:30-9:45 window)
     try:
@@ -331,6 +392,9 @@ def run_precycle(
             )
         if div_events:
             a1_mode = respond_to_divergence(div_events, "A1", a1_mode)
+            # S7-B: send WhatsApp alert on halt (30-min dedup)
+            if a1_mode.mode == OperatingMode.HALTED and publisher is not None:
+                _maybe_send_halt_alert("A1", div_events, publisher, positions)
         a1_mode = check_clean_cycle("A1", a1_mode, div_events)
         # T-003 Desync tripwire — abort (not just log) when state sources disagree
         if (

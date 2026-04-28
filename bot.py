@@ -643,7 +643,7 @@ def run_cycle(
                 rationale = (action.get("catalyst") or action.get("rationale") or reasoning)[:300]
                 mem.add_symbol_to_pattern_watchlist(
                     symbol=sym, reason=rationale,
-                    market_context=f"VIX={state.md['vix']:.1f} regime={regime}",
+                    market_context=f"VIX={state.md.get('vix', 20.0):.1f} regime={regime}",
                 )
                 log.info("[PATTERN_WL] Auto-enrolled %s — skip rationale: %s", sym, rationale[:80])
     except Exception as _skip_exc:
@@ -659,7 +659,7 @@ def run_cycle(
         "regime_view": regime,
         "reasoning":   reasoning,
         "notes":       notes,
-        "vix":         state.md["vix"],
+        "vix":         state.md.get("vix", 20.0),
         "equity":      state.equity,
         "exposure":    round(state.exposure, 2),
         "n_ideas":     len(claude_decision.ideas) if claude_decision else 0,
@@ -860,7 +860,7 @@ def run_cycle(
                             publisher.publish_trade_entry(
                                 action=matching_action,
                                 debate_result=debate_results.get(r.symbol),
-                                market_context=f"VIX={state.md['vix']:.1f} regime={regime}",
+                                market_context=f"VIX={state.md.get('vix', 20.0):.1f} regime={regime}",
                                 alpaca_client=_get_alpaca(),
                             )
                     except Exception as _pub_exc:

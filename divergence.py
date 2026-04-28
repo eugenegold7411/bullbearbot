@@ -215,8 +215,12 @@ def load_account_mode(account: str) -> AccountMode:
             d = json.loads(path.read_text())
             return AccountMode(
                 account=d["account"],
-                mode=OperatingMode(d["mode"]),
-                scope=DivergenceScope(d["scope"]),
+                # T1-4: normalize case before enum lookup — prevents silent HALTED→NORMAL
+                # fallback when JSON stores uppercase (e.g. manual edits).
+                # TODO (post-paper-trading hardening): tighten to raise on unknown mode
+                # instead of silently falling back to NORMAL via the outer except.
+                mode=OperatingMode(str(d["mode"]).lower()),
+                scope=DivergenceScope(str(d["scope"]).lower()),
                 scope_id=d.get("scope_id", ""),
                 reason_code=d.get("reason_code", ""),
                 reason_detail=d.get("reason_detail", ""),

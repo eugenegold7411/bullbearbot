@@ -882,7 +882,14 @@ def _build_intermarket_signals() -> str:
             return "  (macro data not yet available)"
 
         signals = []
-        macro.get("vix",    {}).get("price", 0)
+        # T1-3: macro snapshot stores vix as {"price": N, "chg_pct": M} dict OR float;
+        # guard prevents AttributeError if float arrives at the .get() call site.
+        # _vix_price is intentionally unused here — VIX not in this signal set.
+        _vix_snap = macro.get("vix", {})
+        _vix_price = (
+            float(_vix_snap.get("price", 20.0) or 20.0)
+            if isinstance(_vix_snap, dict) else float(_vix_snap or 20.0)
+        )
         oil  = macro.get("oil",    {}).get("chg_pct", 0)
         gold = macro.get("gold",   {}).get("chg_pct", 0)
         dxy  = macro.get("dollar", {}).get("chg_pct", 0)

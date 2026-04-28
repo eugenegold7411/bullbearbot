@@ -645,9 +645,12 @@ def format_retrieved_memories(scenarios: list[dict]) -> str:
         tier     = meta.get("tier", "short")
 
         ts      = str(meta.get("ts", ""))
-        session = meta.get("session", "?")
+        session = meta.get("session", "unknown")   # S7-D: "unknown" not "?" — don't assert unrecorded session
         vix     = meta.get("vix", 0.0)
-        regime  = meta.get("regime", "?")
+        # S7-D: normalize legacy "?" regime sentinel to "unknown" so prompt text is clean
+        regime  = meta.get("regime", "unknown")
+        if regime == "?":
+            regime = "unknown"
         symbols = meta.get("symbols", "?")
         outcome = meta.get("outcome", "?")
         pnl     = meta.get("pnl", 0.0)

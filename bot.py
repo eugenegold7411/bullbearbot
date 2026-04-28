@@ -43,6 +43,7 @@ from bot_stage3_decision import (
     is_claude_trading_window,
 )
 from bot_stage4_execution import debate_trade, fundamental_check
+from portfolio_allocator import format_allocator_section as _format_allocator_section
 from log_setup import get_logger, log_trade
 from schemas import (
     BrokerAction as _BrokerAction,
@@ -393,6 +394,7 @@ def run_cycle(
                     exit_status=state.exit_status_str,
                     macro_backdrop=macro_backdrop_str,
                     scratchpad_section=_scratchpad.format_scratchpad_section(scratchpad_result),
+                    allocator_section=_format_allocator_section(state.allocator_output),
                 )
             _cap_sys, _ = __import__("bot_stage3_decision")._load_prompts()
             _cap_user    = user_prompt

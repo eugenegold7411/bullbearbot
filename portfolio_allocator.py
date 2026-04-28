@@ -61,6 +61,7 @@ _PA_DEFAULTS: dict = {
     "enable_live":                     False,   # ALWAYS False this sprint
     "replace_score_gap":               15.0,
     "trim_score_drop":                 10.0,    # normalized threshold for TRIM (score ≤ 40)
+    "trim_score_threshold":            4,       # S7-F: raw thesis_score ceiling for TRIM (1–10 scale)
     "weight_deadband":                 0.02,    # 2% — min weight gap to trigger action
     "min_rebalance_notional":          500.0,   # $500 minimum to recommend
     "max_recommendations_per_cycle":   3,
@@ -309,6 +310,7 @@ def _decide_actions(
     min_notional        = float(pa_cfg["min_rebalance_notional"])
     weight_deadband     = float(pa_cfg["weight_deadband"])
     max_recs            = int(pa_cfg["max_recommendations_per_cycle"])
+    trim_thresh         = int(pa_cfg["trim_score_threshold"])   # S7-F: config-driven
     available_for_new   = float(sizes.get("available_for_new", 0) or 0)
 
     target_wts = _target_weights(incumbents, sizes)
@@ -325,9 +327,9 @@ def _decide_actions(
         tier_max = target_wts.get(sym, 0.08)
 
         # TRIM: thesis weak AND position is large enough to trim meaningfully
-        # threshold: thesis_score <= 4 (normalized <= 40), which represents
-        # "exit_consider" or "reduce" territory in portfolio_intelligence
-        if score <= 4 and mv > min_notional:
+        # threshold: thesis_score <= trim_thresh (normalized <= 40 at default 4),
+        # representing "exit_consider" or "reduce" territory in portfolio_intelligence
+        if score <= trim_thresh and mv > min_notional:
             trim_notional = round(mv * 0.25, 2)   # trim ~25% of position
             if trim_notional >= min_notional:
                 proposed.append({
@@ -662,8 +664,13 @@ def format_allocator_section(output: Optional[dict]) -> str:
     Authority: PRESENTATION — formats shadow output as advisory prompt text.
       No enforcement authority. Claude treats this as context, not mandate.
     """
+    # S7-E: explicit absence header — Claude knowing the section exists but has no
+    # data this cycle is more informative than silent omission (Option B confirmed).
     if not output:
-        return ""
+        return (
+            "=== PORTFOLIO ALLOCATOR SHADOW (advisory only) ===\n"
+            "  (allocator not available this cycle)"
+        )
 
     lines = ["=== PORTFOLIO ALLOCATOR SHADOW (advisory only) ==="]
 

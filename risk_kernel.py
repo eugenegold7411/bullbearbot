@@ -514,6 +514,16 @@ def size_position(
     max_pos_pct = _params(config).get("max_position_pct_equity")
     if max_pos_pct is not None:
         max_pos_dollars = equity * float(max_pos_pct)
+        # S7-P: subtract existing position value so ADD orders don't breach cap.
+        existing_val = next(
+            (p.market_value for p in snapshot.positions if p.symbol == idea.symbol), 0.0
+        )
+        max_pos_dollars = max(0.0, max_pos_dollars - existing_val)
+        if existing_val:
+            log.debug(
+                "[RISK] %s: max_position_pct_equity headroom adjusted by existing $%.0f → $%.0f",
+                idea.symbol, existing_val, max_pos_dollars,
+            )
         if max_dollars > max_pos_dollars:
             log.debug(
                 "[RISK] %s: budget $%.0f capped to $%.0f by max_position_pct_equity=%.0f%%",

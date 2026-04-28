@@ -748,9 +748,11 @@ class TestShadowOnlyGuarantee:
             "build_user_prompt() must accept allocator_section parameter (S6-ALLOCATOR)"
 
     def test_allocator_section_injected_into_prompt(self):
-        """format_allocator_section(None) returns empty string (no output → no injection)."""
+        """format_allocator_section(None) returns fallback header (S7-E: Option B — explicit absence).
+        Claude seeing "not available" is more informative than silent omission."""
         section = pa.format_allocator_section(None)
-        assert section == ""
+        assert "PORTFOLIO ALLOCATOR" in section
+        assert "not available" in section
 
     def test_format_allocator_section_advisory_label(self, tmp_path):
         positions = [_make_position("XBI", 20, 150, 140)]

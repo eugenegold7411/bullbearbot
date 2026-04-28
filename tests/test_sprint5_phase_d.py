@@ -174,10 +174,11 @@ class TestSystemPromptEarnings:
         return p.read_text()
 
     def test_pd08_system_references_pre_earnings_intelligence(self):
-        """system_v1.txt EARNINGS section references PRE-EARNINGS INTELLIGENCE."""
+        """system_v1.txt has an EARNINGS section covering pre-earnings guidance."""
         text = self._load_system()
-        assert "PRE-EARNINGS INTELLIGENCE" in text, (
-            "system_v1.txt must mention PRE-EARNINGS INTELLIGENCE section"
+        # v1 used 'PRE-EARNINGS INTELLIGENCE'; v2 uses 'EARNINGS INTELLIGENCE'
+        assert "EARNINGS INTELLIGENCE" in text or "PRE-EARNINGS INTELLIGENCE" in text, (
+            "system_v1.txt must contain an earnings intelligence section"
         )
 
     def test_pd09_system_references_earnings_pending_catalyst_type(self):

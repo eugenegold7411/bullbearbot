@@ -132,10 +132,14 @@ class TestSystemPromptPDTInstruction(unittest.TestCase):
     """system_v1.txt must state PDT day-trade limit is N/A above $25K equity."""
 
     def test_system_prompt_pdt_exempt_language_present(self):
-        """System prompt must explain PDT-exempt status for accounts above $25K."""
+        """System prompt must instruct Claude not to self-impose PDT limits above threshold."""
         system_txt = (Path(_BOT_DIR) / "prompts" / "system_v1.txt").read_text()
-        self.assertIn("PDT-exempt", system_txt,
-                      "system_v1.txt must contain 'PDT-exempt' for accounts above $25K")
+        # v2 prompt uses "Never self-impose PDT day-trade limits when equity is above the threshold"
+        self.assertTrue(
+            "PDT-exempt" in system_txt or "self-impose PDT" in system_txt,
+            "system_v1.txt must express PDT-exempt behaviour (either 'PDT-exempt' or "
+            "'self-impose PDT' phrasing)",
+        )
 
     def test_system_prompt_no_never_open_if_pdt_zero(self):
         """System prompt must NOT contain the old 'PDT remaining = 0' blocking rule."""

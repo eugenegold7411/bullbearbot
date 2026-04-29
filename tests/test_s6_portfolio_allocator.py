@@ -278,12 +278,14 @@ class TestDecisionLogic:
         zzz = next(p for p in proposed if p["symbol"] == "ZZZ")
         assert zzz["action"] == "TRIM"
 
-    def test_no_trim_when_score_5(self):
+    def test_trim_when_score_5(self):
+        # S8-shadow-hardening: trim_score_threshold raised from 4→5 to align with
+        # system_v1.txt "4–5/10: TRIM 25%". Score=5 now correctly fires TRIM.
         incs  = [self._incumbent("SPY", 5, market_value=5_000.0)]
         pi    = _make_pi_data([], equity=100_000.0)
         proposed, _ = self._run(incs, [], pi)
         spy = next(p for p in proposed if p["symbol"] == "SPY")
-        assert spy["action"] == "HOLD"
+        assert spy["action"] == "TRIM"
 
     def test_no_trim_when_notional_below_floor(self):
         cfg = _base_cfg()

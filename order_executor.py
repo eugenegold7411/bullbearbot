@@ -803,7 +803,9 @@ def execute_all(
                     from portfolio_intelligence import (
                         execute_reallocate,  # noqa: PLC0415
                     )
-                    realloc_result = execute_reallocate(action, _get_alpaca())
+                    realloc_result = execute_reallocate(
+                        action.get("exit_symbol"), action, _get_alpaca()
+                    )
                     results.append(ExecutionResult(
                         symbol=f"{action.get('exit_symbol','?')}→{action.get('entry_symbol','?')}",
                         action="reallocate",

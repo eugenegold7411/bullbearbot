@@ -229,9 +229,9 @@ class TestTrimScoreThreshold(unittest.TestCase):
         actions = [a["action"] for a in proposed]
         self.assertIn("TRIM", actions)
 
-    def test_default_threshold_is_4(self):
-        """_PA_DEFAULTS has trim_score_threshold=4 (unchanged behavior after S7-F)."""
-        self.assertEqual(self._PA_DEFAULTS["trim_score_threshold"], 4)
+    def test_default_threshold_is_5(self):
+        """_PA_DEFAULTS has trim_score_threshold=5 (raised S8 to align with system_v1.txt "4–5/10: TRIM")."""
+        self.assertEqual(self._PA_DEFAULTS["trim_score_threshold"], 5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

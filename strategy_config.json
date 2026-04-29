@@ -276,6 +276,7 @@
     "enable_live": false,
     "replace_score_gap": 15,
     "trim_score_drop": 10,
+    "trim_score_threshold": 5,
     "weight_deadband": 0.02,
     "min_rebalance_notional": 500,
     "max_recommendations_per_cycle": 5,

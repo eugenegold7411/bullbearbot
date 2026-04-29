@@ -12,7 +12,7 @@ Feature flags (strategy_config.json portfolio_allocator section):
 
 Decision rules (explicit, legible):
   HOLD    — default for all incumbents
-  TRIM    — thesis_score <= 4 (normalized <=40) AND notional > min_rebalance_notional
+  TRIM    — thesis_score <= 5 (normalized <=50) AND notional > min_rebalance_notional
   ADD     — thesis_score >= 7 (normalized >=70) AND room below tier ceiling
             AND available_for_new > min_rebalance_notional
   REPLACE — candidate.signal_score − weakest_incumbent.thesis_score_normalized
@@ -61,7 +61,7 @@ _PA_DEFAULTS: dict = {
     "enable_live":                     False,   # ALWAYS False this sprint
     "replace_score_gap":               15.0,
     "trim_score_drop":                 10.0,    # normalized threshold for TRIM (score ≤ 40)
-    "trim_score_threshold":            4,       # S7-F: raw thesis_score ceiling for TRIM (1–10 scale)
+    "trim_score_threshold":            5,       # S7-F/S8-D: raw thesis_score ceiling for TRIM (1–10 scale); aligned with system_v1.txt "4–5/10: TRIM"
     "weight_deadband":                 0.02,    # 2% — min weight gap to trigger action
     "min_rebalance_notional":          500.0,   # $500 minimum to recommend
     "max_recommendations_per_cycle":   5,
@@ -612,6 +612,12 @@ def run_allocator_shadow(
 
     except Exception as exc:
         log.warning("[ALLOC] run_allocator_shadow failed (non-fatal): %s", exc)
+        _write_artifact({
+            "schema_version": SCHEMA_VERSION,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "status": "error",
+            "error": str(exc),
+        })
         return None
 
 

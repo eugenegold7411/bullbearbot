@@ -105,7 +105,14 @@
     "_protection_grace_seconds_note": "Alpaca paper propagation buffer — bracket stop children take 1-3s to appear in GET /orders after a fill; 120s = two full market cycles before protection_missing fires",
     "earnings_aware_stop_enabled": false,
     "earnings_stop_eda_trigger": 1,
-    "earnings_stop_iv_floor_pct": 0.05
+    "earnings_stop_iv_floor_pct": 0.05,
+    "trail_tiers": [
+      {"profit_r": 1.0, "lock_pct": 0.00},
+      {"profit_r": 2.0, "lock_pct": 0.50},
+      {"profit_r": 3.0, "lock_pct": 0.67},
+      {"profit_r": 4.0, "lock_pct": 0.75}
+    ],
+    "_trail_tiers_note": "Graduated trail. When present, replaces trail_trigger_r/trail_to_breakeven_plus_pct. profit_r uses entry x stop_loss_pct_core as denominator. lock_pct is the fraction of unrealized gains locked in by moving the stop up."
   },
   "account2": {
     "enabled": true,

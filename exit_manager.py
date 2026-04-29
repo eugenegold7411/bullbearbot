@@ -645,6 +645,37 @@ def _trail_cancel_and_replace(
         return False
 
 
+def _graduated_trail_stop(
+    current_price: float,
+    entry_price: float,
+    stop_price: float,
+    tiers: list,
+    stop_loss_pct_core: float,
+) -> Optional[float]:
+    """
+    Graduated trail: compute new stop from config-driven tier table.
+
+    Uses entry_price × stop_loss_pct_core as the fixed denominator so profit_r
+    keeps growing correctly after the stop moves above entry (the legacy formula
+    entry_price - stop_price goes negative and permanently disables the trail).
+
+    Returns new stop price if a tier fires, None otherwise.
+    """
+    original_stop_dist = entry_price * stop_loss_pct_core
+    if original_stop_dist <= 0:
+        return None
+    profit_r = (current_price - entry_price) / original_stop_dist
+    # Walk tiers in ascending order; keep the highest one where profit_r qualifies.
+    active_tier: Optional[dict] = None
+    for t in sorted(tiers, key=lambda x: float(x["profit_r"])):
+        if profit_r >= float(t["profit_r"]):
+            active_tier = t
+    if active_tier is None:
+        return None
+    lock_pct = float(active_tier["lock_pct"])
+    return round(entry_price + lock_pct * (current_price - entry_price), 2)
+
+
 def maybe_trail_stop(
     position,
     alpaca_client,
@@ -652,8 +683,8 @@ def maybe_trail_stop(
     exit_info: Optional[dict] = None,
 ) -> bool:
     """
-    If position profit >= trail_trigger_r × stop distance, trail stop to
-    entry + trail_to_breakeven_plus_pct. Returns True if trail was applied.
+    Trail stop toward the graduated tier targets (or legacy single-trigger
+    breakeven+0.5%) when profit grows. Returns True if trail was applied.
     """
     em_cfg = _em_config(strategy_config)
     if not em_cfg.get("trail_stop_enabled", True):
@@ -676,18 +707,30 @@ def maybe_trail_stop(
     if stop_price is None:
         return False
 
-    stop_dist = entry_price - stop_price
-    if stop_dist <= 0:
-        return False
-
-    trigger_r = em_cfg.get("trail_trigger_r", 1.0)
-    profit_r  = (current - entry_price) / stop_dist
-
-    if profit_r < trigger_r:
-        return False
-
-    plus_pct = em_cfg.get("trail_to_breakeven_plus_pct", 0.005)
-    new_stop = round(entry_price * (1 + plus_pct), 2)
+    tiers = em_cfg.get("trail_tiers")
+    if tiers:
+        # Graduated trail path — fixed denominator avoids self-disabling after first fire.
+        stop_loss_pct = float(
+            strategy_config.get("parameters", {}).get("stop_loss_pct_core", 0.035)
+        )
+        new_stop  = _graduated_trail_stop(current, entry_price, stop_price, tiers, stop_loss_pct)
+        if new_stop is None:
+            return False
+        # For logging: recalculate profit_r and find the active tier for display.
+        original_stop_dist = entry_price * stop_loss_pct
+        profit_r  = (current - entry_price) / original_stop_dist if original_stop_dist > 0 else 0.0
+        trigger_r = float(sorted(tiers, key=lambda x: float(x["profit_r"]))[0]["profit_r"])
+    else:
+        # Legacy single-trigger path.
+        stop_dist = entry_price - stop_price
+        if stop_dist <= 0:
+            return False
+        trigger_r = em_cfg.get("trail_trigger_r", 1.0)
+        profit_r  = (current - entry_price) / stop_dist
+        if profit_r < trigger_r:
+            return False
+        plus_pct = em_cfg.get("trail_to_breakeven_plus_pct", 0.005)
+        new_stop = round(entry_price * (1 + plus_pct), 2)
 
     # Earnings-aware stop floor: when earnings are imminent, replace the tight
     # trail target with a wider IV-based floor so the position isn't stopped out
@@ -712,9 +755,8 @@ def maybe_trail_stop(
         return False  # existing stop already at or better than trail target
 
     log.info(
-        "[TRAIL_STOP] %s: profit_r=%.2fx ≥ trigger=%.1fx — trailing "
-        "stop $%.2f → $%.2f (breakeven+%.1f%%)",
-        sym, profit_r, trigger_r, stop_price, new_stop, plus_pct * 100,
+        "[TRAIL_STOP] %s: profit_r=%.2fx ≥ trigger=%.1fx — trailing stop $%.2f → $%.2f",
+        sym, profit_r, trigger_r, stop_price, new_stop,
     )
 
     if stop_oid:

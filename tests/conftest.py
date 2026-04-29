@@ -235,6 +235,14 @@ except Exception:
     pass
 _stub_if_absent("pydantic")
 _stub_if_absent("sendgrid", ["helpers", "helpers.mail"])
+_stub_if_absent("feedparser")
+# Ensure feedparser.parse exists (used by macro_wire.py)
+try:
+    import feedparser as _fp_stub
+    if not hasattr(_fp_stub, "parse"):
+        _fp_stub.parse = lambda url, *a, **kw: types.SimpleNamespace(entries=[])
+except Exception:
+    pass
 
 # Ensure anthropic.Anthropic exists with a .messages attribute even if the stub is bare
 try:
@@ -312,6 +320,26 @@ except Exception:
 # file's module-level _stub("trade_memory", ...) can replace it with an incomplete stub.
 try:
     import trade_memory as _tm  # noqa: F401
+except Exception:
+    pass
+
+# Pre-import modules that test_morning_brief_held_exempt.py stubs at module level via
+# sys.modules.setdefault(). Without this, bare stubs (no attributes) get locked into
+# sys.modules before later tests need the real functions (e.g. get_core, save_structure).
+try:
+    import watchlist_manager as _wm  # noqa: F401
+except Exception:
+    pass
+try:
+    import options_state as _os_mod  # noqa: F401
+except Exception:
+    pass
+try:
+    import insider_intelligence as _ii  # noqa: F401
+except Exception:
+    pass
+try:
+    import earnings_calendar_lookup as _ecl  # noqa: F401
 except Exception:
     pass
 

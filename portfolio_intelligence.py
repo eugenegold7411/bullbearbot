@@ -889,9 +889,13 @@ def format_thesis_ranking_section(
             "exit_consider":  "EXIT CONSIDER — weakest thesis",
         }
         lines.append(f"   Action: {action_map.get(action, action)}")
-        eda = ts.get("earnings_days_away")
-        if eda is not None and eda == 0:
-            lines.append("   *** [CATALYST CONSUMED — re-evaluate fresh] ***")
+        eda    = ts.get("earnings_days_away")
+        timing = ts.get("earnings_timing")
+        if eda is not None and eda == 0 and timing == "pre-market":
+            lines.append("   *** [CATALYST CONSUMED — re-evaluate fresh (pre-market)] ***")
+        elif eda is not None and eda == 0:
+            # post-market or unknown: event hasn't happened yet from a trading perspective
+            lines.append("   ⚠ [EARNINGS TODAY — binary event exposure rule applies]")
         elif eda is not None and eda == 1:
             lines.append("   ⚠ [EARNINGS TOMORROW — apply binary event exposure rule]")
         lines.append("")
@@ -1095,12 +1099,22 @@ def build_portfolio_intelligence(
             from earnings_calendar_lookup import (
                 earnings_days_away as _eda,  # noqa: PLC0415
             )
+            from earnings_calendar_lookup import (
+                earnings_timing as _etiming,  # noqa: PLC0415
+            )
             ts["earnings_days_away"] = _eda(pos.symbol)
+            ts["earnings_timing"] = _etiming(pos.symbol)
         except Exception:
             ts["earnings_days_away"] = None
+            ts["earnings_timing"] = None
 
-        eda_val = ts.get("earnings_days_away")
-        if eda_val is not None and eda_val < 0:
+        eda_val    = ts.get("earnings_days_away")
+        eda_timing = ts.get("earnings_timing")
+        consumed = (
+            (eda_val is not None and eda_val < 0) or
+            (eda_val == 0 and eda_timing == "pre-market")
+        )
+        if consumed:
             ts["catalyst_consumed"] = True
             ts["catalyst_consumed_at"] = datetime.now(timezone.utc).isoformat()
             ts["thesis_score"] = max(0, ts.get("thesis_score", 8) - 1)

@@ -71,6 +71,16 @@ def earnings_days_away(symbol: str, calendar_map: Optional[dict] = None) -> Opti
         return None
 
 
+def earnings_timing(symbol: str, calendar_map: Optional[dict] = None) -> Optional[str]:
+    """Return timing string ('pre-market', 'post-market', 'unknown') or None if absent."""
+    if calendar_map is None:
+        calendar_map = load_calendar_map()
+    entry = calendar_map.get((symbol or "").upper())
+    if not entry:
+        return None
+    return entry.get("timing")
+
+
 def format_earnings_line(symbol: str, n_days: Optional[int], iso: str) -> str:
     """One-line render for the morning brief / debug. Never raises."""
     sym = (symbol or "?").upper()

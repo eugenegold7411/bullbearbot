@@ -80,11 +80,11 @@ class TestEarningsFlagInThesisSection(unittest.TestCase):
         import portfolio_intelligence as pi
         cls._fmt = staticmethod(pi.format_thesis_ranking_section)
 
-    def test_eda_zero_shows_consumed_flag(self):
-        """earnings_days_away=0 → CATALYST CONSUMED flag appears."""
+    def test_eda_zero_shows_earnings_today_flag(self):
+        """earnings_days_away=0 without timing → EARNINGS TODAY (safe default — upcoming)."""
         out = self._fmt([_make_ts(eda=0)])
-        self.assertIn("CATALYST CONSUMED", out)
-        self.assertIn("re-evaluate fresh", out)
+        self.assertIn("EARNINGS TODAY", out)
+        self.assertNotIn("CATALYST CONSUMED", out)
 
     def test_eda_one_shows_tomorrow_flag(self):
         """earnings_days_away=1 → EARNINGS TOMORROW flag appears."""
@@ -120,7 +120,7 @@ class TestEarningsFlagInThesisSection(unittest.TestCase):
     def test_eda_zero_and_eda_one_in_same_section(self):
         """Both flags render correctly when multiple positions."""
         out = self._fmt([_make_ts("AAPL", eda=0), _make_ts("NVDA", eda=1)])
-        self.assertIn("CATALYST CONSUMED", out)
+        self.assertIn("EARNINGS TODAY", out)
         self.assertIn("EARNINGS TOMORROW", out)
 
 

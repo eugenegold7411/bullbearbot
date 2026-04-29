@@ -41,10 +41,13 @@ log = logging.getLogger(__name__)
 _PHASE1_STRATEGIES: frozenset[OptionStrategy] = frozenset({
     OptionStrategy.SINGLE_CALL,
     OptionStrategy.SINGLE_PUT,
+    OptionStrategy.SHORT_PUT,
     OptionStrategy.CALL_DEBIT_SPREAD,
     OptionStrategy.PUT_DEBIT_SPREAD,
     OptionStrategy.CALL_CREDIT_SPREAD,
     OptionStrategy.PUT_CREDIT_SPREAD,
+    OptionStrategy.STRADDLE,
+    OptionStrategy.STRANGLE,
 })
 
 # Auditable execution log path (D13)
@@ -156,10 +159,11 @@ def _submit_single_leg(
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import LimitOrderRequest
 
+        order_side = OrderSide.SELL if leg.side == "sell" else OrderSide.BUY
         req = LimitOrderRequest(
             symbol=occ_sym,
             qty=structure.contracts,
-            side=OrderSide.BUY,
+            side=order_side,
             time_in_force=TimeInForce.GTC,
             limit_price=limit_price,
         )
@@ -172,11 +176,11 @@ def _submit_single_leg(
         structure = _set_lifecycle(structure, StructureLifecycle.SUBMITTED, None)
         structure.order_ids.append(order_id)
         structure.add_audit(
-            f"single leg submitted: {occ_sym} qty={structure.contracts} "
+            f"single leg submitted: {occ_sym} side={order_side.value} qty={structure.contracts} "
             f"limit={limit_price:.2f} order_id={order_id}"
         )
-        log.info("[EXECUTOR] %s single leg submitted: %s limit=%.2f order=%s",
-                 structure.underlying, occ_sym, limit_price, order_id)
+        log.info("[EXECUTOR] %s single leg submitted: %s side=%s limit=%.2f order=%s",
+                 structure.underlying, occ_sym, order_side.value, limit_price, order_id)
 
     except Exception as exc:
         err = str(exc)

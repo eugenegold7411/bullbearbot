@@ -166,7 +166,9 @@ class OptionStrategy(str, Enum):
     PUT_CREDIT_SPREAD  = "put_credit_spread"
     SINGLE_CALL        = "single_call"
     SINGLE_PUT         = "single_put"
+    SHORT_PUT          = "short_put"
     STRADDLE           = "straddle"
+    STRANGLE           = "strangle"
     CLOSE_OPTION       = "close_option"
 
 

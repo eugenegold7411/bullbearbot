@@ -54,6 +54,9 @@ _PHASE1_STRATEGIES: frozenset[OptionStrategy] = frozenset({
     OptionStrategy.PUT_CREDIT_SPREAD,
     OptionStrategy.SINGLE_CALL,
     OptionStrategy.SINGLE_PUT,
+    OptionStrategy.SHORT_PUT,
+    OptionStrategy.STRADDLE,
+    OptionStrategy.STRANGLE,
 })
 
 # Default liquidity requirements (tightened; overridden by config liquidity_gates)
@@ -204,6 +207,16 @@ def build_structure(
     if economics.get("net_debit") is None:
         return None, f"could not compute economics for {symbol} (missing mid prices)"
 
+    # ── SHORT_PUT minimum premium check ──────────────────────────────────────
+    if strategy == OptionStrategy.SHORT_PUT:
+        _max_profit = economics.get("max_profit") or 0.0
+        _min_prem   = float(config.get("short_put_min_premium_usd", 50.0))
+        if _max_profit * 100 < _min_prem:
+            return None, (
+                f"{symbol} short_put: premium ${_max_profit * 100:.0f} "
+                f"< minimum ${_min_prem:.0f}"
+            )
+
     # ── 5. Size contracts ─────────────────────────────────────────────────────
     # If action already specifies max_cost, use it; otherwise compute from equity
     if not max_cost:
@@ -342,6 +355,12 @@ def select_strikes(
     greeks_cfg = config.get("greeks", {})
     min_delta  = float(greeks_cfg.get("min_delta", 0.30))
 
+    # Straddle/strangle need both call and put data — route before single-type branch
+    if strategy == OptionStrategy.STRADDLE:
+        return _select_straddle_strikes(exp_data, spot, min_delta)
+    if strategy == OptionStrategy.STRANGLE:
+        return _select_strangle_strikes(exp_data, spot)
+
     # Determine option type from strategy
     if strategy in (OptionStrategy.SINGLE_CALL,
                     OptionStrategy.CALL_DEBIT_SPREAD,
@@ -350,7 +369,8 @@ def select_strikes(
         opts        = exp_data.get("calls", [])
     elif strategy in (OptionStrategy.SINGLE_PUT,
                       OptionStrategy.PUT_DEBIT_SPREAD,
-                      OptionStrategy.PUT_CREDIT_SPREAD):
+                      OptionStrategy.PUT_CREDIT_SPREAD,
+                      OptionStrategy.SHORT_PUT):
         option_type = "put"
         opts        = exp_data.get("puts", [])
     else:
@@ -372,6 +392,21 @@ def select_strikes(
             "long_leg_data":     long_leg,
             "short_strike_price": None,
             "short_leg_data":    None,
+        }
+
+    elif strategy == OptionStrategy.SHORT_PUT:
+        a2_cfg       = config.get("account2", config) if isinstance(config.get("account2"), dict) else config
+        delta_target = float(a2_cfg.get("short_put_delta_target", 0.275))
+        delta_tol    = float(a2_cfg.get("short_put_delta_tolerance", 0.10))
+        otm_leg = _pick_otm_put_leg(opts_sorted, spot, delta_target, delta_tol)
+        if otm_leg is None:
+            return None
+        return {
+            "option_type":        option_type,
+            "long_strike_price":  float(otm_leg["strike"]),  # "long" naming is legacy
+            "long_leg_data":      otm_leg,
+            "short_strike_price": None,
+            "short_leg_data":     None,
         }
 
     elif strategy in (OptionStrategy.CALL_DEBIT_SPREAD,
@@ -411,6 +446,38 @@ def _pick_atm_leg(opts: list[dict], spot: float, min_delta: float) -> Optional[d
 
     # No delta — use closest strike to spot
     return min(opts, key=lambda o: abs(float(o["strike"]) - spot))
+
+
+def _pick_otm_put_leg(
+    opts: list[dict],
+    spot: float,
+    delta_target: float,
+    delta_tol: float,
+) -> Optional[dict]:
+    """
+    Pick an OTM put with delta magnitude closest to delta_target.
+
+    OTM puts have strikes below spot; put deltas are negative (e.g., -0.275).
+    delta_target and delta_tol apply to the absolute value of delta.
+    Falls back to closest-to-spot OTM strike when delta data is absent.
+    """
+    otm_opts = [o for o in opts if float(o.get("strike", 0)) < spot]
+    if not otm_opts:
+        return None
+
+    has_delta = any("delta" in o for o in otm_opts)
+    if has_delta:
+        eligible = [
+            o for o in otm_opts
+            if "delta" in o
+            and abs(abs(float(o["delta"])) - delta_target) <= delta_tol
+        ]
+        if not eligible:
+            eligible = otm_opts
+        return min(eligible, key=lambda o: abs(abs(float(o.get("delta", 0))) - delta_target))
+
+    # No delta — closest OTM strike below spot (highest OTM put)
+    return max(otm_opts, key=lambda o: float(o["strike"]))
 
 
 def _select_debit_spread_strikes(
@@ -496,6 +563,112 @@ def _select_credit_spread_strikes(
     }
 
 
+def _select_straddle_strikes(exp_data: dict, spot: float, min_delta: float) -> Optional[dict]:
+    """
+    Straddle: buy ATM call + buy ATM put at the same strike.
+
+    Strike selection: call closest to delta 0.50 (or closest to spot if no delta).
+    Put selected at the same numerical strike as the call.
+    Returns None if either side is unavailable.
+    """
+    calls = exp_data.get("calls", [])
+    puts  = exp_data.get("puts", [])
+    if not calls or not puts:
+        return None
+
+    calls_sorted = sorted(calls, key=lambda o: float(o["strike"]))
+    puts_sorted  = sorted(puts,  key=lambda o: float(o["strike"]))
+
+    call_leg = _pick_atm_leg(calls_sorted, spot, min_delta)
+    if call_leg is None:
+        return None
+    atm_strike = float(call_leg["strike"])
+
+    # Match put at the same strike; fall back to closest put strike
+    exact_put = next((p for p in puts_sorted if float(p["strike"]) == atm_strike), None)
+    if exact_put is None:
+        exact_put = min(puts_sorted, key=lambda p: abs(float(p["strike"]) - atm_strike))
+    if exact_put is None:
+        return None
+
+    return {
+        "option_type":        "straddle",
+        "call_strike_price":  atm_strike,
+        "call_leg_data":      call_leg,
+        "put_strike_price":   float(exact_put["strike"]),
+        "put_leg_data":       exact_put,
+        # legacy compat: map call leg to long_* so existing callers still work
+        "long_strike_price":  atm_strike,
+        "long_leg_data":      call_leg,
+        "short_strike_price": None,
+        "short_leg_data":     None,
+    }
+
+
+def _select_strangle_strikes(exp_data: dict, spot: float) -> Optional[dict]:
+    """
+    Strangle: buy OTM call + buy OTM put targeting delta ~0.30 on each side.
+
+    Call leg: OTM call (strike > spot) with delta closest to 0.30.
+              Falls back to first strike above spot if delta data absent.
+    Put leg:  OTM put  (strike < spot) with delta closest to -0.30.
+              Falls back to first strike below spot if delta data absent.
+    Returns None if either side is unavailable.
+    """
+    calls = exp_data.get("calls", [])
+    puts  = exp_data.get("puts", [])
+    if not calls or not puts:
+        return None
+
+    otm_calls = sorted(
+        [o for o in calls if float(o["strike"]) > spot],
+        key=lambda o: float(o["strike"]),
+    )
+    otm_puts = sorted(
+        [o for o in puts if float(o["strike"]) < spot],
+        key=lambda o: float(o["strike"]),
+        reverse=True,
+    )
+    if not otm_calls or not otm_puts:
+        return None
+
+    _TARGET_DELTA = 0.30
+
+    has_delta_calls = any("delta" in o for o in otm_calls)
+    if has_delta_calls:
+        call_leg = min(
+            otm_calls,
+            key=lambda o: abs(abs(float(o.get("delta", 0))) - _TARGET_DELTA),
+        )
+    else:
+        call_leg = otm_calls[0]  # closest OTM call by strike
+
+    has_delta_puts = any("delta" in o for o in otm_puts)
+    if has_delta_puts:
+        put_leg = min(
+            otm_puts,
+            key=lambda o: abs(abs(float(o.get("delta", 0))) - _TARGET_DELTA),
+        )
+    else:
+        put_leg = otm_puts[0]  # closest OTM put by strike
+
+    call_strike = float(call_leg["strike"])
+    put_strike  = float(put_leg["strike"])
+
+    return {
+        "option_type":        "strangle",
+        "call_strike_price":  call_strike,
+        "call_leg_data":      call_leg,
+        "put_strike_price":   put_strike,
+        "put_leg_data":       put_leg,
+        # legacy compat
+        "long_strike_price":  call_strike,
+        "long_leg_data":      call_leg,
+        "short_strike_price": None,
+        "short_leg_data":     None,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # validate_liquidity
 # ─────────────────────────────────────────────────────────────────────────────
@@ -537,6 +710,9 @@ def validate_liquidity(strikes_data: dict, config: dict) -> tuple[bool, str]:
         legs_to_check.append(("long",  strikes_data["long_leg_data"]))
     if strikes_data.get("short_leg_data"):
         legs_to_check.append(("short", strikes_data["short_leg_data"]))
+    # Straddle/strangle: put_leg_data is the second buy leg (not in short_leg_data)
+    if strikes_data.get("put_leg_data"):
+        legs_to_check.append(("put",   strikes_data["put_leg_data"]))
 
     for leg_label, leg in legs_to_check:
         oi = leg.get("openInterest", 0) or 0
@@ -603,7 +779,15 @@ def compute_economics(strategy: OptionStrategy, strikes_data: dict) -> dict:
     if long_mid is None:
         return result
 
-    if strategy in (OptionStrategy.SINGLE_CALL, OptionStrategy.SINGLE_PUT):
+    if strategy == OptionStrategy.SHORT_PUT:
+        # Sell OTM put: net_debit = negative (credit received)
+        # max_loss sized on 2x stop (stop at 200% of premium) rather than worst case (strike-premium)
+        _STOP_MULT = 2.0
+        result["net_debit"]  = round(-long_mid, 4)
+        result["max_profit"] = round(long_mid, 4)
+        result["max_loss"]   = round(long_mid * _STOP_MULT, 4)
+
+    elif strategy in (OptionStrategy.SINGLE_CALL, OptionStrategy.SINGLE_PUT):
         result["net_debit"]  = round(long_mid, 4)
         result["max_profit"] = None   # theoretically unlimited for calls
         result["max_loss"]   = round(long_mid, 4)
@@ -633,6 +817,19 @@ def compute_economics(strategy: OptionStrategy, strikes_data: dict) -> dict:
         result["net_debit"]  = round(net, 4)          # negative
         result["max_profit"] = round(credit, 4)        # credit received
         result["max_loss"]   = round(spread_width - credit, 4)
+
+    elif strategy in (OptionStrategy.STRADDLE, OptionStrategy.STRANGLE):
+        # Both legs are buys: total debit = call_mid + put_mid
+        put_leg = strikes_data.get("put_leg_data")
+        put_mid = _mid_price(put_leg)
+        if long_mid is None or put_mid is None:
+            return result
+        total_debit = round(long_mid + put_mid, 4)
+        result["net_debit"]  = total_debit
+        result["max_loss"]   = total_debit   # max loss = total debit paid
+        result["max_profit"] = None          # unlimited (large directional move)
+        result["long_mid"]   = long_mid      # call mid
+        result["short_mid"]  = put_mid       # repurposed: put mid
 
     return result
 
@@ -734,11 +931,52 @@ def build_legs(
 
     legs: list[OptionsLeg] = []
 
-    # Long leg
+    # Straddle/strangle: two buy legs — call then put at (possibly different) strikes
+    if option_type in ("straddle", "strangle"):
+        call_data   = strikes_data.get("call_leg_data")
+        put_data    = strikes_data.get("put_leg_data")
+        call_strike = strikes_data.get("call_strike_price")
+        put_strike  = strikes_data.get("put_strike_price")
+        if not call_data or not put_data or call_strike is None or put_strike is None:
+            return []
+        legs.append(OptionsLeg(
+            occ_symbol    = _build_occ_symbol(symbol, expiry, "call", call_strike),
+            underlying    = symbol,
+            side          = "buy",
+            qty           = 1,
+            option_type   = "call",
+            strike        = float(call_strike),
+            expiration    = expiry,
+            bid           = _maybe_float(call_data.get("bid")),
+            ask           = _maybe_float(call_data.get("ask")),
+            mid           = _mid_price(call_data),
+            delta         = _maybe_float(call_data.get("delta")),
+            open_interest = int(call_data["openInterest"]) if call_data.get("openInterest") is not None else None,
+            volume        = int(call_data["volume"]) if call_data.get("volume") is not None else None,
+        ))
+        legs.append(OptionsLeg(
+            occ_symbol    = _build_occ_symbol(symbol, expiry, "put", put_strike),
+            underlying    = symbol,
+            side          = "buy",
+            qty           = 1,
+            option_type   = "put",
+            strike        = float(put_strike),
+            expiration    = expiry,
+            bid           = _maybe_float(put_data.get("bid")),
+            ask           = _maybe_float(put_data.get("ask")),
+            mid           = _mid_price(put_data),
+            delta         = _maybe_float(put_data.get("delta")),
+            open_interest = int(put_data["openInterest"]) if put_data.get("openInterest") is not None else None,
+            volume        = int(put_data["volume"]) if put_data.get("volume") is not None else None,
+        ))
+        return legs
+
+    # Long leg (single or spread). SHORT_PUT is a sell leg — side overridden.
+    _leg_side = "sell" if strategy == OptionStrategy.SHORT_PUT else "buy"
     legs.append(OptionsLeg(
         occ_symbol    = _build_occ_symbol(symbol, expiry, option_type, long_strike),
         underlying    = symbol,
-        side          = "buy",
+        side          = _leg_side,
         qty           = 1,            # qty per contract — OptionsStructure.contracts scales
         option_type   = option_type,
         strike        = float(long_strike),
@@ -799,10 +1037,13 @@ def _dte_max_for_strategy(strategy: OptionStrategy) -> int:
     _DTE_MAP = {
         OptionStrategy.SINGLE_CALL:        21,
         OptionStrategy.SINGLE_PUT:         21,
+        OptionStrategy.SHORT_PUT:          45,
         OptionStrategy.CALL_DEBIT_SPREAD:  28,
         OptionStrategy.PUT_DEBIT_SPREAD:   28,
         OptionStrategy.CALL_CREDIT_SPREAD: 45,
         OptionStrategy.PUT_CREDIT_SPREAD:  45,
+        OptionStrategy.STRADDLE:           28,
+        OptionStrategy.STRANGLE:           28,
     }
     return _DTE_MAP.get(strategy, 28)
 
@@ -817,12 +1058,14 @@ def _max_cost_for_tier(
     is_spread = strategy in (
         OptionStrategy.CALL_DEBIT_SPREAD, OptionStrategy.PUT_DEBIT_SPREAD,
         OptionStrategy.CALL_CREDIT_SPREAD, OptionStrategy.PUT_CREDIT_SPREAD,
+        OptionStrategy.SHORT_PUT,   # size on stop-loss risk budget (5%)
     )
     if tier == Tier.DYNAMIC:
         pct = float(sizing_cfg.get("dynamic_max_pct", 0.03))
     elif is_spread:
         pct = float(sizing_cfg.get("core_spread_max_pct", 0.05))
     else:
+        # Single legs, straddles, strangles: 3% max (total debit = full risk)
         pct = float(sizing_cfg.get("core_single_leg_max_pct", 0.03))
     return equity * pct
 

@@ -236,7 +236,19 @@ EXPIRY TARGETS
 - Credit spread: usually 21–45 days
 - Single-leg: usually 7–14 days
 - Dynamic / momentum: same-week to short horizon
-- Straddle on binary event: 14–28 days (router scaffolded; builder not yet implemented — straddle candidates will not appear in the candidate set)
+- Straddle on binary event: 14–28 days
+- Strangle on binary event: 14–28 days
+
+LONG STRADDLE / STRANGLE (pre-earnings IV expansion)
+When IV rank < 40 (cheap) AND earnings are 6–14 days away:
+- Long straddle: buy ATM call + ATM put — profits from large move in either direction
+- Long strangle: buy OTM call + OTM put (~0.30 delta) — cheaper, needs bigger move
+- Enter when IV is cheap because you are buying volatility — it should be inexpensive
+- The earnings event is the catalyst for the move AND potential IV expansion
+- Exit before earnings print (DTE ≤ 2) unless conviction is very high
+- Max loss = total debit paid (defined risk)
+- Vega should be positive — you want IV to rise or the stock to move significantly
+- P(profit) is typically 30–45% — accept this for asymmetric payoff potential
 
 WHAT YOU NEVER DO
 - Never buy options on crypto

@@ -2760,15 +2760,15 @@ class TestSuite14OptionsBuilder(unittest.TestCase):
         self.assertEqual(result, exp14,
             f"select_expiry(5,21) should return 14-DTE={exp14}, got {result}")
 
-    # ── T7: Phase 2/3 returns not-yet-supported ───────────────────────────────
+    # ── T7: unimplemented strategy returns not-yet-supported ─────────────────
 
-    def test_build_structure_straddle_not_supported(self):
-        """T7: build_structure returns (None, 'not yet supported') for STRADDLE."""
+    def test_build_structure_close_option_not_supported(self):
+        """T7: build_structure returns (None, 'not yet supported') for CLOSE_OPTION (Phase 3+)."""
         from options_builder import build_structure
         from schemas import OptionStrategy
         action = {
             "symbol":          "GLD",
-            "option_strategy": OptionStrategy.STRADDLE.value,
+            "option_strategy": OptionStrategy.CLOSE_OPTION.value,
             "direction":       "neutral",
             "iv_rank":         50.0,
             "max_cost_usd":    500.0,
@@ -2921,22 +2921,22 @@ class TestSuite15OptionsExecutorAndIntelligence(unittest.TestCase):
         result = build_occ_symbol("AMZN", "2026-05-15", "put", 247.5)
         self.assertEqual(result, "AMZN260515P00247500")
 
-    # ── T3: Phase 2/3 strategy immediately rejected ───────────────────────────
+    # ── T3: unimplemented strategy immediately rejected ───────────────────────
 
-    def test_submit_structure_phase2_rejected(self):
-        """T3: STRADDLE (Phase 2) → lifecycle=REJECTED, audit_log contains 'not yet supported'."""
+    def test_submit_structure_close_option_rejected(self):
+        """T3: CLOSE_OPTION (Phase 3+) → lifecycle=REJECTED, audit_log contains 'not yet supported'."""
         from options_executor import submit_structure
         from schemas import OptionStrategy, StructureLifecycle
 
         struct = self._make_structure(
-            strategy=OptionStrategy.STRADDLE,
+            strategy=OptionStrategy.CLOSE_OPTION,
             lifecycle=StructureLifecycle.PROPOSED,
         )
-        # trading_client is never called for Phase 2 strategies
+        # trading_client is never called for Phase 3+ strategies
         result = submit_structure(struct, trading_client=None, config={})
 
         self.assertEqual(result.lifecycle, StructureLifecycle.REJECTED,
-                         "STRADDLE must be rejected immediately")
+                         "CLOSE_OPTION must be rejected immediately")
         self.assertTrue(len(result.audit_log) > 0, "audit_log must have an entry")
         last_entry = result.audit_log[-1]
         last_msg = last_entry["msg"] if isinstance(last_entry, dict) else str(last_entry)

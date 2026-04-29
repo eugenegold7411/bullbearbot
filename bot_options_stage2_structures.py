@@ -27,11 +27,13 @@ log = get_logger(__name__)
 _STRATEGY_FROM_STRUCTURE: dict[str, _OS] = {
     "long_call":          _OS.SINGLE_CALL,
     "long_put":           _OS.SINGLE_PUT,
+    "short_put":          _OS.SHORT_PUT,
     "debit_call_spread":  _OS.CALL_DEBIT_SPREAD,
     "debit_put_spread":   _OS.PUT_DEBIT_SPREAD,
     "credit_call_spread": _OS.CALL_CREDIT_SPREAD,
     "credit_put_spread":  _OS.PUT_CREDIT_SPREAD,
-    "straddle":           _OS.STRADDLE,   # routed; builder stub until Phase 2
+    "straddle":           _OS.STRADDLE,
+    "strangle":           _OS.STRANGLE,
 }
 
 
@@ -55,6 +57,12 @@ _A2_ROUTER_DEFAULTS: dict = {
     "pre_earnings_iv_rank_min":                   85,   # IV rank floor (very elevated only)
     "pre_earnings_dte_min":                        7,   # minimum DTE for pre-earnings credit spread
     "pre_earnings_dte_max":                       14,   # maximum DTE for pre-earnings credit spread
+    # RULE_STRADDLE_STRANGLE: cheap IV + approaching earnings window
+    "straddle_iv_rank_max":  40,   # IV rank ceiling (cheap premium required)
+    "straddle_dte_min":       6,   # minimum DTE window for straddle/strangle entry
+    "straddle_dte_max":      14,   # maximum DTE window for straddle/strangle entry
+    # RULE_SHORT_PUT: sell OTM put in elevated IV + bullish/neutral environments
+    "short_put_iv_rank_min": 50,   # minimum IV rank to enter short put
 }
 
 
@@ -258,6 +266,21 @@ def _route_strategy(
             )
             return _pe
 
+    # RULE_STRADDLE_STRANGLE: cheap IV + earnings approaching in the straddle window.
+    # Fires before RULE_EARNINGS so that when IV is cheap (<40) and earnings are
+    # 6–14 days away, we prefer straddle/strangle over a directional debit spread.
+    straddle_iv_max  = float(rcfg.get("straddle_iv_rank_max", 40))
+    straddle_dte_min = int(rcfg.get("straddle_dte_min", 6))
+    straddle_dte_max = int(rcfg.get("straddle_dte_max", 14))
+    if (eda is not None
+            and straddle_dte_min <= eda <= straddle_dte_max
+            and eda > earnings_dte_blackout
+            and pack.iv_rank < straddle_iv_max):
+        allowed = ["straddle", "strangle"]
+        log.info("[OPTS] RULE_STRADDLE_STRANGLE %s: eda=%d iv_rank=%.1f → %s",
+                 sym, eda, pack.iv_rank, allowed)
+        return allowed
+
     # RULE_EARNINGS: direction-split when near (but not in blackout for) earnings
     # AND iv_rank is not elevated. Elevated IV (>= gate) falls through to RULE2_CREDIT/7
     # so we don't buy premium into expected vol crush.
@@ -285,6 +308,23 @@ def _route_strategy(
         log.debug("[OPTS] _route_strategy %s: RULE2_CREDIT iv_env=very_expensive dir=%s -> %s",
                   sym, pack.a1_direction, _vexp)
         return _vexp
+
+    # RULE_SHORT_PUT: sell OTM put when IV is elevated and direction is bullish/neutral.
+    # After RULE2_CREDIT (very_expensive handled) and before debit/mixed rules.
+    # iv_env check blocks cheap environments where selling premium has poor edge.
+    _sp_iv_min = float(rcfg.get("short_put_iv_rank_min", 50))
+    if (pack.iv_rank >= _sp_iv_min
+            and pack.a1_direction in ("bullish", "neutral")
+            and pack.iv_environment not in ("very_cheap", "cheap")):
+        _sp_score      = pack.a1_signal_score or 0
+        _sp_conviction = "high" if _sp_score >= 70 else "medium" if _sp_score >= 40 else "low"
+        _sp_earn_ok    = (eda is None or eda < 0 or eda > earnings_dte_blackout)
+        if _sp_conviction in ("high", "medium") and _sp_earn_ok:
+            log.debug(
+                "[OPTS] _route_strategy %s: RULE_SHORT_PUT iv_rank=%.1f iv_env=%s dir=%s -> ['short_put']",
+                sym, pack.iv_rank, pack.iv_environment, pack.a1_direction,
+            )
+            return ["short_put"]
 
     # RULE5: cheap IV + directional signal
     if pack.iv_environment in ("very_cheap", "cheap") and pack.a1_direction != "neutral":
@@ -353,11 +393,21 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
         return "RULE_EARNINGS_HIGH_IV"
     if eda is not None and eda < 0 and pack.iv_rank >= pe_iv_min:
         return "RULE_POST_EARNINGS"
+    straddle_iv_max  = float(rcfg.get("straddle_iv_rank_max", 40))
+    straddle_dte_min = int(rcfg.get("straddle_dte_min", 6))
+    straddle_dte_max = int(rcfg.get("straddle_dte_max", 14))
+    if (eda is not None
+            and straddle_dte_min <= eda <= straddle_dte_max
+            and eda > earnings_dte_blackout
+            and pack.iv_rank < straddle_iv_max):
+        return "RULE_STRADDLE_STRANGLE"
     if (eda is not None
             and earnings_dte_blackout < eda <= earnings_dte_window):
         return "RULE_EARNINGS"
     if pack.iv_environment == "very_expensive":
         return "RULE2_CREDIT"
+    if "short_put" in allowed:
+        return "RULE_SHORT_PUT"
     if pack.iv_environment in ("very_cheap", "cheap"):
         return "RULE5"
     if pack.iv_environment == "neutral":

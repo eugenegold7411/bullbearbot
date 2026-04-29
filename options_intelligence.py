@@ -295,26 +295,30 @@ def _dynamic_single_leg(
 _STRUCTURE_MAP: dict[str, OptionStrategy] = {
     "long_call":          OptionStrategy.SINGLE_CALL,
     "long_put":           OptionStrategy.SINGLE_PUT,
+    "short_put":          OptionStrategy.SHORT_PUT,
     "debit_call_spread":  OptionStrategy.CALL_DEBIT_SPREAD,
     "debit_put_spread":   OptionStrategy.PUT_DEBIT_SPREAD,
     "credit_call_spread": OptionStrategy.CALL_CREDIT_SPREAD,
     "credit_put_spread":  OptionStrategy.PUT_CREDIT_SPREAD,
-    "straddle":           OptionStrategy.STRADDLE,   # routed; builder stub until Phase 2
+    "straddle":           OptionStrategy.STRADDLE,
+    "strangle":           OptionStrategy.STRANGLE,
 }
 
 # Strategies routed through _STRUCTURE_MAP but whose builders are Phase 2+ stubs.
 # generate_candidate_structures() logs INFO and skips these rather than letting
 # them reach select_strikes() and failing silently.
-_BUILDER_STUBS: frozenset[OptionStrategy] = frozenset({OptionStrategy.STRADDLE})
+_BUILDER_STUBS: frozenset[OptionStrategy] = frozenset()  # straddle/strangle implemented Phase 2
 
 _DTE_RANGE: dict[OptionStrategy, tuple[int, int]] = {
     OptionStrategy.SINGLE_CALL:        (5, 21),
     OptionStrategy.SINGLE_PUT:         (5, 21),
+    OptionStrategy.SHORT_PUT:          (21, 45),
     OptionStrategy.CALL_DEBIT_SPREAD:  (5, 28),
     OptionStrategy.PUT_DEBIT_SPREAD:   (5, 28),
     OptionStrategy.CALL_CREDIT_SPREAD: (5, 45),
     OptionStrategy.PUT_CREDIT_SPREAD:  (5, 45),
     OptionStrategy.STRADDLE:           (14, 28),
+    OptionStrategy.STRANGLE:           (14, 28),
 }
 
 
@@ -323,6 +327,144 @@ def _float_or_none(v) -> Optional[float]:
         return float(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _build_short_put(
+    pack,
+    chain: dict,
+    equity: float,
+    config: dict | None = None,
+) -> Optional[dict]:
+    """
+    Build a cash-secured short put candidate.
+
+    Selects OTM put with delta magnitude closest to short_put_delta_target (~0.275).
+    max_loss uses stop-loss-bounded risk (2x premium) so sizing and EV are sensible.
+    Returns candidate dict or None if no suitable strike or premium floor not met.
+    """
+    a2_cfg        = (config or {}).get("account2", {})
+    delta_target  = float(a2_cfg.get("short_put_delta_target", 0.275))
+    delta_tol     = float(a2_cfg.get("short_put_delta_tolerance", 0.05))
+    min_premium   = float(a2_cfg.get("short_put_min_premium_usd", 50.0))
+    stop_multiple = float(a2_cfg.get("short_put_stop_loss_multiple", 2.0))
+
+    spot = chain.get("current_price")
+    if not spot or float(spot) <= 0:
+        return None
+    spot = float(spot)
+
+    today        = date.today()
+    expirations  = chain.get("expirations", {})
+    dte_min, dte_max = _DTE_RANGE[OptionStrategy.SHORT_PUT]  # (21, 45)
+
+    # Find expiry closest to midpoint of DTE range
+    expiry     = None
+    target_mid = (dte_min + dte_max) / 2.0
+    best_dist  = float("inf")
+    for exp_str in sorted(expirations.keys()):
+        try:
+            dte = (date.fromisoformat(exp_str) - today).days
+            if dte_min <= dte <= dte_max:
+                dist = abs(dte - target_mid)
+                if dist < best_dist:
+                    expiry    = exp_str
+                    best_dist = dist
+        except Exception:
+            continue
+
+    if expiry is None:
+        log.debug("[GEN_CAND] %s short_put: no expiry in DTE %d-%d", pack.symbol, dte_min, dte_max)
+        return None
+
+    puts = expirations.get(expiry, {}).get("puts", [])
+    if not puts:
+        return None
+
+    # Find OTM put with delta magnitude closest to target
+    otm_puts = [p for p in puts if float(p.get("strike", 0)) < spot]
+    if not otm_puts:
+        return None
+
+    has_delta = any("delta" in p for p in otm_puts)
+    if has_delta:
+        eligible = [
+            p for p in otm_puts
+            if "delta" in p and abs(abs(float(p["delta"])) - delta_target) <= delta_tol
+        ]
+        if not eligible:
+            eligible = otm_puts
+        best_put = min(eligible, key=lambda p: abs(abs(float(p.get("delta", 0))) - delta_target))
+    else:
+        best_put = max(otm_puts, key=lambda p: float(p["strike"]))  # closest OTM
+
+    strike = float(best_put.get("strike", 0))
+    if strike <= 0:
+        return None
+
+    bid = float(best_put.get("bid") or 0)
+    ask = float(best_put.get("ask") or 0)
+    if bid <= 0 and ask <= 0:
+        return None
+    mid = (bid + ask) / 2.0
+    if mid <= 0:
+        return None
+
+    # Minimum premium floor check
+    if mid * 100 < min_premium:
+        log.debug("[GEN_CAND] %s short_put: premium $%.0f < floor $%.0f",
+                  pack.symbol, mid * 100, min_premium)
+        return None
+
+    # Sizing: budget / (stop_multiple * mid * 100) contracts, capped at 10
+    _max_spread_pct = float((config or {}).get("account2", {}).get("max_spread_cost_pct", 0.05))
+    budget          = min(pack.premium_budget_usd, equity * _max_spread_pct)
+    max_loss_per    = stop_multiple * mid * 100   # stop-loss bounded cost per contract
+    contracts       = max(1, min(10, int(budget / max_loss_per))) if max_loss_per > 0 else 1
+
+    max_gain_usd    = mid * contracts * 100
+    max_loss_usd    = max_loss_per * contracts
+    dte             = (date.fromisoformat(expiry) - today).days
+    breakeven       = strike - mid
+
+    delta = _float_or_none(best_put.get("delta"))
+    theta = _float_or_none(best_put.get("theta"))
+    vega  = _float_or_none(best_put.get("vega"))
+
+    probability_profit = round(1.0 - abs(delta), 3) if delta is not None else None
+    expected_value: Optional[float] = None
+    if probability_profit is not None:
+        expected_value = round(
+            max_gain_usd * probability_profit - max_loss_usd * (1.0 - probability_profit),
+            2,
+        )
+
+    bid_ask_spread_pct = round((ask - bid) / mid, 4) if mid > 0 else None
+    oi                 = best_put.get("openInterest")
+    open_interest      = int(oi) if oi is not None else None
+
+    return {
+        "candidate_id":       str(uuid4())[:8],
+        "structure_type":     "short_put",
+        "symbol":             pack.symbol,
+        "expiry":             expiry,
+        "long_strike":        strike,     # legacy naming (the sold put strike)
+        "short_strike":       None,
+        "leg_side":           "sell",
+        "contracts":          contracts,
+        "debit":              round(-mid, 4),    # negative = credit received
+        "max_loss":           round(max_loss_usd, 2),
+        "max_gain":           round(max_gain_usd, 2),
+        "breakeven":          round(breakeven, 2),
+        "delta":              delta,
+        "theta":              theta,
+        "vega":               vega,
+        "probability_profit": probability_profit,
+        "expected_value":     expected_value,
+        "liquidity_score":    pack.liquidity_score,
+        "bid_ask_spread_pct": bid_ask_spread_pct,
+        "open_interest":      open_interest,
+        "dte":                dte,
+    }
 
 
 def generate_candidate_structures(
@@ -357,6 +499,19 @@ def generate_candidate_structures(
     today = date.today()
 
     for struct_name in allowed_structures:
+        # Short put has a dedicated sell-side builder
+        if struct_name == "short_put":
+            try:
+                cand = _build_short_put(pack, chain, equity, config)
+                if cand is not None:
+                    candidates.append(cand)
+                else:
+                    log.debug("[GEN_CAND] %s short_put: no candidate built", pack.symbol)
+            except Exception as _exc:
+                log.debug("[GEN_CAND] %s short_put: failed (non-fatal): %s",
+                          pack.symbol, _exc)
+            continue
+
         strategy = _STRUCTURE_MAP.get(struct_name)
         if strategy is None:
             log.debug("[GEN_CAND] %s: unknown structure type %r", pack.symbol, struct_name)
@@ -410,7 +565,10 @@ def generate_candidate_structures(
 
             if strategy in (OptionStrategy.SINGLE_CALL,
                             OptionStrategy.CALL_DEBIT_SPREAD,
-                            OptionStrategy.CALL_CREDIT_SPREAD):
+                            OptionStrategy.CALL_CREDIT_SPREAD,
+                            OptionStrategy.STRADDLE,
+                            OptionStrategy.STRANGLE):
+                # For straddle/strangle: upper breakeven = call_strike + total_debit
                 breakeven = long_strike + abs(net_debit)
             else:
                 breakeven = long_strike - abs(net_debit)

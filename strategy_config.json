@@ -167,6 +167,11 @@
     "short_put_delta_tolerance": 0.05,
     "short_put_min_premium_usd": 50,
     "short_put_stop_loss_multiple": 2.0,
+    "iron_condor_short_delta_target": 0.175,
+    "iron_condor_spread_width": 5.0,
+    "iron_condor_min_credit_usd": 50,
+    "iron_butterfly_wing_width": 10.0,
+    "iron_butterfly_min_credit_usd": 100,
     "iv_monitoring": {
       "enabled": true,
       "auto_close_on_crush": false,
@@ -289,6 +294,7 @@
     "straddle_dte_min": 6,
     "straddle_dte_max": 14,
     "short_put_iv_rank_min": 50,
+    "iron_iv_rank_min": 70,
     "v1_defaults_note": "These are v1 safety defaults added 2026-04-20. Each is a candidate for tuning after shadow validation."
   },
   "a2_veto_thresholds": {

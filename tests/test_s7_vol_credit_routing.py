@@ -151,11 +151,11 @@ class TestRule7Mixed(unittest.TestCase):
             sorted(["credit_put_spread", "credit_call_spread", "debit_call_spread", "debit_put_spread"]),
         )
 
-    def test_expensive_neutral_routes_to_short_put(self):
-        """expensive + neutral + iv_rank>=50 -> RULE_SHORT_PUT fires (short put valid for neutral stance)."""
+    def test_expensive_neutral_routes_to_iron_condor(self):
+        """expensive + neutral + iv_rank=70 -> RULE_IRON fires (iron_condor at floor threshold)."""
         pack = _make_pack(iv_environment="expensive", iv_rank=70.0, a1_direction="neutral")
         result = _route(pack)
-        self.assertEqual(result, ["short_put"])
+        self.assertEqual(result, ["iron_condor"])
 
     def test_expensive_no_naked_longs(self):
         """Single leg structures should not appear for expensive IV."""

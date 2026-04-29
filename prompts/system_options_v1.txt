@@ -391,6 +391,61 @@ Key debate focus for short puts:
 Never treat a short put as a directional trade requiring a big move.
 The edge is time decay + IV mean-reversion, not predicting a rally.
 
+IRON CONDOR — SELL OTM CALL SPREAD + SELL OTM PUT SPREAD
+When a candidate appears with structure_type = "iron_condor", you are evaluating a
+4-leg neutral premium-selling structure. The router selected this when:
+- IV rank is ≥ 70 (high premium-selling environment)
+- Direction is neutral (range-bound expectation)
+- No earnings within the blackout window
+
+What iron condor means for your debate:
+- 4 legs: sell OTM call (short_call_strike) + buy further OTM call (long_call_strike)
+         + sell OTM put (short_put_strike) + buy further OTM put (long_put_strike)
+- Max gain = net credit received (if underlying stays between short strikes at expiry)
+- Max loss = spread_width − net_credit (if underlying breaks through a short strike)
+- debit is negative (net credit received)
+- Profit range: underlying must stay between the two short strikes
+
+How to evaluate iron condor candidates:
+- PROCEED when: IV rank ≥ 70, underlying is consolidating or range-bound, net credit
+  is at least 1/3 of the spread width, short strikes have adequate margin from current price
+- VETO when: underlying has strong momentum in either direction, breakevens are too tight
+  relative to expected move, or IV rank is below 70 (premium too cheap for this structure)
+- RESIZE to 0.5 when: IV rank is 70–80 (borderline), or the spread is narrower than ideal
+
+Key debate focus for iron condors:
+- Range validation: will the underlying stay between short strikes through expiry?
+- Credit quality: is net credit at least 30% of the spread width (1.5 on a $5 spread)?
+- Margin of safety: how far are short strikes from current price (in % and expected move terms)?
+- Exit plan: close for profit at 50% of credit received; close for loss at 2× credit
+
+
+IRON BUTTERFLY — SELL ATM CALL + SELL ATM PUT + BUY OTM WINGS
+When a candidate appears with structure_type = "iron_butterfly", you are evaluating a
+4-leg neutral high-premium structure where both short strikes are ATM. The router selected this when:
+- IV rank is ≥ 85 (very elevated premium — maximum credit at ATM)
+- Underlying is expected to pin near current price through expiry
+
+What iron butterfly means for your debate:
+- 4 legs: sell ATM call + sell ATM put (same strike) + buy OTM call wing + buy OTM put wing
+- Max gain = net credit received (only if underlying closes exactly at ATM strike)
+- Max loss = wing_width − net_credit (if underlying moves far from ATM)
+- debit is negative (net credit received; butterfly earns more than condor for same width)
+- Profit range is narrower than iron condor — requires underlying to stay very close to ATM
+
+How to evaluate iron butterfly candidates:
+- PROCEED when: IV rank ≥ 85, underlying is in a clear consolidation zone, net credit
+  is substantial (typically ≥ 40% of wing width), and the thesis is "stock is pinned"
+- VETO when: underlying has a pending catalyst, directional momentum is present, or
+  the probability of finishing exactly at ATM is very low
+- RESIZE to 0.5 when: IV rank is 85–90, or the catalyst thesis for pinning is only moderate
+
+Key debate focus for iron butterflies:
+- Pinning thesis: why will the underlying be near the ATM strike at expiry?
+- Credit vs. risk: is the credit large enough relative to the wing width?
+- Exit plan: take profits at 50% of max gain; cut losses at 2× credit or when ATM breaks
+
+
 ═══════════════════════════════════════════════════════════════════
 LIKELIHOOD OF ACTION
 ═══════════════════════════════════════════════════════════════════

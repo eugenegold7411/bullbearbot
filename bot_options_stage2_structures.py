@@ -34,6 +34,8 @@ _STRATEGY_FROM_STRUCTURE: dict[str, _OS] = {
     "credit_put_spread":  _OS.PUT_CREDIT_SPREAD,
     "straddle":           _OS.STRADDLE,
     "strangle":           _OS.STRANGLE,
+    "iron_condor":        _OS.IRON_CONDOR,
+    "iron_butterfly":     _OS.IRON_BUTTERFLY,
 }
 
 
@@ -63,6 +65,8 @@ _A2_ROUTER_DEFAULTS: dict = {
     "straddle_dte_max":      14,   # maximum DTE window for straddle/strangle entry
     # RULE_SHORT_PUT: sell OTM put in elevated IV + bullish/neutral environments
     "short_put_iv_rank_min": 50,   # minimum IV rank to enter short put
+    # RULE_IRON: iron condor/butterfly when IV is very elevated + neutral outlook
+    "iron_iv_rank_min": 70,        # minimum IV rank for iron structures
 }
 
 
@@ -309,8 +313,28 @@ def _route_strategy(
                   sym, pack.a1_direction, _vexp)
         return _vexp
 
+    # RULE_IRON: iron condor when IV is very elevated (≥70) and direction is neutral.
+    # iv_rank ≥ 85 with any direction routes to both iron_butterfly and iron_condor
+    # (iron_butterfly pins; iron_condor gives wider profit range).
+    # Fires after RULE2_CREDIT so very_expensive with directional view routes to credit spreads first.
+    _iron_iv_min = float(rcfg.get("iron_iv_rank_min", 70))
+    _iron_earn_ok = (eda is None or eda < 0 or eda > earnings_dte_blackout)
+    if pack.iv_rank >= _iron_iv_min and _iron_earn_ok:
+        if pack.iv_rank >= 85:
+            _iron = ["iron_butterfly", "iron_condor"]
+        elif pack.a1_direction == "neutral":
+            _iron = ["iron_condor"]
+        else:
+            _iron = None
+        if _iron is not None:
+            log.debug(
+                "[OPTS] _route_strategy %s: RULE_IRON iv_rank=%.1f dir=%s -> %s",
+                sym, pack.iv_rank, pack.a1_direction, _iron,
+            )
+            return _iron
+
     # RULE_SHORT_PUT: sell OTM put when IV is elevated and direction is bullish/neutral.
-    # After RULE2_CREDIT (very_expensive handled) and before debit/mixed rules.
+    # After RULE_IRON (very high IV handled) and before debit/mixed rules.
     # iv_env check blocks cheap environments where selling premium has poor edge.
     _sp_iv_min = float(rcfg.get("short_put_iv_rank_min", 50))
     if (pack.iv_rank >= _sp_iv_min
@@ -406,6 +430,9 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
         return "RULE_EARNINGS"
     if pack.iv_environment == "very_expensive":
         return "RULE2_CREDIT"
+    _iron_iv_min_i = float(rcfg.get("iron_iv_rank_min", 70))
+    if ("iron_condor" in allowed or "iron_butterfly" in allowed) and pack.iv_rank >= _iron_iv_min_i:
+        return "RULE_IRON"
     if "short_put" in allowed:
         return "RULE_SHORT_PUT"
     if pack.iv_environment in ("very_cheap", "cheap"):

@@ -169,6 +169,8 @@ class OptionStrategy(str, Enum):
     SHORT_PUT          = "short_put"
     STRADDLE           = "straddle"
     STRANGLE           = "strangle"
+    IRON_CONDOR        = "iron_condor"
+    IRON_BUTTERFLY     = "iron_butterfly"
     CLOSE_OPTION       = "close_option"
 
 

@@ -57,6 +57,8 @@ _PHASE1_STRATEGIES: frozenset[OptionStrategy] = frozenset({
     OptionStrategy.SHORT_PUT,
     OptionStrategy.STRADDLE,
     OptionStrategy.STRANGLE,
+    OptionStrategy.IRON_CONDOR,
+    OptionStrategy.IRON_BUTTERFLY,
 })
 
 # Default liquidity requirements (tightened; overridden by config liquidity_gates)
@@ -355,11 +357,15 @@ def select_strikes(
     greeks_cfg = config.get("greeks", {})
     min_delta  = float(greeks_cfg.get("min_delta", 0.30))
 
-    # Straddle/strangle need both call and put data — route before single-type branch
+    # Straddle/strangle/iron structures need both call and put data — route before single-type branch
     if strategy == OptionStrategy.STRADDLE:
         return _select_straddle_strikes(exp_data, spot, min_delta)
     if strategy == OptionStrategy.STRANGLE:
         return _select_strangle_strikes(exp_data, spot)
+    if strategy == OptionStrategy.IRON_CONDOR:
+        return _select_iron_condor_strikes(exp_data, spot, config)
+    if strategy == OptionStrategy.IRON_BUTTERFLY:
+        return _select_iron_butterfly_strikes(exp_data, spot, config)
 
     # Determine option type from strategy
     if strategy in (OptionStrategy.SINGLE_CALL,
@@ -669,6 +675,158 @@ def _select_strangle_strikes(exp_data: dict, spot: float) -> Optional[dict]:
     }
 
 
+def _select_iron_condor_strikes(
+    exp_data: dict,
+    spot: float,
+    config: dict,
+) -> Optional[dict]:
+    """
+    Iron condor: sell OTM call + buy further OTM call + sell OTM put + buy further OTM put.
+
+    Short strikes target delta ~0.175 (configurable). Long strikes are spread_width
+    (default 5.0) further OTM. Falls back to 7% OTM when delta data is absent.
+    Returns None if any leg cannot be found.
+    """
+    calls = exp_data.get("calls", [])
+    puts  = exp_data.get("puts", [])
+    if not calls or not puts:
+        return None
+
+    a2_cfg       = config.get("account2", config) if isinstance(config.get("account2"), dict) else config
+    delta_target = float(a2_cfg.get("iron_condor_short_delta_target", 0.175))
+    spread_width = float(a2_cfg.get("iron_condor_spread_width", 5.0))
+
+    otm_calls = sorted([o for o in calls if float(o["strike"]) > spot], key=lambda o: float(o["strike"]))
+    otm_puts  = sorted([o for o in puts  if float(o["strike"]) < spot], key=lambda o: float(o["strike"]), reverse=True)
+
+    if not otm_calls or not otm_puts:
+        return None
+
+    # Short call: closest delta magnitude to target
+    has_delta_calls = any("delta" in o for o in otm_calls)
+    if has_delta_calls:
+        short_call = min(otm_calls, key=lambda o: abs(abs(float(o.get("delta", 0))) - delta_target))
+    else:
+        # Fallback: 7% OTM call
+        target_strike = spot * 1.07
+        short_call = min(otm_calls, key=lambda o: abs(float(o["strike"]) - target_strike))
+
+    # Long call: spread_width above short call strike (risk-define)
+    sc_strike = float(short_call["strike"])
+    lc_target = sc_strike + spread_width
+    further_calls = [o for o in otm_calls if float(o["strike"]) > sc_strike]
+    if not further_calls:
+        return None
+    long_call = min(further_calls, key=lambda o: abs(float(o["strike"]) - lc_target))
+
+    # Short put: closest delta magnitude to target
+    has_delta_puts = any("delta" in o for o in otm_puts)
+    if has_delta_puts:
+        short_put = min(otm_puts, key=lambda o: abs(abs(float(o.get("delta", 0))) - delta_target))
+    else:
+        # Fallback: 7% OTM put
+        target_strike = spot * 0.93
+        short_put = min(otm_puts, key=lambda o: abs(float(o["strike"]) - target_strike))
+
+    # Long put: spread_width below short put strike (risk-define)
+    sp_strike = float(short_put["strike"])
+    lp_target = sp_strike - spread_width
+    further_puts = [o for o in otm_puts if float(o["strike"]) < sp_strike]
+    if not further_puts:
+        return None
+    long_put = min(further_puts, key=lambda o: abs(float(o["strike"]) - lp_target))
+
+    lc_strike = float(long_call["strike"])
+    lp_strike = float(long_put["strike"])
+
+    return {
+        "option_type":             "iron_condor",
+        "short_call_strike_price": sc_strike,
+        "short_call_leg_data":     short_call,
+        "long_call_strike_price":  lc_strike,
+        "long_call_leg_data":      long_call,
+        "short_put_strike_price":  sp_strike,
+        "short_put_leg_data":      short_put,
+        "long_put_strike_price":   lp_strike,
+        "long_put_leg_data":       long_put,
+        # legacy compat: expose long_strike_price for generate_candidate_structures
+        "long_strike_price":       lp_strike,
+        "long_leg_data":           long_put,
+        "short_strike_price":      sp_strike,
+        "short_leg_data":          short_put,
+    }
+
+
+def _select_iron_butterfly_strikes(
+    exp_data: dict,
+    spot: float,
+    config: dict,
+) -> Optional[dict]:
+    """
+    Iron butterfly: sell ATM call + sell ATM put (same strike) + buy OTM wings.
+
+    ATM strike selected as closest to spot. Wing width (default 10.0) is the
+    distance from ATM to each long strike.
+    Returns None if any leg cannot be found.
+    """
+    calls = exp_data.get("calls", [])
+    puts  = exp_data.get("puts", [])
+    if not calls or not puts:
+        return None
+
+    a2_cfg     = config.get("account2", config) if isinstance(config.get("account2"), dict) else config
+    wing_width = float(a2_cfg.get("iron_butterfly_wing_width", 10.0))
+
+    calls_sorted = sorted(calls, key=lambda o: float(o["strike"]))
+    puts_sorted  = sorted(puts,  key=lambda o: float(o["strike"]))
+
+    # ATM call: closest to spot
+    atm_call = min(calls_sorted, key=lambda o: abs(float(o["strike"]) - spot))
+    atm_strike = float(atm_call["strike"])
+
+    # ATM put at the same strike
+    exact_put = next((p for p in puts_sorted if float(p["strike"]) == atm_strike), None)
+    if exact_put is None:
+        exact_put = min(puts_sorted, key=lambda p: abs(float(p["strike"]) - atm_strike))
+    if exact_put is None:
+        return None
+
+    # Long call wing: wing_width above ATM
+    lc_target = atm_strike + wing_width
+    otm_calls = [o for o in calls_sorted if float(o["strike"]) > atm_strike]
+    if not otm_calls:
+        return None
+    long_call = min(otm_calls, key=lambda o: abs(float(o["strike"]) - lc_target))
+
+    # Long put wing: wing_width below ATM
+    lp_target = atm_strike - wing_width
+    otm_puts = [o for o in puts_sorted if float(o["strike"]) < atm_strike]
+    if not otm_puts:
+        return None
+    long_put = min(otm_puts, key=lambda o: abs(float(o["strike"]) - lp_target))
+
+    lc_strike = float(long_call["strike"])
+    lp_strike = float(long_put["strike"])
+    sp_strike = float(exact_put["strike"])
+
+    return {
+        "option_type":             "iron_butterfly",
+        "short_call_strike_price": atm_strike,
+        "short_call_leg_data":     atm_call,
+        "long_call_strike_price":  lc_strike,
+        "long_call_leg_data":      long_call,
+        "short_put_strike_price":  sp_strike,
+        "short_put_leg_data":      exact_put,
+        "long_put_strike_price":   lp_strike,
+        "long_put_leg_data":       long_put,
+        # legacy compat
+        "long_strike_price":       atm_strike,
+        "long_leg_data":           atm_call,
+        "short_strike_price":      None,
+        "short_leg_data":          None,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # validate_liquidity
 # ─────────────────────────────────────────────────────────────────────────────
@@ -713,6 +871,11 @@ def validate_liquidity(strikes_data: dict, config: dict) -> tuple[bool, str]:
     # Straddle/strangle: put_leg_data is the second buy leg (not in short_leg_data)
     if strikes_data.get("put_leg_data"):
         legs_to_check.append(("put",   strikes_data["put_leg_data"]))
+    # Iron condor/butterfly: 4 named leg fields
+    for _label in ("short_call_leg_data", "long_call_leg_data",
+                   "short_put_leg_data", "long_put_leg_data"):
+        if strikes_data.get(_label):
+            legs_to_check.append((_label.replace("_leg_data", ""), strikes_data[_label]))
 
     for leg_label, leg in legs_to_check:
         oi = leg.get("openInterest", 0) or 0
@@ -762,6 +925,31 @@ def compute_economics(strategy: OptionStrategy, strikes_data: dict) -> dict:
         "short_mid":   float | None,
     }
     """
+    # Iron condor/butterfly: handled first (4 named leg fields, bypasses long_leg guard)
+    if strategy in (OptionStrategy.IRON_CONDOR, OptionStrategy.IRON_BUTTERFLY):
+        sc_mid = _mid_price(strikes_data.get("short_call_leg_data"))
+        lc_mid = _mid_price(strikes_data.get("long_call_leg_data"))
+        sp_mid = _mid_price(strikes_data.get("short_put_leg_data"))
+        lp_mid = _mid_price(strikes_data.get("long_put_leg_data"))
+        _r: dict = {"net_debit": None, "max_profit": None, "max_loss": None,
+                    "long_mid": sc_mid, "short_mid": lc_mid}
+        if None in (sc_mid, lc_mid, sp_mid, lp_mid):
+            return _r
+        net_credit = (sc_mid + sp_mid) - (lc_mid + lp_mid)
+        if net_credit <= 0:
+            return _r  # wings cost more than premium sold — not viable
+        sc_strike = float(strikes_data.get("short_call_strike_price", 0))
+        lc_strike = float(strikes_data.get("long_call_strike_price", 0))
+        sp_strike = float(strikes_data.get("short_put_strike_price", 0))
+        lp_strike = float(strikes_data.get("long_put_strike_price", 0))
+        call_spread_width = lc_strike - sc_strike
+        put_spread_width  = sp_strike - lp_strike
+        spread_width = max(call_spread_width, put_spread_width)
+        _r["net_debit"]  = round(-net_credit, 4)
+        _r["max_profit"] = round(net_credit, 4)
+        _r["max_loss"]   = round(spread_width - net_credit, 4)
+        return _r
+
     long_leg  = strikes_data.get("long_leg_data")
     short_leg = strikes_data.get("short_leg_data")
 
@@ -921,6 +1109,45 @@ def build_legs(
       e.g. GLD251219C00435000  (no ticker padding — Alpaca rejects OCC paper space format)
     """
     option_type  = strikes_data.get("option_type", "call")
+    legs: list[OptionsLeg] = []
+
+    # Iron condor/butterfly: 4 legs — must be handled before the long_leg_data guard
+    if option_type in ("iron_condor", "iron_butterfly"):
+        sc_data   = strikes_data.get("short_call_leg_data")
+        lc_data   = strikes_data.get("long_call_leg_data")
+        sp_data   = strikes_data.get("short_put_leg_data")
+        lp_data   = strikes_data.get("long_put_leg_data")
+        sc_strike = strikes_data.get("short_call_strike_price")
+        lc_strike = strikes_data.get("long_call_strike_price")
+        sp_strike = strikes_data.get("short_put_strike_price")
+        lp_strike = strikes_data.get("long_put_strike_price")
+        if None in (sc_data, lc_data, sp_data, lp_data,
+                    sc_strike, lc_strike, sp_strike, lp_strike):
+            return []
+        for _side, _ot, _strike, _data in [
+            ("sell", "call", sc_strike, sc_data),
+            ("buy",  "call", lc_strike, lc_data),
+            ("sell", "put",  sp_strike, sp_data),
+            ("buy",  "put",  lp_strike, lp_data),
+        ]:
+            legs.append(OptionsLeg(
+                occ_symbol    = _build_occ_symbol(symbol, expiry, _ot, _strike),
+                underlying    = symbol,
+                side          = _side,
+                qty           = 1,
+                option_type   = _ot,
+                strike        = float(_strike),
+                expiration    = expiry,
+                bid           = _maybe_float(_data.get("bid")),
+                ask           = _maybe_float(_data.get("ask")),
+                mid           = _mid_price(_data),
+                delta         = _maybe_float(_data.get("delta")),
+                open_interest = int(_data["openInterest"]) if _data.get("openInterest") is not None else None,
+                volume        = int(_data["volume"]) if _data.get("volume") is not None else None,
+            ))
+        return legs
+
+    # All other strategies need long_leg_data
     long_data    = strikes_data.get("long_leg_data")
     short_data   = strikes_data.get("short_leg_data")
     long_strike  = strikes_data.get("long_strike_price")
@@ -928,8 +1155,6 @@ def build_legs(
 
     if long_data is None or long_strike is None:
         return []
-
-    legs: list[OptionsLeg] = []
 
     # Straddle/strangle: two buy legs — call then put at (possibly different) strikes
     if option_type in ("straddle", "strangle"):
@@ -1044,6 +1269,8 @@ def _dte_max_for_strategy(strategy: OptionStrategy) -> int:
         OptionStrategy.PUT_CREDIT_SPREAD:  45,
         OptionStrategy.STRADDLE:           28,
         OptionStrategy.STRANGLE:           28,
+        OptionStrategy.IRON_CONDOR:        45,
+        OptionStrategy.IRON_BUTTERFLY:     45,
     }
     return _DTE_MAP.get(strategy, 28)
 
@@ -1058,7 +1285,9 @@ def _max_cost_for_tier(
     is_spread = strategy in (
         OptionStrategy.CALL_DEBIT_SPREAD, OptionStrategy.PUT_DEBIT_SPREAD,
         OptionStrategy.CALL_CREDIT_SPREAD, OptionStrategy.PUT_CREDIT_SPREAD,
-        OptionStrategy.SHORT_PUT,   # size on stop-loss risk budget (5%)
+        OptionStrategy.SHORT_PUT,          # size on stop-loss risk budget (5%)
+        OptionStrategy.IRON_CONDOR,
+        OptionStrategy.IRON_BUTTERFLY,
     )
     if tier == Tier.DYNAMIC:
         pct = float(sizing_cfg.get("dynamic_max_pct", 0.03))

@@ -48,6 +48,8 @@ _PHASE1_STRATEGIES: frozenset[OptionStrategy] = frozenset({
     OptionStrategy.PUT_CREDIT_SPREAD,
     OptionStrategy.STRADDLE,
     OptionStrategy.STRANGLE,
+    OptionStrategy.IRON_CONDOR,
+    OptionStrategy.IRON_BUTTERFLY,
 })
 
 # Auditable execution log path (D13)

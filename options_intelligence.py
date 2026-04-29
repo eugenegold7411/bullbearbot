@@ -302,6 +302,8 @@ _STRUCTURE_MAP: dict[str, OptionStrategy] = {
     "credit_put_spread":  OptionStrategy.PUT_CREDIT_SPREAD,
     "straddle":           OptionStrategy.STRADDLE,
     "strangle":           OptionStrategy.STRANGLE,
+    "iron_condor":        OptionStrategy.IRON_CONDOR,
+    "iron_butterfly":     OptionStrategy.IRON_BUTTERFLY,
 }
 
 # Strategies routed through _STRUCTURE_MAP but whose builders are Phase 2+ stubs.
@@ -319,6 +321,8 @@ _DTE_RANGE: dict[OptionStrategy, tuple[int, int]] = {
     OptionStrategy.PUT_CREDIT_SPREAD:  (5, 45),
     OptionStrategy.STRADDLE:           (14, 28),
     OptionStrategy.STRANGLE:           (14, 28),
+    OptionStrategy.IRON_CONDOR:        (21, 45),
+    OptionStrategy.IRON_BUTTERFLY:     (21, 45),
 }
 
 
@@ -467,6 +471,202 @@ def _build_short_put(
     }
 
 
+def _build_iron_condor(
+    pack,
+    chain: dict,
+    equity: float,
+    config: dict | None = None,
+) -> Optional[dict]:
+    """
+    Build an iron condor candidate: sell OTM call + buy further OTM call +
+    sell OTM put + buy further OTM put (same expiry, defined risk).
+
+    Returns candidate dict or None if chain data is insufficient or
+    net credit falls below min_credit floor.
+    """
+    import options_builder as _ob  # noqa: PLC0415
+
+    a2_cfg     = (config or {}).get("account2", {})
+    min_credit = float(a2_cfg.get("iron_condor_min_credit_usd", 50.0))
+
+    spot = chain.get("current_price")
+    if not spot or float(spot) <= 0:
+        return None
+    spot = float(spot)
+
+    today        = date.today()
+    dte_min, dte_max = _DTE_RANGE[OptionStrategy.IRON_CONDOR]  # (21, 45)
+
+    expiry = _ob.select_expiry(chain, dte_min, dte_max)
+    if expiry is None:
+        log.debug("[GEN_CAND] %s iron_condor: no expiry in DTE %d-%d", pack.symbol, dte_min, dte_max)
+        return None
+
+    strikes_data = _ob.select_strikes(chain, expiry, OptionStrategy.IRON_CONDOR, spot, "neutral", config or {})
+    if strikes_data is None:
+        log.debug("[GEN_CAND] %s iron_condor: select_strikes=None", pack.symbol)
+        return None
+
+    economics = _ob.compute_economics(OptionStrategy.IRON_CONDOR, strikes_data)
+    net_debit = economics.get("net_debit")
+    max_profit = economics.get("max_profit")
+    max_loss   = economics.get("max_loss")
+
+    if net_debit is None or net_debit >= 0 or max_profit is None or max_loss is None:
+        return None
+
+    net_credit = abs(net_debit)
+
+    _max_spread_pct = float((config or {}).get("account2", {}).get("max_spread_cost_pct", 0.05))
+    budget      = min(pack.premium_budget_usd, equity * _max_spread_pct)
+    cost_per    = max_loss * 100
+    contracts   = max(1, min(10, int(budget / cost_per))) if cost_per > 0 else 1
+
+    # Minimum credit floor
+    if net_credit * contracts * 100 < min_credit:
+        log.debug("[GEN_CAND] %s iron_condor: net_credit $%.0f < floor $%.0f",
+                  pack.symbol, net_credit * contracts * 100, min_credit)
+        return None
+
+    dte           = (date.fromisoformat(expiry) - today).days
+    max_gain_usd  = round(max_profit * contracts * 100, 2)
+    max_loss_usd  = round(max_loss   * contracts * 100, 2)
+
+    sc_strike = float(strikes_data.get("short_call_strike_price", 0))
+    sp_strike = float(strikes_data.get("short_put_strike_price", 0))
+    breakeven_upper = sc_strike + net_credit
+    breakeven_lower = sp_strike - net_credit
+
+    sc_data   = strikes_data.get("short_call_leg_data") or {}
+    bid       = float(sc_data.get("bid") or 0)
+    ask       = float(sc_data.get("ask") or 0)
+    mid       = (bid + ask) / 2 if (bid + ask) > 0 else net_credit
+    bid_ask_spread_pct = round((ask - bid) / mid, 4) if mid > 0 else None
+    oi        = sc_data.get("openInterest")
+
+    return {
+        "candidate_id":       str(uuid4())[:8],
+        "structure_type":     "iron_condor",
+        "symbol":             pack.symbol,
+        "expiry":             expiry,
+        "long_strike":        float(strikes_data.get("long_put_strike_price", 0)),
+        "short_strike":       sp_strike,
+        "leg_side":           "sell",     # primary legs are sells
+        "contracts":          contracts,
+        "debit":              round(-net_credit, 4),   # negative = credit
+        "max_loss":           max_loss_usd,
+        "max_gain":           max_gain_usd,
+        "breakeven":          round(breakeven_lower, 2),
+        "breakeven_upper":    round(breakeven_upper, 2),
+        "delta":              _float_or_none(sc_data.get("delta")),
+        "theta":              _float_or_none(sc_data.get("theta")),
+        "vega":               _float_or_none(sc_data.get("vega")),
+        "probability_profit": None,
+        "expected_value":     None,
+        "liquidity_score":    pack.liquidity_score,
+        "bid_ask_spread_pct": bid_ask_spread_pct,
+        "open_interest":      int(oi) if oi is not None else None,
+        "dte":                dte,
+    }
+
+
+def _build_iron_butterfly(
+    pack,
+    chain: dict,
+    equity: float,
+    config: dict | None = None,
+) -> Optional[dict]:
+    """
+    Build an iron butterfly candidate: sell ATM call + sell ATM put +
+    buy OTM call wing + buy OTM put wing (same expiry, defined risk).
+
+    Returns candidate dict or None if chain data is insufficient or
+    net credit falls below min_credit floor.
+    """
+    import options_builder as _ob  # noqa: PLC0415
+
+    a2_cfg     = (config or {}).get("account2", {})
+    min_credit = float(a2_cfg.get("iron_butterfly_min_credit_usd", 100.0))
+
+    spot = chain.get("current_price")
+    if not spot or float(spot) <= 0:
+        return None
+    spot = float(spot)
+
+    today        = date.today()
+    dte_min, dte_max = _DTE_RANGE[OptionStrategy.IRON_BUTTERFLY]  # (21, 45)
+
+    expiry = _ob.select_expiry(chain, dte_min, dte_max)
+    if expiry is None:
+        log.debug("[GEN_CAND] %s iron_butterfly: no expiry in DTE %d-%d", pack.symbol, dte_min, dte_max)
+        return None
+
+    strikes_data = _ob.select_strikes(chain, expiry, OptionStrategy.IRON_BUTTERFLY, spot, "neutral", config or {})
+    if strikes_data is None:
+        log.debug("[GEN_CAND] %s iron_butterfly: select_strikes=None", pack.symbol)
+        return None
+
+    economics = _ob.compute_economics(OptionStrategy.IRON_BUTTERFLY, strikes_data)
+    net_debit = economics.get("net_debit")
+    max_profit = economics.get("max_profit")
+    max_loss   = economics.get("max_loss")
+
+    if net_debit is None or net_debit >= 0 or max_profit is None or max_loss is None:
+        return None
+
+    net_credit = abs(net_debit)
+
+    _max_spread_pct = float((config or {}).get("account2", {}).get("max_spread_cost_pct", 0.05))
+    budget      = min(pack.premium_budget_usd, equity * _max_spread_pct)
+    cost_per    = max_loss * 100
+    contracts   = max(1, min(10, int(budget / cost_per))) if cost_per > 0 else 1
+
+    if net_credit * contracts * 100 < min_credit:
+        log.debug("[GEN_CAND] %s iron_butterfly: net_credit $%.0f < floor $%.0f",
+                  pack.symbol, net_credit * contracts * 100, min_credit)
+        return None
+
+    dte           = (date.fromisoformat(expiry) - today).days
+    max_gain_usd  = round(max_profit * contracts * 100, 2)
+    max_loss_usd  = round(max_loss   * contracts * 100, 2)
+
+    atm_strike = float(strikes_data.get("short_call_strike_price", spot))
+    breakeven_upper = atm_strike + net_credit
+    breakeven_lower = atm_strike - net_credit
+
+    sc_data = strikes_data.get("short_call_leg_data") or {}
+    bid     = float(sc_data.get("bid") or 0)
+    ask     = float(sc_data.get("ask") or 0)
+    mid     = (bid + ask) / 2 if (bid + ask) > 0 else net_credit
+    bid_ask_spread_pct = round((ask - bid) / mid, 4) if mid > 0 else None
+    oi      = sc_data.get("openInterest")
+
+    return {
+        "candidate_id":       str(uuid4())[:8],
+        "structure_type":     "iron_butterfly",
+        "symbol":             pack.symbol,
+        "expiry":             expiry,
+        "long_strike":        float(strikes_data.get("long_put_strike_price", 0)),
+        "short_strike":       atm_strike,
+        "leg_side":           "sell",
+        "contracts":          contracts,
+        "debit":              round(-net_credit, 4),
+        "max_loss":           max_loss_usd,
+        "max_gain":           max_gain_usd,
+        "breakeven":          round(breakeven_lower, 2),
+        "breakeven_upper":    round(breakeven_upper, 2),
+        "delta":              _float_or_none(sc_data.get("delta")),
+        "theta":              _float_or_none(sc_data.get("theta")),
+        "vega":               _float_or_none(sc_data.get("vega")),
+        "probability_profit": None,
+        "expected_value":     None,
+        "liquidity_score":    pack.liquidity_score,
+        "bid_ask_spread_pct": bid_ask_spread_pct,
+        "open_interest":      int(oi) if oi is not None else None,
+        "dte":                dte,
+    }
+
+
 def generate_candidate_structures(
     pack: A2FeaturePack,
     allowed_structures: list[str],
@@ -499,7 +699,7 @@ def generate_candidate_structures(
     today = date.today()
 
     for struct_name in allowed_structures:
-        # Short put has a dedicated sell-side builder
+        # Dedicated sell-side builders for short_put, iron_condor, iron_butterfly
         if struct_name == "short_put":
             try:
                 cand = _build_short_put(pack, chain, equity, config)
@@ -509,6 +709,30 @@ def generate_candidate_structures(
                     log.debug("[GEN_CAND] %s short_put: no candidate built", pack.symbol)
             except Exception as _exc:
                 log.debug("[GEN_CAND] %s short_put: failed (non-fatal): %s",
+                          pack.symbol, _exc)
+            continue
+
+        if struct_name == "iron_condor":
+            try:
+                cand = _build_iron_condor(pack, chain, equity, config)
+                if cand is not None:
+                    candidates.append(cand)
+                else:
+                    log.debug("[GEN_CAND] %s iron_condor: no candidate built", pack.symbol)
+            except Exception as _exc:
+                log.debug("[GEN_CAND] %s iron_condor: failed (non-fatal): %s",
+                          pack.symbol, _exc)
+            continue
+
+        if struct_name == "iron_butterfly":
+            try:
+                cand = _build_iron_butterfly(pack, chain, equity, config)
+                if cand is not None:
+                    candidates.append(cand)
+                else:
+                    log.debug("[GEN_CAND] %s iron_butterfly: no candidate built", pack.symbol)
+            except Exception as _exc:
+                log.debug("[GEN_CAND] %s iron_butterfly: failed (non-fatal): %s",
                           pack.symbol, _exc)
             continue
 

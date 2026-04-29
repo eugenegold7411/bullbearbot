@@ -109,7 +109,8 @@ def compute_dynamic_sizes(
 
     max_exposure    = equity * max_exp_pct
     available       = max(0.0, buying_power)
-    exposure_pct    = round(current_exposure_dollars / equity * 100, 1) if equity > 0 else 0.0
+    _total_cap      = current_exposure_dollars + buying_power
+    exposure_pct    = round(current_exposure_dollars / _total_cap * 100, 1) if _total_cap > 0 else 0.0
 
     cap_high   = round(sizing_basis_high, 2)
     cap_medium = round(sizing_basis_med, 2)
@@ -178,7 +179,7 @@ def format_dynamic_sizes_section(sizes: dict, equity: float) -> str:
         "",
         f"Cash reserve floor: ${sizes['cash_reserve']:,.0f}",
         f"Available for new positions: ${sizes['available_for_new']:,.0f}",
-        f"Current exposure: ${sizes['current_exposure']:,.0f} ({sizes['exposure_pct']}%)",
+        f"Current exposure: ${sizes['current_exposure']:,.0f} ({sizes['exposure_pct']}% of total capacity)",
     ]
     bp = sizes.get("buying_power", 0.0)
     if bp > equity:

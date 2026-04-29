@@ -4,6 +4,7 @@ Item 1 — log_trade isolation in test_sprint2_followup (no trades.jsonl contami
 Item 2 — available_for_new uses buying_power (not equity-cap formula)
 Item 3 — catalyst_consumed auto-flip when earnings_days_away < 0
 Item 4 — format_thesis_ranking_section renders consumed-catalyst text
+Item 5 — exposure_pct uses total capacity denominator (current_exposure + buying_power)
 """
 
 import textwrap
@@ -349,6 +350,65 @@ class TestFormatConsumedCatalyst(unittest.TestCase):
                       consumed_at="2026-04-25T10:00:00+00:00", eda=-3)
         output = format_thesis_ranking_section([ts])
         self.assertIn("2026-04-25", output)
+
+
+# ---------------------------------------------------------------------------
+# Item 5 — exposure_pct uses total capacity denominator
+# ---------------------------------------------------------------------------
+
+class TestExposurePctTotalCapacity(unittest.TestCase):
+    """compute_dynamic_sizes must compute exposure_pct as
+    current_exposure / (current_exposure + buying_power)."""
+
+    def _sizes(self, exposure, buying_power, equity=100_000.0):
+        from portfolio_intelligence import compute_dynamic_sizes
+        cfg = _base_config()
+        return compute_dynamic_sizes(equity, cfg, exposure, buying_power=buying_power)
+
+    def test_exposure_pct_typical_margin_account(self):
+        """Live numbers: $114K deployed, $271K BP → 29.6%."""
+        sizes = self._sizes(114_382.91, 271_556.71)
+        self.assertAlmostEqual(sizes["exposure_pct"], 29.6, places=0)
+
+    def test_exposure_pct_not_over_100(self):
+        """With margin accounts, equity-based denominator was returning 110%+.
+        Total-capacity denominator must always return ≤ 100%."""
+        # exposure slightly above equity (margin deployed)
+        sizes = self._sizes(110_000.0, 290_000.0, equity=100_000.0)
+        self.assertLessEqual(sizes["exposure_pct"], 100.0)
+
+    def test_exposure_pct_zero_exposure(self):
+        """All cash: exposure_pct = 0."""
+        sizes = self._sizes(0.0, 400_000.0)
+        self.assertEqual(sizes["exposure_pct"], 0.0)
+
+    def test_exposure_pct_fully_deployed(self):
+        """All-in with no buying power left: exposure_pct = 100.0."""
+        sizes = self._sizes(100_000.0, 0.0, equity=100_000.0)
+        self.assertEqual(sizes["exposure_pct"], 100.0)
+
+    def test_exposure_pct_buying_power_zero_fallback(self):
+        """When both exposure and buying_power are 0, no ZeroDivisionError."""
+        sizes = self._sizes(0.0, 0.0, equity=100_000.0)
+        self.assertEqual(sizes["exposure_pct"], 0.0)
+
+    def test_available_for_new_unchanged(self):
+        """available_for_new must still equal buying_power exactly."""
+        bp = 271_556.71
+        sizes = self._sizes(114_382.91, bp)
+        self.assertEqual(sizes["available_for_new"], round(bp, 2))
+
+    def test_exposure_label_contains_total_capacity(self):
+        """format_dynamic_sizes_section label must say 'of total capacity'."""
+        from portfolio_intelligence import (
+            compute_dynamic_sizes,
+            format_dynamic_sizes_section,
+        )
+        cfg = _base_config()
+        sizes = compute_dynamic_sizes(100_000.0, cfg, 30_000.0, buying_power=270_000.0)
+        section = format_dynamic_sizes_section(sizes, 100_000.0)
+        self.assertIn("of total capacity", section)
+        self.assertNotIn("of buying power", section)
 
 
 if __name__ == "__main__":

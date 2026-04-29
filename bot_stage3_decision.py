@@ -242,7 +242,8 @@ def build_user_prompt(
              pdt_used, pdt_used, equity)
 
     long_value   = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
-    exposure_pct = (long_value / equity * 100) if equity > 0 else 0.0
+    _total_cap   = long_value + buying_power
+    exposure_pct = (long_value / _total_cap * 100) if _total_cap > 0 else ((long_value / equity * 100) if equity > 0 else 0.0)
 
     if positions:
         rows = []
@@ -389,7 +390,8 @@ def build_compact_prompt(
     pdt_used      = int(getattr(account, "daytrade_count", 0) or 0)
     pdt_remaining = max(0, 3 - pdt_used)
     long_val      = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
-    exposure_pct  = (long_val / equity * 100) if equity > 0 else 0.0
+    _total_cap    = long_val + buying_power
+    exposure_pct  = (long_val / _total_cap * 100) if _total_cap > 0 else ((long_val / equity * 100) if equity > 0 else 0.0)
     cash_pct      = (cash / equity * 100) if equity > 0 else 0.0
     vix           = float(md.get("vix", 0) or 0)
 

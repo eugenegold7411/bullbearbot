@@ -123,24 +123,31 @@ def _stub_alpaca_tree() -> None:
     for _name in (
         "ClosePositionRequest", "GetOptionContractsRequest", "GetOrdersRequest",
         "GetOrderByIdRequest", "GetAssetsRequest", "GetPortfolioHistoryRequest",
-        "LimitOrderRequest", "MarketOrderRequest",
-        "StopLossRequest", "StopOrderRequest", "TakeProfitRequest",
-        "TrailingStopOrderRequest",
+        "TakeProfitRequest",
     ):
         setattr(_rq_mod, _name, _cls(_name))
 
     class _KwargsRequest:
-        def __init__(self, **kw):
+        def __init__(self, *a, **kw):
             for k, v in kw.items():
                 setattr(self, k, v)
-    setattr(_rq_mod, "ReplaceOrderRequest", _KwargsRequest)
+    # Order request classes must capture kwargs so tests can assert on fields
+    for _name in (
+        "LimitOrderRequest", "MarketOrderRequest",
+        "StopLossRequest", "StopOrderRequest", "TrailingStopOrderRequest",
+        "ReplaceOrderRequest",
+    ):
+        setattr(_rq_mod, _name, _KwargsRequest)
     for _name in (
         "AssetClass", "AssetStatus", "ContractType", "ExerciseStyle",
         "OrderClass", "OrderStatus", "OrderType",
-        "PositionSide", "TimeInForce",
+        "PositionSide",
     ):
         setattr(_en_mod, _name, _cls(_name))
     setattr(_en_mod, "OrderSide", types.SimpleNamespace(BUY="buy", SELL="sell"))
+    setattr(_en_mod, "TimeInForce", types.SimpleNamespace(
+        GTC="gtc", DAY="day", IOC="ioc", FOK="fok", OPG="opg", CLS="cls",
+    ))
     setattr(_en_mod, "QueryOrderStatus", types.SimpleNamespace(OPEN="open", CLOSED="closed"))
     for _name in ("TradeAccount", "Position", "Order", "Asset"):
         setattr(_mo_mod, _name, _cls(_name))

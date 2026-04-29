@@ -838,6 +838,8 @@ before deadline expiry.
 
 ## Git Workflow
 
+**Commit message rules:** Do not add Co-Authored-By lines to commit messages.
+
 ### Local mirror
 ```
 /Users/eugene.gold/trading-bot/   ← git repo (tag: v1.0-phase1-complete)

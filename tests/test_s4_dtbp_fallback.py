@@ -9,13 +9,9 @@ After fix:  dtbp=0 + obp>0 → log info + fall through to submission
 from __future__ import annotations
 
 import logging
-import types
 import unittest
-from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Optional
-from unittest.mock import MagicMock, call, patch
-
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Minimal stubs so we can import order_executor_options without the full stack
@@ -196,7 +192,8 @@ class TestDtbpZeroStatusGone(unittest.TestCase):
 
     def test_no_dtbp_zero_status_in_module_source(self):
         """The string 'dtbp_zero' should not appear as a return status in the deployed module."""
-        import pathlib, re
+        import pathlib
+        import re
         src = (pathlib.Path(__file__).parent.parent / "order_executor_options.py").read_text()
         # Find all status= assignments — none should be "dtbp_zero"
         status_assignments = re.findall(r'status\s*=\s*["\']([^"\']+)["\']', src)

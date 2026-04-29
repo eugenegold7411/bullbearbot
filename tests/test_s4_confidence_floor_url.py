@@ -10,13 +10,9 @@ derive the confidence floor from ALPACA_BASE_URL rather than pf_allow_live_order
 """
 from __future__ import annotations
 
-import importlib
 import os
-import sys
-import types
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # Helpers — extract the _is_paper / _conf_floor logic without importing the

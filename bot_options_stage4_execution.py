@@ -437,6 +437,77 @@ def _update_fill_prices(structures: list, trading_client) -> bool:
     return updated_any
 
 
+# ── Submitted-order lifecycle sync ───────────────────────────────────────────
+
+def _sync_submitted_lifecycles(structures: list, trading_client) -> None:
+    """
+    For every SUBMITTED structure, query Alpaca for its order status and
+    transition lifecycle accordingly. Non-fatal. Saves each mutated structure.
+
+    Transitions:
+      cancelled / expired / done_for_day / stopped / suspended → CANCELLED
+      filled                                                    → FULLY_FILLED
+      partially_filled                                          → PARTIALLY_FILLED
+      new / accepted / pending_new / held / (still open)       → no change
+    """
+    import options_state  # noqa: PLC0415
+    from schemas import StructureLifecycle  # noqa: PLC0415
+
+    _CANCEL_STATUSES  = {"cancelled", "expired", "done_for_day", "stopped", "suspended"}
+    _FILL_STATUSES    = {"filled"}
+    _PARTIAL_STATUSES = {"partially_filled"}
+
+    for s in structures:
+        lc = s.lifecycle.value if hasattr(s.lifecycle, "value") else str(s.lifecycle)
+        if lc != "submitted":
+            continue
+        if not s.order_ids:
+            continue
+        try:
+            order = trading_client.get_order_by_id(s.order_ids[0])
+            raw_status = str(order.status).lower()
+            # Normalise "orderstatus.cancelled" → "cancelled"
+            status = raw_status.split(".")[-1]
+
+            if status in _CANCEL_STATUSES:
+                s.add_audit(
+                    f"order {s.order_ids[0]} status={status} — lifecycle → cancelled"
+                )
+                s.lifecycle = StructureLifecycle.CANCELLED
+                log.info(
+                    "[FILL] %s (%s): order %s → %s, lifecycle=cancelled",
+                    s.underlying, s.structure_id, s.order_ids[0], status,
+                )
+            elif status in _FILL_STATUSES:
+                s.add_audit(
+                    f"order {s.order_ids[0]} filled — lifecycle → fully_filled"
+                )
+                s.lifecycle = StructureLifecycle.FULLY_FILLED
+                log.info(
+                    "[FILL] %s (%s): order %s filled, lifecycle=fully_filled",
+                    s.underlying, s.structure_id, s.order_ids[0],
+                )
+            elif status in _PARTIAL_STATUSES:
+                s.add_audit(
+                    f"order {s.order_ids[0]} partially_filled — lifecycle → partially_filled"
+                )
+                s.lifecycle = StructureLifecycle.PARTIALLY_FILLED
+                log.info(
+                    "[FILL] %s (%s): order %s partially_filled, lifecycle=partially_filled",
+                    s.underlying, s.structure_id, s.order_ids[0],
+                )
+            else:
+                continue  # still open — no transition needed
+
+            try:
+                options_state.save_structure(s)
+            except Exception as _se:
+                log.debug("[FILL] save_structure failed for %s: %s", s.structure_id, _se)
+
+        except Exception as exc:
+            log.debug("[FILL] _sync_submitted_lifecycles %s: %s", s.structure_id, exc)
+
+
 # ── Close-check loop ──────────────────────────────────────────────────────────
 
 def close_check_loop(alpaca_client) -> None:
@@ -452,6 +523,7 @@ def close_check_loop(alpaca_client) -> None:
         open_structs  = options_state.get_open_structures()
         # Backfill fill prices for any submitted/filled structures missing them.
         _all_structs = options_state.load_structures()
+        _sync_submitted_lifecycles(_all_structs, alpaca_client)
         _update_fill_prices(_all_structs, alpaca_client)
         if open_structs:
             for struct in open_structs:

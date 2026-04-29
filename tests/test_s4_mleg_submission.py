@@ -14,7 +14,6 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Alpaca mock classes — injected into sys.modules before each executor call
 # ─────────────────────────────────────────────────────────────────────────────

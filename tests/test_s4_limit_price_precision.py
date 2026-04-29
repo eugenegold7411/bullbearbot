@@ -11,7 +11,6 @@ Fix: wrap with round(..., 2) to eliminate the artifact.
 """
 from __future__ import annotations
 
-import math
 import unittest
 
 from options_executor import _round_limit
@@ -31,7 +30,7 @@ class TestRoundLimitPrecision(unittest.TestCase):
 
     def test_1_97_no_artifact(self):
         # 1.97 → round(1.97/0.05)*0.05 = 39*0.05 = 1.9500000000000002 without fix
-        result = _round_limit(1.97)
+        _round_limit(1.97)
         self._assert_max_2dp(1.97, "1.97")
 
     def test_1_97_rounds_to_195(self):
@@ -39,7 +38,7 @@ class TestRoundLimitPrecision(unittest.TestCase):
 
     def test_2_97_no_artifact(self):
         # 2.97 → round(2.97/0.05)*0.05 = 59*0.05 = 2.9500000000000002 without fix
-        result = _round_limit(2.97)
+        _round_limit(2.97)
         self._assert_max_2dp(2.97, "2.97")
 
     def test_3_97_no_artifact(self):
@@ -57,7 +56,7 @@ class TestRoundLimitPrecision(unittest.TestCase):
         """Every possible _round_limit output ($0.05–$20.00) must have ≤2dp."""
         for n in range(1, 401):
             price = n * 0.05
-            result = _round_limit(price)
+            _round_limit(price)
             self._assert_max_2dp(price, f"n={n}")
 
     # ── Spot checks for correct rounding ────────────────────────────────────

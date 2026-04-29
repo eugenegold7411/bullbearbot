@@ -159,21 +159,25 @@ class OptionsReconResult:
     Composite reconciliation result for Account 2 options structures.
     Returned by reconcile_options_structures().
 
-    intact        — structure_ids where all leg OCC symbols are in broker positions
-    broken        — structure_ids where only some leg OCC symbols are present
-    expiring_soon — structure_ids with DTE ≤ 2
-    needs_close   — structure_ids where should_close_structure() returns True
-    orphaned_legs — OCC symbols in broker positions with no matching structure leg
-    close_reasons — structure_id → close reason string (for plan_structure_repair)
-    orphaned_qtys — OCC symbol → qty (for plan_structure_repair)
+    intact           — structure_ids where all leg OCC symbols are in broker positions
+    broken           — structure_ids where only some leg OCC symbols are present
+    expiring_soon    — structure_ids with DTE ≤ 2
+    needs_close      — structure_ids where should_close_structure() returns True
+    orphaned_legs    — OCC symbols in broker positions with no matching structure leg
+    cancelled_orders — structure_ids that are SUBMITTED but whose order_ids are absent
+                       from snapshot.open_orders and OCC symbols absent from positions
+                       (order was cancelled/expired without filling)
+    close_reasons    — structure_id → close reason string (for plan_structure_repair)
+    orphaned_qtys    — OCC symbol → qty (for plan_structure_repair)
     """
-    intact:        list[str]       = field(default_factory=list)
-    broken:        list[str]       = field(default_factory=list)
-    expiring_soon: list[str]       = field(default_factory=list)
-    needs_close:   list[str]       = field(default_factory=list)
-    orphaned_legs: list[str]       = field(default_factory=list)
-    close_reasons: dict[str, str]  = field(default_factory=dict)
-    orphaned_qtys: dict[str, int]  = field(default_factory=dict)
+    intact:           list[str]       = field(default_factory=list)
+    broken:           list[str]       = field(default_factory=list)
+    expiring_soon:    list[str]       = field(default_factory=list)
+    needs_close:      list[str]       = field(default_factory=list)
+    orphaned_legs:    list[str]       = field(default_factory=list)
+    cancelled_orders: list[str]       = field(default_factory=list)
+    close_reasons:    dict[str, str]  = field(default_factory=dict)
+    orphaned_qtys:    dict[str, int]  = field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -953,6 +957,30 @@ def reconcile_options_structures(
                     result.orphaned_qtys[sym] = int(abs(pos.qty))
                 except (TypeError, ValueError):
                     result.orphaned_qtys[sym] = 1
+
+    # ── SUBMITTED with dead order check ──────────────────────────────────────
+    # A SUBMITTED structure whose order_ids are not in snapshot.open_orders AND
+    # whose OCC symbols are not in broker positions was cancelled without filling.
+    # _sync_submitted_lifecycles() (stage4) handles the authoritative Alpaca poll;
+    # this snapshot-based check is belt-and-suspenders for the same cycle's recon.
+    open_order_ids = {str(getattr(o, "order_id", "") or getattr(o, "id", ""))
+                      for o in snapshot.open_orders}
+    for struct in structures:
+        lc = struct.lifecycle.value if hasattr(struct.lifecycle, "value") else str(struct.lifecycle)
+        if lc != "submitted":
+            continue
+        if not struct.order_ids:
+            continue
+        all_dead = all(oid not in open_order_ids for oid in struct.order_ids)
+        occ_syms = [leg.occ_symbol for leg in struct.legs if leg.occ_symbol]
+        none_filled = not any(sym in snapshot_syms for sym in occ_syms)
+        if all_dead and none_filled:
+            result.cancelled_orders.append(struct.structure_id)
+            log.info(
+                "[OPTS_RECON] %s (%s): SUBMITTED order absent from open_orders "
+                "and no positions — likely cancelled",
+                struct.underlying, struct.structure_id,
+            )
 
     return result
 

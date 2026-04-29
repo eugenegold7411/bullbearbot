@@ -132,6 +132,14 @@ def submit_options_order(
 
         filled = options_executor.submit_structure(structure, client, config={})
 
+        # Persist the updated structure (lifecycle, order_ids, leg.order_id).
+        # submit_structure() does not save — we must do it here.
+        try:
+            import options_state as _os
+            _os.save_structure(filled)
+        except Exception as _se:
+            log.debug("[OPTS_EXEC] save_structure after submit failed (non-fatal): %s", _se)
+
         _SUBMITTED_OK = {
             StructureLifecycle.SUBMITTED,
             StructureLifecycle.PARTIALLY_FILLED,

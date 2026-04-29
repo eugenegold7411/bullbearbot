@@ -12,8 +12,7 @@ NA6: publish_trade_entry not fired for hold/monitor results (secondary fix)
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
-
+from unittest.mock import MagicMock, patch
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -89,7 +88,6 @@ class TestNA1FillPriceNoneSuppressesAlert:
 
     def test_na1_log_info_when_fill_price_none(self, caplog):
         """When fill_price is None the deferred-alert INFO log must appear."""
-        import logging
         import order_executor as oe  # noqa: PLC0415
 
         # Patch Alpaca to return an unfilled order (fill_price absent)

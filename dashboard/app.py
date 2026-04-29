@@ -84,8 +84,8 @@ def _jsonl_last(path: Path, n: int = 1):
 def _alpaca_a1():
     try:
         from alpaca.trading.client import TradingClient
+        from alpaca.trading.enums import OrderSide, OrderStatus, QueryOrderStatus
         from alpaca.trading.requests import GetOrdersRequest
-        from alpaca.trading.enums import QueryOrderStatus, OrderStatus, OrderSide
 
         c = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
         acc = c.get_account()

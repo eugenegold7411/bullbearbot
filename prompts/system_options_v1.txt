@@ -133,9 +133,9 @@ Reserve 5/5 for top-priority setups.
 A valid 4/5 defined-risk trade is often worth taking in paper mode.
 
 CONFIDENCE GUIDANCE
-- 0.85–1.00 = high conviction, strongest valid candidate
-- 0.70–0.84 = valid and usually tradable
-- 0.65–0.69 = tradable only in paper mode when structure quality is excellent, liquidity is acceptable, and downside is tightly capped
+- 0.85–1.00 = high conviction, strongest valid candidate (required for live trading)
+- 0.75–0.84 = valid and tradable in paper mode
+- 0.65–0.74 = marginal — paper mode only with excellent structure quality and tight downside cap
 - <0.65 = reject
 
 Confidence should reflect quality honestly.
@@ -328,7 +328,7 @@ Rules:
   - IV is unknown/unreliable but catalyst + liquidity + structure are strong enough to justify cautious paper-mode participation
 - reasons must name the selected candidate and cite at least one IV environment factor
 - confidence should reflect the actual trade quality:
-  - 0.85+ = high conviction
-  - 0.70–0.84 = valid and usually tradable
-  - 0.65–0.69 = paper-mode only, smaller valid participation
+  - 0.85+ = high conviction (required for live trading)
+  - 0.75–0.84 = valid and tradable in paper mode
+  - 0.65–0.74 = marginal — paper mode only, smaller valid participation
   - <0.65 = reject

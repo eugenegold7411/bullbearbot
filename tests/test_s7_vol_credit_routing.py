@@ -4,7 +4,7 @@ tests/test_s7_vol_credit_routing.py — S7-VOL: volatility-aware routing tests.
 Covers:
   Build 2 — RULE2_CREDIT: very_expensive IV routes to credit structures
   Build 2 — RULE7_MIXED: expensive IV routes to both credit and debit structures
-  Build 5 — validate_config accepts debate_confidence_floor in 0.60-0.95 range
+  Build 5 — validate_config accepts paper/live_confidence_floor in 0.0-1.0 range
   Build 5 — validate_config accepts empty iv_env_blackout list
 """
 
@@ -176,11 +176,19 @@ class TestStrategyConfigS7Vol(unittest.TestCase):
         return json.loads(cfg_path.read_text())
 
     def test_debate_confidence_floor_lowered(self):
+        """paper_confidence_floor=0.75 replaces old dead key debate_confidence_floor."""
         cfg = self._load_config()
-        dcf = cfg.get("account2", {}).get("debate_confidence_floor")
-        self.assertIsNotNone(dcf)
-        self.assertLessEqual(float(dcf), 0.70,
-                             "Paper trading floor should be ≤ 0.70 to accumulate signals")
+        a2 = cfg.get("account2", {})
+        pcf = a2.get("paper_confidence_floor")
+        lcf = a2.get("live_confidence_floor")
+        self.assertIsNotNone(pcf, "account2.paper_confidence_floor missing")
+        self.assertIsNotNone(lcf, "account2.live_confidence_floor missing")
+        self.assertAlmostEqual(float(pcf), 0.75, places=3,
+                               msg="paper_confidence_floor should be 0.75")
+        self.assertAlmostEqual(float(lcf), 0.85, places=3,
+                               msg="live_confidence_floor should be 0.85")
+        self.assertNotIn("debate_confidence_floor", a2,
+                         "Dead key debate_confidence_floor must not be present")
 
     def test_iv_env_blackout_empty(self):
         cfg = self._load_config()

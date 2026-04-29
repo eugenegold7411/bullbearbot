@@ -141,7 +141,8 @@
       "high_max": 40,
       "crisis_halt": 40
     },
-    "debate_confidence_floor": 0.65,
+    "paper_confidence_floor": 0.75,
+    "live_confidence_floor": 0.85,
     "max_open_positions": 8,
     "liquidity_gates": {
       "min_open_interest": 100,

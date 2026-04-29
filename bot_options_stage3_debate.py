@@ -127,6 +127,7 @@ def run_options_debate(
     equity: float,
     allowed_structures_by_symbol: dict | None = None,
     candidate_structures: list[dict] | None = None,
+    conf_floor: float = 0.75,
 ) -> tuple[dict, Optional[str], Optional[str]]:
     """
     A2-3b bounded adjudication debate.
@@ -231,7 +232,7 @@ Synthesize the debate and respond ONLY with this JSON — no other text:
   "recommended_size_modifier": 1.0,
   "reject": <true|false>
 }}
-Confidence >= 0.85 required for PROCEED. If rejecting all: selected_candidate_id=null, reject=true.
+Confidence >= {conf_floor:.2f} required for PROCEED. If rejecting all: selected_candidate_id=null, reject=true.
 """
         try:
             resp = claude.messages.create(
@@ -301,7 +302,7 @@ Conduct the four-way debate for each candidate:
 4. SYNTHESIS: PROCEED | VETO | RESIZE | RESTRUCTURE
 
 Output your top 1-3 approved trades (or all HOLDs if no setup qualifies).
-Minimum confidence 0.85 for any PROCEED. Apply all hard rules from system prompt.
+Minimum confidence {conf_floor:.2f} for any PROCEED. Apply all hard rules from system prompt.
 Respond ONLY with valid JSON. No markdown. No explanation outside JSON fields.
 """
     raw = ""
@@ -431,6 +432,14 @@ def run_bounded_debate(
     _ts = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
     decision_id = f"a2_dec_{_ts}"
 
+    # Determine confidence floor from config (paper vs live)
+    _a2_cfg = config.get("account2", {})
+    _is_live = config.get("account2", {}).get("pf_allow_live_orders", False)
+    if _is_live:
+        _conf_floor = float(_a2_cfg.get("live_confidence_floor", 0.85))
+    else:
+        _conf_floor = float(_a2_cfg.get("paper_confidence_floor", 0.75))
+
     debate_result, prompt_used, raw_response = run_options_debate(
         candidates=candidates,
         iv_summaries=iv_summaries,
@@ -441,6 +450,7 @@ def run_bounded_debate(
         equity=equity,
         allowed_structures_by_symbol=allowed_by_sym or None,
         candidate_structures=candidate_structures or None,
+        conf_floor=_conf_floor,
     )
 
     log.info("[OPTS] Debate complete: bounded=%s  selected=%s  confidence=%s  reject=%s",
@@ -458,7 +468,7 @@ def run_bounded_debate(
         _conf   = float(debate_result.get("confidence", 0.0))
         if _reject or not _sel_id:
             no_trade_reason = "debate_rejected_all"
-        elif _conf < 0.85:
+        elif _conf < _conf_floor:
             no_trade_reason = "debate_low_confidence"
 
     # Find selected candidate dict

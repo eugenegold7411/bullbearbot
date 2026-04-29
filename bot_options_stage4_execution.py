@@ -161,6 +161,14 @@ def submit_selected_candidate(
     if not pf_allow_new_entries:
         log.warning("[PREFLIGHT] New A2 entries suppressed by preflight (reconcile_only)")
 
+    # Load confidence floor from config (paper vs live)
+    _cfg = _load_strategy_config()
+    _a2_cfg = _cfg.get("account2", {})
+    if pf_allow_live_orders:
+        _conf_floor = float(_a2_cfg.get("live_confidence_floor", 0.85))
+    else:
+        _conf_floor = float(_a2_cfg.get("paper_confidence_floor", 0.75))
+
     # ── A2-3b bounded execution path ─────────────────────────────────────────
     if candidate_structures and "selected_candidate_id" in debate_result:
         _reject   = debate_result.get("reject", True)
@@ -175,8 +183,8 @@ def submit_selected_candidate(
             decision_record.no_trade_reason = "debate_rejected_all"
             return "no_trade"
 
-        if _conf < 0.85:
-            log.info("[OPTS] Bounded debate: confidence=%.2f < 0.85 — holding", _conf)
+        if _conf < _conf_floor:
+            log.info("[OPTS] Bounded debate: confidence=%.2f < %.2f — holding", _conf, _conf_floor)
             decision_record.execution_result = "no_trade"
             decision_record.no_trade_reason = "debate_low_confidence"
             return "no_trade"

@@ -275,13 +275,21 @@ if cfg:
     else:
         check(FAIL, f"strategy_config.json: account2.equity_floor=${eq_floor} below $25,000")
 
-    dcf = a2.get("debate_confidence_floor")
-    if dcf is None:
-        check(FAIL, "strategy_config.json: account2.debate_confidence_floor missing")
-    elif 0.60 <= float(dcf) <= 0.95:
-        check(PASS, f"strategy_config.json: account2.debate_confidence_floor={dcf} (valid 0.60–0.95)")
+    pcf = a2.get("paper_confidence_floor")
+    if pcf is None:
+        check(FAIL, "strategy_config.json: account2.paper_confidence_floor missing")
+    elif 0.0 <= float(pcf) <= 1.0:
+        check(PASS, f"strategy_config.json: account2.paper_confidence_floor={pcf} (valid 0.0–1.0)")
     else:
-        check(FAIL, f"strategy_config.json: account2.debate_confidence_floor={dcf} out of range (0.60–0.95)")
+        check(FAIL, f"strategy_config.json: account2.paper_confidence_floor={pcf} out of range (0.0–1.0)")
+
+    lcf = a2.get("live_confidence_floor")
+    if lcf is None:
+        check(FAIL, "strategy_config.json: account2.live_confidence_floor missing")
+    elif 0.0 <= float(lcf) <= 1.0:
+        check(PASS, f"strategy_config.json: account2.live_confidence_floor={lcf} (valid 0.0–1.0)")
+    else:
+        check(FAIL, f"strategy_config.json: account2.live_confidence_floor={lcf} out of range (0.0–1.0)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

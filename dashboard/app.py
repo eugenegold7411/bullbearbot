@@ -351,7 +351,7 @@ def _html(status: dict) -> str:  # noqa: C901
         plpc = p.get("unreal_plpc", 0)
         stop = p.get("stop")
         gap = p.get("gap_to_stop")
-        pct_eq = p.get("pct_of_equity", 0)
+        pct_bp = p.get("pct_of_bp", 0)
         earnings_flag = p.get("earnings", "")
         oversize = p.get("oversize", False)
 
@@ -381,7 +381,7 @@ def _html(status: dict) -> str:  # noqa: C901
           <td style="color:{pl_color}">{pl_sign}{_fp(plpc)}</td>
           <td>{stop_str}</td>
           <td style="color:{gap_color}">{gap_str}</td>
-          <td>{_fp(pct_eq)}</td>
+          <td>{_fp(pct_bp)}</td>
         </tr>"""
 
     # Active flags
@@ -394,7 +394,7 @@ def _html(status: dict) -> str:  # noqa: C901
         if p.get("earnings"):
             flags_list.append(f'<div class="alert alert-orange">📅 {p["symbol"]}: {p["earnings"]}</div>')
         if p.get("oversize"):
-            flags_list.append(f'<div class="alert alert-orange">⚡ {p["symbol"]}: OVERSIZE ({_fp(p.get("pct_of_equity",0))} of equity)</div>')
+            flags_list.append(f'<div class="alert alert-orange">⚡ {p["symbol"]}: OVERSIZE ({_fp(p.get("pct_of_bp",0))} of BP)</div>')
         if p.get("gap_to_stop") is not None and p["gap_to_stop"] < 2.0:
             flags_list.append(f'<div class="alert alert-orange">🔴 {p["symbol"]}: stop gap only {p["gap_to_stop"]:.1f}% — near stop</div>')
     if not flags_list:
@@ -557,7 +557,7 @@ def _html(status: dict) -> str:  # noqa: C901
         <thead>
           <tr>
             <th>Symbol</th><th>Qty</th><th>Entry</th><th>Current</th>
-            <th>P&amp;L $</th><th>P&amp;L %</th><th>Stop</th><th>Gap</th><th>% Eq</th>
+            <th>P&amp;L $</th><th>P&amp;L %</th><th>Stop</th><th>Gap</th><th>% BP</th>
           </tr>
         </thead>
         <tbody>{positions_html}</tbody>
@@ -676,6 +676,8 @@ def _build_status() -> dict:
     positions = []
     if a1_acc:
         equity = float(a1_acc.equity or 0)
+        buying_power = float(a1_acc.buying_power or 0)
+        denom = buying_power if buying_power else equity  # fall back to equity if BP is 0
         stops = _stop_map(a1d.get("orders", []))
         for p in a1d.get("positions", []):
             sym = p.symbol
@@ -685,16 +687,16 @@ def _build_status() -> dict:
             market_val = float(p.market_value or 0)
             unreal_pl = float(p.unrealized_pl or 0)
             unreal_plpc = float(p.unrealized_plpc or 0) * 100
-            pct_eq = (market_val / equity * 100) if equity else 0
+            pct_bp = (market_val / denom * 100) if denom else 0
             stop = stops.get(sym)
             gap = ((current - stop) / current * 100) if stop and current else None
             positions.append({
                 "symbol": sym, "qty": qty, "entry": entry, "current": current,
                 "market_val": market_val, "unreal_pl": unreal_pl,
-                "unreal_plpc": unreal_plpc, "pct_of_equity": pct_eq,
+                "unreal_plpc": unreal_plpc, "pct_of_bp": pct_bp,
                 "stop": stop, "gap_to_stop": gap,
                 "earnings": earnings.get(sym, ""),
-                "oversize": pct_eq > 16,
+                "oversize": pct_bp > 8,  # 15% equity ≈ 8% of buying power (2x margin account)
             })
 
     a2_dec_raw = _rj(BOT_DIR / "data/account2/trade_memory/decisions_account2.json", default=[])

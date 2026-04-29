@@ -680,9 +680,23 @@ def _check_pending_fills() -> None:
                     "fill_qty":   fq,
                     "timestamp":  ft,
                 })
+                # Send deferred fill confirmation if the submission-time alert was suppressed
+                # (fill_price was None at submission → send_trade_alert was not fired)
+                if info.get("alert_deferred") and fp > 0:
+                    try:
+                        from notifications import send_whatsapp_direct  # noqa: PLC0415
+                        _act   = info.get("action", "order").upper()
+                        _sym   = info["symbol"]
+                        _emoji = "🟢" if info.get("action", "").lower() == "buy" else "🔴"
+                        _qty   = f" {int(float(info['qty']))}" if info.get("qty") else ""
+                        send_whatsapp_direct(
+                            f"{_emoji} FILL CONFIRMED: {_act} {_sym}{_qty} @ ${fp:.2f}"
+                        )
+                    except Exception as _fn_exc:
+                        log.debug("[EXECUTOR] fill notification failed (non-fatal): %s", _fn_exc)
                 del _pending_fill_checks[oid]
 
-            elif status in ("canceled", "cancelled", "expired", "replaced"):
+            elif status in ("canceled", "cancelled", "expired", "replaced", "rejected"):
                 log.info("[EXECUTOR] CANCELLED %s  order_id=%s  reason=%s",
                          info["symbol"], oid, status)
                 log_trade({
@@ -693,6 +707,17 @@ def _check_pending_fills() -> None:
                     "reason":     status,
                     "timestamp":  datetime.now(timezone.utc).isoformat(),
                 })
+                # Always notify on cancellation — catches async rejections (e.g. OCA lock 40310000)
+                try:
+                    from notifications import send_whatsapp_direct  # noqa: PLC0415
+                    _act = info.get("action", "order").upper()
+                    _sym = info["symbol"]
+                    _qty = f" {int(float(info['qty']))}" if info.get("qty") else ""
+                    send_whatsapp_direct(
+                        f"⚠️ ORDER CANCELLED: {_act} {_sym}{_qty} — {status}"
+                    )
+                except Exception as _cn_exc:
+                    log.debug("[EXECUTOR] cancel notification failed (non-fatal): %s", _cn_exc)
                 del _pending_fill_checks[oid]
             # Still pending (accepted, partially_filled, etc.) — leave for next cycle
 
@@ -992,9 +1017,10 @@ def execute_all(
             # T-021: register non-immediate fills for confirmation polling next cycle
             if act in ("buy", "sell", "close") and oid and not oid.startswith("OPTIONS_"):
                 _pending_fill_checks[oid] = {
-                    "symbol": symbol,
-                    "action": act,
-                    "qty":    action.get("qty"),
+                    "symbol":         symbol,
+                    "action":         act,
+                    "qty":            action.get("qty"),
+                    "alert_deferred": (_fp is None),  # True when fill not confirmed at submission
                 }
             _req_qty   = float(action.get("qty") or 0) or None
             _req_otype = action.get("order_type", "market") or "market"

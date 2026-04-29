@@ -91,3 +91,28 @@ def build_order_email_html(
         f"<table style='border-collapse:collapse;width:100%;font-size:14px'>{row_html}</table>"
         "</body></html>"
     )
+
+
+def send_whatsapp_direct(message: str) -> bool:
+    """Send a WhatsApp message via Twilio without a TradePublisher instance.
+
+    Reads TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, WHATSAPP_FROM, WHATSAPP_TO from env.
+    Used by order_executor to send fill confirmations and cancellation alerts from the
+    T-021 fill-poll loop, where no TradePublisher instance is available.
+    Returns True on success, False on any failure. Never raises.
+    """
+    import os  # noqa: PLC0415
+    try:
+        from dotenv import load_dotenv  # noqa: PLC0415
+        load_dotenv()
+        sid   = os.getenv("TWILIO_ACCOUNT_SID")
+        token = os.getenv("TWILIO_AUTH_TOKEN")
+        from_ = os.getenv("WHATSAPP_FROM")
+        to    = os.getenv("WHATSAPP_TO")
+        if not all([sid, token, from_, to]):
+            return False
+        from twilio.rest import Client  # noqa: PLC0415
+        Client(sid, token).messages.create(body=message, from_=from_, to=to)
+        return True
+    except Exception:
+        return False

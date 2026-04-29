@@ -802,17 +802,41 @@ def run_cycle(
                 _send_email_alert(f"BullBearBot Order: {r.action.upper()} {r.symbol}", _order_html)
                 if publisher:
                     try:
-                        publisher.send_trade_alert(
-                            action=r.action,
-                            symbol=r.symbol,
-                            qty=r.qty,
-                            price=r.fill_price,
-                            conviction=_idea_conviction,
-                            catalyst=_exec_action.get("catalyst"),
-                            equity=state.equity,
-                        )
+                        if r.fill_price is not None:
+                            publisher.send_trade_alert(
+                                action=r.action,
+                                symbol=r.symbol,
+                                qty=r.qty,
+                                price=r.fill_price,
+                                conviction=_idea_conviction,
+                                catalyst=_exec_action.get("catalyst"),
+                                equity=state.equity,
+                            )
+                        else:
+                            log.info(
+                                "[PUBLISHER] %s %s: fill_price=None — alert deferred "
+                                "pending fill confirmation (T-021 will notify on fill/cancel)",
+                                r.action, r.symbol,
+                            )
                     except Exception as _ta_exc:
                         log.debug("send_trade_alert failed (non-fatal): %s", _ta_exc)
+                if publisher and publisher.enabled and r.action in ("buy", "sell", "close"):
+                    try:
+                        _pub_action = next(
+                            (a for a in actions if a.get("symbol") == r.symbol
+                             and a.get("action") == r.action), None,
+                        )
+                        if _pub_action:
+                            publisher.publish_trade_entry(
+                                action=_pub_action,
+                                debate_result=debate_results.get(r.symbol),
+                                market_context=(
+                                    f"VIX={state.md.get('vix', 20.0):.1f} regime={regime}"
+                                ),
+                                alpaca_client=_get_alpaca(),
+                            )
+                    except Exception as _pub_exc:
+                        log.debug("publisher trade_entry failed (non-fatal): %s", _pub_exc)
                 try:
                     from attribution import (
                         log_attribution_event as _log_attr,  # noqa: PLC0415
@@ -894,21 +918,6 @@ def run_cycle(
                     )
                 except Exception:
                     pass
-                if publisher and publisher.enabled:
-                    try:
-                        matching_action = next(
-                            (a for a in actions if a.get("symbol") == r.symbol
-                             and a.get("action") == r.action), None,
-                        )
-                        if matching_action:
-                            publisher.publish_trade_entry(
-                                action=matching_action,
-                                debate_result=debate_results.get(r.symbol),
-                                market_context=f"VIX={state.md.get('vix', 20.0):.1f} regime={regime}",
-                                alpaca_client=_get_alpaca(),
-                            )
-                    except Exception as _pub_exc:
-                        log.debug("publisher trade_entry failed (non-fatal): %s", _pub_exc)
                 if r.action == "buy":
                     try:
                         from feature_flags import (

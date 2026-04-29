@@ -85,7 +85,7 @@ def _alpaca_a1():
     try:
         from alpaca.trading.client import TradingClient
         from alpaca.trading.requests import GetOrdersRequest
-        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.enums import QueryOrderStatus, OrderStatus, OrderSide
 
         c = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
         acc = c.get_account()
@@ -94,9 +94,23 @@ def _alpaca_a1():
             orders = c.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=200))
         except Exception:
             orders = []
-        return {"ok": True, "account": acc, "positions": pos, "orders": orders}
+        buys_today = 0
+        sells_today = 0
+        try:
+            today_midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            closed = c.get_orders(GetOrdersRequest(
+                status=QueryOrderStatus.CLOSED, after=today_midnight, limit=200
+            ))
+            filled = [o for o in closed if o.status == OrderStatus.FILLED]
+            buys_today = sum(1 for o in filled if o.side == OrderSide.BUY)
+            sells_today = sum(1 for o in filled if o.side == OrderSide.SELL)
+        except Exception:
+            pass
+        return {"ok": True, "account": acc, "positions": pos, "orders": orders,
+                "buys_today": buys_today, "sells_today": sells_today}
     except Exception as e:
-        return {"ok": False, "error": str(e), "account": None, "positions": [], "orders": []}
+        return {"ok": False, "error": str(e), "account": None, "positions": [], "orders": [],
+                "buys_today": 0, "sells_today": 0}
 
 
 @_cached("a2", ttl=60)
@@ -337,9 +351,9 @@ def _html(status: dict) -> str:  # noqa: C901
     regime_score = decision.get("regime_score", "—")
     dec_session = decision.get("session", "—")
 
-    # Today's trades breakdown
-    buys = [t for t in trades if t.get("action") == "buy" and t.get("status") == "submitted"]
-    sells = [t for t in trades if t.get("action") in ("sell", "close") and t.get("status") == "submitted"]
+    # Today's trades breakdown — buys/sells from Alpaca filled orders (Bug 1 fix)
+    buys_today = status["buys_today"]
+    sells_today = status["sells_today"]
     rejected = [t for t in trades if t.get("status") == "rejected"]
     trail_stops = [t for t in trades if t.get("event") == "trail_stop"]
 
@@ -406,11 +420,14 @@ def _html(status: dict) -> str:  # noqa: C901
     alloc_last = _to_et(alloc_status.get("last_run_at", ""))
     alloc_st = alloc_status.get("status", "—")
 
-    # A2 last decision
-    a2_reasoning = a2_dec.get("reasoning", "—")[:100] if a2_dec else "—"
-    a2_ts = _to_et(a2_dec.get("timestamp", "")) if a2_dec else "—"
-    a2_actions = a2_dec.get("actions", [])
-    a2_action_str = "no_trade" if not a2_actions else f"{len(a2_actions)} structure(s)"
+    # A2 last decision — reads from data/account2/decisions/ (new stage pipeline format, Bug 3 fix)
+    a2_ts = _to_et(a2_dec.get("built_at", "")) if a2_dec else "—"
+    _a2_result = a2_dec.get("execution_result", "—") if a2_dec else "—"
+    _a2_reason = a2_dec.get("no_trade_reason", "") if a2_dec else ""
+    a2_action_str = f"{_a2_result} ({_a2_reason})" if _a2_reason else _a2_result
+    a2_session = a2_dec.get("session_tier", "") if a2_dec else ""
+    a2_reasoning = (f"{a2_session} · {_a2_reason}" if a2_session and _a2_reason
+                    else a2_session or _a2_reason or "—")[:100]
 
     # Costs
     daily_cost = costs.get("daily_cost", 0)
@@ -579,11 +596,11 @@ def _html(status: dict) -> str:  # noqa: C901
       </div>
       <div class="stat-box">
         <div class="stat-label">Buys Today</div>
-        <div class="stat-val green">{len(buys)}</div>
+        <div class="stat-val green">{buys_today}</div>
       </div>
       <div class="stat-box">
         <div class="stat-label">Sells Today</div>
-        <div class="stat-val red">{len(sells)}</div>
+        <div class="stat-val red">{sells_today}</div>
       </div>
       <div class="stat-box">
         <div class="stat-label">Rejected</div>
@@ -666,6 +683,18 @@ def _html(status: dict) -> str:  # noqa: C901
 </html>"""
 
 
+def _a2_last_cycle() -> dict:
+    """Read most recent A2 decision from data/account2/decisions/ (new stage pipeline format)."""
+    try:
+        dec_dir = BOT_DIR / "data/account2/decisions"
+        files = sorted(dec_dir.glob("a2_dec_*.json"))
+        if not files:
+            return {}
+        return json.loads(files[-1].read_text())
+    except Exception:
+        return {}
+
+
 # ── Build status dict ─────────────────────────────────────────────────────────
 def _build_status() -> dict:
     a1d = _alpaca_a1()
@@ -696,15 +725,16 @@ def _build_status() -> dict:
                 "unreal_plpc": unreal_plpc, "pct_of_bp": pct_bp,
                 "stop": stop, "gap_to_stop": gap,
                 "earnings": earnings.get(sym, ""),
-                "oversize": pct_bp > 8,  # 15% equity ≈ 8% of buying power (2x margin account)
+                "oversize": pct_bp > 20,  # flag if >20% of buying power (consistent with risk kernel)
             })
 
-    a2_dec_raw = _rj(BOT_DIR / "data/account2/trade_memory/decisions_account2.json", default=[])
-    a2_dec = (a2_dec_raw[-1] if isinstance(a2_dec_raw, list) and a2_dec_raw else {})
+    a2_dec = _a2_last_cycle()
 
     return {
         "a1": a1d, "a2": a2d,
         "positions": positions,
+        "buys_today": a1d.get("buys_today", 0),
+        "sells_today": a1d.get("sells_today", 0),
         "a1_mode": _rj(BOT_DIR / "data/runtime/a1_mode.json"),
         "a2_mode": _rj(BOT_DIR / "data/runtime/a2_mode.json"),
         "gate": _rj(BOT_DIR / "data/market/gate_state.json"),

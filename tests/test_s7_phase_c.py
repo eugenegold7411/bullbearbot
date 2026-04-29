@@ -1,10 +1,11 @@
 """
-Sprint 7 Phase C tests — S7-G, S7-H, S7-I, S7-L.
+Sprint 7 Phase C tests — S7-G, S7-H, S7-I, S7-L, S8-cancel-replace.
 
 S7-G: max_recommendations_per_cycle raised from 3 to 5
 S7-H: ADD conviction gate in eligibility_check() — BUY on held symbol requires conviction >= add_conviction_gate
 S7-I: Graduated TRIM severity — trim_pct scales with thesis_score weakness
 S7-L: Conviction score appended to allocator ADD reason string
+S8-cancel-replace: _trail_cancel_and_replace fallback in maybe_trail_stop for Alpaca 42210000
 """
 import unittest
 
@@ -451,3 +452,171 @@ class TestAddConvictionNote(unittest.TestCase):
         trims = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(trims), 1)
         self.assertNotIn("conviction=", trims[0]["reason"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S8 — _trail_cancel_and_replace: cancel-and-replace fallback for 42210000
+# ─────────────────────────────────────────────────────────────────────────────
+
+import json
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+
+def _make_position(symbol="GOOGL", qty=10, entry=340.0, current=355.0, unrealized=150.0):
+    p = MagicMock()
+    p.symbol           = symbol
+    p.qty              = qty
+    p.avg_entry_price  = entry
+    p.current_price    = current
+    p.unrealized_pl    = unrealized
+    return p
+
+
+def _em_cfg_base(**overrides):
+    cfg = {
+        "trail_stop_enabled":           True,
+        "trail_trigger_r":              1.0,
+        "trail_to_breakeven_plus_pct":  0.005,
+        "refresh_if_stop_stale_pct":    0.15,
+        "backstop_days":                7,
+        "trail_replace_max_failures":   3,
+        "trail_cancel_replace_enabled": True,
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+def _strategy_cfg(**exit_overrides):
+    base = _em_cfg_base(**exit_overrides)
+    return {"exit_management": base}
+
+
+class TestTrailCancelAndReplace(unittest.TestCase):
+    """S8: _trail_cancel_and_replace fires on 42210000, leaves other errors to retry path."""
+
+    def setUp(self):
+        import exit_manager as em
+        em._trail_replace_failures.clear()
+        self._em = em
+
+    # ── 1. 42210000 triggers cancel-and-replace ───────────────────────────────
+
+    def test_42210000_triggers_cancel_and_replace(self):
+        """replace_order raises 42210000 → cancel called, new stop placed."""
+        client = MagicMock()
+        client.replace_order_by_id.side_effect = Exception("42210000: cannot replace order")
+        new_order = MagicMock(); new_order.id = "new-order-id"
+        client.submit_order.return_value = new_order
+
+        pos = _make_position()
+        ei  = {"stop_price": 325.0, "stop_order_id": "old-oid", "stop_order_status": "accepted"}
+
+        with patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
+            result = self._em.maybe_trail_stop(pos, client, _strategy_cfg())
+
+        client.cancel_order_by_id.assert_called_once_with("old-oid")
+        client.submit_order.assert_called_once()
+        self.assertTrue(result)
+
+    # ── 2. Different error uses existing retry path ───────────────────────────
+
+    def test_non_42210000_error_uses_retry_path(self):
+        """replace_order raises a different error → counter incremented, no cancel."""
+        client = MagicMock()
+        client.replace_order_by_id.side_effect = Exception("40010001: some other error")
+
+        pos = _make_position()
+        ei  = {"stop_price": 325.0, "stop_order_id": "old-oid", "stop_order_status": "new"}
+
+        with patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
+            result = self._em.maybe_trail_stop(pos, client, _strategy_cfg())
+
+        client.cancel_order_by_id.assert_not_called()
+        self.assertFalse(result)
+        self.assertEqual(self._em._trail_replace_failures.get("old-oid", 0), 1)
+
+    # ── 3. Cancel succeeds → new stop placed at trail price ──────────────────
+
+    def test_cancel_success_places_new_stop_at_trail_price(self):
+        """After cancel, submit_order called with stop_price == new_stop (entry × 1.005)."""
+
+        client = MagicMock()
+        client.replace_order_by_id.side_effect = Exception("42210000")
+        new_order = MagicMock(); new_order.id = "new-id"
+        client.submit_order.return_value = new_order
+
+        # entry=340, plus_pct=0.005 → new_stop = round(340 * 1.005, 2) = 341.70
+        pos = _make_position(entry=340.0, current=355.0, unrealized=150.0)
+        ei  = {"stop_price": 325.0, "stop_order_id": "oid-123", "stop_order_status": "accepted"}
+
+        with patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
+            result = self._em.maybe_trail_stop(pos, client, _strategy_cfg())
+
+        self.assertTrue(result)
+        submitted = client.submit_order.call_args[0][0]
+        self.assertAlmostEqual(float(submitted.stop_price), 341.70, places=1)
+
+    # ── 4. Cancel fails → failure counter incremented, no place attempt ───────
+
+    def test_cancel_failure_increments_counter_no_place(self):
+        """cancel_order_by_id raises → failure counter incremented, submit_order not called."""
+        client = MagicMock()
+        client.replace_order_by_id.side_effect = Exception("42210000")
+        client.cancel_order_by_id.side_effect  = Exception("cancel failed")
+
+        pos = _make_position()
+        ei  = {"stop_price": 325.0, "stop_order_id": "oid-cancel-fail", "stop_order_status": "accepted"}
+
+        with patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
+            result = self._em.maybe_trail_stop(pos, client, _strategy_cfg())
+
+        self.assertFalse(result)
+        client.submit_order.assert_not_called()
+        self.assertEqual(self._em._trail_replace_failures.get("oid-cancel-fail", 0), 1)
+
+    # ── 5. trail_cancel_replace_enabled=False → existing retry behavior ───────
+
+    def test_cancel_replace_disabled_uses_retry_path(self):
+        """trail_cancel_replace_enabled=False → 42210000 goes to failure counter, no cancel."""
+        client = MagicMock()
+        client.replace_order_by_id.side_effect = Exception("42210000: accepted status")
+
+        pos = _make_position()
+        ei  = {"stop_price": 325.0, "stop_order_id": "oid-disabled", "stop_order_status": "accepted"}
+
+        cfg = _strategy_cfg(trail_cancel_replace_enabled=False)
+        with patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
+            result = self._em.maybe_trail_stop(pos, client, cfg)
+
+        client.cancel_order_by_id.assert_not_called()
+        self.assertFalse(result)
+        self.assertEqual(self._em._trail_replace_failures.get("oid-disabled", 0), 1)
+
+    # ── 6. S8-B retry cap still applies to cancel-and-replace ────────────────
+
+    def test_retry_cap_applies_to_cancel_and_replace(self):
+        """After trail_replace_max_failures failures, cancel-and-replace abandoned."""
+        client = MagicMock()
+        client.replace_order_by_id.side_effect = Exception("42210000")
+
+        oid = "oid-maxed"
+        self._em._trail_replace_failures[oid] = 3   # already at cap
+
+        pos = _make_position()
+        ei  = {"stop_price": 325.0, "stop_order_id": oid, "stop_order_status": "accepted"}
+
+        with patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
+            result = self._em.maybe_trail_stop(pos, client, _strategy_cfg())
+
+        client.cancel_order_by_id.assert_not_called()
+        self.assertFalse(result)
+
+    # ── 7. strategy_config.json has trail_cancel_replace_enabled ─────────────
+
+    def test_strategy_config_has_trail_cancel_replace_enabled(self):
+        cfg_path = Path(__file__).parent.parent / "strategy_config.json"
+        cfg = json.loads(cfg_path.read_text())
+        em_section = cfg["exit_management"]
+        self.assertIn("trail_cancel_replace_enabled", em_section)
+        self.assertTrue(em_section["trail_cancel_replace_enabled"])

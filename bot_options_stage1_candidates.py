@@ -181,13 +181,14 @@ _EARNINGS_EXEMPT_SYMBOLS: frozenset[str] = frozenset({
 
 def _load_earnings_days_away(symbol: str) -> Optional[int]:
     """
-    Return days until the nearest earnings event for symbol, or None if unknown.
-    Reads data/market/earnings_calendar.json. Non-fatal.
+    Return days until the nearest upcoming earnings event (positive int), or the
+    days since the most recent past earnings (negative int), or None if unknown.
 
-    Returns None immediately for symbols in _EARNINGS_EXEMPT_SYMBOLS (ETFs and
-    funds that never report earnings). Also returns None for foreign stocks not
-    covered by the Alpha Vantage US calendar (ASML, TSM); the router's earnings
-    rules are None-safe so this is handled gracefully.
+    - Returns None for symbols in _EARNINGS_EXEMPT_SYMBOLS (ETFs / funds)
+    - Returns positive int: days until upcoming earnings (existing behavior)
+    - Returns negative int: days since most recent past earnings (new — enables
+      RULE_POST_EARNINGS to detect the post-earnings IV crush window)
+    - Returns None: no entries found in the AV calendar
     """
     import json  # noqa: PLC0415
     if symbol.upper() in _EARNINGS_EXEMPT_SYMBOLS:
@@ -199,7 +200,8 @@ def _load_earnings_days_away(symbol: str) -> Optional[int]:
             return None
         cal = json.loads(cal_path.read_text())
         today = date.today()
-        min_days: Optional[int] = None
+        min_future: Optional[int] = None   # smallest non-negative (upcoming)
+        max_past:   Optional[int] = None   # largest negative (most recent past, closest to 0)
         for entry in cal.get("calendar", []):
             if entry.get("symbol", "").upper() != symbol.upper():
                 continue
@@ -209,12 +211,19 @@ def _load_earnings_days_away(symbol: str) -> Optional[int]:
             try:
                 days = (date.fromisoformat(str(raw)[:10]) - today).days
                 if days >= 0:
-                    min_days = days if min_days is None else min(min_days, days)
+                    min_future = days if min_future is None else min(min_future, days)
+                else:
+                    max_past = days if max_past is None else max(max_past, days)
             except Exception:
                 continue
-        if min_days is None:
-            log.debug("[EARNINGS] %s — no upcoming entry in AV calendar", symbol)
-        return min_days
+        if min_future is not None:
+            return min_future
+        if max_past is not None:
+            log.debug("[EARNINGS] %s — no upcoming earnings; most recent past %d days ago",
+                      symbol, abs(max_past))
+            return max_past
+        log.debug("[EARNINGS] %s — no entry in AV calendar", symbol)
+        return None
     except Exception:
         return None
 

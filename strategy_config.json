@@ -272,6 +272,15 @@
     "min_liquidity_score": 0.25,
     "macro_iv_gate_rank": 70,
     "iv_env_blackout": [],
+    "post_earnings_window_premarket": 2,
+    "post_earnings_window_postmarket": 1,
+    "post_earnings_window_unknown": 1,
+    "post_earnings_iv_rank_min": 75,
+    "post_earnings_iv_already_crushed_threshold": 15,
+    "pre_earnings_credit_spread_enabled": false,
+    "pre_earnings_iv_rank_min": 85,
+    "pre_earnings_dte_min": 7,
+    "pre_earnings_dte_max": 14,
     "v1_defaults_note": "These are v1 safety defaults added 2026-04-20. Each is a candidate for tuning after shadow validation."
   },
   "a2_veto_thresholds": {

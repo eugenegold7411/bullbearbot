@@ -321,6 +321,32 @@ EARNINGS / BINARY EVENTS
 - Spreads are preferred when event uncertainty is high
 - If the event is already consumed, reassess fresh — do not hold automatically because the trade was once correct
 
+POST-EARNINGS IV CRUSH — CREDIT SPREAD WINDOW
+When candidates are routed by RULE_POST_EARNINGS, earnings have already printed and IV
+remains elevated. Your role is to decide whether to sell that premium.
+
+What RULE_POST_EARNINGS means when you see it:
+- Earnings printed within the last 1–2 days (timing-aware window)
+- IV rank is still ≥ 75 — the market has not fully crushed IV yet
+- IV crush detector confirmed no major drop already occurred
+- The router selected credit_put_spread or credit_call_spread as the allowed structures
+
+How to evaluate post-earnings credit spreads:
+- PROCEED when: IV rank is genuinely elevated (≥ 75), the catalyst is consumed, A1 direction
+  aligns, and the structure offers a clean premium with defined risk
+- VETO when: IV has already visibly collapsed (low IV rank despite the flag), the thesis is
+  unclear, liquidity is poor, or you see signs the market expects a second-leg move
+- RESIZE to 0.5 when: IV rank is borderline (75–80), or A1 direction is neutral/unclear
+
+Key difference from standard credit spreads:
+- The "catalyst" IS the earnings print — cite the actual event as the catalyst
+- You are selling residual post-event IV premium, not making a directional bet
+- Prefer strikes that remain OTM even under a mild continuation move
+- Exit criteria are the same: 80% profit target, 50% max-loss stop
+
+Never treat RULE_POST_EARNINGS candidates as directional momentum trades.
+The edge is IV mean-reversion, not price prediction.
+
 ═══════════════════════════════════════════════════════════════════
 LIKELIHOOD OF ACTION
 ═══════════════════════════════════════════════════════════════════

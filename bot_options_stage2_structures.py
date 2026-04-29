@@ -22,7 +22,7 @@ from schemas import OptionStrategy as _OS
 
 log = get_logger(__name__)
 
-# Mapping from route_strategy structure type → OptionStrategy enum.
+# Mapping from route_strategy structure type -> OptionStrategy enum.
 # Used by Stage 4 execution and exposed here for backward compat (tests import from bot_options).
 _STRATEGY_FROM_STRUCTURE: dict[str, _OS] = {
     "long_call":          _OS.SINGLE_CALL,
@@ -39,12 +39,80 @@ _STRATEGY_FROM_STRUCTURE: dict[str, _OS] = {
 
 _A2_ROUTER_DEFAULTS: dict = {
     "earnings_dte_blackout": 5,
-    "earnings_dte_window":   14,   # RULE_EARNINGS active when blackout < dte ≤ window
+    "earnings_dte_window":   14,   # RULE_EARNINGS active when blackout < dte <= window
     "earnings_iv_rank_gate": 70,   # RULE_EARNINGS only fires when iv_rank < this
     "min_liquidity_score":   0.3,
     "macro_iv_gate_rank":    60,
     "iv_env_blackout":       [],  # S7-VOL: very_expensive now routes to credit spreads (RULE2_CREDIT)
+    # Post-earnings IV crush config (RULE_POST_EARNINGS)
+    "post_earnings_window_premarket":              2,   # days since earnings to stay in window (pre-mkt print)
+    "post_earnings_window_postmarket":             1,   # days since earnings to stay in window (post-mkt print)
+    "post_earnings_window_unknown":                1,   # days since earnings when timing unknown
+    "post_earnings_iv_rank_min":                  75,   # minimum IV rank to enter post-earnings credit spread
+    "post_earnings_iv_already_crushed_threshold": 15,  # rank-point drop that signals crush already done
+    # Pre-earnings high-IV credit config (RULE_EARNINGS_HIGH_IV -- DISABLED BY DEFAULT)
+    "pre_earnings_credit_spread_enabled":        False, # master gate -- must be true for rule to fire
+    "pre_earnings_iv_rank_min":                   85,   # IV rank floor (very elevated only)
+    "pre_earnings_dte_min":                        7,   # minimum DTE for pre-earnings credit spread
+    "pre_earnings_dte_max":                       14,   # maximum DTE for pre-earnings credit spread
 }
+
+
+def _get_earnings_timing(sym: str, earnings_calendar_data: dict) -> str:
+    """
+    Return 'pre_market', 'post_market', or 'unknown' for the most recent
+    past earnings event for a symbol. Used to set RULE_POST_EARNINGS window width.
+    """
+    today = date.today()
+    best: tuple | None = None   # (earnings_date, timing_str)
+    for entry in earnings_calendar_data.get("calendar", []):
+        if entry.get("symbol", "").upper() != sym.upper():
+            continue
+        raw = entry.get("earnings_date", "")
+        if not raw:
+            continue
+        try:
+            eda_date = date.fromisoformat(str(raw)[:10])
+            if eda_date < today:
+                if best is None or eda_date > best[0]:
+                    raw_timing = str(entry.get("timing", "")).lower()
+                    norm = ("pre_market"  if any(k in raw_timing for k in ("pre", "bmo")) else
+                            "post_market" if any(k in raw_timing for k in ("post", "amc", "after")) else
+                            "unknown")
+                    best = (eda_date, norm)
+        except Exception:
+            continue
+    return best[1] if best is not None else "unknown"
+
+
+def _iv_already_crushed(sym: str, current_iv_rank: float, threshold: float = 15.0) -> bool:
+    """
+    Return True if IV rank dropped by more than `threshold` points since yesterday.
+    Uses the same 52-week rank formula as compute_iv_rank() but comparing the
+    last two entries in the IV history file.
+    Returns False if history is unavailable (conservative -- don't skip trade).
+    """
+    try:
+        import json as _json  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+        hist_path = (_Path(__file__).parent / "data" / "options" / "iv_history"
+                     / f"{sym}_iv_history.json")
+        if not hist_path.exists():
+            return False
+        history = _json.loads(hist_path.read_text())
+        ivs = [e["iv"] for e in history if isinstance(e, dict) and e.get("iv", 0) > 0]
+        if len(ivs) < 2:
+            return False
+        low  = min(ivs)
+        high = max(ivs)
+        if high == low:
+            return False
+        today_rank     = (ivs[-1] - low) / (high - low) * 100
+        yesterday_rank = (ivs[-2] - low) / (high - low) * 100
+        drop = yesterday_rank - today_rank
+        return drop >= threshold
+    except Exception:
+        return False
 
 
 def _get_router_config(config: dict | None = None) -> dict:
@@ -55,13 +123,34 @@ def _get_router_config(config: dict | None = None) -> dict:
     return {**_A2_ROUTER_DEFAULTS, **router_cfg}
 
 
-def _route_strategy(pack, config: dict | None = None) -> list[str]:
+def _route_strategy(
+    pack,
+    config: dict | None = None,
+    earnings_calendar_data: dict | None = None,
+) -> list[str]:
     """
     Deterministic rules decide which structures are legal BEFORE AI debate.
     Returns list of allowed structure types, empty list = no trade.
 
     Thresholds are read from config["a2_router"] with v1 safety defaults.
     Behavior is identical to prior hardcoded version when config matches defaults.
+
+    earnings_calendar_data: optional dict with "calendar" list used by
+    RULE_POST_EARNINGS for timing-aware window width. Loaded from disk if None.
+
+    Rule order:
+      RULE_EARNINGS_HIGH_IV  — pre-earnings credit spread (disabled by default)
+      RULE1                  — upcoming earnings blackout (0 <= eda <= blackout)
+      RULE2                  — IV environment blackout
+      RULE3                  — liquidity floor
+      RULE4                  — macro event + elevated IV
+      RULE_POST_EARNINGS     — post-earnings IV crush trade (eda < 0)
+      RULE_EARNINGS          — near-earnings direction split
+      RULE2_CREDIT           — very_expensive IV -> credit structures
+      RULE5                  — cheap IV + directional
+      RULE6                  — neutral IV + directional
+      RULE7                  — expensive IV + directional
+      RULE8                  — default no-trade
     """
     sym  = pack.symbol
     rcfg = _get_router_config(config)
@@ -72,35 +161,108 @@ def _route_strategy(pack, config: dict | None = None) -> list[str]:
     macro_iv_gate_rank    = float(rcfg["macro_iv_gate_rank"])
     iv_env_blackout       = list(rcfg["iv_env_blackout"])
 
-    # Rule 1: earnings blackout
-    if pack.earnings_days_away is not None and pack.earnings_days_away <= earnings_dte_blackout:
-        log.debug("[OPTS] _route_strategy %s: RULE1 earnings_blackout days=%s <= %d → []",
-                  sym, pack.earnings_days_away, earnings_dte_blackout)
+    # Post-earnings config
+    pe_win_pre   = int(rcfg.get("post_earnings_window_premarket", 2))
+    pe_win_post  = int(rcfg.get("post_earnings_window_postmarket", 1))
+    pe_win_unk   = int(rcfg.get("post_earnings_window_unknown", 1))
+    pe_iv_min    = float(rcfg.get("post_earnings_iv_rank_min", 75))
+    pe_crush_thr = float(rcfg.get("post_earnings_iv_already_crushed_threshold", 15))
+
+    # Pre-earnings high-IV config
+    pre_earn_enabled = bool(rcfg.get("pre_earnings_credit_spread_enabled", False))
+    pre_earn_iv_min  = float(rcfg.get("pre_earnings_iv_rank_min", 85))
+    pre_earn_dte_min = int(rcfg.get("pre_earnings_dte_min", 7))
+    pre_earn_dte_max = int(rcfg.get("pre_earnings_dte_max", 14))
+
+    eda = pack.earnings_days_away
+
+    # RULE_EARNINGS_HIGH_IV — disabled by default; preempts RULE1 for very-high IV pre-earnings.
+    # When enabled: if earnings is within the target DTE range and IV is very elevated,
+    # sell a credit spread to capture IV premium before the binary event.
+    if pre_earn_enabled:
+        if (eda is not None
+                and pre_earn_dte_min <= eda <= pre_earn_dte_max
+                and pack.iv_rank >= pre_earn_iv_min):
+            if pack.a1_direction == "bullish":
+                _pehi = ["credit_put_spread"]
+            elif pack.a1_direction == "bearish":
+                _pehi = ["credit_call_spread"]
+            else:
+                _pehi = ["credit_put_spread", "credit_call_spread"]
+            log.debug(
+                "[OPTS] _route_strategy %s: RULE_EARNINGS_HIGH_IV eda=%s iv_rank=%.1f dir=%s -> %s",
+                sym, eda, pack.iv_rank, pack.a1_direction, _pehi,
+            )
+            return _pehi
+
+    # RULE1: upcoming earnings blackout — block all trades within N days of earnings.
+    # Uses 0 <= eda to exclude past earnings (negative eda handled by RULE_POST_EARNINGS).
+    if eda is not None and 0 <= eda <= earnings_dte_blackout:
+        log.debug("[OPTS] _route_strategy %s: RULE1 earnings_blackout days=%s <= %d -> []",
+                  sym, eda, earnings_dte_blackout)
         return []
 
-    # Rule 2: no long premium in blacklisted IV environments
+    # RULE2: no long premium in blacklisted IV environments
     if pack.iv_environment in iv_env_blackout:
-        log.debug("[OPTS] _route_strategy %s: RULE2 iv_env=%s in blackout=%s → []",
+        log.debug("[OPTS] _route_strategy %s: RULE2 iv_env=%s in blackout=%s -> []",
                   sym, pack.iv_environment, iv_env_blackout)
         return []
 
-    # Rule 3: liquidity floor
+    # RULE3: liquidity floor
     if pack.liquidity_score < min_liquidity_score:
-        log.debug("[OPTS] _route_strategy %s: RULE3 liquidity=%.2f < %.2f → []",
+        log.debug("[OPTS] _route_strategy %s: RULE3 liquidity=%.2f < %.2f -> []",
                   sym, pack.liquidity_score, min_liquidity_score)
         return []
 
-    # Rule 4: macro event + elevated IV
+    # RULE4: macro event + elevated IV
     if pack.macro_event_flag and pack.iv_rank > macro_iv_gate_rank:
-        log.debug("[OPTS] _route_strategy %s: RULE4 macro_event + iv_rank=%.1f > %.1f → []",
+        log.debug("[OPTS] _route_strategy %s: RULE4 macro_event + iv_rank=%.1f > %.1f -> []",
                   sym, pack.iv_rank, macro_iv_gate_rank)
         return []
 
-    # Rule EARNINGS: direction-split when near (but not in blackout for) earnings
-    # AND iv_rank is not elevated. Elevated IV (>= gate) falls through to RULE6/7
+    # RULE_POST_EARNINGS: sell IV premium after earnings print when IV still elevated.
+    # eda < 0 means earnings already happened (abs(eda) = days since print).
+    # Timing-aware window: pre-market print gives a 2-day window; post-market gives 1.
+    # Blocked if IV has already crashed (crush detected from history).
+    if eda is not None and eda < 0:
+        # Lazy-load earnings calendar from disk if not supplied by caller
+        if earnings_calendar_data is None:
+            try:
+                import json as _json  # noqa: PLC0415
+                from pathlib import Path as _Path  # noqa: PLC0415
+                cal_path = _Path(__file__).parent / "data" / "market" / "earnings_calendar.json"
+                earnings_calendar_data = _json.loads(cal_path.read_text()) if cal_path.exists() else {}
+            except Exception:
+                earnings_calendar_data = {}
+        timing = _get_earnings_timing(sym, earnings_calendar_data)
+        if timing == "pre_market":
+            window = pe_win_pre
+        elif timing == "post_market":
+            window = pe_win_post
+        else:
+            window = pe_win_unk
+        days_since = -eda   # positive: days since print
+        if (days_since <= window
+                and pack.iv_rank >= pe_iv_min
+                and not _iv_already_crushed(sym, pack.iv_rank, pe_crush_thr)):
+            if pack.a1_direction == "bullish":
+                _pe = ["credit_put_spread"]
+            elif pack.a1_direction == "bearish":
+                _pe = ["credit_call_spread"]
+            else:
+                _pe = ["credit_put_spread", "credit_call_spread"]
+            log.debug(
+                "[OPTS] _route_strategy %s: RULE_POST_EARNINGS eda=%s timing=%s "
+                "window=%d iv_rank=%.1f dir=%s -> %s",
+                sym, eda, timing, window, pack.iv_rank, pack.a1_direction, _pe,
+            )
+            return _pe
+
+    # RULE_EARNINGS: direction-split when near (but not in blackout for) earnings
+    # AND iv_rank is not elevated. Elevated IV (>= gate) falls through to RULE2_CREDIT/7
     # so we don't buy premium into expected vol crush.
-    if (pack.earnings_days_away is not None
-            and earnings_dte_blackout < pack.earnings_days_away <= earnings_dte_window
+    if (eda is not None
+            and earnings_dte_blackout < eda <= earnings_dte_window
             and pack.iv_rank < earnings_iv_rank_gate):
         if pack.a1_direction == "bullish":
             allowed = ["debit_call_spread", "straddle"]
@@ -108,45 +270,45 @@ def _route_strategy(pack, config: dict | None = None) -> list[str]:
             allowed = ["debit_put_spread", "straddle"]
         else:  # neutral
             allowed = ["straddle"]
-        log.debug("[OPTS] _route_strategy %s: RULE_EARNINGS dte=%s iv_rank=%.1f dir=%s → %s",
-                  sym, pack.earnings_days_away, pack.iv_rank, pack.a1_direction, allowed)
+        log.debug("[OPTS] _route_strategy %s: RULE_EARNINGS dte=%s iv_rank=%.1f dir=%s -> %s",
+                  sym, eda, pack.iv_rank, pack.a1_direction, allowed)
         return allowed
 
-    # Rule 2b: very expensive IV → route to credit structures (sell premium)
+    # RULE2_CREDIT: very expensive IV -> route to credit structures (sell premium)
     if pack.iv_environment == "very_expensive":
         if pack.a1_direction == "bullish":
             _vexp = ["credit_put_spread"]
         elif pack.a1_direction == "bearish":
             _vexp = ["credit_call_spread"]
-        else:  # neutral — allow both sides
+        else:  # neutral -- allow both sides
             _vexp = ["credit_put_spread", "credit_call_spread"]
-        log.debug("[OPTS] _route_strategy %s: RULE2_CREDIT iv_env=very_expensive dir=%s → %s",
+        log.debug("[OPTS] _route_strategy %s: RULE2_CREDIT iv_env=very_expensive dir=%s -> %s",
                   sym, pack.a1_direction, _vexp)
         return _vexp
 
-    # Rule 5: cheap IV + directional signal
+    # RULE5: cheap IV + directional signal
     if pack.iv_environment in ("very_cheap", "cheap") and pack.a1_direction != "neutral":
         allowed = ["long_call", "long_put", "debit_call_spread", "debit_put_spread"]
-        log.debug("[OPTS] _route_strategy %s: RULE5 iv_env=%s dir=%s → %s",
+        log.debug("[OPTS] _route_strategy %s: RULE5 iv_env=%s dir=%s -> %s",
                   sym, pack.iv_environment, pack.a1_direction, allowed)
         return allowed
 
-    # Rule 6: neutral IV + directional signal
+    # RULE6: neutral IV + directional signal
     if pack.iv_environment == "neutral" and pack.a1_direction != "neutral":
         allowed = ["debit_call_spread", "debit_put_spread"]
-        log.debug("[OPTS] _route_strategy %s: RULE6 iv_env=neutral dir=%s → %s",
+        log.debug("[OPTS] _route_strategy %s: RULE6 iv_env=neutral dir=%s -> %s",
                   sym, pack.a1_direction, allowed)
         return allowed
 
-    # Rule 7: expensive IV + directional signal (mixed: credit preferred, debit allowed)
+    # RULE7: expensive IV + directional signal (mixed: credit preferred, debit allowed)
     if pack.iv_environment == "expensive" and pack.a1_direction != "neutral":
         allowed = ["credit_put_spread", "credit_call_spread", "debit_call_spread", "debit_put_spread"]
-        log.debug("[OPTS] _route_strategy %s: RULE7_MIXED iv_env=expensive dir=%s → %s",
+        log.debug("[OPTS] _route_strategy %s: RULE7_MIXED iv_env=expensive dir=%s -> %s",
                   sym, pack.a1_direction, allowed)
         return allowed
 
-    # Rule 8: default no-trade
-    log.debug("[OPTS] _route_strategy %s: RULE8 default no match (iv_env=%s dir=%s) → []",
+    # RULE8: default no-trade
+    log.debug("[OPTS] _route_strategy %s: RULE8 default no match (iv_env=%s dir=%s) -> []",
               sym, pack.iv_environment, pack.a1_direction)
     return []
 
@@ -155,12 +317,25 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
     """Infer which _route_strategy rule fired for audit logging in A2CandidateSet."""
     rcfg = _get_router_config(config)
     earnings_dte_blackout = int(rcfg["earnings_dte_blackout"])
+    earnings_dte_window   = int(rcfg.get("earnings_dte_window", 14))
     min_liquidity_score   = float(rcfg["min_liquidity_score"])
     macro_iv_gate_rank    = float(rcfg["macro_iv_gate_rank"])
     iv_env_blackout       = list(rcfg["iv_env_blackout"])
+    pre_earn_enabled      = bool(rcfg.get("pre_earnings_credit_spread_enabled", False))
+    pre_earn_iv_min       = float(rcfg.get("pre_earnings_iv_rank_min", 85))
+    pre_earn_dte_min      = int(rcfg.get("pre_earnings_dte_min", 7))
+    pre_earn_dte_max      = int(rcfg.get("pre_earnings_dte_max", 14))
+    pe_iv_min             = float(rcfg.get("post_earnings_iv_rank_min", 75))
+
+    eda = pack.earnings_days_away
 
     if not allowed:
-        if pack.earnings_days_away is not None and pack.earnings_days_away <= earnings_dte_blackout:
+        if (pre_earn_enabled
+                and eda is not None
+                and pre_earn_dte_min <= eda <= pre_earn_dte_max
+                and pack.iv_rank >= pre_earn_iv_min):
+            return "RULE_EARNINGS_HIGH_IV"
+        if eda is not None and 0 <= eda <= earnings_dte_blackout:
             return "RULE1"
         if pack.iv_environment in iv_env_blackout:
             return "RULE2"
@@ -169,14 +344,26 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
         if pack.macro_event_flag and pack.iv_rank > macro_iv_gate_rank:
             return "RULE4"
         return "RULE8"
+
+    # Non-empty allowed: infer which positive rule fired
+    if (pre_earn_enabled
+            and eda is not None
+            and pre_earn_dte_min <= eda <= pre_earn_dte_max
+            and pack.iv_rank >= pre_earn_iv_min):
+        return "RULE_EARNINGS_HIGH_IV"
+    if eda is not None and eda < 0 and pack.iv_rank >= pe_iv_min:
+        return "RULE_POST_EARNINGS"
+    if (eda is not None
+            and earnings_dte_blackout < eda <= earnings_dte_window):
+        return "RULE_EARNINGS"
+    if pack.iv_environment == "very_expensive":
+        return "RULE2_CREDIT"
     if pack.iv_environment in ("very_cheap", "cheap"):
         return "RULE5"
     if pack.iv_environment == "neutral":
         return "RULE6"
     if pack.iv_environment == "expensive":
         return "RULE7"
-    if pack.iv_environment == "very_expensive":
-        return "RULE2_CREDIT"
     return "RULE_UNKNOWN"
 
 
@@ -283,7 +470,7 @@ def _quick_liquidity_check(
 
         expirations = chain.get("expirations", {})
         if not expirations:
-            return True, ""   # no chain data — pass through, let builder decide
+            return True, ""   # no chain data -- pass through, let builder decide
 
         # Pick first usable expiration (DTE >= 2)
         today = date.today()
@@ -312,7 +499,7 @@ def _quick_liquidity_check(
             opts = exp_data.get("puts", [])
 
         if not opts:
-            return True, ""   # no chain — pass through
+            return True, ""   # no chain -- pass through
 
         # Find ATM strike
         atm = min(opts, key=lambda o: abs(float(o.get("strike", 0)) - spot))
@@ -329,7 +516,7 @@ def _quick_liquidity_check(
 
     except Exception as _e:
         log.debug("[OPTS] _quick_liquidity_check failed (non-fatal, passing): %s", _e)
-        return True, ""   # always pass on error — never block on pre-screen failure
+        return True, ""   # always pass on error -- never block on pre-screen failure
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -424,7 +611,7 @@ def build_candidate_structures(
                           pack.symbol, _vetoed_count, len(generated))
             if not surviving:
                 _sample_reason = vetoed[0]["reason"] if vetoed else "no_structures"
-                log.info("[OPTS] %s: all %d structures vetoed (%s) — skipping",
+                log.info("[OPTS] %s: all %d structures vetoed (%s) -- skipping",
                          pack.symbol, len(generated), _sample_reason)
             # Enrich surviving candidates with Alpaca greeks where chain data was absent
             for c in surviving:

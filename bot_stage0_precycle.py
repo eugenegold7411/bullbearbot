@@ -153,7 +153,8 @@ def run_precycle(
     cash               = float(account.cash)
     buying_power_float = float(account.buying_power)
     long_val  = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
-    exposure  = long_val / equity * 100 if equity > 0 else 0.0
+    _total_cap = long_val + buying_power_float
+    exposure  = (long_val / _total_cap * 100) if _total_cap > 0 else 0.0
 
     log.info("Account  equity=$%s  cash=$%s  exposure=%.1f%%  positions=%d",
              f"{equity:,.0f}", f"{cash:,.0f}", exposure, len(positions))

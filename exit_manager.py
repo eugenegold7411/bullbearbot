@@ -25,6 +25,48 @@ from log_setup import get_logger, log_trade
 load_dotenv()
 log = get_logger(__name__)
 
+
+def _get_eda(sym: str, strategy_config: dict) -> Optional[int]:  # noqa: ARG001
+    """Return days-to-earnings for sym from earnings_calendar.json. None if not found."""
+    try:
+        import json as _json  # noqa: PLC0415
+        from datetime import date as _date  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+        cal_path = _Path("data/market/earnings_calendar.json")
+        if not cal_path.exists():
+            return None
+        cal = _json.loads(cal_path.read_text())
+        today = _date.today()
+        for entry in cal.get("calendar", []):
+            if entry.get("symbol") == sym:
+                iso = str(entry.get("earnings_date", ""))[:10]
+                try:
+                    return (_date.fromisoformat(iso) - today).days
+                except Exception:
+                    pass
+        return None
+    except Exception:
+        return None
+
+
+def _get_latest_iv(sym: str) -> Optional[float]:
+    """Return most recent IV for sym from iv_history file. None if unavailable."""
+    try:
+        import json as _json  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+        path = _Path("data/options/iv_history") / f"{sym}_iv_history.json"
+        if not path.exists():
+            return None
+        data = _json.loads(path.read_text())
+        if not data:
+            return None
+        latest = data[-1]
+        iv_val = float(latest.get("iv") or latest.get("iv_rank") or 0)
+        return iv_val if iv_val > 0 else None
+    except Exception:
+        return None
+
+
 # ── Crypto symbol detection ───────────────────────────────────────────────────
 # _is_crypto() below handles Alpaca-format symbols (BTCUSD).
 # schema_is_crypto() handles any format via normalize_symbol().
@@ -646,6 +688,25 @@ def maybe_trail_stop(
 
     plus_pct = em_cfg.get("trail_to_breakeven_plus_pct", 0.005)
     new_stop = round(entry_price * (1 + plus_pct), 2)
+
+    # Earnings-aware stop floor: when earnings are imminent, replace the tight
+    # trail target with a wider IV-based floor so the position isn't stopped out
+    # by the earnings-day volatility swing.
+    if em_cfg.get("earnings_aware_stop_enabled", False):
+        eda = _get_eda(sym, strategy_config)
+        eda_trigger = int(em_cfg.get("earnings_stop_eda_trigger", 1))
+        if eda is not None and 0 <= eda <= eda_trigger:
+            iv = _get_latest_iv(sym)
+            iv_floor = float(em_cfg.get("earnings_stop_iv_floor_pct", 0.05))
+            if iv is not None and iv > 0:
+                expected_move_pct = max(iv, iv_floor)
+                earnings_floor = round(entry_price * (1 - expected_move_pct), 2)
+                if earnings_floor > stop_price:
+                    log.info(
+                        "[EARNINGS_STOP] %s eda=%d: widening stop $%.2f → $%.2f (IV=%.1f%%)",
+                        sym, eda, new_stop, earnings_floor, iv * 100,
+                    )
+                    new_stop = earnings_floor
 
     if new_stop <= stop_price:
         return False  # existing stop already at or better than trail target

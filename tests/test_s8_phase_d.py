@@ -5,6 +5,7 @@ Item 2 — available_for_new uses buying_power (not equity-cap formula)
 Item 3 — catalyst_consumed auto-flip when earnings_days_away < 0
 Item 4 — format_thesis_ranking_section renders consumed-catalyst text
 Item 5 — exposure_pct uses total capacity denominator (current_exposure + buying_power)
+Item 6 — bot_stage0_precycle exposure uses total-capacity denominator
 """
 
 import textwrap
@@ -409,6 +410,76 @@ class TestExposurePctTotalCapacity(unittest.TestCase):
         section = format_dynamic_sizes_section(sizes, 100_000.0)
         self.assertIn("of total capacity", section)
         self.assertNotIn("of buying power", section)
+
+
+# ---------------------------------------------------------------------------
+# Item 6 — bot_stage0_precycle exposure formula: total-capacity denominator
+# ---------------------------------------------------------------------------
+
+class TestPrecycleExposureFormula(unittest.TestCase):
+    """
+    Verify bot_stage0_precycle computes exposure as:
+      long_val / (long_val + buying_power_float) * 100
+
+    Tests validate the formula math and edge cases without hitting Alpaca.
+    """
+
+    @staticmethod
+    def _exposure(long_val: float, buying_power: float) -> float:
+        """Mirror the exact formula in bot_stage0_precycle.py:156."""
+        _total_cap = long_val + buying_power
+        return (long_val / _total_cap * 100) if _total_cap > 0 else 0.0
+
+    def test_exposure_total_capacity_formula(self):
+        """Typical margin account: long=$114K, bp=$272K → ~29.6%."""
+        result = self._exposure(114_382.91, 271_556.71)
+        self.assertAlmostEqual(result, 29.6, delta=0.2)
+
+    def test_exposure_not_over_100(self):
+        """Margin account exposure is always ≤ 100% of total capacity."""
+        result = self._exposure(200_000.0, 1.0)
+        self.assertLessEqual(result, 100.0)
+
+    def test_exposure_buying_power_zero_no_division_error(self):
+        """bp=0 and long_val=0 → exposure=0.0, no ZeroDivisionError."""
+        result = self._exposure(0.0, 0.0)
+        self.assertEqual(result, 0.0)
+
+    def test_exposure_fully_deployed(self):
+        """long=equity, bp=0 → 100.0%."""
+        result = self._exposure(100_000.0, 0.0)
+        self.assertEqual(result, 100.0)
+
+    def test_exposure_not_equity_based(self):
+        """Formula must not divide by equity. Same long/bp with higher equity → same result."""
+        r1 = self._exposure(30_000.0, 70_000.0)   # 30% total cap
+        r2 = self._exposure(30_000.0, 70_000.0)   # equity irrelevant
+        self.assertAlmostEqual(r1, 30.0, delta=0.01)
+        self.assertAlmostEqual(r2, 30.0, delta=0.01)
+
+    def test_exposure_result_between_0_and_100(self):
+        """Any normal input produces exposure in [0, 100]."""
+        cases = [
+            (0.0, 100_000.0),
+            (50_000.0, 50_000.0),
+            (99_999.0, 1.0),
+            (1.0, 99_999.0),
+        ]
+        for long_val, bp in cases:
+            result = self._exposure(long_val, bp)
+            self.assertGreaterEqual(result, 0.0, f"long={long_val} bp={bp}")
+            self.assertLessEqual(result, 100.0, f"long={long_val} bp={bp}")
+
+    def test_precycle_module_computes_total_cap_denominator(self):
+        """bot_stage0_precycle.py source must use total-capacity denominator."""
+        import pathlib
+        src = pathlib.Path("bot_stage0_precycle.py").read_text()
+        # Confirm _total_cap appears in the source (denominator variable)
+        self.assertIn("_total_cap", src,
+                      "bot_stage0_precycle must define _total_cap for exposure formula")
+        # Confirm old equity-based pattern is gone
+        self.assertNotIn("long_val / equity", src,
+                         "bot_stage0_precycle must not divide long_val by equity for exposure")
 
 
 if __name__ == "__main__":

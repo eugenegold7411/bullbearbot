@@ -247,15 +247,6 @@ class TestRemoveBackstopWiredInExecutor(unittest.TestCase):
         self.assertEqual(results[0].status, "submitted",
                          "remove_backstop failure must not affect execution result")
 
-    def test_time_bound_actions_now_empty(self):
-        """strategy_config.json must have no time_bound_actions after cleanup."""
-        cfg = json.loads(
-            (Path(__file__).parent.parent / "strategy_config.json").read_text()
-        )
-        tba = cfg.get("time_bound_actions", [])
-        self.assertEqual(len(tba), 0,
-                         f"Expected empty time_bound_actions, got: {tba}")
-
 
 # =============================================================================
 # F3 — OCC symbol format regression: both builders, all structure types

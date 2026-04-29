@@ -95,7 +95,8 @@ class TestBuildPreEarningsIntelSection:
             return f"  {sym}: signal BULLISH"
 
         with patch("data_warehouse.load_earnings_calendar", return_value=cal), \
-             patch("earnings_intel.get_earnings_intel_section", side_effect=fake_intel):
+             patch("earnings_intel.get_earnings_intel_section", side_effect=fake_intel), \
+             patch("morning_brief._get_held_symbols", return_value=set()):
             mb._build_pre_earnings_intel_section()
 
         assert len(calls) <= 3, f"Called intel for {len(calls)} symbols, expected ≤ 3"

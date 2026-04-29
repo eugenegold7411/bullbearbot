@@ -5401,8 +5401,8 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_detect_protection_stop_missing(self):
         """detect_protection_divergence: position with no stop order → stop_missing event."""
-        import time
         import tempfile
+        import time
 
         import divergence as _div_mod
         original_log = _div_mod.DIVERGENCE_LOG

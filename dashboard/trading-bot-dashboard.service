@@ -1,0 +1,17 @@
+[Unit]
+Description=BullBearBot Health Dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/trading-bot/dashboard
+ExecStart=/home/trading-bot/.venv/bin/python3 app.py
+Restart=always
+RestartSec=10
+EnvironmentFile=/home/trading-bot/.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-bot-dashboard
+
+[Install]
+WantedBy=multi-user.target

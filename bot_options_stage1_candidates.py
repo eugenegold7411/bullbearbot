@@ -515,6 +515,14 @@ def run_candidate_stage(
 
             all_candidate_structs.extend(cset.surviving_candidates)
 
+            # Enrich surviving candidates with A1 signal context for debate prompt rendering
+            _a1_dir = pack.a1_direction if pack is not None else "unknown"
+            for _c in cset.surviving_candidates:
+                _c["a1_direction"]        = _a1_dir
+                _c["a1_conviction"]       = sig_data.get("conviction", "unknown")
+                _c["a1_score"]            = int(sig_data.get("score", 0))
+                _c["a1_primary_catalyst"] = sig_data.get("primary_catalyst", "")
+
         # Build StructureProposal (for debate + legacy path)
         proposal = options_intelligence.select_options_strategy(
             symbol=sym,

@@ -180,19 +180,34 @@ def run_options_debate(
             beven    = c.get("breakeven", 0) or 0
             delta    = c.get("delta")
             theta    = c.get("theta")
+            vega     = c.get("vega")
+            prob     = c.get("probability_profit")
             ev       = c.get("expected_value")
             dte      = c.get("dte", 0) or 0
             oi       = c.get("open_interest")
             delta_s  = f"{delta:.2f}" if delta is not None else "N/A"
             theta_s  = f"${theta:.3f}/day" if theta is not None else "N/A"
+            vega_s   = f"{vega:.4f}" if vega is not None else "N/A"
+            prob_s   = f"{prob:.1%}" if prob is not None else "N/A"
             ev_s     = f"${ev:.2f}" if ev is not None else "N/A"
             oi_s     = str(oi) if oi is not None else "N/A"
+            # A1 signal context (Fix 2 — enriched in stage 1)
+            a1_dir_c = c.get("a1_direction", "")
+            a1_conv  = c.get("a1_conviction", "")
+            a1_sc    = c.get("a1_score")
+            a1_cat   = c.get("a1_primary_catalyst", "")
+            a1_sc_s  = f"{a1_sc}/100" if a1_sc is not None else "N/A"
+            a1_line  = (
+                f"\n A1 signal: {a1_dir_c} | conviction={a1_conv} | score={a1_sc_s}"
+                + (f" | {a1_cat}" if a1_cat else "")
+            ) if (a1_dir_c or a1_conv) else ""
             candidate_blocks.append(
                 f"[Candidate {cid} — {stype} {sym} {exp} {strike_str}\n"
                 f" Debit: ${debit:.2f}/share | Max loss: ${max_loss:.0f} | "
                 f"Max gain: {gain_str} | Breakeven: {beven:.2f}\n"
-                f" Delta: {delta_s} | Theta: {theta_s} | EV: {ev_s} | "
-                f"DTE: {dte} | OI: {oi_s}]"
+                f" Delta: {delta_s} | Theta: {theta_s} | Vega: {vega_s} | "
+                f"EV: {ev_s} | DTE: {dte} | OI: {oi_s} | P(profit): {prob_s}"
+                f"{a1_line}]"
             )
             allowed_actions_parts.append(f"prefer {cid}")
         allowed_actions_parts.append("reject_all")
@@ -217,6 +232,17 @@ Account 2 Equity: ${equity:,.0f}
 
 RISK BUDGET: ${risk_budget:,.0f}
 ALLOWED ACTIONS: {allowed_actions_str}
+
+=== EXIT CRITERIA (applied automatically after entry) ===
+These rules fire every cycle on all open structures:
+• Profit target: gain ≥ 80% of max profit → close (target_profit_hit)
+• Stop loss: loss ≥ 50% of max risk → close (stop_loss_hit)
+• Expiry guard: DTE ≤ 2 → close to avoid assignment risk
+• Time-stop: elapsed DTE ≥ 40% for single legs, ≥ 50% for debit spreads
+• Thesis invalidation: A1 signal flips bearish on a call position → close
+Factor these into entry decisions: avoid single legs with < 10 DTE remaining,
+avoid debit spreads past 50% of their DTE window, and prefer structures
+where max gain is meaningfully larger than the stop-loss trigger.
 
 === DEBATE ROLES ===
 - DIRECTIONAL ADVOCATE: Is the underlying thesis real and is now the right time?

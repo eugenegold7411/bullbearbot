@@ -264,7 +264,7 @@
     "enable_thesis_ai_ingestion": false
   },
   "a2_router": {
-    "earnings_dte_blackout": 3,
+    "earnings_dte_blackout": 2,
     "min_liquidity_score": 0.25,
     "macro_iv_gate_rank": 70,
     "iv_env_blackout": [],

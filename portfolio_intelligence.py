@@ -108,7 +108,7 @@ def compute_dynamic_sizes(
     sizing_basis_low  = equity
 
     max_exposure    = equity * max_exp_pct
-    available       = max(0.0, max_exposure - current_exposure_dollars)
+    available       = max(0.0, buying_power)
     exposure_pct    = round(current_exposure_dollars / equity * 100, 1) if equity > 0 else 0.0
 
     cap_high   = round(sizing_basis_high, 2)
@@ -861,9 +861,15 @@ def format_thesis_ranking_section(
             lines.append(
                 f"   *** {ts['override_flag']} — original thesis no longer valid ***")
 
-        catalyst_line = f"   Catalyst: {ts['catalyst']}" if ts["catalyst"] else "   Catalyst: (none recorded)"
-        age           = ts["catalyst_age_days"]
-        catalyst_line += f" ({age}d old) {'✓' if age <= 2 else '⚠' if age <= 5 else '✗'}"
+        if ts.get("catalyst_consumed"):
+            consumed_at = (ts.get("catalyst_consumed_at") or "")[:10]
+            tags = ts.get("thesis_tags", [])
+            forward = " / ".join(tags) if tags else "re-evaluate forward thesis: revenue trend / guidance / next catalyst"
+            catalyst_line = f"   Catalyst: CONSUMED (earnings {consumed_at}) — {forward}"
+        else:
+            catalyst_line = f"   Catalyst: {ts['catalyst']}" if ts["catalyst"] else "   Catalyst: (none recorded)"
+            age = ts["catalyst_age_days"]
+            catalyst_line += f" ({age}d old) {'✓' if age <= 2 else '⚠' if age <= 5 else '✗'}"
         lines.append(catalyst_line)
 
         tech_symbol = "✓" if ts["technical_intact"] else "✗"
@@ -1092,6 +1098,16 @@ def build_portfolio_intelligence(
             ts["earnings_days_away"] = _eda(pos.symbol)
         except Exception:
             ts["earnings_days_away"] = None
+
+        eda_val = ts.get("earnings_days_away")
+        if eda_val is not None and eda_val < 0:
+            ts["catalyst_consumed"] = True
+            ts["catalyst_consumed_at"] = datetime.now(timezone.utc).isoformat()
+            ts["thesis_score"] = max(0, ts.get("thesis_score", 8) - 1)
+        else:
+            ts["catalyst_consumed"] = False
+            ts["catalyst_consumed_at"] = None
+
         thesis_scores.append(ts)
 
     return {

@@ -138,7 +138,8 @@ class TestRemoveBackstopWiredInExecutor(unittest.TestCase):
 
         with patch.object(oe, "_get_alpaca") as mock_alpaca, \
              patch("reconciliation.remove_backstop", side_effect=fake_rb), \
-             patch("order_executor.validate_action", return_value=None):
+             patch("order_executor.validate_action", return_value=None), \
+             patch("order_executor.log_trade"):
 
             if act == "close":
                 mock_alpaca.return_value.close_position.return_value = MagicMock(id="oid-close-1")
@@ -227,7 +228,8 @@ class TestRemoveBackstopWiredInExecutor(unittest.TestCase):
 
         with patch.object(oe, "_get_alpaca") as mock_alpaca, \
              patch("reconciliation.remove_backstop", side_effect=exploding_rb), \
-             patch("order_executor.validate_action", return_value=None):
+             patch("order_executor.validate_action", return_value=None), \
+             patch("order_executor.log_trade"):
 
             mock_order = MagicMock()
             mock_order.id = "oid-sell-nonfatal"

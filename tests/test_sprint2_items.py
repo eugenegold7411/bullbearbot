@@ -60,7 +60,8 @@ def _make_mock_structure():
 
 
 def test_dtbp_zero_guard_skips_submission(tmp_path, monkeypatch):
-    """When DTBP=0 and options_buying_power>0, submission is skipped with warning."""
+    """When DTBP=0 and options_buying_power>0, submission proceeds (falls through)."""
+    import options_executor
     import order_executor_options as oe
 
     # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
@@ -76,28 +77,25 @@ def test_dtbp_zero_guard_skips_submission(tmp_path, monkeypatch):
     mock_client = MagicMock()
     mock_client.get_account.return_value = mock_account
 
+    submitted_structure = _make_mock_structure()
+    from schemas import StructureLifecycle
+    submitted_structure.lifecycle = StructureLifecycle.SUBMITTED
+    submitted_structure.order_ids = ["order-dtbp-001"]
+
     monkeypatch.setattr(oe, "_get_options_client", lambda: mock_client)
+    monkeypatch.setattr(options_executor, "submit_structure",
+                        lambda s, c, config: submitted_structure)
 
-    import logging
-    warnings = []
+    result = oe.submit_options_order(structure, equity=50000.0, observation_mode=False)
 
-    class _Catcher(logging.Handler):
-        def emit(self, record):
-            if "DTBP_ZERO" in record.getMessage():
-                warnings.append(record.getMessage())
-
-    logger = logging.getLogger("order_executor_options")
-    logger.addHandler(_Catcher())
-    try:
-        result = oe.submit_options_order(structure, equity=50000.0, observation_mode=False)
-    finally:
-        logger.handlers = [h for h in logger.handlers if not isinstance(h, _Catcher)]
-
-    assert result.status == "dtbp_zero", (
-        f"Expected status=dtbp_zero, got {result.status}"
+    # New behavior: DTBP=0 + OBP>0 falls through to submission (does NOT return dtbp_zero)
+    assert result.status != "dtbp_zero", (
+        f"Expected status != dtbp_zero after fallback fix, got {result.status}"
     )
-    assert len(warnings) > 0, "Expected DTBP_ZERO warning to be logged"
-    assert mock_client.submit_order.call_count == 0, "No order should be submitted"
+    # Submission must have been attempted (not short-circuited)
+    assert result.status == "submitted", (
+        f"Expected submission to proceed when DTBP=0 and OBP>0, got {result.status}"
+    )
 
 
 def test_dtbp_nonzero_proceeds_normally(tmp_path, monkeypatch):

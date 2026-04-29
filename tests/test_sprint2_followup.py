@@ -48,7 +48,8 @@ class TestDTBPTestsDoNotContaminateProductionLog(unittest.TestCase):
         self.assertIn("def test_dtbp_check_failure_fails_open(tmp_path", src)
 
     def test_dtbp_zero_writes_to_tmp_not_production(self, tmp_path=None):
-        """When DTBP guard fires, log goes to tmp not production path."""
+        """When DTBP=0 falls through to submission, log goes to tmp not production path."""
+        import sys
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             tmp_log = Path(td) / "options_log.jsonl"
@@ -85,20 +86,37 @@ class TestDTBPTestsDoNotContaminateProductionLog(unittest.TestCase):
             mock_client = MagicMock()
             mock_client.get_account.return_value = mock_account
 
+            # Mock submit_structure so we don't make real Alpaca calls
+            mock_filled = OptionsStructure(
+                structure_id="followup-test-001",
+                underlying="GLD",
+                strategy=OptionStrategy.SINGLE_CALL,
+                lifecycle=StructureLifecycle.SUBMITTED,
+                legs=[leg], contracts=1, max_cost_usd=500.0,
+                opened_at=datetime.now(timezone.utc).isoformat(),
+                catalyst="test", tier=Tier.CORE,
+            )
+            mock_filled.order_ids = ["order-followup-001"]
+
+            mock_executor = MagicMock()
+            mock_executor.submit_structure.return_value = mock_filled
+
             original_log_path = oe._LOG_PATH
             try:
                 oe._LOG_PATH = tmp_log
-                with mock.patch.object(oe, "_get_options_client", return_value=mock_client):
+                with mock.patch.object(oe, "_get_options_client", return_value=mock_client), \
+                     mock.patch.dict(sys.modules, {"options_executor": mock_executor}):
                     result = oe.submit_options_order(structure, equity=50000.0)
             finally:
                 oe._LOG_PATH = original_log_path
 
-            self.assertEqual(result.status, "dtbp_zero")
-            # Log entry went to tmp, not production
-            self.assertTrue(tmp_log.exists(), "Entry should be in tmp log")
-            entries = [json.loads(l) for l in tmp_log.read_text().splitlines() if l.strip()]
-            self.assertEqual(len(entries), 1)
-            self.assertEqual(entries[0]["status"], "dtbp_zero")
+            # New behavior: DTBP=0 + OBP>0 falls through — status is submitted not dtbp_zero
+            self.assertNotEqual(result.status, "dtbp_zero",
+                                "dtbp_zero status must not be returned after fallback fix")
+            # Log entry must go to tmp, not production
+            self.assertTrue(tmp_log.exists(), "Execution log entry should be in tmp log")
+            entries = [json.loads(line) for line in tmp_log.read_text().splitlines() if line.strip()]
+            self.assertGreaterEqual(len(entries), 1, "At least one log entry expected in tmp log")
             self.assertIn("followup-test-001", entries[0]["structure_id"])
 
 

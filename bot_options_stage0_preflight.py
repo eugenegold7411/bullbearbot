@@ -20,7 +20,7 @@ Responsibilities:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -206,6 +206,7 @@ class A2PreflightResult:
     pf_allow_live_orders: bool = True
     pf_allow_new_entries: bool = True
     a2_mode: Any = None
+    pending_underlyings: frozenset = field(default_factory=frozenset)
 
 
 def _build_a2_broker_snapshot(alpaca_client):
@@ -380,6 +381,24 @@ def run_a2_preflight(
                 log.debug("[OPTS_RECON] %d open structures — all intact", len(_open_structs))
         else:
             log.debug("[OPTS_RECON] No open structures — skipping reconciliation")
+
+        # Pending mleg guard: SUBMITTED = DAY order in flight; skip re-submission
+        # this cycle for any underlying that already has an order pending.
+        try:
+            from schemas import StructureLifecycle  # noqa: PLC0415
+            _submitted = [
+                s for s in _open_structs
+                if s.lifecycle == StructureLifecycle.SUBMITTED
+            ]
+            if _submitted:
+                result.pending_underlyings = frozenset(
+                    s.underlying for s in _submitted
+                )
+                log.info("[OPTS] Pending mleg — skip new candidates for: %s",
+                         ", ".join(sorted(result.pending_underlyings)))
+        except Exception as _pe:
+            log.debug("[OPTS] pending_underlyings check failed (non-fatal): %s", _pe)
+
     except Exception as _recon_err:
         log.warning("[OPTS_RECON] Failed (non-fatal): %s", _recon_err)
 

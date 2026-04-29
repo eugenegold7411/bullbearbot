@@ -146,6 +146,8 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
         log.debug("[OPTS] universe init failed (non-fatal): %s", _ue)
 
     config = _load_strategy_config()
+    if pf.pending_underlyings:
+        config["_pending_underlyings"] = pf.pending_underlyings
     candidate_sets, candidates, allowed_by_sym, candidate_structures = run_candidate_stage(
         signal_scores=signal_scores, iv_summaries=iv_summaries,
         equity=equity, vix=vix, equity_symbols=_get_core_equity_symbols(), config=config,

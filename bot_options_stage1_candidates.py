@@ -424,7 +424,13 @@ def run_candidate_stage(
         reverse=True
     )[:8]  # top 8 candidates only
 
+    # Symbols with a pending mleg DAY order from a prior cycle — skip re-submission.
+    _pending_underlyings = config.get("_pending_underlyings", frozenset())
+
     for sym, sig_data in scored_symbols:
+        if sym in _pending_underlyings:
+            log.info("[OPTS] %s: skipping — mleg order pending from prior cycle", sym)
+            continue
         iv_summary = iv_summaries.get(sym, {
             "symbol": sym, "iv_environment": "unknown", "observation_mode": True
         })

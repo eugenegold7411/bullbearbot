@@ -38,7 +38,7 @@ from schemas import (
 
 log = logging.getLogger(__name__)
 
-# ── Phase 1 strategies eligible for sequential submission ────────────────────
+# ── Phase 1 strategies ───────────────────────────────────────────────────────
 _PHASE1_STRATEGIES: frozenset[OptionStrategy] = frozenset({
     OptionStrategy.SINGLE_CALL,
     OptionStrategy.SINGLE_PUT,
@@ -47,10 +47,6 @@ _PHASE1_STRATEGIES: frozenset[OptionStrategy] = frozenset({
     OptionStrategy.CALL_CREDIT_SPREAD,
     OptionStrategy.PUT_CREDIT_SPREAD,
 })
-
-# Poll config for spread leg fill confirmation
-_POLL_ATTEMPTS = 3
-_POLL_INTERVAL = 2.0   # seconds between poll attempts
 
 # Auditable execution log path (D13)
 _LOG_PATH = Path("data/account2/positions/options_log.jsonl")
@@ -106,20 +102,14 @@ def submit_structure(
 
       call_debit_spread / put_debit_spread /
       call_credit_spread / put_credit_spread:
-        1. Submit long leg first (limit at mid, GTC)
-        2. Record long leg order_id; lifecycle = PARTIALLY_FILLED
-        3. Poll for long leg fill (max _POLL_ATTEMPTS × _POLL_INTERVAL)
-        4. If filled → submit short leg (limit at mid, GTC)
-        5. If both fill → lifecycle = FULLY_FILLED
-        6. If long fills but short fails → cancel or close long, lifecycle = CANCELLED
-        7. If long never fills → cancel long, lifecycle = REJECTED
+        Single atomic mleg order (OrderClass.MLEG, TimeInForce.DAY).
+        limit_price = net debit/credit computed from leg mids:
+          positive = debit paid, negative = credit received.
+        On success → lifecycle = SUBMITTED, single order_id on all legs.
+        On rejection → lifecycle = REJECTED.
 
     Phase 2/3 strategies:
       lifecycle = REJECTED, add_audit("strategy not yet supported for submission")
-
-    All submissions: LimitOrderRequest, time_in_force=GTC,
-                     order_class=SIMPLE, extended_hours=False,
-                     qty = structure.contracts (integer)
 
     Returns updated OptionsStructure (does NOT save — caller decides).
     """
@@ -137,7 +127,7 @@ def submit_structure(
     if is_single:
         return _submit_single_leg(structure, trading_client)
     else:
-        return _submit_spread_sequential(structure, trading_client)
+        return _submit_spread_mleg(structure, trading_client)
 
 
 def _submit_single_leg(
@@ -199,14 +189,39 @@ def _submit_single_leg(
     return structure
 
 
-def _submit_spread_sequential(
+def _compute_net_mid(structure: OptionsStructure) -> Optional[float]:
+    """
+    Net mid price for a spread order.
+    Buy legs add to cost; sell legs subtract (credit received).
+    Returns positive for debit spreads, negative for credit spreads.
+    Returns None if any leg has no usable mid price.
+    """
+    total = 0.0
+    for leg in structure.legs:
+        mid = _mid_for_leg(leg)
+        if mid is None or mid <= 0:
+            return None
+        if leg.side == "buy":
+            total += mid
+        else:
+            total -= mid
+    return round(total, 4)
+
+
+def _submit_spread_mleg(
     structure:      OptionsStructure,
     trading_client,
 ) -> OptionsStructure:
     """
-    Submit a spread by sequential leg submission: long first, poll, then short.
+    Submit a spread as a single atomic mleg order (OrderClass.MLEG, DAY).
 
-    Aborts cleanly if either step fails.
+    limit_price = net debit/credit from leg mids:
+      positive = debit paid (debit spreads)
+      negative = credit received (credit spreads)
+
+    A single order_id is assigned to both legs. lifecycle = SUBMITTED.
+    The DAY time_in_force means the order expires at close if unfilled;
+    the next cycle re-evaluates with fresh mids and re-submits if still selected.
     """
     if len(structure.legs) < 2:
         return _set_lifecycle(
@@ -214,134 +229,64 @@ def _submit_spread_sequential(
             "spread requires at least 2 legs"
         )
 
-    long_leg  = structure.legs[0]   # long leg always first per ordering rule
-    short_leg = structure.legs[1]
-
-    # ── Step 1: Submit long leg ───────────────────────────────────────────────
-    long_occ = long_leg.occ_symbol or build_occ_symbol(
-        structure.underlying, structure.expiration, long_leg.option_type, long_leg.strike
-    )
-    long_mid = _mid_for_leg(long_leg)
-    if long_mid is None or long_mid <= 0:
+    net_mid = _compute_net_mid(structure)
+    if net_mid is None:
         return _set_lifecycle(
             structure, StructureLifecycle.REJECTED,
-            f"cannot compute mid for long leg {long_occ}"
+            "cannot compute net mid price for mleg order — leg bid/ask unavailable"
         )
-    long_limit = _round_limit(long_mid)
+
+    # Round to $0.05 tick, preserve debit/credit sign.
+    abs_rounded = round(round(abs(net_mid) / 0.05) * 0.05, 2)
+    abs_rounded = max(0.05, abs_rounded)
+    limit_price = abs_rounded if net_mid >= 0 else -abs_rounded
 
     try:
-        from alpaca.trading.enums import OrderSide, TimeInForce
-        from alpaca.trading.requests import LimitOrderRequest
+        from alpaca.trading.enums import OrderClass, PositionIntent, TimeInForce
+        from alpaca.trading.requests import LimitOrderRequest, OptionLegRequest
 
-        long_req = LimitOrderRequest(
-            symbol=long_occ,
+        leg_requests = []
+        for leg in structure.legs:
+            occ_sym = leg.occ_symbol or build_occ_symbol(
+                structure.underlying, structure.expiration, leg.option_type, leg.strike
+            )
+            intent = (
+                PositionIntent.BUY_TO_OPEN if leg.side == "buy"
+                else PositionIntent.SELL_TO_OPEN
+            )
+            leg_requests.append(OptionLegRequest(
+                symbol=occ_sym,
+                ratio_qty=1.0,
+                position_intent=intent,
+            ))
+
+        req = LimitOrderRequest(
             qty=structure.contracts,
-            side=OrderSide.BUY,
-            time_in_force=TimeInForce.GTC,
-            limit_price=long_limit,
+            order_class=OrderClass.MLEG,
+            time_in_force=TimeInForce.DAY,
+            limit_price=limit_price,
+            legs=leg_requests,
         )
-        long_order = trading_client.submit_order(long_req)
-        long_order_id = str(long_order.id)
-        long_leg.order_id = long_order_id
-        structure.order_ids.append(long_order_id)
-        structure = _set_lifecycle(structure, StructureLifecycle.PARTIALLY_FILLED, None)
+        order = trading_client.submit_order(req)
+        order_id = str(order.id)
+
+        for leg in structure.legs:
+            leg.order_id = order_id
+        structure.order_ids.append(order_id)
+        structure = _set_lifecycle(structure, StructureLifecycle.SUBMITTED, None)
         structure.add_audit(
-            f"long leg submitted: {long_occ} qty={structure.contracts} "
-            f"limit={long_limit:.2f} order_id={long_order_id}"
+            f"mleg submitted: {structure.underlying} {structure.strategy.value} "
+            f"qty={structure.contracts} net_limit={limit_price:.2f} order_id={order_id}"
         )
-        log.info("[EXECUTOR] %s long leg submitted: %s limit=%.2f order=%s",
-                 structure.underlying, long_occ, long_limit, long_order_id)
+        log.info("[EXECUTOR] %s mleg submitted: net_limit=%.2f order=%s",
+                 structure.underlying, limit_price, order_id)
 
     except Exception as exc:
         err = str(exc)
         structure = _set_lifecycle(
-            structure, StructureLifecycle.REJECTED,
-            f"long leg rejected: {err}"
+            structure, StructureLifecycle.REJECTED, f"mleg rejected: {err}"
         )
-        log.warning("[EXECUTOR] %s long leg rejected: %s", structure.underlying, err)
-        return structure
-
-    # ── Step 2: Poll for long leg fill ────────────────────────────────────────
-    long_filled = False
-    for attempt in range(_POLL_ATTEMPTS):
-        time.sleep(_POLL_INTERVAL)
-        try:
-            order_status = trading_client.get_order_by_id(long_order_id)
-            status_val = str(getattr(order_status, "status", "")).lower()
-            if "fill" in status_val:
-                long_filled = True
-                log.info("[EXECUTOR] %s long leg filled (attempt %d/%d)",
-                         structure.underlying, attempt + 1, _POLL_ATTEMPTS)
-                break
-            log.debug("[EXECUTOR] %s long leg status=%s (attempt %d/%d)",
-                      structure.underlying, status_val, attempt + 1, _POLL_ATTEMPTS)
-        except Exception as exc:
-            log.debug("[EXECUTOR] %s poll attempt %d failed: %s",
-                      structure.underlying, attempt + 1, exc)
-
-    if not long_filled:
-        # Cancel long leg, mark rejected
-        try:
-            trading_client.cancel_order_by_id(long_order_id)
-            structure.add_audit(f"long leg cancelled (no fill after {_POLL_ATTEMPTS} polls)")
-        except Exception as exc:
-            structure.add_audit(f"long leg cancel failed: {exc}")
-        structure = _set_lifecycle(
-            structure, StructureLifecycle.REJECTED,
-            f"long leg not filled after {_POLL_ATTEMPTS} attempts — spread aborted"
-        )
-        log.warning("[EXECUTOR] %s spread aborted: long leg not filled", structure.underlying)
-        return structure
-
-    # ── Step 3: Submit short leg ──────────────────────────────────────────────
-    short_occ = short_leg.occ_symbol or build_occ_symbol(
-        structure.underlying, structure.expiration, short_leg.option_type, short_leg.strike
-    )
-    short_mid = _mid_for_leg(short_leg)
-    if short_mid is None or short_mid <= 0:
-        # Can't price short leg — close long and abort
-        _emergency_close_leg(trading_client, long_occ, structure.contracts)
-        structure.add_audit(
-            "short leg price unavailable — long leg closed, spread aborted"
-        )
-        structure = _set_lifecycle(structure, StructureLifecycle.CANCELLED,
-            "short leg mid price unavailable; long leg emergency-closed")
-        return structure
-
-    short_limit = _round_limit(short_mid)
-
-    try:
-        short_req = LimitOrderRequest(
-            symbol=short_occ,
-            qty=structure.contracts,
-            side=OrderSide.SELL,
-            time_in_force=TimeInForce.GTC,
-            limit_price=short_limit,
-        )
-        short_order = trading_client.submit_order(short_req)
-        short_order_id = str(short_order.id)
-        short_leg.order_id = short_order_id
-        structure.order_ids.append(short_order_id)
-        structure = _set_lifecycle(structure, StructureLifecycle.FULLY_FILLED, None)
-        structure.add_audit(
-            f"short leg submitted: {short_occ} qty={structure.contracts} "
-            f"limit={short_limit:.2f} order_id={short_order_id}"
-        )
-        log.info("[EXECUTOR] %s short leg submitted: %s limit=%.2f order=%s — spread FULLY_FILLED",
-                 structure.underlying, short_occ, short_limit, short_order_id)
-
-    except Exception as exc:
-        err = str(exc)
-        # Long is filled, short failed — emergency close long leg
-        _emergency_close_leg(trading_client, long_occ, structure.contracts)
-        structure.add_audit(
-            f"short leg rejected ({err}) — long leg emergency-closed; spread aborted"
-        )
-        structure = _set_lifecycle(structure, StructureLifecycle.CANCELLED,
-            f"spread aborted: short leg failed after long fill: {err}")
-        _send_spread_abort_sms(structure)
-        log.error("[EXECUTOR] %s SPREAD ABORTED: short leg failed, long closed: %s",
-                  structure.underlying, err)
+        log.warning("[EXECUTOR] %s mleg rejected: %s", structure.underlying, err)
 
     return structure
 

@@ -118,6 +118,7 @@
   "account2": {
     "enabled": true,
     "max_spread_cost_pct": 0.05,
+    "stale_cleanup_max_age_hours": 2,
     "observation_mode_days": 20,
     "equity_floor": 25000,
     "scheduler_offset_seconds": 90,

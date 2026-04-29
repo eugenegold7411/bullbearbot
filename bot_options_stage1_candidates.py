@@ -163,12 +163,36 @@ def _summarize_account1_for_prompt(decision: dict) -> str:
 
 # ── Earnings context ──────────────────────────────────────────────────────────
 
+# ETFs and funds that have no earnings reports. Alpha Vantage's earnings
+# calendar covers US equities only; these symbols always return None —
+# that is correct and expected. The router's earnings rules safely skip
+# when earnings_days_away is None.
+#
+# ASML and TSM are foreign-listed stocks (AEX / TWSE) also absent from the
+# AV US calendar — their Q1 2026 earnings have passed; Q2 is ~July 2026.
+# They return None via the normal calendar lookup path; documented here as
+# a known AV coverage gap so the router's None-safe guards are relied upon.
+_EARNINGS_EXEMPT_SYMBOLS: frozenset[str] = frozenset({
+    "COPX", "ECH", "EEM", "EWJ", "EWM", "FXI",
+    "GLD", "ITA", "IWM", "QQQ", "SLV", "SPY",
+    "TLT", "USO", "VXX", "XBI", "XLE", "XLF", "XRT",
+})
+
+
 def _load_earnings_days_away(symbol: str) -> Optional[int]:
     """
     Return days until the nearest earnings event for symbol, or None if unknown.
     Reads data/market/earnings_calendar.json. Non-fatal.
+
+    Returns None immediately for symbols in _EARNINGS_EXEMPT_SYMBOLS (ETFs and
+    funds that never report earnings). Also returns None for foreign stocks not
+    covered by the Alpha Vantage US calendar (ASML, TSM); the router's earnings
+    rules are None-safe so this is handled gracefully.
     """
     import json  # noqa: PLC0415
+    if symbol.upper() in _EARNINGS_EXEMPT_SYMBOLS:
+        log.debug("[EARNINGS] %s — ETF/fund, no earnings expected (exempt)", symbol)
+        return None
     try:
         cal_path = Path(__file__).parent / "data" / "market" / "earnings_calendar.json"
         if not cal_path.exists():
@@ -188,6 +212,8 @@ def _load_earnings_days_away(symbol: str) -> Optional[int]:
                     min_days = days if min_days is None else min(min_days, days)
             except Exception:
                 continue
+        if min_days is None:
+            log.debug("[EARNINGS] %s — no upcoming entry in AV calendar", symbol)
         return min_days
     except Exception:
         return None

@@ -168,6 +168,66 @@ def is_observation_mode() -> bool:
     return not state.get("observation_complete", False)
 
 
+def _cleanup_stale_proposed_structures(
+    structures: list,
+    max_age_hours: float = 2.0,
+) -> int:
+    """
+    Cancel PROPOSED structures older than max_age_hours with empty order_ids.
+
+    These are proposals that were never submitted — either pre-fix artifacts
+    from a cycle that failed before reaching the executor, or proposals that
+    expired without being acted upon.
+
+    Rules:
+      - Only touches PROPOSED lifecycle structures
+      - Only touches structures with empty order_ids (non-empty = may be in-flight)
+      - Only touches structures older than max_age_hours
+      - Non-fatal per structure — one bad entry never blocks the rest
+
+    Returns count of structures cancelled.
+    """
+    import options_state as _os  # noqa: PLC0415
+    from schemas import StructureLifecycle  # noqa: PLC0415
+
+    cancelled = 0
+    now = datetime.now(timezone.utc)
+
+    for s in structures:
+        try:
+            if s.lifecycle != StructureLifecycle.PROPOSED:
+                continue
+            if s.order_ids:
+                continue  # has order_ids — may be in-flight, do not touch
+
+            try:
+                opened = datetime.fromisoformat(s.opened_at.replace("Z", "+00:00"))
+                if opened.tzinfo is None:
+                    opened = opened.replace(tzinfo=timezone.utc)
+                age_hours = (now - opened).total_seconds() / 3600
+            except Exception:
+                age_hours = max_age_hours + 1.0  # unparseable timestamp → treat as stale
+
+            if age_hours <= max_age_hours:
+                continue
+
+            s.lifecycle = StructureLifecycle.CANCELLED
+            s.add_audit(
+                f"auto-cancelled: stale proposed, age={age_hours:.1f}h > {max_age_hours}h, "
+                "no order_ids — never submitted"
+            )
+            _os.save_structure(s)
+            log.info(
+                "[PREFLIGHT] Cancelled stale PROPOSED %s (%s) age=%.1fh",
+                s.structure_id[:8], s.underlying, age_hours,
+            )
+            cancelled += 1
+        except Exception as _e:
+            log.debug("[PREFLIGHT] _cleanup_stale_proposed skip (non-fatal): %s", _e)
+
+    return cancelled
+
+
 def _check_and_update_iv_ready(state: dict) -> dict:
     """
     Check IV history readiness for all core A2 symbols via options_data.
@@ -332,6 +392,19 @@ def run_a2_preflight(
                         result.a2_mode.scope_id)
     except Exception as _div_exc:
         log.warning("[DIV] A2 mode load failed (non-fatal): %s", _div_exc)
+
+    # Stale PROPOSED structure cleanup (before reconciliation)
+    try:
+        import options_state as _oss  # noqa: PLC0415
+        _cfg_path = Path(__file__).parent / "strategy_config.json"
+        _s_cfg = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
+        _max_age = float(_s_cfg.get("account2", {}).get("stale_cleanup_max_age_hours", 2.0))
+        _all_structs = _oss.load_structures()
+        _n_cleaned = _cleanup_stale_proposed_structures(_all_structs, _max_age)
+        if _n_cleaned:
+            log.info("[PREFLIGHT] Cancelled %d stale PROPOSED structure(s)", _n_cleaned)
+    except Exception as _cleanup_err:
+        log.debug("[PREFLIGHT] stale PROPOSED cleanup failed (non-fatal): %s", _cleanup_err)
 
     # Options structure reconciliation (before new proposals)
     try:

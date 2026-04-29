@@ -16,8 +16,6 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
 
-import pytest
-
 # Ensure repo root is on path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -31,7 +29,6 @@ from bot_options_stage2_structures import (
     _route_strategy,
 )
 
-
 # ── Mock pack ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -41,6 +38,7 @@ class MockPack:
     iv_rank: float = 50.0
     iv_environment: str = "neutral"
     a1_direction: str = "bullish"
+    a1_signal_score: float = 60.0
     liquidity_score: float = 0.5
     macro_event_flag: bool = False
 
@@ -199,25 +197,26 @@ class TestRulePostEarnings:
 
     def test_does_not_fire_when_outside_premarket_window(self, monkeypatch):  # PE-06
         _no_crush(monkeypatch)
-        # pre_market window=2, eda=-3, days_since=3 > 2 -> miss; RULE7 fires (4 items)
+        # pre_market window=2, eda=-3, days_since=3 > 2 -> RULE_POST_EARNINGS misses
+        # RULE_SHORT_PUT fires (iv_rank=80 >= 50, bullish, expensive)
         pack = MockPack(symbol="AAPL", earnings_days_away=-3, iv_rank=80.0, iv_environment="expensive")
         result = _route_strategy(pack, _cfg(), earnings_calendar_data=self._pre_market_cal(3))
-        assert len(result) > 1  # RULE_POST_EARNINGS returns 1; RULE7 returns 4
+        assert result != ["credit_put_spread"]  # RULE_POST_EARNINGS did not fire
 
     def test_does_not_fire_when_iv_rank_below_min(self, monkeypatch):  # PE-07
         _no_crush(monkeypatch)
         pack = MockPack(symbol="AAPL", earnings_days_away=-1, iv_rank=60.0, iv_environment="neutral")
         result = _route_strategy(pack, _cfg({"post_earnings_iv_rank_min": 75}),
                                  earnings_calendar_data=self._pre_market_cal(1))
-        # iv_rank=60 < 75 -> rule misses; RULE6 (neutral+bullish) fires
-        assert "debit_call_spread" in result
+        # iv_rank=60 < 75 -> RULE_POST_EARNINGS misses; RULE_SHORT_PUT fires (iv_rank>=50, bullish, neutral)
+        assert result != ["credit_put_spread"]  # RULE_POST_EARNINGS did not fire
 
     def test_does_not_fire_when_iv_already_crushed(self, monkeypatch):  # PE-08
         monkeypatch.setattr(_stage2, "_iv_already_crushed", lambda *a, **k: True)
         pack = MockPack(symbol="AAPL", earnings_days_away=-1, iv_rank=80.0, iv_environment="expensive")
         result = _route_strategy(pack, _cfg(), earnings_calendar_data=self._pre_market_cal(1))
-        # crush detected -> rule skipped; RULE7 fires -> 4 items
-        assert len(result) > 1
+        # crush detected -> RULE_POST_EARNINGS skipped; RULE_SHORT_PUT fires (iv_rank=80>=50, bullish)
+        assert result != ["credit_put_spread"]  # RULE_POST_EARNINGS did not fire
 
     def test_bearish_direction_gives_credit_call_spread(self, monkeypatch):  # PE-09
         _no_crush(monkeypatch)
@@ -242,10 +241,11 @@ class TestRulePostEarnings:
 
     def test_does_not_fire_for_eda_neg2_postmarket(self, monkeypatch):  # PE-12
         _no_crush(monkeypatch)
-        # post_market window=1, days_since=2 -> 2 > 1 -> miss; RULE7 fires
+        # post_market window=1, days_since=2 -> 2 > 1 -> RULE_POST_EARNINGS misses
+        # RULE_SHORT_PUT fires (iv_rank=80>=50, bullish, expensive)
         pack = MockPack(symbol="AAPL", earnings_days_away=-2, iv_rank=80.0, iv_environment="expensive")
         result = _route_strategy(pack, _cfg(), earnings_calendar_data=self._post_market_cal(2))
-        assert len(result) > 1
+        assert result != ["credit_put_spread"]  # RULE_POST_EARNINGS did not fire
 
     def test_falls_through_to_standard_rules_when_outside_window(self, monkeypatch):
         _no_crush(monkeypatch)
@@ -301,8 +301,8 @@ class TestRuleEarningsHighIV:
             "pre_earnings_dte_max": 14,
         })
         result = _route_strategy(pack, cfg)
-        # iv_rank=80 < 85 -> misses; RULE7 (expensive + bullish)
-        assert "credit_put_spread" in result or "debit_call_spread" in result
+        # iv_rank=80 < 85 -> RULE_EARNINGS_HIGH_IV misses; RULE_SHORT_PUT fires (iv_rank>=50, bullish)
+        assert result != []  # some rule fires; RULE_EARNINGS_HIGH_IV was NOT it
 
 
 # ── _infer_router_rule_fired tests ────────────────────────────────────────────

@@ -650,6 +650,7 @@ class TestRuleEarningsDirectional:
         pack.a1_direction = direction
         pack.iv_rank = iv_rank
         pack.iv_environment = "neutral"
+        pack.a1_signal_score = 60.0
         pack.liquidity_score = 0.8
         pack.macro_event_flag = False
         return pack

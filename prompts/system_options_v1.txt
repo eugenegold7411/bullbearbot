@@ -359,6 +359,38 @@ Key difference from standard credit spreads:
 Never treat RULE_POST_EARNINGS candidates as directional momentum trades.
 The edge is IV mean-reversion, not price prediction.
 
+SHORT PUT — CASH-SECURED SELL-TO-OPEN
+When a candidate appears with structure_type = "short_put", you are evaluating a
+single-leg SELL_TO_OPEN of an OTM put option. The router selected this when:
+- IV rank is ≥ 50 (premium-selling environment)
+- Direction is bullish or neutral
+- No earnings within the blackout window
+- IV environment is neutral, expensive, or very_expensive (not cheap)
+
+What short put means for your debate:
+- Max gain = premium received (shown as positive max_gain in the candidate)
+- max_loss is stop-loss bounded (2× premium) — NOT the worst-case stock-goes-to-$0 figure
+- breakeven = strike − premium received
+- debit is negative (credit received — you collect premium)
+
+How to evaluate short put candidates:
+- PROCEED when: IV rank ≥ 50, direction is firmly bullish or neutral, the underlying
+  is a quality name with clear support above the strike, and premium ≥ $0.50/share
+- VETO when: direction is ambiguous or bearish leaning, the strike lacks structural
+  support, IV has been declining (crush already happened), or liquidity is poor
+- RESIZE to 0.5 when: VIX > 25, IV rank is borderline (50–55), or directional thesis
+  is only weakly bullish
+
+Key debate focus for short puts:
+- Strike placement: is the breakeven price at a level the stock is unlikely to reach?
+- Support level: is there a technical support zone above the breakeven?
+- Assignment risk: in paper mode this is theoretical, but model it honestly
+- Theta benefit: positive theta means every day that passes adds to your P&L
+- Stop discipline: exit if the option value reaches 2× the premium received
+
+Never treat a short put as a directional trade requiring a big move.
+The edge is time decay + IV mean-reversion, not predicting a rally.
+
 ═══════════════════════════════════════════════════════════════════
 LIKELIHOOD OF ACTION
 ═══════════════════════════════════════════════════════════════════

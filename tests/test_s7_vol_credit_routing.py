@@ -122,23 +122,26 @@ class TestRule2Credit(unittest.TestCase):
 # ════════════════════════════════════════════════════════════════════════════
 
 class TestRule7Mixed(unittest.TestCase):
-    """expensive IV + directional should include both credit and debit structures."""
+    """expensive IV + directional routing (updated: RULE_SHORT_PUT fires before RULE7 for bullish/neutral)."""
 
-    def test_expensive_bullish_includes_credit_put(self):
+    def test_expensive_bullish_routes_to_short_put(self):
+        """expensive + bullish + iv_rank>=50 + medium/high conviction -> RULE_SHORT_PUT fires."""
         pack = _make_pack(iv_environment="expensive", iv_rank=70.0, a1_direction="bullish")
         result = _route(pack)
-        self.assertIn("credit_put_spread", result)
+        self.assertEqual(result, ["short_put"])
 
-    def test_expensive_bullish_includes_credit_call(self):
+    def test_expensive_bullish_no_credit_call(self):
+        """RULE_SHORT_PUT fires before RULE7 — credit_call_spread not in result for expensive+bullish."""
         pack = _make_pack(iv_environment="expensive", iv_rank=70.0, a1_direction="bullish")
         result = _route(pack)
-        self.assertIn("credit_call_spread", result)
+        self.assertNotIn("credit_call_spread", result)
 
-    def test_expensive_bullish_includes_debit_spreads(self):
+    def test_expensive_bullish_no_debit_spreads(self):
+        """RULE_SHORT_PUT fires before RULE7 — debit spreads not offered in expensive+bullish."""
         pack = _make_pack(iv_environment="expensive", iv_rank=70.0, a1_direction="bullish")
         result = _route(pack)
-        self.assertIn("debit_call_spread", result)
-        self.assertIn("debit_put_spread", result)
+        self.assertNotIn("debit_call_spread", result)
+        self.assertNotIn("debit_put_spread", result)
 
     def test_expensive_bearish_includes_all_four(self):
         pack = _make_pack(iv_environment="expensive", iv_rank=70.0, a1_direction="bearish")
@@ -148,11 +151,11 @@ class TestRule7Mixed(unittest.TestCase):
             sorted(["credit_put_spread", "credit_call_spread", "debit_call_spread", "debit_put_spread"]),
         )
 
-    def test_expensive_neutral_no_trade(self):
-        """expensive + neutral direction still hits RULE8 (no directional signal)."""
+    def test_expensive_neutral_routes_to_short_put(self):
+        """expensive + neutral + iv_rank>=50 -> RULE_SHORT_PUT fires (short put valid for neutral stance)."""
         pack = _make_pack(iv_environment="expensive", iv_rank=70.0, a1_direction="neutral")
         result = _route(pack)
-        self.assertEqual(result, [])
+        self.assertEqual(result, ["short_put"])
 
     def test_expensive_no_naked_longs(self):
         """Single leg structures should not appear for expensive IV."""

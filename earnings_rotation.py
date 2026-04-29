@@ -61,6 +61,10 @@ _EXTRA_UNIVERSE: frozenset[str] = frozenset({
     "RDFN", "Z", "OPEN", "CVNA", "RIVN", "LCID", "NIO", "XPEV", "LI",
     "BIDU", "JD", "PDD", "BABA", "SE", "GRAB", "GOTO", "TSLA",
     "AAPL", "META", "GOOGL", "AMD",
+    # Consumer / blue-chip names (S8-C Fix A1 — keeps in sync with data_warehouse)
+    "SBUX", "COST", "DIS", "MCD", "HD", "LOW", "TGT", "NKE", "PG", "KO",
+    "PEP", "T", "VZ", "CVS", "MDT", "ABT", "NEE", "DUK", "SO", "D",
+    "AMT", "PLD", "EQIX", "PSA", "O",
 })
 
 
@@ -250,6 +254,79 @@ def _cull_post_earnings_symbols() -> list[dict]:
         log.info("[ROTATION] culled %d post-earnings symbols: %s",
                  len(culled), [c["symbol"] for c in culled])
     return culled
+
+
+# ── Short-horizon expansion ───────────────────────────────────────────────────
+
+def expand_watchlist_for_upcoming_earnings(
+    days_ahead: int = 5,
+    config: Optional[dict] = None,
+) -> list[str]:
+    """
+    Add _EXTRA_UNIVERSE symbols with earnings within *days_ahead* calendar days
+    to the rotation tier so they appear in signal scoring before the event.
+
+    Designed to catch blue-chip / consumer names (SBUX, DIS, MCD …) that are
+    not on the core watchlist but have imminent earnings worth tracking.
+
+    TTL: post_earnings_cull_after = earnings_date + post_earnings_hold_days
+    (defaults to 2).  _cull_post_earnings_symbols() removes them at 2 AM after
+    the cull date passes — no manual cleanup required.
+
+    Non-fatal — returns [] on any failure.
+    """
+    try:
+        from data_warehouse import load_earnings_calendar  # noqa: PLC0415
+        cal_data = load_earnings_calendar()
+        entries = cal_data.get("calendar", []) if isinstance(cal_data, dict) else []
+    except Exception as exc:
+        log.warning("[ROTATION] expand_watchlist: calendar load failed: %s", exc)
+        return []
+
+    today  = date.today()
+    cutoff = today + timedelta(days=days_ahead)
+
+    in_watchlist: set[str] = (
+        {(s.get("symbol") or "").upper() for s in get_rotation()}
+        | {(s.get("symbol") or "").upper() for s in get_core()}
+    )
+
+    cfg = (config or {}).get("earnings_rotation", {}) if isinstance(config, dict) else {}
+    post_hold_days = int(cfg.get("post_earnings_hold_days", 2))
+
+    added: list[str] = []
+    for e in entries:
+        sym = (e.get("symbol") or "").upper()
+        if not sym or sym in in_watchlist or "/" in sym:
+            continue
+        if sym not in _EXTRA_UNIVERSE:
+            continue
+        ed_str = str(e.get("earnings_date", ""))[:10]
+        if not ed_str:
+            continue
+        try:
+            ed = date.fromisoformat(ed_str)
+        except ValueError:
+            continue
+        if not (today <= ed <= cutoff):
+            continue
+        cull_after = (ed + timedelta(days=post_hold_days)).isoformat()
+        sector = _infer_sector(sym)
+        ok = add_rotation_symbol(
+            symbol=sym,
+            sector=sector,
+            cull_after=cull_after,
+            source="earnings_expand",
+            earnings_date=ed.isoformat(),
+        )
+        if ok:
+            added.append(sym)
+            log.info("[ROTATION] expand_watchlist: added %s (earnings %s, cull %s)",
+                     sym, ed_str, cull_after)
+
+    if added:
+        log.info("[ROTATION] expand_watchlist: %d new symbol(s): %s", len(added), added)
+    return added
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────

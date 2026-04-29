@@ -42,13 +42,19 @@ import pytest  # noqa: F401
 # Change 1 — Alpha Vantage earnings calendar
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Dates are relative so the filter (reportDate < today) never ages them out.
+# _D1 = today+1 (V), _D2 = today+2 (GOOGL, QCOM), _D3 = today+3 (AAPL, MA)
+_D1 = (date.today() + timedelta(days=1)).isoformat()
+_D2 = (date.today() + timedelta(days=2)).isoformat()
+_D3 = (date.today() + timedelta(days=3)).isoformat()
+
 AV_SAMPLE_CSV = (
     "symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\n"
-    "GOOGL,ALPHABET INC,2026-04-29,2026-03-31,2.63,USD,post-market\n"
-    "AAPL,APPLE INC,2026-04-30,2026-03-31,1.91,USD,post-market\n"
-    "V,VISA INC,2026-04-28,2026-03-31,3.09,USD,post-market\n"
-    "MA,MASTERCARD INC,2026-04-30,2026-03-31,4.40,USD,pre-market\n"
-    "QCOM,QUALCOMM INC,2026-04-29,2026-03-31,1.89,USD,post-market\n"
+    f"GOOGL,ALPHABET INC,{_D2},2026-03-31,2.63,USD,post-market\n"
+    f"AAPL,APPLE INC,{_D3},2026-03-31,1.91,USD,post-market\n"
+    f"V,VISA INC,{_D1},2026-03-31,3.09,USD,post-market\n"
+    f"MA,MASTERCARD INC,{_D3},2026-03-31,4.40,USD,pre-market\n"
+    f"QCOM,QUALCOMM INC,{_D2},2026-03-31,1.89,USD,post-market\n"
     # Off-universe micro-cap — should be filtered out
     "BAH,BOOZ ALLEN HAMILTON,2026-05-22,2026-03-31,1.35,USD,pre-market\n"
     # Non-tracked symbol — should be filtered out
@@ -123,7 +129,7 @@ class TestAVEarningsCalendar:
     def test_entry_shape(self, tmp_path, monkeypatch):
         result, _ = self._run_av(tmp_path, monkeypatch)
         googl = next(e for e in result["calendar"] if e["symbol"] == "GOOGL")
-        assert googl["earnings_date"] == "2026-04-29"
+        assert googl["earnings_date"] == _D2
         assert googl["timing"] == "post-market"
         assert googl["eps_estimate"] == 2.63
         assert googl["source"] == "alphavantage"
@@ -157,16 +163,16 @@ class TestAVEarningsCalendar:
             "calendar": [
                 {
                     "symbol": "V",
-                    "earnings_date": "2026-04-29",  # stored date
+                    "earnings_date": _D2,  # stored as day+2
                     "source": "alphavantage",
                 },
             ],
         }
         result, _ = self._run_av(tmp_path, monkeypatch, existing=existing)
         v = next(e for e in result["calendar"] if e["symbol"] == "V")
-        # New date from CSV is 2026-04-28 — reschedule detected
-        assert v["earnings_date"] == "2026-04-28"
-        assert v.get("prior_reported_date") == "2026-04-29"
+        # CSV has V at _D1 (day+1) — reschedule from _D2 detected
+        assert v["earnings_date"] == _D1
+        assert v.get("prior_reported_date") == _D2
 
     def test_empty_csv_returns_empty_dict(self, tmp_path, monkeypatch):
         result, _ = self._run_av(tmp_path, monkeypatch,
@@ -191,16 +197,18 @@ class TestYfinanceConfirm:
         market_dir.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(dw, "MARKET_DIR", market_dir)
 
-        # Seed with an existing stored date
+        # Seed with _D2 as stored date; yfinance will report _D1 → reschedule
+        _d1 = date.today() + timedelta(days=1)
+        _d2_str = _D2
+
         (market_dir / "earnings_calendar.json").write_text(json.dumps({
             "calendar": [
-                {"symbol": "V", "earnings_date": "2026-04-29", "timing": "post-market"},
+                {"symbol": "V", "earnings_date": _d2_str, "timing": "post-market"},
             ],
         }))
 
-        # yfinance reports a different date → reschedule
         mock_ticker = MagicMock()
-        mock_ticker.calendar = {"Earnings Date": [date(2026, 4, 28)]}
+        mock_ticker.calendar = {"Earnings Date": [_d1]}
         monkeypatch.setattr("yfinance.Ticker", lambda s: mock_ticker)
 
         result = dw.refresh_earnings_calendar_yfinance_confirm(["V"])
@@ -208,8 +216,8 @@ class TestYfinanceConfirm:
 
         saved = json.loads((market_dir / "earnings_calendar.json").read_text())
         v = next(e for e in saved["calendar"] if e["symbol"] == "V")
-        assert v["earnings_date"] == "2026-04-28"
-        assert v.get("prior_reported_date") == "2026-04-29"
+        assert v["earnings_date"] == _D1
+        assert v.get("prior_reported_date") == _d2_str
 
     def test_unchanged_when_date_matches(self, tmp_path, monkeypatch):
         import data_warehouse as dw
@@ -220,12 +228,13 @@ class TestYfinanceConfirm:
 
         (market_dir / "earnings_calendar.json").write_text(json.dumps({
             "calendar": [
-                {"symbol": "V", "earnings_date": "2026-04-28"},
+                {"symbol": "V", "earnings_date": _D1},
             ],
         }))
 
+        _d1 = date.today() + timedelta(days=1)
         mock_ticker = MagicMock()
-        mock_ticker.calendar = {"Earnings Date": [date(2026, 4, 28)]}
+        mock_ticker.calendar = {"Earnings Date": [_d1]}
         monkeypatch.setattr("yfinance.Ticker", lambda s: mock_ticker)
 
         result = dw.refresh_earnings_calendar_yfinance_confirm(["V"])

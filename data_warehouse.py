@@ -490,6 +490,10 @@ _EXTRA_TRACKED_UNIVERSE: frozenset[str] = frozenset({
     "MU", "INTC", "TXN", "AMAT", "KLAC", "LRCX", "ONTO", "ENTG", "SNAP",
     "SPOT", "RDFN", "Z", "OPEN", "CVNA", "RIVN", "LCID", "NIO", "XPEV",
     "LI", "BIDU", "JD", "PDD", "BABA", "SE", "GRAB", "GOTO", "TSLA",
+    # Consumer / blue-chip names (S8-C Fix A1 — covers SBUX-class misses)
+    "SBUX", "COST", "DIS", "MCD", "HD", "LOW", "TGT", "NKE", "PG", "KO",
+    "PEP", "T", "VZ", "CVS", "MDT", "ABT", "NEE", "DUK", "SO", "D",
+    "AMT", "PLD", "EQIX", "PSA", "O",
 })
 
 
@@ -833,13 +837,50 @@ def load_macro_snapshot() -> dict:
 
 
 def load_earnings_calendar() -> dict:
+    """
+    Load earnings_calendar.json and merge any manual overrides from
+    earnings_overrides.json (same directory).  Override entries replace
+    AV entries for the same symbol, allowing manual correction without
+    touching the AV-canonical file.  Schema for overrides.json:
+      [{"symbol": "SBUX", "earnings_date": "2026-04-28",
+        "timing": "after-hours", "source": "manual"}]
+    """
     path = MARKET_DIR / "earnings_calendar.json"
+    result: dict = {}
     if path.exists():
         try:
-            return json.loads(path.read_text())
+            result = json.loads(path.read_text())
         except Exception:
             pass
-    return {}
+
+    overrides_path = MARKET_DIR / "earnings_overrides.json"
+    if overrides_path.exists():
+        try:
+            overrides = json.loads(overrides_path.read_text())
+            if isinstance(overrides, list) and overrides:
+                cal = result.get("calendar", []) if isinstance(result, dict) else []
+                override_syms = {(o.get("symbol") or "").upper() for o in overrides}
+                merged = [e for e in cal
+                          if (e.get("symbol") or "").upper() not in override_syms]
+                for o in overrides:
+                    sym = (o.get("symbol") or "").upper()
+                    if not sym:
+                        continue
+                    merged.append({
+                        "symbol":        sym,
+                        "earnings_date": o.get("earnings_date", ""),
+                        "timing":        o.get("timing", "unknown"),
+                        "eps_estimate":  None,
+                        "source":        o.get("source", "manual"),
+                    })
+                result = dict(result)
+                result["calendar"] = merged
+                log.debug("[EARNINGS] merged %d override(s): %s",
+                          len(overrides), [o.get("symbol") for o in overrides])
+        except Exception as exc:
+            log.debug("[EARNINGS] overrides merge failed (non-fatal): %s", exc)
+
+    return result
 
 
 # ── Global indices ─────────────────────────────────────────────────────────────

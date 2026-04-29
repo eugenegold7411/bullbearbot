@@ -972,6 +972,13 @@ def _maybe_run_earnings_rotation(dry_run: bool = False) -> None:
         result = er.run_earnings_rotation()
         log.info("[ROTATION] daily run complete: added=%s size_after=%d",
                  result.get("added", []), result.get("watchlist_size_after", 0))
+        # Short-horizon pass: add _EXTRA_UNIVERSE names with earnings within 5 days
+        try:
+            expanded = er.expand_watchlist_for_upcoming_earnings(days_ahead=5)
+            if expanded:
+                log.info("[ROTATION] short-horizon expansion: %s", expanded)
+        except Exception as exc2:
+            log.warning("[ROTATION] expand_watchlist failed (non-fatal): %s", exc2)
         _earnings_rotation_ran_date = today
     except Exception as exc:
         log.warning("[ROTATION] daily run failed (non-fatal): %s", exc)

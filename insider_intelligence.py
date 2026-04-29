@@ -452,6 +452,16 @@ def build_insider_intelligence_section(symbols: list[str]) -> str:
         return "  (insider intelligence unavailable this cycle)"
 
     if not cong and not form4:
+        # Still run the outside-watchlist scan before returning — it reads the cache
+        # directly and doesn't depend on the watchlist-filtered fetch results.
+        try:
+            outside = _build_outside_watchlist_section(set(symbols))
+        except Exception:
+            outside = []
+        if outside:
+            parts = ["[SIGNALS OUTSIDE WATCHLIST]"] + outside
+            parts.append("\n  Note: 45-day disclosure lag on congressional trades. Form 4 = 2-day lag.")
+            return "\n".join(parts)
         return "  (no congressional or insider activity found for watchlist symbols)"
 
     high_conv_lines = []
@@ -531,8 +541,73 @@ def build_insider_intelligence_section(symbols: list[str]) -> str:
     if not sections:
         return "  (no significant insider/congressional activity for watchlist symbols)"
 
+    # Scan cache for activity on symbols NOT in the current watchlist
+    try:
+        outside = _build_outside_watchlist_section(set(symbols))
+        if outside:
+            sections += ["[SIGNALS OUTSIDE WATCHLIST]"] + outside
+    except Exception:
+        pass
+
     sections.append("\n  Note: 45-day disclosure lag on congressional trades. Form 4 = 2-day lag.")
     return "\n".join(sections)
+
+
+def _build_outside_watchlist_section(
+    watchlist_syms: set[str],
+    max_symbols: int = 10,
+) -> list[str]:
+    """
+    Read the congressional trades cache directly and surface activity for
+    symbols NOT in the current watchlist.
+
+    Inclusion rules:
+      - BUY trades: any age (congressional conviction, regardless of timing)
+      - SELL trades: within 30 days only (recent exits are caution signals)
+
+    Returns up to max_symbols formatted lines (one per symbol, most recent trade).
+    """
+    try:
+        raw = json.loads(_CONGRESS_FILE.read_text())
+        all_trades: list[dict] = raw.get("trades", [])
+    except Exception:
+        return []
+
+    watchlist_upper = {s.upper() for s in watchlist_syms}
+    outside: dict[str, dict] = {}  # sym → most-recent trade
+
+    for t in all_trades:
+        sym = (t.get("ticker") or "").upper()
+        if not sym or sym in watchlist_upper or "/" in sym:
+            continue
+        action = (t.get("action") or "").lower()
+        days   = t.get("days_since_trade", 9999)
+        if action == "sell" and days > 30:
+            continue
+        if action not in ("buy", "sell"):
+            continue
+        # Keep most-recent trade per symbol
+        existing = outside.get(sym)
+        if existing is None or days < existing.get("days_since_trade", 9999):
+            outside[sym] = t
+
+    if not outside:
+        return []
+
+    lines: list[str] = []
+    for sym, t in sorted(outside.items(), key=lambda kv: kv[1].get("days_since_trade", 9999)):
+        if len(lines) >= max_symbols:
+            break
+        action    = (t.get("action") or "?").upper()
+        politician = t.get("politician") or "?"
+        amount    = t.get("amount_range") or "?"
+        filing    = t.get("filing_date") or "?"
+        days      = t.get("days_since_trade", "?")
+        lines.append(
+            f"  {sym}: {politician} {action} {amount} on {filing} ({days}d ago)"
+        )
+
+    return lines
 
 
 # ── Shared helper ──────────────────────────────────────────────────────────────

@@ -790,6 +790,9 @@ def maybe_trail_stop(
                     )
                     new_stop = earnings_floor
 
+    # Gain ratio for log_trade — works for both routing paths.
+    _gain_r = round((current - entry_price) / entry_price, 3) if entry_price > 0 else 0.0
+
     if stop_oid:
         # Skip if the stop order is mid-replace — status from already-cached order
         # list, no extra Alpaca API call.
@@ -821,7 +824,7 @@ def maybe_trail_stop(
                 "symbol":   sym,
                 "old_stop": stop_price,
                 "new_stop": new_stop,
-                "profit_r": round(profit_r, 2),
+                "gain_r":   _gain_r,
                 "order_id": stop_oid,
             })
             return True

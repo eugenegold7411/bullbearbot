@@ -366,7 +366,7 @@ class TestBotOptionsBackwardCompatExports(unittest.TestCase):
 
     def test_strategy_from_structure_has_correct_count(self):
         from bot_options import _STRATEGY_FROM_STRUCTURE
-        self.assertEqual(len(_STRATEGY_FROM_STRUCTURE), 6)
+        self.assertEqual(len(_STRATEGY_FROM_STRUCTURE), 7)  # +1 for straddle (Phase 2 stub)
 
 
 # ════════════════════════════════════════════════════════════════════════════

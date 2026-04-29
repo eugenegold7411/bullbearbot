@@ -191,7 +191,7 @@ HARD RULES — NEVER VIOLATE
 ═══════════════════════════════════════════════════════════════════
 
 POSITION SIZING
-- Core spread: max 5% of Account 2 equity
+- Core spread: maximum spread cost is 5% of Account 2 equity
 - Core single-leg: max 3% of Account 2 equity
 - Dynamic tier: max 3% of Account 2 equity
 - Intraday options: smallest size only; if allowed, treat as sub-dynamic risk

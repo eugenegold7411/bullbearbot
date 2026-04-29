@@ -117,6 +117,7 @@
   },
   "account2": {
     "enabled": true,
+    "max_spread_cost_pct": 0.05,
     "observation_mode_days": 20,
     "equity_floor": 25000,
     "scheduler_offset_seconds": 90,
@@ -125,7 +126,7 @@
       "pre_open"
     ],
     "position_sizing": {
-      "core_spread_max_pct": 0.06,
+      "core_spread_max_pct": 0.05,
       "core_single_leg_max_pct": 0.035,
       "dynamic_max_pct": 0.03,
       "intraday_options": false
@@ -265,6 +266,8 @@
   },
   "a2_router": {
     "earnings_dte_blackout": 2,
+    "earnings_dte_window": 14,
+    "earnings_iv_rank_gate": 70,
     "min_liquidity_score": 0.25,
     "macro_iv_gate_rank": 70,
     "iv_env_blackout": [],

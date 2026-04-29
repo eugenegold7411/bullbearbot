@@ -234,7 +234,7 @@ def _sell_premium_strategy(
     else:
         strategy = "call_credit_spread"
 
-    max_cost = equity * 0.04 * size_mult   # max risk budget for credit spreads
+    max_cost = equity * 0.05 * size_mult   # max risk budget for credit spreads
     dir_enum = Direction(direction) if direction in ("bullish", "bearish", "neutral") else Direction.NEUTRAL
     return StructureProposal(
         symbol=symbol,
@@ -299,7 +299,13 @@ _STRUCTURE_MAP: dict[str, OptionStrategy] = {
     "debit_put_spread":   OptionStrategy.PUT_DEBIT_SPREAD,
     "credit_call_spread": OptionStrategy.CALL_CREDIT_SPREAD,
     "credit_put_spread":  OptionStrategy.PUT_CREDIT_SPREAD,
+    "straddle":           OptionStrategy.STRADDLE,   # routed; builder stub until Phase 2
 }
+
+# Strategies routed through _STRUCTURE_MAP but whose builders are Phase 2+ stubs.
+# generate_candidate_structures() logs INFO and skips these rather than letting
+# them reach select_strikes() and failing silently.
+_BUILDER_STUBS: frozenset[OptionStrategy] = frozenset({OptionStrategy.STRADDLE})
 
 _DTE_RANGE: dict[OptionStrategy, tuple[int, int]] = {
     OptionStrategy.SINGLE_CALL:        (5, 21),
@@ -308,6 +314,7 @@ _DTE_RANGE: dict[OptionStrategy, tuple[int, int]] = {
     OptionStrategy.PUT_DEBIT_SPREAD:   (5, 28),
     OptionStrategy.CALL_CREDIT_SPREAD: (5, 45),
     OptionStrategy.PUT_CREDIT_SPREAD:  (5, 45),
+    OptionStrategy.STRADDLE:           (14, 28),
 }
 
 
@@ -323,6 +330,7 @@ def generate_candidate_structures(
     allowed_structures: list[str],
     equity: float,
     chain: dict,
+    config: dict | None = None,
 ) -> list[dict]:
     """
     Generate fully-specified candidate structures from live chain data.
@@ -354,6 +362,11 @@ def generate_candidate_structures(
             log.debug("[GEN_CAND] %s: unknown structure type %r", pack.symbol, struct_name)
             continue
 
+        if strategy in _BUILDER_STUBS:
+            log.info("[GEN_CAND] %s: %s not yet implemented (Phase 2) — skipping",
+                     pack.symbol, struct_name)
+            continue
+
         try:
             dte_min, dte_max = _DTE_RANGE.get(strategy, (5, 28))
             expiry = _ob.select_expiry(chain, dte_min, dte_max)
@@ -379,7 +392,10 @@ def generate_candidate_structures(
             if not max_loss_per or max_loss_per <= 0:
                 continue
 
-            budget = min(pack.premium_budget_usd, equity * 0.05)
+            _max_spread_pct = float(
+                (config or {}).get("account2", {}).get("max_spread_cost_pct", 0.05)
+            )
+            budget = min(pack.premium_budget_usd, equity * _max_spread_pct)
             cost_per = (abs(net_debit) if net_debit > 0 else max_loss_per) * 100
             contracts = max(1, min(10, int(budget / cost_per))) if cost_per > 0 else 1
 

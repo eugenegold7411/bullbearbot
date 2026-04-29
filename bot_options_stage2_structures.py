@@ -31,6 +31,7 @@ _STRATEGY_FROM_STRUCTURE: dict[str, _OS] = {
     "debit_put_spread":   _OS.PUT_DEBIT_SPREAD,
     "credit_call_spread": _OS.CALL_CREDIT_SPREAD,
     "credit_put_spread":  _OS.PUT_CREDIT_SPREAD,
+    "straddle":           _OS.STRADDLE,   # routed; builder stub until Phase 2
 }
 
 
@@ -407,6 +408,7 @@ def build_candidate_structures(
             allowed_structures=allowed_structures,
             equity=equity,
             chain=chain,
+            config=config,
         )
         if _cand_structs is not None:
             generated = list(_cand_structs)

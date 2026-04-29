@@ -103,8 +103,6 @@ def send_whatsapp_direct(message: str) -> bool:
     """
     import os  # noqa: PLC0415
     try:
-        from dotenv import load_dotenv  # noqa: PLC0415
-        load_dotenv()
         sid   = os.getenv("TWILIO_ACCOUNT_SID")
         token = os.getenv("TWILIO_AUTH_TOKEN")
         from_ = os.getenv("WHATSAPP_FROM")

@@ -285,8 +285,10 @@
     "trim_severity": [
       {"score_max": 2, "trim_pct": 0.75},
       {"score_max": 4, "trim_pct": 0.50},
-      {"score_max": 6, "trim_pct": 0.25}
+      {"score_max": 5, "trim_pct": 0.25}
     ],
-    "_note": "S6-ALLOCATOR: shadow mode only. enable_live must remain false until trim-only promotion sprint. trim_severity added S7-I."
+    "size_trim_enabled": true,
+    "size_trim_tolerance_pct": 2.0,
+    "_note": "S6-ALLOCATOR: shadow mode only. enable_live must remain false until trim-only promotion sprint. trim_severity added S7-I. size_trim added S8."
   }
 }

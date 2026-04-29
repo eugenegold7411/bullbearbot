@@ -270,7 +270,7 @@ def build_user_prompt(
         if _pi:
             open_syms      = [p.symbol for p in positions if float(p.qty) > 0]
             dyn_sizes_sec  = pi.format_dynamic_sizes_section(_pi.get("sizes", {}), equity)
-            pos_health_sec = pi.format_positions_with_health(positions, equity)
+            pos_health_sec = pi.format_positions_with_health(positions, equity, buying_power=buying_power)
             corr_sec       = pi.format_correlation_section(_pi.get("correlation", {}), open_syms)
             thesis_sec     = pi.format_thesis_ranking_section(
                 _pi.get("thesis_scores", []), _pi.get("weakest_symbol"))

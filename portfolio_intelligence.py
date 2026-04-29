@@ -328,16 +328,25 @@ def get_deadline_exits(strategy_config: dict, positions: list) -> list[dict]:
     return expired
 
 
-def format_positions_with_health(positions: list, equity: float) -> str:
+def format_positions_with_health(
+    positions: list,
+    equity: float,
+    buying_power: float = 0.0,
+) -> str:
     """
     Format === OPEN POSITIONS === section with per-position health data.
     Replaces the plain positions_table in build_user_prompt().
+
+    Oversize bands use buying_power as denominator (aligns with risk kernel).
+    Falls back to equity if buying_power is 0.
 
     Authority: PRESENTATION — formats analytics as prompt text only.
       No enforcement authority.
     """
     if not positions:
         return "  (none)"
+
+    bp = buying_power if buying_power > 0 else equity
 
     rows = []
     for p in positions:
@@ -352,20 +361,20 @@ def format_positions_with_health(positions: list, equity: float) -> str:
         elif health["health"] == "WARNING":
             flag = "  !! WARNING: drawdown approaching stop threshold"
 
-        acct_pct = health["account_pct"]
-        if acct_pct > 20.0:
+        bp_pct = float(p.market_value) / bp * 100 if bp > 0 else 0.0
+        if bp_pct > 25.0:
             oversize_flag = (
-                f"\n             !! OVERSIZE — {acct_pct:.1f}% exceeds max tier ceiling 20%"
+                f"\n             !! OVERSIZE — {bp_pct:.1f}% of BP exceeds max tier ceiling 25%"
                 f" — TRIM or close regardless of tier"
             )
-        elif acct_pct > 15.0:
+        elif bp_pct > 15.0:
             oversize_flag = (
-                f"\n             !! OVERSIZE — {acct_pct:.1f}% exceeds standard core max 15%"
+                f"\n             !! OVERSIZE — {bp_pct:.1f}% of BP exceeds standard core max 15%"
                 f" — confirm HIGH conviction core or TRIM"
             )
-        elif acct_pct > 8.0:
+        elif bp_pct > 8.0:
             oversize_flag = (
-                f"\n             !! OVERSIZE for dynamic/intraday tier — {acct_pct:.1f}% exceeds 8%"
+                f"\n             !! OVERSIZE for dynamic/intraday tier — {bp_pct:.1f}% of BP exceeds 8%"
                 f" — TRIM or confirm core tier intended"
             )
         else:

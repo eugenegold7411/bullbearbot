@@ -44,12 +44,63 @@ _ROOT                = Path(__file__).parent
 _ARTIFACT_PATH       = _ROOT / "data" / "analytics" / "portfolio_allocator_shadow.jsonl"
 _SIGNAL_SCORES_PATH  = _ROOT / "data" / "market" / "signal_scores.json"
 _REGISTRY_JSON_PATH  = _ROOT / "data" / "reports" / "shadow_status_latest.json"
+_WL_CORE_PATH        = _ROOT / "watchlist_core.json"
+_WL_DYNAMIC_PATH     = _ROOT / "watchlist_dynamic.json"
+_WL_INTRA_PATH       = _ROOT / "watchlist_intraday.json"
 
 SCHEMA_VERSION = 1
 
 # Module-level same-day cooldown: symbol → "YYYY-MM-DD" of last recommendation.
 # Cleared implicitly when the date changes. Not persisted across restarts.
 _daily_cooldown: dict[str, str] = {}
+
+
+def _build_watchlist_tier_map() -> dict[str, str]:
+    """Build {symbol: tier_name} from watchlist files at import time. Non-fatal."""
+    out: dict[str, str] = {}
+    try:
+        for path, tier in [
+            (_WL_CORE_PATH, "core"),
+            (_WL_DYNAMIC_PATH, "dynamic"),
+            (_WL_INTRA_PATH, "intraday"),
+        ]:
+            if not path.exists():
+                continue
+            for entry in json.loads(path.read_text()).get("symbols", []):
+                sym = (entry.get("symbol") or "").upper()
+                if sym and sym not in out:
+                    out[sym] = tier
+    except Exception:
+        pass
+    return out
+
+
+_SYMBOL_TIER_MAP: dict[str, str] = _build_watchlist_tier_map()
+
+
+def _tier_max_for_symbol(symbol: str, mv: float, sizes: dict) -> float:
+    """Return tier max weight fraction for a held symbol.
+
+    Watchlist lookup is authoritative (reflects how the kernel would size a new
+    entry in the same symbol). Size-inference from _target_weights is the fallback
+    when the symbol is not on any watchlist (e.g. a short-lived dynamic addition
+    that has since been pruned).
+    """
+    tier = _SYMBOL_TIER_MAP.get((symbol or "").upper())
+    if tier == "core":
+        return 0.15
+    if tier == "dynamic":
+        return 0.08
+    if tier == "intraday":
+        return 0.05
+    # Size-inference fallback
+    core_max = float(sizes.get("core", 0) or 0)
+    dyn_max  = float(sizes.get("standard", 0) or 0)
+    if core_max > 0 and mv >= core_max * 0.50:
+        return 0.15
+    if dyn_max > 0 and mv >= dyn_max * 0.50:
+        return 0.08
+    return 0.05
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -67,6 +118,8 @@ _PA_DEFAULTS: dict = {
     "max_recommendations_per_cycle":   5,
     "same_symbol_daily_cooldown_enabled": True,
     "same_day_replace_block_hours":    6.0,
+    "size_trim_enabled":               True,    # S8: size-based TRIM gate (fires for score ≥ 6 positions over tier max)
+    "size_trim_tolerance_pct":         2.0,     # S8: pp over tier max before size TRIM fires
 }
 
 
@@ -325,7 +378,10 @@ def _decide_actions(
     weight_deadband     = float(pa_cfg["weight_deadband"])
     max_recs            = int(pa_cfg["max_recommendations_per_cycle"])
     trim_thresh         = int(pa_cfg["trim_score_threshold"])   # S7-F: config-driven
+    size_trim_enabled   = bool(pa_cfg.get("size_trim_enabled", True))
+    size_trim_tol       = float(pa_cfg.get("size_trim_tolerance_pct", 2.0)) / 100.0
     available_for_new   = float(sizes.get("available_for_new", 0) or 0)
+    bp                  = float(sizes.get("buying_power", 0) or 0)
 
     target_wts = _target_weights(incumbents, sizes)
     proposed:   list[dict] = []
@@ -337,8 +393,8 @@ def _decide_actions(
         score    = inc["thesis_score"]
         norm     = inc["thesis_score_normalized"]
         mv       = inc["market_value"]
-        acct_pct = inc["account_pct"] / 100.0   # fraction
-        tier_max = target_wts.get(sym, 0.08)
+        acct_pct = inc["account_pct"] / 100.0   # fraction (equity-based)
+        tier_max = _tier_max_for_symbol(sym, mv, sizes)   # S8: watchlist-first, size fallback
 
         # TRIM: thesis weak AND position is large enough to trim meaningfully
         # threshold: thesis_score <= trim_thresh (normalized <= 40 at default 4),
@@ -360,6 +416,30 @@ def _decide_actions(
                     "exit_symbol":      None,
                 })
                 continue   # don't double-count as HOLD
+
+        # SIZE TRIM: strong thesis but position exceeds tier max by more than tolerance.
+        # Fires independently of thesis-score TRIM (exclusive paths: score ≤ trim_thresh
+        # goes to thesis TRIM above; score > trim_thresh falls through to here).
+        if size_trim_enabled and score >= 6 and bp > 0 and mv > min_notional:
+            bp_frac = mv / bp
+            if bp_frac > tier_max + size_trim_tol:
+                target_mv     = tier_max * bp
+                trim_notional = round(mv - target_mv, 2)
+                if trim_notional >= min_notional:
+                    proposed.append({
+                        "action":           "TRIM",
+                        "symbol":           sym,
+                        "reason":           (
+                            f"SIZE TRIM — {sym} at {bp_frac*100:.1f}% of BP exceeds "
+                            f"{tier_max*100:.0f}% {_SYMBOL_TIER_MAP.get(sym.upper(), 'inferred')} "
+                            f"tier max (tol={size_trim_tol*100:.1f}%) — "
+                            f"trim ~${trim_notional:,.0f} to target ${target_mv:,.0f}"
+                        ),
+                        "score_gap":        None,
+                        "target_weight_pct": tier_max,
+                        "exit_symbol":      None,
+                    })
+                    continue
 
         # ADD: thesis strong AND room to grow below tier ceiling
         # threshold: thesis_score >= 7 (normalized >= 70)

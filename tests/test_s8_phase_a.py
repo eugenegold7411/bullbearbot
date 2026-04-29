@@ -1,12 +1,14 @@
 """
-tests/test_s8_phase_a.py — Sprint 8 Phase A verification.
+tests/test_s8_phase_a.py — Sprint 8 Phase A + S8 Items 1/2/3 verification.
 
-Item 1: system_v1.txt EARNINGS / BINARY EVENT EXPOSURE RULE inserted correctly.
-Item 2: format_thesis_ranking_section() appends earnings flags from earnings_days_away.
-Item 3: format_positions_with_health() appends three-band oversize flag.
+Item 1 (S8): format_positions_with_health() oversize bands use buying_power denominator.
+Item 2 (S8): trim_severity score_max=5 (Option C — was 6).
+Item 3 (S8): size-based TRIM gate in _decide_actions fires for score≥6 + oversized positions.
+Prior items (Sprint prev): system_v1.txt earnings rule + earnings flag in thesis section.
 """
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -125,75 +127,94 @@ class TestEarningsFlagInThesisSection(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Item 3 — oversize flag in format_positions_with_health()
+# Item 1 (S8) — format_positions_with_health() uses buying_power denominator
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_pos(symbol="STNG", acct_pct_target=None, equity=100_000.0):
-    """Build a minimal mock position object."""
-    # market_value drives account_pct in compute_position_health
-    market_value = (acct_pct_target / 100.0) * equity if acct_pct_target else 5_000.0
+def _make_pos_mv(mv: float, symbol: str = "STNG") -> MagicMock:
+    """Build a minimal mock position with an explicit market value."""
     p = MagicMock()
     p.symbol          = symbol
     p.qty             = 100.0
-    p.avg_entry_price = market_value / 100.0
-    p.current_price   = market_value / 100.0
-    p.market_value    = market_value
+    p.avg_entry_price = mv / 100.0
+    p.current_price   = mv / 100.0
+    p.market_value    = mv
     p.unrealized_pl   = 0.0
     p.unrealized_plpc = 0.0
     return p
 
 
 class TestOversizeFlagInPositionsHealth(unittest.TestCase):
+    """Item 1 (S8): oversize bands use buying_power as denominator."""
 
     @classmethod
     def setUpClass(cls):
         import portfolio_intelligence as pi
         cls._fmt = staticmethod(pi.format_positions_with_health)
 
-    def _render(self, acct_pct, equity=100_000.0):
-        pos = _make_pos(acct_pct_target=acct_pct, equity=equity)
-        return self._fmt([pos], equity)
+    def _render(self, bp_pct: float, equity: float = 100_000.0, buying_power: float = 120_000.0) -> str:
+        """bp_pct is position market_value as % of buying_power."""
+        mv  = (bp_pct / 100.0) * buying_power
+        pos = _make_pos_mv(mv)
+        return self._fmt([pos], equity, buying_power=buying_power)
 
-    def test_above_20_fires_top_band(self):
-        """24.7% → top band: 'exceeds max tier ceiling 20%'."""
-        out = self._render(24.7)
+    def test_above_25_fires_top_band(self):
+        """26% of BP → top band: 'exceeds max tier ceiling 25%'."""
+        out = self._render(26.0)
         self.assertIn("OVERSIZE", out)
-        self.assertIn("exceeds max tier ceiling 20%", out)
+        self.assertIn("exceeds max tier ceiling 25%", out)
+        self.assertIn("of BP", out)
         self.assertIn("TRIM or close regardless of tier", out)
 
-    def test_above_15_below_20_fires_core_band(self):
-        """17.0% → core band: 'exceeds standard core max 15%'."""
-        out = self._render(17.0)
+    def test_above_15_below_25_fires_core_band(self):
+        """16% of BP → core band: 'exceeds standard core max 15%'."""
+        out = self._render(16.0)
         self.assertIn("OVERSIZE", out)
         self.assertIn("exceeds standard core max 15%", out)
+        self.assertIn("of BP", out)
         self.assertIn("confirm HIGH conviction core or TRIM", out)
 
     def test_above_8_below_15_fires_dynamic_band(self):
-        """10.0% → dynamic band: 'exceeds 8%'."""
-        out = self._render(10.0)
+        """9% of BP → dynamic band: 'exceeds 8%'."""
+        out = self._render(9.0)
         self.assertIn("OVERSIZE for dynamic/intraday tier", out)
         self.assertIn("exceeds 8%", out)
+        self.assertIn("of BP", out)
         self.assertIn("TRIM or confirm core tier intended", out)
 
     def test_exactly_8_no_flag(self):
-        """8.0% → at dynamic tier max, no flag fires."""
+        """8.0% of BP → at dynamic tier max boundary, no flag fires."""
         out = self._render(8.0)
         self.assertNotIn("OVERSIZE", out)
 
     def test_below_8_no_flag(self):
-        """5.0% → well within dynamic tier max, no flag."""
+        """5.0% of BP → well within any tier max, no flag."""
         out = self._render(5.0)
         self.assertNotIn("OVERSIZE", out)
 
-    def test_exactly_20_fires_core_band_not_top(self):
-        """20.0% → core band (> 15%, not > 20%)."""
-        out = self._render(20.0)
+    def test_exactly_25_fires_core_band_not_top(self):
+        """25.0% of BP → core band (>15%, not strictly >25%)."""
+        out = self._render(25.0)
         self.assertIn("exceeds standard core max 15%", out)
-        self.assertNotIn("exceeds max tier ceiling 20%", out)
+        self.assertNotIn("exceeds max tier ceiling 25%", out)
+
+    def test_14_pct_of_bp_fires_dynamic_band(self):
+        """14% of BP → dynamic band (>8%, <15%)."""
+        out = self._render(14.0)
+        self.assertIn("OVERSIZE for dynamic/intraday tier", out)
+
+    def test_buying_power_zero_falls_back_to_equity(self):
+        """buying_power=0 → equity is denominator, no crash, flag still fires at 26%."""
+        equity = 100_000.0
+        mv     = 26_000.0   # 26% of equity → top band
+        pos    = _make_pos_mv(mv)
+        import portfolio_intelligence as pi
+        out    = pi.format_positions_with_health([pos], equity, buying_power=0.0)
+        self.assertIn("OVERSIZE", out)
+        self.assertIn("exceeds max tier ceiling 25%", out)
 
     def test_existing_health_fields_still_present(self):
         """Adding oversize flag does not remove existing health output."""
-        out = self._render(24.7)
+        out = self._render(26.0)
         self.assertIn("account_pct=", out)
         self.assertIn("drawdown=", out)
         self.assertIn("health=", out)
@@ -203,11 +224,159 @@ class TestOversizeFlagInPositionsHealth(unittest.TestCase):
         import portfolio_intelligence as pi
         with patch.object(pi, "compute_position_health") as mock_health:
             mock_health.return_value = {
-                "health":      "CRITICAL",
-                "account_pct": 25.0,
+                "health":       "CRITICAL",
+                "account_pct":  25.0,
                 "drawdown_pct": 12.5,
             }
-            pos = _make_pos(acct_pct_target=25.0)
-            out = pi.format_positions_with_health([pos], 100_000.0)
+            pos = _make_pos_mv(26_000.0)
+            out = pi.format_positions_with_health([pos], 100_000.0, buying_power=100_000.0)
         self.assertIn("CRITICAL DRAWDOWN", out)
         self.assertIn("OVERSIZE", out)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Item 2 (S8) — trim_severity score_max=5 (Option C)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestTrimSeverityItem2(unittest.TestCase):
+    """score_max ceiling is 5 — score=5 maps to the 25% trim tier."""
+
+    def _pa_cfg(self):
+        import portfolio_allocator as pa
+        cfg = dict(pa._PA_DEFAULTS)
+        cfg["trim_severity"] = [
+            {"score_max": 2, "trim_pct": 0.75},
+            {"score_max": 4, "trim_pct": 0.50},
+            {"score_max": 5, "trim_pct": 0.25},
+        ]
+        return cfg
+
+    def test_score_5_routes_to_25pct(self):
+        import portfolio_allocator as pa
+        self.assertAlmostEqual(pa._trim_pct_for_score(5, self._pa_cfg()), 0.25)
+
+    def test_score_4_routes_to_50pct(self):
+        import portfolio_allocator as pa
+        self.assertAlmostEqual(pa._trim_pct_for_score(4, self._pa_cfg()), 0.50)
+
+    def test_score_2_routes_to_75pct(self):
+        import portfolio_allocator as pa
+        self.assertAlmostEqual(pa._trim_pct_for_score(2, self._pa_cfg()), 0.75)
+
+    def test_score_6_above_all_tiers_uses_default(self):
+        """score=6 exceeds all score_max entries → falls through to 0.25 default."""
+        import portfolio_allocator as pa
+        self.assertAlmostEqual(pa._trim_pct_for_score(6, self._pa_cfg()), 0.25)
+
+    def test_strategy_config_has_score_max_5_not_6(self):
+        """Confirm strategy_config.json trim_severity has score_max=5, not 6."""
+        cfg_path = Path(__file__).parent.parent / "strategy_config.json"
+        cfg  = json.loads(cfg_path.read_text())
+        tiers = cfg["portfolio_allocator"]["trim_severity"]
+        max_values = [int(t["score_max"]) for t in tiers]
+        self.assertIn(5, max_values)
+        self.assertNotIn(6, max_values)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Item 3 (S8) — size-based TRIM gate in _decide_actions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_incumbent(symbol: str = "STNG", score: int = 7, mv: float = 22_000.0) -> dict:
+    return {
+        "symbol":                  symbol,
+        "market_value":            mv,
+        "account_pct":             mv / 1000.0,   # rough; not used by size-TRIM path
+        "thesis_score":            score,
+        "thesis_score_normalized": score * 10,
+        "health":                  "OK",
+        "recommended_pi_action":   "hold",
+        "override_flag":           None,
+        "weakest_factor":          "",
+    }
+
+
+def _make_sizes(bp: float = 120_000.0) -> dict:
+    return {
+        "buying_power":    bp,
+        "core":            15_000.0,
+        "standard":        8_000.0,
+        "available_for_new": 20_000.0,
+        "max_exposure":    30_000.0,
+    }
+
+
+def _run_decide(
+    incumbents,
+    pa_overrides: dict | None = None,
+    bp: float = 120_000.0,
+) -> list[dict]:
+    """Helper: run _decide_actions with sane defaults. Returns proposed_actions."""
+    import portfolio_allocator as pa
+    cfg    = {"time_bound_actions": []}
+    pa_cfg = dict(pa._PA_DEFAULTS)
+    pa_cfg["trim_severity"] = [
+        {"score_max": 2, "trim_pct": 0.75},
+        {"score_max": 4, "trim_pct": 0.50},
+        {"score_max": 5, "trim_pct": 0.25},
+    ]
+    if pa_overrides:
+        pa_cfg.update(pa_overrides)
+    sizes   = _make_sizes(bp)
+    pi_data: dict = {"correlation": {}}
+    proposed, _ = pa._decide_actions(
+        incumbents, [], pi_data, cfg, pa_cfg, sizes, 100_000.0
+    )
+    return proposed
+
+
+class TestSizeTrimGateItem3(unittest.TestCase):
+    """Item 3 (S8): size-based TRIM gate fires for score≥6 + oversized positions."""
+
+    def test_size_trim_fires_when_bp_pct_exceeds_tier_plus_tolerance(self):
+        """STNG (core, tier_max=15%) at 22K/120K BP = 18.3% > 17% → SIZE TRIM."""
+        inc = _make_incumbent("STNG", score=7, mv=22_000.0)
+        proposed = _run_decide([inc], bp=120_000.0)
+        actions  = [p for p in proposed if p["action"] == "TRIM"]
+        self.assertEqual(len(actions), 1)
+        self.assertIn("SIZE TRIM", actions[0]["reason"])
+        self.assertIn("BP", actions[0]["reason"])
+
+    def test_size_trim_does_not_fire_within_tolerance(self):
+        """STNG at 19K/120K BP = 15.8% — within 15% + 2% = 17% → no size TRIM."""
+        inc = _make_incumbent("STNG", score=7, mv=19_000.0)
+        proposed = _run_decide([inc], bp=120_000.0)
+        trim_actions = [p for p in proposed if p["action"] == "TRIM"]
+        self.assertEqual(len(trim_actions), 0)
+
+    def test_low_score_uses_thesis_trim_not_size_trim(self):
+        """score=4 (≤ trim_thresh=5) → thesis TRIM fires, not size TRIM."""
+        inc = _make_incumbent("STNG", score=4, mv=22_000.0)
+        proposed = _run_decide([inc], bp=120_000.0)
+        trim_actions = [p for p in proposed if p["action"] == "TRIM"]
+        self.assertEqual(len(trim_actions), 1)
+        self.assertNotIn("SIZE TRIM", trim_actions[0]["reason"])
+        self.assertIn("thesis_score=4", trim_actions[0]["reason"])
+
+    def test_score_6_triggers_size_trim_not_thesis_trim(self):
+        """score=6 is above trim_thresh (5) → size TRIM path (not thesis TRIM)."""
+        inc = _make_incumbent("STNG", score=6, mv=22_000.0)
+        proposed = _run_decide([inc], bp=120_000.0)
+        trim_actions = [p for p in proposed if p["action"] == "TRIM"]
+        self.assertEqual(len(trim_actions), 1)
+        self.assertIn("SIZE TRIM", trim_actions[0]["reason"])
+
+    def test_size_trim_disabled_flag_suppresses_gate(self):
+        """size_trim_enabled=False → oversized position with score=7 → HOLD, no size TRIM."""
+        inc = _make_incumbent("STNG", score=7, mv=22_000.0)
+        proposed = _run_decide([inc], pa_overrides={"size_trim_enabled": False}, bp=120_000.0)
+        trim_actions = [p for p in proposed if p["action"] == "TRIM"]
+        self.assertEqual(len(trim_actions), 0)
+
+    def test_strategy_config_has_size_trim_enabled(self):
+        """Confirm strategy_config.json has size_trim_enabled=true."""
+        cfg_path = Path(__file__).parent.parent / "strategy_config.json"
+        cfg = json.loads(cfg_path.read_text())
+        pa_section = cfg["portfolio_allocator"]
+        self.assertTrue(pa_section["size_trim_enabled"])
+        self.assertIsInstance(pa_section["size_trim_tolerance_pct"], (int, float))

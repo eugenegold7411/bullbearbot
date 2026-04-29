@@ -768,6 +768,11 @@ def _mid_for_leg(leg) -> Optional[float]:
 
 
 def _round_limit(price: float) -> float:
-    """Round limit price to nearest $0.05 (standard options tick). Minimum $0.05."""
-    rounded = round(price / 0.05) * 0.05
+    """Round limit price to nearest $0.05 (standard options tick). Minimum $0.05.
+
+    The inner round(..., 2) eliminates float artifacts from n * 0.05
+    (e.g., 39 * 0.05 == 1.9500000000000002 in Python). Alpaca rejects
+    limit prices with more than 2 decimal places.
+    """
+    rounded = round(round(price / 0.05) * 0.05, 2)
     return max(0.05, rounded)

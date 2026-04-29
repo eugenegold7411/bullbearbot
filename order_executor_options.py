@@ -113,30 +113,20 @@ def submit_options_order(
     try:
         client = _get_options_client()
 
-        # DTBP pre-flight guard — Alpaca paper accounts sometimes return
+        # DTBP pre-flight guard — Alpaca paper accounts sometimes misreport
         # daytrading_buying_power=0 while options_buying_power is correct.
-        # When this happens, submissions fail with error 40310000. Log a clear
-        # actionable warning and skip the cycle rather than burning a rejection.
+        # When DTBP=0 but OBP>0, use OBP as the available capital and proceed;
+        # blocking the cycle on a Alpaca paper state artifact causes missed trades.
         try:
             acct = client.get_account()
             dtbp = float(acct.daytrading_buying_power or 0)
             obp  = float(getattr(acct, "options_buying_power", 0) or 0)
             if dtbp == 0 and obp > 0:
-                log.warning(
-                    "[EXECUTOR] DTBP_ZERO — daytrading_buying_power=$0 but "
-                    "options_buying_power=$%.0f. Alpaca paper account state issue. "
-                    "Skipping submission this cycle. Contact Alpaca support to reset. "
-                    "Account: %s",
+                log.info(
+                    "[EXECUTOR] DTBP=0 — using options_buying_power=$%.0f as fallback  account=%s",
                     obp, getattr(acct, "id", "?"),
                 )
-                result = OptionsExecutionResult(
-                    symbol=sym, option_strategy=strategy, action=strategy,
-                    status="dtbp_zero",
-                    reason="daytrading_buying_power=0 — Alpaca paper account state issue",
-                    structure_id=structure.structure_id,
-                )
-                _log_result(result)
-                return result
+                # Fall through — options_buying_power is the correct available capital.
         except Exception as _dtbp_exc:
             log.debug("[EXECUTOR] DTBP pre-check failed (non-fatal): %s", _dtbp_exc)
 

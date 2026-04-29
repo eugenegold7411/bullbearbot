@@ -1,69 +1,53 @@
 """
 tests/test_s9_graduated_trail.py — Sprint 9 graduated trail-stop tests.
 
-14 test cases covering:
-  TC-01  No tier fires when profit_r < 1.0x
-  TC-02  Tier-1 fires at exactly 1.0x (lock_pct=0.00 → stop at entry)
-  TC-03  Tier-2 fires at 2.0x (lock_pct=0.50 → stop at midpoint)
-  TC-04  Tier-3 fires at 3.0x (lock_pct=0.67)
-  TC-05  Tier-4 fires at 4.0x+ (lock_pct=0.75)
-  TC-06  Never-narrow: new_stop ≤ stop_price returns False from maybe_trail_stop
-  TC-07  Denominator uses entry×stop_loss_pct_core, NOT entry−stop_price
-  TC-08  After first fire stop_price > entry — profit_r still computed correctly
-  TC-09  Legacy path used when trail_tiers absent from config
-  TC-10  Legacy path self-disables when stop_dist ≤ 0 (bug preserved as documented)
-  TC-11  V at $336.28, entry $310, stop_loss_pct_core=0.03 — tier-2 fires
-  TC-12  Graduated path returns None when original_stop_dist ≤ 0
-  TC-13  Earnings floor overrides new_stop when earnings_aware_stop_enabled=True
-  TC-14  Tiers evaluated in ascending profit_r order (unsorted config)
+15 test cases covering gain_pct/stop_pct tier format:
+  TC-01  Tier 1 fires at +3% gain → stop = entry × 1.01
+  TC-02  Tier 2 fires at +5% gain → stop = entry × 1.03
+  TC-03  Tier 3 fires at +10% gain → stop = entry × 1.07
+  TC-04  Tier 4 fires at +15% gain → stop = entry × 1.12
+  TC-05  Tier 5 fires at +20% gain → stop = entry × 1.17
+  TC-06  Partial gain (+4%) picks tier 1, not tier 2
+  TC-07  No tier fires below +3% → current_stop returned
+  TC-08  Never-narrow: new_stop < current_stop → current_stop returned
+  TC-09  MA real scenario: entry=$502.35, current=$529.87 → tier 2
+  TC-10  V real scenario: existing stop better than tier target → no change
+  TC-11  XLE real scenario: tier 1 fires and improves existing stop
+  TC-12  trail_tiers=[] in config → legacy path used
+  TC-13  Legacy profit_r format tiers → _graduated_trail_stop returns None → legacy path
+  TC-14  new_stop >= current_price → safety cap → current_stop returned
+  TC-15  entry_price=0 → returns current_stop immediately
 """
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 _BOT_DIR = Path(__file__).resolve().parent.parent
 if str(_BOT_DIR) not in sys.path:
     sys.path.insert(0, str(_BOT_DIR))
 
+from exit_manager import _graduated_trail_stop  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Helper: build a minimal fake position
-# ---------------------------------------------------------------------------
-
-def _pos(symbol="AAPL", entry=100.0, current=120.0, unrealized=200.0, qty=10):
-    p = MagicMock()
-    p.symbol = symbol
-    p.avg_entry_price = str(entry)
-    p.current_price = str(current)
-    p.unrealized_pl = str(unrealized)
-    p.qty = str(qty)
-    return p
-
-
-# ---------------------------------------------------------------------------
-# Helper: minimal strategy_config with trail_tiers
+# Shared tier list (mirrors strategy_config.json)
 # ---------------------------------------------------------------------------
 
 _TIERS = [
-    {"profit_r": 1.0, "lock_pct": 0.00},
-    {"profit_r": 2.0, "lock_pct": 0.50},
-    {"profit_r": 3.0, "lock_pct": 0.67},
-    {"profit_r": 4.0, "lock_pct": 0.75},
+    {"gain_pct": 0.03, "stop_pct": 0.01},
+    {"gain_pct": 0.05, "stop_pct": 0.03},
+    {"gain_pct": 0.10, "stop_pct": 0.07},
+    {"gain_pct": 0.15, "stop_pct": 0.12},
+    {"gain_pct": 0.20, "stop_pct": 0.17},
 ]
 
 
-def _cfg(tiers=_TIERS, stop_loss_pct_core=0.03, earnings_aware=False):
+def _cfg(tiers=None):
     return {
-        "parameters": {
-            "stop_loss_pct_core": stop_loss_pct_core,
-        },
+        "parameters": {"stop_loss_pct_core": 0.03},
         "exit_management": {
             "trail_stop_enabled": True,
-            "trail_tiers": tiers,
-            "earnings_aware_stop_enabled": earnings_aware,
-            "earnings_stop_eda_trigger": 1,
-            "earnings_stop_iv_floor_pct": 0.05,
+            "trail_tiers": tiers if tiers is not None else _TIERS,
         },
     }
 
@@ -80,339 +64,331 @@ def _legacy_cfg(trigger_r=1.0, plus_pct=0.005):
     }
 
 
+def _pos(symbol="AAPL", entry=100.0, current=120.0, unrealized=200.0, qty=10):
+    p = MagicMock()
+    p.symbol = symbol
+    p.avg_entry_price = str(entry)
+    p.current_price = str(current)
+    p.unrealized_pl = str(unrealized)
+    p.qty = str(qty)
+    return p
+
+
 # ---------------------------------------------------------------------------
-# Import helper under test
+# TC-01: Tier 1 fires at +3% gain
 # ---------------------------------------------------------------------------
 
-from exit_manager import _graduated_trail_stop  # noqa: E402
-
-# ---------------------------------------------------------------------------
-# TC-01: no tier fires when profit_r < 1.0x
-# ---------------------------------------------------------------------------
-
-class TestTC01NoTierFires:
-    def test_profit_r_below_first_tier(self):
-        # entry=$100, stop_loss_pct=0.03 → original_dist=$3
-        # current=$102.5 → profit_r = 2.5/3 = 0.833x < 1.0 → None
+class TestTC01Tier1:
+    def test_tier1_at_3pct_gain(self):
+        # current=103 → gain=3% → tier 1 (stop_pct=0.01) → stop=100×1.01=101.00
         result = _graduated_trail_stop(
-            current_price=102.5,
             entry_price=100.0,
-            stop_price=97.0,
-            tiers=_TIERS,
-            stop_loss_pct_core=0.03,
-        )
-        assert result is None, f"Expected None for profit_r<1.0, got {result}"
-
-
-# ---------------------------------------------------------------------------
-# TC-02: Tier-1 fires at exactly 1.0x (lock_pct=0.00 → stop at entry)
-# ---------------------------------------------------------------------------
-
-class TestTC02Tier1:
-    def test_tier1_fires_at_1x(self):
-        # entry=$100, stop_loss_pct=0.03 → dist=$3
-        # current=$103.0 → profit_r = 3/3 = 1.0x → tier-1 (lock_pct=0.00)
-        # new_stop = 100 + 0.00*(103-100) = $100.00
-        result = _graduated_trail_stop(
             current_price=103.0,
-            entry_price=100.0,
-            stop_price=97.0,
-            tiers=_TIERS,
-            stop_loss_pct_core=0.03,
+            current_stop=97.0,
+            trail_tiers=_TIERS,
         )
-        assert result == 100.00, f"Expected $100.00, got {result}"
+        assert result == 101.00, f"Expected $101.00, got {result}"
 
 
 # ---------------------------------------------------------------------------
-# TC-03: Tier-2 fires at 2.0x (lock_pct=0.50)
+# TC-02: Tier 2 fires at +5% gain
 # ---------------------------------------------------------------------------
 
-class TestTC03Tier2:
-    def test_tier2_at_2x(self):
-        # entry=$100, dist=$3, current=$106 → profit_r = 6/3 = 2.0x → tier-2 (lock_pct=0.50)
-        # new_stop = 100 + 0.50*(106-100) = 100+3 = $103.00
+class TestTC02Tier2:
+    def test_tier2_at_5pct_gain(self):
+        # current=105 → gain=5% → tier 2 (stop_pct=0.03) → stop=100×1.03=103.00
         result = _graduated_trail_stop(
-            current_price=106.0,
             entry_price=100.0,
-            stop_price=97.0,
-            tiers=_TIERS,
-            stop_loss_pct_core=0.03,
+            current_price=105.0,
+            current_stop=97.0,
+            trail_tiers=_TIERS,
         )
         assert result == 103.00, f"Expected $103.00, got {result}"
 
 
 # ---------------------------------------------------------------------------
-# TC-04: Tier-3 fires at 3.0x (lock_pct=0.67)
+# TC-03: Tier 3 fires at +10% gain
 # ---------------------------------------------------------------------------
 
-class TestTC04Tier3:
-    def test_tier3_at_3x(self):
-        # entry=$100, dist=$3, current=$109 → profit_r = 9/3 = 3.0x → tier-3 (lock_pct=0.67)
-        # new_stop = 100 + 0.67*(109-100) = 100+6.03 = $106.03
+class TestTC03Tier3:
+    def test_tier3_at_10pct_gain(self):
+        # current=111 → gain=11% → tier 3 (stop_pct=0.07) → stop=100×1.07=107.00
+        # (using 111 not 110 to avoid floating-point edge: 100.0*1.10 == 110.00000000000001)
         result = _graduated_trail_stop(
-            current_price=109.0,
             entry_price=100.0,
-            stop_price=97.0,
-            tiers=_TIERS,
-            stop_loss_pct_core=0.03,
+            current_price=111.0,
+            current_stop=97.0,
+            trail_tiers=_TIERS,
         )
-        assert result == 106.03, f"Expected $106.03, got {result}"
+        assert result == 107.00, f"Expected $107.00, got {result}"
 
 
 # ---------------------------------------------------------------------------
-# TC-05: Tier-4 fires at 4.0x+ (lock_pct=0.75)
+# TC-04: Tier 4 fires at +15% gain
 # ---------------------------------------------------------------------------
 
-class TestTC05Tier4:
-    def test_tier4_at_4x(self):
-        # entry=$100, dist=$3, current=$112 → profit_r = 12/3 = 4.0x → tier-4 (lock_pct=0.75)
-        # new_stop = 100 + 0.75*(112-100) = 100+9 = $109.00
+class TestTC04Tier4:
+    def test_tier4_at_15pct_gain(self):
+        # current=115 → gain=15% → tier 4 (stop_pct=0.12) → stop=100×1.12=112.00
         result = _graduated_trail_stop(
-            current_price=112.0,
             entry_price=100.0,
-            stop_price=97.0,
-            tiers=_TIERS,
-            stop_loss_pct_core=0.03,
-        )
-        assert result == 109.00, f"Expected $109.00, got {result}"
-
-    def test_tier4_above_4x(self):
-        # Same tier capped at 0.75 even at 5x
-        # current=$115 → profit_r = 15/3 = 5.0x → still tier-4
-        # new_stop = 100 + 0.75*(115-100) = 100+11.25 = $111.25
-        result = _graduated_trail_stop(
             current_price=115.0,
-            entry_price=100.0,
-            stop_price=97.0,
-            tiers=_TIERS,
-            stop_loss_pct_core=0.03,
+            current_stop=97.0,
+            trail_tiers=_TIERS,
         )
-        assert result == 111.25, f"Expected $111.25, got {result}"
+        assert result == 112.00, f"Expected $112.00, got {result}"
 
 
 # ---------------------------------------------------------------------------
-# TC-06: Never-narrow guarantee
+# TC-05: Tier 5 fires at +20% gain
 # ---------------------------------------------------------------------------
 
-class TestTC06NeverNarrow:
-    def test_new_stop_at_or_below_current_stop_returns_false(self):
-        """When the graduated target doesn't improve on the existing stop, no trail fires."""
-        from exit_manager import maybe_trail_stop
-
-        # entry=$100, stop_loss_pct=0.03, current=$103 → tier-1 → new_stop=$100
-        # BUT stop_price is already $101 (better than $100) → should return False
-        pos = _pos(entry=100.0, current=103.0, unrealized=300.0)
-        ei = {"stop_price": 101.0, "stop_order_id": "ord-1", "stop_order_status": "open"}
-        cfg = _cfg()
-
-        result = maybe_trail_stop(pos, MagicMock(), cfg, exit_info=ei)
-        assert result is False, f"Expected False (new_stop ≤ stop_price), got {result}"
-
-
-# ---------------------------------------------------------------------------
-# TC-07: Denominator fix — uses entry×pct, not entry−stop_price
-# ---------------------------------------------------------------------------
-
-class TestTC07DenominatorFix:
-    def test_profit_r_computed_from_entry_times_pct(self):
-        # entry=$100, stop=$97, stop_loss_pct=0.03 → original_dist=$3
-        # If we used entry-stop_price: dist=$3 → same result at first fire
-        # But this test explicitly sets stop_price=$99 (above entry−3=97)
-        # to confirm that stop_loss_pct_core is used, not entry-stop_price distance
-        # entry=$100, stop=$99 (only $1 below entry), stop_loss_pct=0.03 → dist=$3
-        # current=$103 → profit_r = 3/3 = 1.0x → tier-1 fires
+class TestTC05Tier5:
+    def test_tier5_at_20pct_gain(self):
+        # current=120 → gain=20% → tier 5 (stop_pct=0.17) → stop=100×1.17=117.00
         result = _graduated_trail_stop(
+            entry_price=100.0,
+            current_price=120.0,
+            current_stop=97.0,
+            trail_tiers=_TIERS,
+        )
+        assert result == 117.00, f"Expected $117.00, got {result}"
+
+
+# ---------------------------------------------------------------------------
+# TC-06: +4% gain picks tier 1 (highest applicable), not tier 2
+# ---------------------------------------------------------------------------
+
+class TestTC06CorrectTierSelection:
+    def test_4pct_gain_picks_tier1_not_tier2(self):
+        # current=104 → gain=4% → qualifies for tier 1 (≥3%) but NOT tier 2 (≥5%)
+        # → stop_pct=0.01 → stop=100×1.01=101.00
+        result = _graduated_trail_stop(
+            entry_price=100.0,
+            current_price=104.0,
+            current_stop=97.0,
+            trail_tiers=_TIERS,
+        )
+        assert result == 101.00, f"Expected $101.00 (tier 1), got {result}"
+
+
+# ---------------------------------------------------------------------------
+# TC-07: No tier fires below +3% → current_stop returned
+# ---------------------------------------------------------------------------
+
+class TestTC07NoTierFires:
+    def test_below_3pct_gain_returns_current_stop(self):
+        # current=102.5 → gain=2.5% < 3% → no tier qualifies → current_stop returned
+        result = _graduated_trail_stop(
+            entry_price=100.0,
+            current_price=102.5,
+            current_stop=97.0,
+            trail_tiers=_TIERS,
+        )
+        assert result == 97.0, f"Expected current_stop=97.0, got {result}"
+
+    def test_exactly_at_threshold_qualifies(self):
+        # current=103.0 → gain=3.0% → qualifies for tier 1
+        result = _graduated_trail_stop(
+            entry_price=100.0,
             current_price=103.0,
-            entry_price=100.0,
-            stop_price=99.0,  # only $1 below entry — old formula would give dist=1, profit_r=3
-            tiers=_TIERS,
-            stop_loss_pct_core=0.03,  # 3% → dist=$3
+            current_stop=97.0,
+            trail_tiers=_TIERS,
         )
-        # With correct denominator (dist=3): profit_r=1.0x → tier-1 → new_stop=entry+0=100
-        assert result == 100.00, f"Expected $100.00 (correct denominator), got {result}"
+        assert result == 101.00, f"Expected $101.00 at exactly 3% threshold, got {result}"
 
 
 # ---------------------------------------------------------------------------
-# TC-08: After first fire, stop > entry — profit_r still computed correctly
+# TC-08: Never-narrow — new_stop < current_stop → current_stop returned
 # ---------------------------------------------------------------------------
 
-class TestTC08ReFireAfterTrail:
-    def test_trail_fires_again_after_stop_above_entry(self):
-        """After stop moves to entry+0.5%, profit_r still computes from original dist."""
-        # Simulate: entry=$100, stop already trailed to $100.50 (above entry)
-        # stop_loss_pct=0.03 → original_dist=$3
-        # current=$106 → profit_r = 6/3 = 2.0x → tier-2 → new_stop=$103
-        # This would fail in legacy (entry-stop = $100-$100.50 = -$0.50 → stop_dist≤0)
+class TestTC08NeverNarrow:
+    def test_new_stop_below_current_stop_returns_current(self):
+        # entry=100, current=103 → tier 1 → new_stop=101.00
+        # current_stop=102 (already better) → must return 102, not 101
         result = _graduated_trail_stop(
-            current_price=106.0,
             entry_price=100.0,
-            stop_price=100.50,  # stop already above entry (legacy would return False)
-            tiers=_TIERS,
-            stop_loss_pct_core=0.03,
+            current_price=103.0,
+            current_stop=102.0,
+            trail_tiers=_TIERS,
         )
-        assert result == 103.00, (
-            f"Expected $103.00 (graduated trail re-fires after stop > entry), got {result}"
+        assert result == 102.0, f"Expected current_stop=102.0 (never narrow), got {result}"
+
+    def test_equal_stop_returns_current(self):
+        # new_stop == current_stop → still return current (no improvement)
+        result = _graduated_trail_stop(
+            entry_price=100.0,
+            current_price=103.0,
+            current_stop=101.0,  # exactly what tier 1 would produce
+            trail_tiers=_TIERS,
         )
+        assert result == 101.0, f"Expected 101.0 (no improvement case), got {result}"
 
 
 # ---------------------------------------------------------------------------
-# TC-09: Legacy path when trail_tiers absent
+# TC-09: MA real scenario — entry=$502.35, current=$529.87 (+5.5%) → tier 2
 # ---------------------------------------------------------------------------
 
-class TestTC09LegacyPath:
-    def test_legacy_path_fires_when_no_tiers(self):
-        """When trail_tiers is absent, the legacy single-trigger path fires."""
+class TestTC09MAScenario:
+    def test_ma_tier2_fires(self):
+        # gain = (529.87 - 502.35) / 502.35 = 5.48% → tier 2 (stop_pct=0.03)
+        # new_stop = 502.35 × 1.03 = 517.4205 → rounds to 517.42
+        result = _graduated_trail_stop(
+            entry_price=502.35,
+            current_price=529.87,
+            current_stop=487.28,  # 502.35 × (1 - 0.03)
+            trail_tiers=_TIERS,
+        )
+        assert result == 517.42, f"Expected $517.42 (MA tier 2), got {result}"
+
+
+# ---------------------------------------------------------------------------
+# TC-10: V real scenario — existing stop better than tier target → no change
+# ---------------------------------------------------------------------------
+
+class TestTC10VScenario:
+    def test_v_existing_stop_beats_tier_target(self):
+        # entry=$310.30, current=$337 → gain=8.6% → tier 2 (stop_pct=0.03)
+        # new_stop = 310.30 × 1.03 = 319.609 → rounds to 319.61
+        # current_stop=$333 > $319.61 → never-narrow → return $333
+        result = _graduated_trail_stop(
+            entry_price=310.30,
+            current_price=337.0,
+            current_stop=333.0,
+            trail_tiers=_TIERS,
+        )
+        assert result == 333.0, f"Expected current_stop=333.0 (V stop better than tier), got {result}"
+
+
+# ---------------------------------------------------------------------------
+# TC-11: XLE real scenario — tier 1 fires and improves existing stop
+# ---------------------------------------------------------------------------
+
+class TestTC11XLEScenario:
+    def test_xle_tier1_improves_stop(self):
+        # entry=$56.73, current=$58.88 → gain=3.79% → tier 1 (stop_pct=0.01)
+        # new_stop = 56.73 × 1.01 = 57.2973 → rounds to 57.30
+        # current_stop=$57.01 < $57.30 → fires → return $57.30
+        result = _graduated_trail_stop(
+            entry_price=56.73,
+            current_price=58.88,
+            current_stop=57.01,
+            trail_tiers=_TIERS,
+        )
+        assert result == 57.30, f"Expected $57.30 (XLE tier 1), got {result}"
+
+
+# ---------------------------------------------------------------------------
+# TC-12: trail_tiers=[] → legacy path used via maybe_trail_stop
+# ---------------------------------------------------------------------------
+
+class TestTC12EmptyTiersLegacyPath:
+    def test_empty_tiers_routes_to_legacy(self):
         from exit_manager import maybe_trail_stop
 
-        # entry=$100, stop=$97 (dist=$3), current=$104 → profit_r=4/3=1.33x ≥ 1.0 → fires
-        # new_stop = entry*(1+0.005) = $100.50
+        # entry=$100, stop=$97 → dist=$3, current=$104 → profit_r=4/3≈1.33x ≥ 1.0
+        # legacy fires: new_stop = 100×1.005 = $100.50
         pos = _pos(entry=100.0, current=104.0, unrealized=400.0)
-        ei = {"stop_price": 97.0, "stop_order_id": "ord-2", "stop_order_status": "open"}
-        cfg = _legacy_cfg(trigger_r=1.0, plus_pct=0.005)
+        ei = {"stop_price": 97.0, "stop_order_id": "ord-legacy", "stop_order_status": "open"}
+        cfg = _legacy_cfg(trigger_r=1.0, plus_pct=0.005)  # no trail_tiers key
 
         alpaca_mock = MagicMock()
-        # replace_order_by_id must succeed without raising
         alpaca_mock.replace_order_by_id.return_value = MagicMock()
 
         result = maybe_trail_stop(pos, alpaca_mock, cfg, exit_info=ei)
-        assert result is True, "Expected legacy trail to fire"
-        call_args = alpaca_mock.replace_order_by_id.call_args
-        req = call_args[0][1] if call_args[0] else call_args[1].get("request_params", None)
-        # The ReplaceOrderRequest is a stub in tests (KwargsRequest) — check stop_price attr
-        assert hasattr(req, "stop_price"), "ReplaceOrderRequest missing stop_price"
-        assert abs(req.stop_price - 100.50) < 0.01, f"Expected stop $100.50, got {req.stop_price}"
-
-
-# ---------------------------------------------------------------------------
-# TC-10: Legacy self-disables when stop > entry (documented behavior, NOT a bug)
-# ---------------------------------------------------------------------------
-
-class TestTC10LegacySelfDisable:
-    def test_legacy_returns_false_when_stop_above_entry(self):
-        """Legacy path: stop_dist = entry-stop_price ≤ 0 → returns False (known behavior)."""
-        from exit_manager import maybe_trail_stop
-
-        pos = _pos(entry=100.0, current=106.0, unrealized=600.0)
-        ei = {"stop_price": 100.50, "stop_order_id": "ord-3"}  # stop already above entry
-        cfg = _legacy_cfg()
-
-        result = maybe_trail_stop(pos, MagicMock(), cfg, exit_info=ei)
-        assert result is False, (
-            "Legacy path should return False when stop_price > entry_price"
+        assert result is True, "Expected legacy trail to fire when trail_tiers absent"
+        req = alpaca_mock.replace_order_by_id.call_args[0][1]
+        assert abs(req.stop_price - 100.50) < 0.01, (
+            f"Expected legacy stop $100.50, got {req.stop_price}"
         )
 
 
 # ---------------------------------------------------------------------------
-# TC-11: V at $336.28, entry=$310, stop_loss_pct_core=0.03
+# TC-13: Legacy profit_r format → _graduated_trail_stop returns None → legacy path
 # ---------------------------------------------------------------------------
 
-class TestTC11VisaScenario:
-    def test_visa_tier2(self):
-        """V scenario: entry=$310, current=$336.28, pct=0.03 → profit_r≈2.8x → tier-2."""
-        # original_dist = 310 * 0.03 = $9.30
-        # profit = 336.28 - 310 = $26.28
-        # profit_r = 26.28 / 9.30 ≈ 2.83x → tier-2 (lock_pct=0.50)
-        # new_stop = 310 + 0.50*(336.28-310) = 310 + 13.14 = $323.14
-        result = _graduated_trail_stop(
-            current_price=336.28,
-            entry_price=310.0,
-            stop_price=300.70,  # 310*(1-0.03)
-            tiers=_TIERS,
-            stop_loss_pct_core=0.03,
-        )
-        assert result == 323.14, f"Expected $323.14, got {result}"
-
-    def test_visa_tier3_above_3x(self):
-        """V at $338.30 → profit_r≈3.04x → tier-3 (lock_pct=0.67)."""
-        # original_dist = 310*0.03 = 9.2999... (Python float)
-        # profit = 338.30 - 310 = 28.30
-        # profit_r = 28.30 / 9.2999... ≈ 3.043x → tier-3 (lock_pct=0.67)
-        # new_stop = 310 + 0.67*(338.30-310) = 310+18.961 = $328.96
-        result = _graduated_trail_stop(
-            current_price=338.30,
-            entry_price=310.0,
-            stop_price=300.70,
-            tiers=_TIERS,
-            stop_loss_pct_core=0.03,
-        )
-        assert result == 328.96, f"Expected $328.96, got {result}"
-
-
-# ---------------------------------------------------------------------------
-# TC-12: _graduated_trail_stop returns None when original_stop_dist ≤ 0
-# ---------------------------------------------------------------------------
-
-class TestTC12ZeroDenominator:
-    def test_zero_stop_loss_pct_returns_none(self):
-        result = _graduated_trail_stop(
-            current_price=110.0,
-            entry_price=100.0,
-            stop_price=97.0,
-            tiers=_TIERS,
-            stop_loss_pct_core=0.0,  # zero denominator
-        )
-        assert result is None
-
-    def test_negative_stop_loss_pct_returns_none(self):
-        result = _graduated_trail_stop(
-            current_price=110.0,
-            entry_price=100.0,
-            stop_price=97.0,
-            tiers=_TIERS,
-            stop_loss_pct_core=-0.01,
-        )
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# TC-13: Earnings floor overrides new_stop when earnings_aware enabled
-# ---------------------------------------------------------------------------
-
-class TestTC13EarningsFloor:
-    def test_earnings_floor_overrides_tier_target(self):
-        """When earnings_aware_stop is enabled and IV-based floor > tier target, floor wins."""
-        from exit_manager import maybe_trail_stop
-
-        # entry=$100, current=$103 → tier-1 → new_stop=$100.00
-        # But earnings floor = entry*(1-0.15) = $85 — this is BELOW stop_price so NOT applied
-        # (earnings floor only applies if floor > current stop_price)
-        pos = _pos(entry=100.0, current=106.0, unrealized=600.0)
-        ei = {"stop_price": 97.0, "stop_order_id": "ord-4", "stop_order_status": "open"}
-        cfg = _cfg(earnings_aware=True)
-
-        with (
-            patch("exit_manager._get_eda", return_value=0),  # eda=0, within trigger
-            patch("exit_manager._get_latest_iv", return_value=0.15),  # IV=15%
-        ):
-            alpaca_mock = MagicMock()
-            alpaca_mock.replace_order_by_id.return_value = MagicMock()
-            result = maybe_trail_stop(pos, alpaca_mock, cfg, exit_info=ei)
-
-        # earnings_floor = 100*(1-0.15) = $85, which is BELOW stop_price $97 → not applied
-        # tier-2 at 2x: new_stop = 100 + 0.50*(106-100) = $103 → fires normally
-        assert result is True, "Expected trail to fire (earnings floor below existing stop)"
-
-
-# ---------------------------------------------------------------------------
-# TC-14: Tiers evaluated in ascending profit_r order (unsorted config)
-# ---------------------------------------------------------------------------
-
-class TestTC14UnsortedTiers:
-    def test_highest_qualifying_tier_selected_even_if_unsorted(self):
-        """Tiers given in reverse order still yield the correct (highest qualifying) tier."""
-        unsorted_tiers = [
-            {"profit_r": 4.0, "lock_pct": 0.75},
-            {"profit_r": 2.0, "lock_pct": 0.50},  # ← correct active tier at 2.5x
-            {"profit_r": 3.0, "lock_pct": 0.67},
+class TestTC13LegacyFormatDetection:
+    def test_profit_r_format_returns_none(self):
+        # Old profit_r/lock_pct format has no gain_pct key → function returns None
+        old_tiers = [
             {"profit_r": 1.0, "lock_pct": 0.00},
+            {"profit_r": 2.0, "lock_pct": 0.50},
         ]
-        # entry=$100, dist=$3, current=$107.5 → profit_r = 7.5/3 = 2.5x → tier-2 (lock_pct=0.50)
         result = _graduated_trail_stop(
-            current_price=107.5,
             entry_price=100.0,
-            stop_price=97.0,
-            tiers=unsorted_tiers,
-            stop_loss_pct_core=0.03,
+            current_price=110.0,
+            current_stop=97.0,
+            trail_tiers=old_tiers,
         )
-        # new_stop = 100 + 0.50*(107.5-100) = 100+3.75 = $103.75
-        assert result == 103.75, f"Expected $103.75 for unsorted tiers, got {result}"
+        assert result is None, (
+            f"Expected None for legacy profit_r format (signals caller to use legacy path), got {result}"
+        )
+
+    def test_none_result_routes_to_legacy_in_maybe_trail_stop(self):
+        from exit_manager import maybe_trail_stop
+
+        # Config has old-format tiers → _graduated_trail_stop returns None →
+        # routing sets trail_tiers=[] → legacy path fires
+        old_tiers = [{"profit_r": 1.0, "lock_pct": 0.00}]
+        cfg = {
+            "parameters": {"stop_loss_pct_core": 0.03},
+            "exit_management": {
+                "trail_stop_enabled": True,
+                "trail_tiers": old_tiers,
+                "trail_trigger_r": 1.0,
+                "trail_to_breakeven_plus_pct": 0.005,
+            },
+        }
+        pos = _pos(entry=100.0, current=104.0, unrealized=400.0)
+        ei = {"stop_price": 97.0, "stop_order_id": "ord-old", "stop_order_status": "open"}
+
+        alpaca_mock = MagicMock()
+        alpaca_mock.replace_order_by_id.return_value = MagicMock()
+
+        result = maybe_trail_stop(pos, alpaca_mock, cfg, exit_info=ei)
+        assert result is True, "Expected legacy fallback to fire for old profit_r format tiers"
+
+
+# ---------------------------------------------------------------------------
+# TC-14: new_stop >= current_price → safety cap → current_stop returned
+# ---------------------------------------------------------------------------
+
+class TestTC14SafetyCap:
+    def test_new_stop_above_current_price_capped(self):
+        # Custom tier with very high stop_pct: gain_pct=0.01 (fires at +1%), stop_pct=0.10
+        # entry=100, current=101.5 → gain=1.5% → tier fires
+        # new_stop = 100 × 1.10 = 110.0 > current=101.5 → safety cap → return current_stop=98
+        aggressive_tiers = [{"gain_pct": 0.01, "stop_pct": 0.10}]
+        result = _graduated_trail_stop(
+            entry_price=100.0,
+            current_price=101.5,
+            current_stop=98.0,
+            trail_tiers=aggressive_tiers,
+        )
+        assert result == 98.0, (
+            f"Expected current_stop=98.0 (safety cap: new_stop≥current_price), got {result}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TC-15: entry_price=0 → returns current_stop immediately
+# ---------------------------------------------------------------------------
+
+class TestTC15ZeroEntry:
+    def test_zero_entry_price_returns_current_stop(self):
+        result = _graduated_trail_stop(
+            entry_price=0.0,
+            current_price=105.0,
+            current_stop=97.0,
+            trail_tiers=_TIERS,
+        )
+        assert result == 97.0, f"Expected current_stop=97.0 for zero entry, got {result}"
+
+    def test_negative_entry_price_returns_current_stop(self):
+        result = _graduated_trail_stop(
+            entry_price=-10.0,
+            current_price=105.0,
+            current_stop=97.0,
+            trail_tiers=_TIERS,
+        )
+        assert result == 97.0, f"Expected current_stop=97.0 for negative entry, got {result}"

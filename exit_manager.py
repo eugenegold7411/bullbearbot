@@ -646,34 +646,61 @@ def _trail_cancel_and_replace(
 
 
 def _graduated_trail_stop(
-    current_price: float,
     entry_price: float,
-    stop_price: float,
-    tiers: list,
-    stop_loss_pct_core: float,
+    current_price: float,
+    current_stop: float,
+    trail_tiers: list,
 ) -> Optional[float]:
     """
-    Graduated trail: compute new stop from config-driven tier table.
+    Compute new stop using gain_pct/stop_pct graduated trail tiers.
 
-    Uses entry_price × stop_loss_pct_core as the fixed denominator so profit_r
-    keeps growing correctly after the stop moves above entry (the legacy formula
-    entry_price - stop_price goes negative and permanently disables the trail).
-
-    Returns new stop price if a tier fires, None otherwise.
+    Fires when current_price >= entry_price * (1 + gain_pct).
+    Moves stop to entry_price * (1 + stop_pct).
+    Applies the highest qualifying tier.
+    Never narrows below current_stop.
+    Returns current_stop if no tier applies or no improvement available.
+    Returns None if trail_tiers uses the legacy profit_r/lock_pct format,
+    signalling the caller to fall through to the legacy path.
     """
-    original_stop_dist = entry_price * stop_loss_pct_core
-    if original_stop_dist <= 0:
-        return None
-    profit_r = (current_price - entry_price) / original_stop_dist
-    # Walk tiers in ascending order; keep the highest one where profit_r qualifies.
-    active_tier: Optional[dict] = None
-    for t in sorted(tiers, key=lambda x: float(x["profit_r"])):
-        if profit_r >= float(t["profit_r"]):
-            active_tier = t
-    if active_tier is None:
-        return None
-    lock_pct = float(active_tier["lock_pct"])
-    return round(entry_price + lock_pct * (current_price - entry_price), 2)
+    if not trail_tiers or entry_price <= 0:
+        return current_stop
+
+    # Detect tier format — gain_pct/stop_pct (new) vs profit_r/lock_pct (legacy)
+    if "gain_pct" not in trail_tiers[0]:
+        return None  # signals caller to use legacy path
+
+    # Find highest qualifying tier
+    applicable_tier = None
+    for tier in sorted(trail_tiers, key=lambda t: t["gain_pct"], reverse=True):
+        gain_pct = float(tier["gain_pct"])
+        if current_price >= entry_price * (1 + gain_pct):
+            applicable_tier = tier
+            break
+
+    if applicable_tier is None:
+        return current_stop  # no tier reached
+
+    stop_pct = float(applicable_tier["stop_pct"])
+    new_stop = round(entry_price * (1 + stop_pct), 2)
+
+    # Safety caps
+    if new_stop <= 0:
+        log.warning(
+            "[TRAIL_STOP] graduated trail produced non-positive stop $%.2f "
+            "— keeping current stop $%.2f",
+            new_stop, current_stop,
+        )
+        return current_stop
+    if new_stop >= current_price:
+        log.warning(
+            "[TRAIL_STOP] graduated trail produced stop $%.2f >= current "
+            "price $%.2f — keeping current stop $%.2f",
+            new_stop, current_price, current_stop,
+        )
+        return current_stop
+
+    # Never narrow
+    return max(new_stop, current_stop)
 
 
 def maybe_trail_stop(
@@ -707,26 +734,38 @@ def maybe_trail_stop(
     if stop_price is None:
         return False
 
-    tiers = em_cfg.get("trail_tiers")
-    if tiers:
-        # Graduated trail path — fixed denominator avoids self-disabling after first fire.
-        stop_loss_pct = float(
-            strategy_config.get("parameters", {}).get("stop_loss_pct_core", 0.035)
+    trail_tiers = em_cfg.get("trail_tiers", [])
+    if trail_tiers:
+        result = _graduated_trail_stop(
+            entry_price=entry_price,
+            current_price=current,
+            current_stop=stop_price,
+            trail_tiers=trail_tiers,
         )
-        new_stop  = _graduated_trail_stop(current, entry_price, stop_price, tiers, stop_loss_pct)
-        if new_stop is None:
-            return False
-        # For logging: recalculate profit_r and find the active tier for display.
-        original_stop_dist = entry_price * stop_loss_pct
-        profit_r  = (current - entry_price) / original_stop_dist if original_stop_dist > 0 else 0.0
-        trigger_r = float(sorted(tiers, key=lambda x: float(x["profit_r"]))[0]["profit_r"])
-    else:
-        # Legacy single-trigger path.
+        if result is None:
+            trail_tiers = []  # legacy format detected — fall through to legacy path
+        else:
+            new_stop = result
+            if new_stop <= stop_price:
+                return False  # no improvement
+            _tier_label = "none"
+            for _t in sorted(trail_tiers, key=lambda t: t.get("gain_pct", 0), reverse=True):
+                if current >= entry_price * (1 + float(_t.get("gain_pct", 0))):
+                    _tier_label = f"+{_t['gain_pct']*100:.0f}%→+{_t['stop_pct']*100:.0f}%"
+                    break
+            log.info(
+                "[TRAIL_STOP] %s: tier [%s] fired — stop $%.2f → $%.2f "
+                "(entry $%.2f, current $%.2f)",
+                sym, _tier_label, stop_price, new_stop, entry_price, current,
+            )
+
+    if not trail_tiers:
+        # Legacy path — preserved exactly
         stop_dist = entry_price - stop_price
         if stop_dist <= 0:
             return False
-        trigger_r = em_cfg.get("trail_trigger_r", 1.0)
-        profit_r  = (current - entry_price) / stop_dist
+        profit_r = (current - entry_price) / stop_dist
+        trigger_r = float(em_cfg.get("trail_trigger_r", 1.0))
         if profit_r < trigger_r:
             return False
         plus_pct = em_cfg.get("trail_to_breakeven_plus_pct", 0.005)
@@ -750,14 +789,6 @@ def maybe_trail_stop(
                         sym, eda, new_stop, earnings_floor, iv * 100,
                     )
                     new_stop = earnings_floor
-
-    if new_stop <= stop_price:
-        return False  # existing stop already at or better than trail target
-
-    log.info(
-        "[TRAIL_STOP] %s: profit_r=%.2fx ≥ trigger=%.1fx — trailing stop $%.2f → $%.2f",
-        sym, profit_r, trigger_r, stop_price, new_stop,
-    )
 
     if stop_oid:
         # Skip if the stop order is mid-replace — status from already-cached order

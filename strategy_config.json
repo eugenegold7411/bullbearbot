@@ -107,12 +107,13 @@
     "earnings_stop_eda_trigger": 1,
     "earnings_stop_iv_floor_pct": 0.05,
     "trail_tiers": [
-      {"profit_r": 1.0, "lock_pct": 0.00},
-      {"profit_r": 2.0, "lock_pct": 0.50},
-      {"profit_r": 3.0, "lock_pct": 0.67},
-      {"profit_r": 4.0, "lock_pct": 0.75}
+      {"gain_pct": 0.03, "stop_pct": 0.01},
+      {"gain_pct": 0.05, "stop_pct": 0.03},
+      {"gain_pct": 0.10, "stop_pct": 0.07},
+      {"gain_pct": 0.15, "stop_pct": 0.12},
+      {"gain_pct": 0.20, "stop_pct": 0.17}
     ],
-    "_trail_tiers_note": "Graduated trail. When present, replaces trail_trigger_r/trail_to_breakeven_plus_pct. profit_r uses entry x stop_loss_pct_core as denominator. lock_pct is the fraction of unrealized gains locked in by moving the stop up."
+    "_trail_tiers_note": "Graduated trail. gain_pct = price gain threshold from entry. stop_pct = stop target as % above entry. Highest qualifying tier applies. Never narrows existing stop."
   },
   "account2": {
     "enabled": true,

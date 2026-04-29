@@ -21,6 +21,7 @@ Responsibilities:
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any  # Any used in submit_selected_candidate signature
@@ -161,13 +162,15 @@ def submit_selected_candidate(
     if not pf_allow_new_entries:
         log.warning("[PREFLIGHT] New A2 entries suppressed by preflight (reconcile_only)")
 
-    # Load confidence floor from config (paper vs live)
+    # Load confidence floor from Alpaca base URL (paper vs live account)
     _cfg = _load_strategy_config()
     _a2_cfg = _cfg.get("account2", {})
-    if pf_allow_live_orders:
-        _conf_floor = float(_a2_cfg.get("live_confidence_floor", 0.85))
-    else:
-        _conf_floor = float(_a2_cfg.get("paper_confidence_floor", 0.75))
+    _base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    _is_paper = "paper-api.alpaca.markets" in _base_url.lower()
+    _conf_floor = float(_a2_cfg.get(
+        "paper_confidence_floor" if _is_paper else "live_confidence_floor",
+        0.75 if _is_paper else 0.85,
+    ))
 
     # ── A2-3b bounded execution path ─────────────────────────────────────────
     if candidate_structures and "selected_candidate_id" in debate_result:

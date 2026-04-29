@@ -17,6 +17,7 @@ Responsibilities:
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import asdict
@@ -432,13 +433,14 @@ def run_bounded_debate(
     _ts = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
     decision_id = f"a2_dec_{_ts}"
 
-    # Determine confidence floor from config (paper vs live)
+    # Determine confidence floor from Alpaca base URL (paper vs live account)
     _a2_cfg = config.get("account2", {})
-    _is_live = config.get("account2", {}).get("pf_allow_live_orders", False)
-    if _is_live:
-        _conf_floor = float(_a2_cfg.get("live_confidence_floor", 0.85))
-    else:
-        _conf_floor = float(_a2_cfg.get("paper_confidence_floor", 0.75))
+    _base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    _is_paper = "paper-api.alpaca.markets" in _base_url.lower()
+    _conf_floor = float(_a2_cfg.get(
+        "paper_confidence_floor" if _is_paper else "live_confidence_floor",
+        0.75 if _is_paper else 0.85,
+    ))
 
     debate_result, prompt_used, raw_response = run_options_debate(
         candidates=candidates,

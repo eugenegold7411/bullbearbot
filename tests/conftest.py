@@ -197,6 +197,21 @@ def _stub_alpaca_tree() -> None:
 
 if not _alpaca_compatible():
     _stub_alpaca_tree()
+else:
+    # Pre-load alpaca.data subpackages when the real alpaca is installed.
+    # test_sprint2_a2_mode.py inserts MagicMock stubs at module-collection time
+    # using `if not in sys.modules` guards — pre-loading the real submodules here
+    # ensures those guards find them already populated and skip the MagicMock.
+    try:
+        from alpaca.data.enums import DataFeed as _dfe  # noqa: F401
+        from alpaca.data.historical import (  # noqa: F401
+            CryptoHistoricalDataClient as _chdc,
+        )
+        from alpaca.data.historical.news import NewsClient as _nc  # noqa: F401
+        from alpaca.data.requests import NewsRequest as _nr  # noqa: F401
+        from alpaca.data.timeframe import TimeFrame as _tf  # noqa: F401
+    except Exception:
+        pass
 
 _stub_if_absent("anthropic")
 _stub_if_absent("twilio", ["rest"])
@@ -340,6 +355,10 @@ except Exception:
     pass
 try:
     import earnings_calendar_lookup as _ecl  # noqa: F401
+except Exception:
+    pass
+try:
+    import data_warehouse as _dw  # noqa: F401
 except Exception:
     pass
 

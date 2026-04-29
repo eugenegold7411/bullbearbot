@@ -71,19 +71,25 @@ def _make_debate_result(cid: str = "C1", conf: float = 0.80, reject: bool = Fals
 class TestStage3ConfidenceGate(unittest.TestCase):
     """TC1–TC4: run_bounded_debate applies paper vs live floor correctly."""
 
-    def _run_bounded(self, conf: float, config: dict) -> str:
+    def _run_bounded(self, conf: float, config: dict, live_url: bool = False) -> str:
         """
         Patch run_options_debate to return a controlled confidence and verify
         whether run_bounded_debate sets no_trade_reason=debate_low_confidence.
+
+        live_url=True patches ALPACA_BASE_URL to a live endpoint so the code
+        reads live_confidence_floor instead of paper_confidence_floor.
         """
         from bot_options_stage3_debate import run_bounded_debate
 
         cand_struct = [_minimal_candidate_structure(conf=conf)]
         debate_result = _make_debate_result(conf=conf)
 
+        env_patch = {"ALPACA_BASE_URL": "https://api.alpaca.markets"} if live_url else {}
+
         with patch("bot_options_stage3_debate.run_options_debate",
                    return_value=(debate_result, "prompt", "raw")), \
-             patch("bot_options_stage3_debate._load_strategy_config", return_value=config):
+             patch("bot_options_stage3_debate._load_strategy_config", return_value=config), \
+             patch.dict("os.environ", env_patch, clear=False):
             record = run_bounded_debate(
                 candidate_sets=[],
                 candidates=[],
@@ -114,13 +120,13 @@ class TestStage3ConfidenceGate(unittest.TestCase):
 
     def test_tc3_live_85_passes(self):
         """TC3: conf=0.85 in live mode (floor=0.85) → passes."""
-        reason = self._run_bounded(0.85, _live_config())
+        reason = self._run_bounded(0.85, _live_config(), live_url=True)
         self.assertNotEqual(reason, "debate_low_confidence",
                             f"Expected pass but got no_trade_reason={reason!r}")
 
     def test_tc4_live_84_blocked(self):
         """TC4: conf=0.84 in live mode (floor=0.85) → blocked as debate_low_confidence."""
-        reason = self._run_bounded(0.84, _live_config())
+        reason = self._run_bounded(0.84, _live_config(), live_url=True)
         self.assertEqual(reason, "debate_low_confidence")
 
 

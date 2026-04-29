@@ -1080,6 +1080,15 @@ def build_portfolio_intelligence(
         }
 
     # 4. Thesis scores
+    _qual_sym_ctx: dict = {}
+    try:
+        from bot_stage1_5_qualitative import (
+            load_qualitative_context as _load_qual,  # noqa: PLC0415
+        )
+        _qual_sym_ctx = _load_qual().get("symbol_context") or {}
+    except Exception:
+        pass
+
     thesis_scores: list[dict] = []
     for pos in positions:
         if float(pos.qty) <= 0:
@@ -1121,6 +1130,10 @@ def build_portfolio_intelligence(
         else:
             ts["catalyst_consumed"] = False
             ts["catalyst_consumed_at"] = None
+
+        _qual_entry = _qual_sym_ctx.get(pos.symbol) or {}
+        if _qual_entry:
+            ts["thesis_tags"] = _qual_entry.get("thesis_tags") or []
 
         thesis_scores.append(ts)
 

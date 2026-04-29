@@ -389,6 +389,9 @@ def run_precycle(
                 positions=_long_positions,
                 open_orders=snapshot.open_orders,
                 vix=float(md.get("vix", 20) or 20),
+                grace_seconds=float(
+                    cfg.get("exit_management", {}).get("protection_grace_seconds", 120)
+                ),
             )
         if div_events:
             a1_mode = respond_to_divergence(div_events, "A1", a1_mode)

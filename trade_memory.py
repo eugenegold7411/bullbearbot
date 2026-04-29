@@ -58,6 +58,18 @@ _WEIGHT_LONG   = 0.10
 _SHORT_MAX_DAYS  = 7
 _MEDIUM_MAX_DAYS = 90
 
+
+def _scalar(v, default=None):
+    """Normalize a ChromaDB metadata field that may be list-wrapped on deserialisation.
+
+    ChromaDB occasionally returns scalar metadata fields as single-element lists.
+    This guard extracts the first element when that happens so downstream code
+    never sees a list where it expects int/float/str.
+    """
+    if isinstance(v, list):
+        return v[0] if v else default
+    return v
+
 # ---------------------------------------------------------------------------
 # Lazy singletons — initialised on first call to _get_collections()
 # ---------------------------------------------------------------------------
@@ -642,18 +654,20 @@ def format_retrieved_memories(scenarios: list[dict]) -> str:
         meta     = s.get("metadata", {})
         doc      = s.get("document", "")
         s.get("distance", 0.0)
-        tier     = meta.get("tier", "short")
+        tier     = str(_scalar(meta.get("tier", "short"), "short"))
 
-        ts      = str(meta.get("ts", ""))
-        session = meta.get("session", "unknown")   # S7-D: "unknown" not "?" — don't assert unrecorded session
-        vix     = meta.get("vix", 0.0)
+        # Apply _scalar() to every metadata field — ChromaDB may list-wrap any
+        # scalar on deserialisation, which breaks format-spec calls and comparisons.
+        ts      = str(_scalar(meta.get("ts",      ""), ""))
+        session = str(_scalar(meta.get("session",  "unknown"), "unknown"))
+        vix     = float(_scalar(meta.get("vix",   0.0), 0.0))
         # S7-D: normalize legacy "?" regime sentinel to "unknown" so prompt text is clean
-        regime  = meta.get("regime", "unknown")
+        regime  = str(_scalar(meta.get("regime",  "unknown"), "unknown"))
         if regime == "?":
             regime = "unknown"
-        symbols = meta.get("symbols", "?")
-        outcome = meta.get("outcome", "?")
-        pnl     = meta.get("pnl", 0.0)
+        symbols = str(_scalar(meta.get("symbols", "?"), "?"))
+        outcome = str(_scalar(meta.get("outcome", "?"), "?"))
+        pnl     = float(_scalar(meta.get("pnl",   0.0), 0.0))
 
         pnl_str  = f"  P&L=${pnl:+.0f}" if outcome != "pending" else ""
         tier_tag = f"[{tier}] " if tier != "short" else ""

@@ -98,7 +98,10 @@
     "trail_trigger_r": 1.0,
     "trail_to_breakeven_plus_pct": 0.005,
     "refresh_if_stop_stale_pct": 0.15,
-    "backstop_days": 7
+    "backstop_days": 7,
+    "trail_replace_max_failures": 3,
+    "protection_grace_seconds": 120,
+    "_protection_grace_seconds_note": "Alpaca paper propagation buffer — bracket stop children take 1-3s to appear in GET /orders after a fill; 120s = two full market cycles before protection_missing fires"
   },
   "account2": {
     "enabled": true,

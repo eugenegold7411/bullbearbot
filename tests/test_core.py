@@ -5401,6 +5401,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
 
     def test_scenario_detect_protection_stop_missing(self):
         """detect_protection_divergence: position with no stop order → stop_missing event."""
+        import time
         import tempfile
 
         import divergence as _div_mod
@@ -5415,6 +5416,9 @@ class TestSuite24DivergenceC7(unittest.TestCase):
                         self.symbol = symbol
                         self.market_value = market_value
 
+                # Seed _fill_seen with an expired timestamp so the grace window
+                # is already elapsed and the event fires immediately.
+                _div_mod._fill_seen["GLD"] = time.time() - 200
                 events = _div_mod.detect_protection_divergence(
                     account="A1_TEST",
                     positions=[MockPosition("GLD", 800)],  # <2000 → stop_missing
@@ -5427,6 +5431,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
             finally:
                 _div_mod.DIVERGENCE_LOG = original_log
                 _div_mod.DIVERGENCE_COUNTS_PATH = original_counts
+                _div_mod._fill_seen.pop("GLD", None)
 
     # ── E2E T23: detect → respond → clean-cycle recovery ─────────────────────
 
@@ -5466,6 +5471,9 @@ class TestSuite24DivergenceC7(unittest.TestCase):
                 )
 
                 # Step 1: detect — market_value=800 < 2000 → stop_missing (DE_RISK)
+                # Seed _fill_seen with expired timestamp so grace window is already elapsed.
+                import time as _time
+                _div_mod._fill_seen["GLD"] = _time.time() - 200
                 events = _div_mod.detect_protection_divergence(
                     account="A1_E2E_TEST",
                     positions=[MockPosition("GLD", 800)],
@@ -5530,6 +5538,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
             finally:
                 _div_mod.RUNTIME_DIR = original_runtime
                 _div_mod.MODE_TRANSITION_LOG = original_mtl
+                _div_mod._fill_seen.pop("GLD", None)
 
 
 # =============================================================================

@@ -109,6 +109,15 @@ EVENT_TYPES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Grace window for new fills — Section 8 protection divergence detector
+# ---------------------------------------------------------------------------
+# Alpaca paper takes 1–3 s to propagate a new bracket stop into GET /orders.
+# Without a grace period the very first cycle after a fill fires a spurious
+# protection_missing HALT event. _fill_seen tracks when each symbol was first
+# observed without a stop so we can skip the event during the propagation window.
+_fill_seen: dict[str, float] = {}   # symbol → epoch of first no-stop detection
+
+# ---------------------------------------------------------------------------
 # Section 2 — Event log
 # ---------------------------------------------------------------------------
 
@@ -657,6 +666,7 @@ def detect_protection_divergence(
     positions: list,       # list of NormalizedPosition
     open_orders: list,     # list of NormalizedOrder
     vix: float = 20,
+    grace_seconds: float = 120.0,
 ) -> list[DivergenceEvent]:
     """
     Scan all positions for missing/wrong stops.
@@ -666,10 +676,25 @@ def detect_protection_divergence(
     1. Position with no stop → stop_missing or protection_missing (size)
     2. Position with duplicate stop orders → duplicate_exit
     Non-fatal.
+
+    grace_seconds (default 120): new positions are given this window before a
+    protection_missing event fires. Alpaca paper takes 1–3 s to propagate bracket
+    stops into GET /orders; without the grace period the first cycle after a fill
+    always fires a spurious HALT event. 120 s = two full market cycles.
+    Read from strategy_config["exit_management"]["protection_grace_seconds"].
     """
     events: list[DivergenceEvent] = []
     try:
         now = datetime.now(timezone.utc).isoformat()
+        now_epoch = time.time()
+
+        # Clear _fill_seen for any position that closed since the last call.
+        # This ensures a close-and-reopen of the same symbol starts a fresh
+        # grace window rather than inheriting the old timestamp.
+        current_syms = {getattr(pos, "symbol", "") for pos in positions}
+        for sym in list(_fill_seen.keys()):
+            if sym not in current_syms:
+                del _fill_seen[sym]
 
         # Build stop order map
         stop_map: dict[str, list] = {}
@@ -694,7 +719,21 @@ def detect_protection_divergence(
             pos_stops = stop_map.get(sym, [])
 
             if not pos_stops:
-                # No stop at all
+                # No stop detected. Apply grace window before firing an event so
+                # that freshly-filled positions are not immediately flagged while
+                # Alpaca propagates the bracket stop into GET /orders.
+                if sym not in _fill_seen:
+                    _fill_seen[sym] = now_epoch
+
+                elapsed = now_epoch - _fill_seen[sym]
+                if elapsed < grace_seconds:
+                    log.debug(
+                        "[DIV] %s: no stop — in grace window (%.0fs elapsed / %.0fs grace)",
+                        sym, elapsed, grace_seconds,
+                    )
+                    continue   # within grace; don't fire yet
+
+                # Grace expired (or grace_seconds=0) — fire the event
                 event_type = (
                     "protection_missing" if size_usd > 2000
                     else "stop_missing"
@@ -723,40 +762,42 @@ def detect_protection_divergence(
                 log_divergence_event(evt)
                 events.append(evt)
 
-            elif len(pos_stops) > 1:
-                # Multiple stops — only flag as duplicate if total stop qty
-                # over-covers the position. Split-lot stops (e.g. two orders for
-                # different tranches whose qty sums to the position qty) are valid.
-                total_stop_qty = sum(
-                    float(getattr(s, "qty", 0) or 0) for s in pos_stops
-                )
-                position_qty = float(getattr(pos, "qty", 0) or 0)
-                if total_stop_qty <= position_qty:
-                    # Stops partition the position — not a duplicate
-                    pass
-                else:
-                    # Genuine over-coverage
-                    severity, scope, recoverability = classify_divergence(
-                        "duplicate_exit", sym, account,
-                        position_size_usd=size_usd,
+            else:
+                # Stop exists — clear any grace tracking so that if this position
+                # ever loses its stop in a future cycle we detect it promptly.
+                _fill_seen.pop(sym, None)
+
+                if len(pos_stops) > 1:
+                    # Multiple stops — only flag as duplicate if total stop qty
+                    # over-covers the position. Split-lot stops (e.g. two orders for
+                    # different tranches whose qty sums to the position qty) are valid.
+                    total_stop_qty = sum(
+                        float(getattr(s, "qty", 0) or 0) for s in pos_stops
                     )
-                    evt = DivergenceEvent(
-                        event_id=generate_event_id(),
-                        timestamp=now,
-                        account=account,
-                        symbol=sym,
-                        event_type="duplicate_exit",
-                        severity=severity,
-                        scope=scope,
-                        scope_id=sym,
-                        paper_expected={"stop_count": 1},
-                        live_observed={"stop_count": len(pos_stops)},
-                        delta={"extra_stops": len(pos_stops) - 1},
-                        recoverability=recoverability,
-                        risk_impact="low",
-                    )
-                    log_divergence_event(evt)
-                    events.append(evt)
+                    position_qty = float(getattr(pos, "qty", 0) or 0)
+                    if total_stop_qty > position_qty:
+                        # Genuine over-coverage
+                        severity, scope, recoverability = classify_divergence(
+                            "duplicate_exit", sym, account,
+                            position_size_usd=size_usd,
+                        )
+                        evt = DivergenceEvent(
+                            event_id=generate_event_id(),
+                            timestamp=now,
+                            account=account,
+                            symbol=sym,
+                            event_type="duplicate_exit",
+                            severity=severity,
+                            scope=scope,
+                            scope_id=sym,
+                            paper_expected={"stop_count": 1},
+                            live_observed={"stop_count": len(pos_stops)},
+                            delta={"extra_stops": len(pos_stops) - 1},
+                            recoverability=recoverability,
+                            risk_impact="low",
+                        )
+                        log_divergence_event(evt)
+                        events.append(evt)
 
     except Exception as e:
         log.warning("[DIV] detect_protection_divergence failed: %s", e)

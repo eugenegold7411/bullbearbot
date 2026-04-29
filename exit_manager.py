@@ -109,6 +109,12 @@ def _has_take_profit_order(symbol: str, open_orders: list) -> bool:
 _ticker_locks: dict[str, threading.Lock] = {}
 _ticker_locks_guard = threading.Lock()
 
+# Consecutive trail-stop replace failure counter, keyed by stop order ID.
+# After trail_replace_max_failures consecutive failures the replace is abandoned
+# so a stuck PENDING_REPLACE order does not generate a warning every cycle.
+# Cleared on success or when a new stop order ID appears for the same symbol.
+_trail_replace_failures: dict[str, int] = {}
+
 
 def _get_ticker_lock(symbol: str) -> threading.Lock:
     """Return (or lazily create) the threading.Lock for a given ticker symbol."""
@@ -183,21 +189,24 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
         cur_price   = float(pos.current_price)
         open_orders = orders_by_sym.get(sym, [])
 
-        stop_price   = None
-        stop_oid     = None
-        target_price = None
-        target_oid   = None
-        any_sell_oid = None  # fallback for long positions: any sell order counts as protection
+        stop_price        = None
+        stop_oid          = None
+        stop_order_status = None   # captured from already-fetched order list; no extra API call
+        target_price      = None
+        target_oid        = None
+        any_sell_oid      = None  # fallback for long positions: any sell order counts as protection
 
         # Protective orders are buy-side for shorts, sell-side for longs.
         protective_side = "buy" if is_short else "sell"
 
         for o in open_orders:
-            o_type = str(getattr(o, "type", "")).lower()
-            o_side = str(getattr(o, "side", "")).lower()
+            o_type   = str(getattr(o, "type",   "")).lower()
+            o_side   = str(getattr(o, "side",   "")).lower()
+            o_status = str(getattr(o, "status", "")).lower()
             # Normalize Alpaca enum repr: "OrderType.STOP" → "stop", "OrderSide.SELL" → "sell"
-            o_type = o_type.split(".")[-1]
-            o_side = o_side.split(".")[-1]
+            o_type   = o_type.split(".")[-1]
+            o_side   = o_side.split(".")[-1]
+            o_status = o_status.split(".")[-1]
             if protective_side not in o_side:
                 continue
             if not is_short and any_sell_oid is None:
@@ -205,8 +214,9 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
             if o_type in ("stop", "stop_limit"):
                 sp = getattr(o, "stop_price", None)
                 if sp:
-                    stop_price = float(sp)
-                    stop_oid   = str(o.id)
+                    stop_price        = float(sp)
+                    stop_oid          = str(o.id)
+                    stop_order_status = o_status
             elif o_type == "limit" and not is_short:
                 lp = getattr(o, "limit_price", None)
                 if lp:
@@ -249,11 +259,12 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
             status = "unprotected"
 
         result[sym] = {
-            "stop_price":      stop_price,
-            "target_price":    target_price,
-            "stop_order_id":   stop_oid,
-            "target_order_id": target_oid,
-            "status":          status,
+            "stop_price":        stop_price,
+            "target_price":      target_price,
+            "stop_order_id":     stop_oid,
+            "stop_order_status": stop_order_status,
+            "target_order_id":   target_oid,
+            "status":            status,
         }
 
     return result
@@ -554,6 +565,23 @@ def maybe_trail_stop(
     )
 
     if stop_oid:
+        # Skip if the stop order is mid-replace — status from already-cached order
+        # list, no extra Alpaca API call.
+        if ei.get("stop_order_status") == "pending_replace":
+            log.debug(
+                "[TRAIL_STOP] %s: stop order %s is PENDING_REPLACE — skipping this cycle",
+                sym, stop_oid,
+            )
+            return False
+
+        max_failures = int(em_cfg.get("trail_replace_max_failures", 3))
+        if _trail_replace_failures.get(stop_oid, 0) >= max_failures:
+            log.debug(
+                "[TRAIL_STOP] %s: replace abandoned after %d failures (order_id=%s)",
+                sym, max_failures, stop_oid,
+            )
+            return False
+
         try:
             from alpaca.trading.requests import ReplaceOrderRequest  # noqa: PLC0415
             alpaca_client.replace_order_by_id(
@@ -561,6 +589,7 @@ def maybe_trail_stop(
             )
             log.info("[TRAIL_STOP] %s: stop updated $%.2f → $%.2f  order_id=%s",
                      sym, stop_price, new_stop, stop_oid)
+            _trail_replace_failures.pop(stop_oid, None)   # success — clear failure count
             log_trade({
                 "event":    "trail_stop",
                 "symbol":   sym,
@@ -571,7 +600,16 @@ def maybe_trail_stop(
             })
             return True
         except Exception as exc:
-            log.warning("[TRAIL_STOP] %s: replace_order failed: %s", sym, exc)
+            failures = _trail_replace_failures.get(stop_oid, 0) + 1
+            _trail_replace_failures[stop_oid] = failures
+            log.warning("[TRAIL_STOP] %s: replace_order failed (attempt %d/%d): %s",
+                        sym, failures, max_failures, exc)
+            if failures >= max_failures:
+                log.warning(
+                    "[TRAIL_STOP] %s: trail stop replace abandoned after %d consecutive "
+                    "failures (order_id=%s) — manual review needed",
+                    sym, max_failures, stop_oid,
+                )
     return False
 
 

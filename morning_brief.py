@@ -455,6 +455,28 @@ def _load_context() -> str:
     except Exception:
         pass
 
+    # Inject current prices for held positions so Claude generates accurate entry zones.
+    # Without this, Claude uses training-data prices (e.g. GOOGL ~$160) which then fail
+    # the post-generation staleness filter and silently drop the pick.
+    try:
+        _held_syms = _get_held_symbols()
+        if _held_syms:
+            from data_warehouse import load_bars_cached  # noqa: PLC0415
+            _held_price_lines: list[str] = []
+            for _sym in sorted(_held_syms):
+                _bars = load_bars_cached(_sym) or []
+                if _bars:
+                    _price = float(_bars[-1].get("close", 0) or 0)
+                    if _price > 0:
+                        _held_price_lines.append(f"  {_sym}: ${_price:.2f} (currently held)")
+            if _held_price_lines:
+                parts.append(
+                    "\n=== HELD POSITIONS — CURRENT PRICES (use for entry_zone) ==="
+                )
+                parts.extend(_held_price_lines)
+    except Exception:
+        pass
+
     return "\n".join(parts) if parts else "No overnight intelligence available."
 
 
@@ -500,18 +522,25 @@ def _validate_and_sanitize_brief(brief: dict) -> dict:
     price (ratio > 2.0x or < 0.5x vs last-known close). This catches the
     XLE/WTI confusion failure mode — if Sonnet's entry_zone midpoint is
     within 50-200% of the equity price, the pick is kept; otherwise it's
-    dropped with a WARNING."""
+    dropped with a WARNING.
+
+    Held positions are exempt: a symbol we already own must always surface
+    in the brief regardless of whether the entry_zone is stale."""
     if not isinstance(brief, dict):
         return brief
     picks = brief.get("conviction_picks") or []
     if not picks:
         return brief
     current_prices = _current_prices_from_disk()
+    held = _get_held_symbols()
     kept: list = []
     for pick in picks:
         if not isinstance(pick, dict):
             continue
         sym = (pick.get("symbol") or "").upper()
+        if sym in held:
+            kept.append(pick)
+            continue
         ez  = pick.get("entry_zone", "")
         cp  = current_prices.get(sym)
         if sym and cp and cp > 0:

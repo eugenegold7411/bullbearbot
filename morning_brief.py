@@ -789,13 +789,29 @@ def _send_whatsapp_brief(brief: dict) -> None:
 
 
 def _load_signal_scores_for_brief() -> list[dict]:
-    """Load scored_symbols from signal_scores.json. Non-fatal."""
+    """Load scored_symbols from signal_scores.json as a list of dicts. Non-fatal.
+    Handles both formats: list[dict] and dict{symbol: {score, direction, ...}}."""
     try:
         path = _BASE_DIR / "data" / "market" / "signal_scores.json"
         if not path.exists():
             return []
         d = json.loads(path.read_text())
-        return d.get("scored_symbols", []) if isinstance(d, dict) else []
+        if not isinstance(d, dict):
+            return []
+        raw = d.get("scored_symbols", [])
+        # Dict format: {symbol: {score, direction, conviction, ...}}
+        if isinstance(raw, dict):
+            out: list[dict] = []
+            for sym, info in raw.items():
+                if isinstance(info, dict):
+                    entry = dict(info)
+                    entry["symbol"] = sym
+                    out.append(entry)
+            return out
+        # List format: [{symbol, score, direction, ...}]
+        if isinstance(raw, list):
+            return [s for s in raw if isinstance(s, dict)]
+        return []
     except Exception:
         return []
 

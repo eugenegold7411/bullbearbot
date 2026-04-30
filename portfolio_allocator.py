@@ -480,7 +480,7 @@ def _decide_actions(
         score    = inc["thesis_score"]
         norm     = inc["thesis_score_normalized"]
         mv       = inc["market_value"]
-        acct_pct = inc["account_pct"] / 100.0   # fraction (equity-based)
+        acct_pct = inc["account_pct"] / 100.0   # fraction of total_capacity
         tier_max = _tier_max_for_symbol(sym, mv, sizes)   # S8: watchlist-first, size fallback
 
         # TRIM: thesis weak AND position is large enough to trim meaningfully

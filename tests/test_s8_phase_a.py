@@ -387,3 +387,93 @@ class TestSizeTrimGateItem3(unittest.TestCase):
         pa_section = cfg["portfolio_allocator"]
         self.assertTrue(pa_section["size_trim_enabled"])
         self.assertIsInstance(pa_section["size_trim_tolerance_pct"], (int, float))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Batch A — compute_position_health() total_capacity denominator fix
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestComputePositionHealthTotalCapacity(unittest.TestCase):
+    """compute_position_health() uses total_capacity denominator; CRITICAL threshold is 6%."""
+
+    def _make_pos(
+        self,
+        entry: float,
+        current: float,
+        qty: float = 100.0,
+    ) -> MagicMock:
+        p = MagicMock()
+        p.symbol          = "TEST"
+        p.qty             = qty
+        p.avg_entry_price = entry
+        p.current_price   = current
+        p.market_value    = current * qty
+        p.unrealized_pl   = (current - entry) * qty
+        p.unrealized_plpc = (current - entry) / entry
+        return p
+
+    def test_account_pct_uses_total_capacity_not_equity(self):
+        """account_pct = mv / total_capacity, not mv / equity."""
+        import portfolio_intelligence as pi
+        equity         = 107_000.0
+        total_capacity = 289_000.0
+        pos = self._make_pos(100.0, 100.0, qty=100)  # mv = 10_000
+        health = pi.compute_position_health(pos, equity, total_capacity)
+        expected = round(10_000.0 / total_capacity * 100, 2)
+        self.assertAlmostEqual(health["account_pct"], expected, places=1)
+        equity_based = round(10_000.0 / equity * 100, 2)
+        self.assertNotAlmostEqual(health["account_pct"], equity_based, places=1,
+                                  msg="account_pct must NOT equal equity-based value")
+
+    def test_critical_fires_when_drawdown_8_and_account_pct_above_6(self):
+        """drawdown=9%, account_pct=7% of total_capacity → CRITICAL."""
+        import portfolio_intelligence as pi
+        # entry=100, current=91 → drawdown=9%
+        # mv=9100, total_capacity=130_000 → account_pct=7.0%
+        pos = self._make_pos(100.0, 91.0, qty=100)   # mv=9_100
+        health = pi.compute_position_health(pos, equity=100_000.0, total_capacity=130_000.0)
+        self.assertEqual(health["health"], "CRITICAL")
+
+    def test_critical_does_not_fire_when_account_pct_at_or_below_6(self):
+        """drawdown=9%, account_pct=5.9% of total_capacity → WARNING, not CRITICAL."""
+        import portfolio_intelligence as pi
+        # entry=100, current=91 → drawdown=9%
+        # mv=9100, total_capacity=154_000 → account_pct≈5.9%
+        pos = self._make_pos(100.0, 91.0, qty=100)   # mv=9_100
+        health = pi.compute_position_health(pos, equity=100_000.0, total_capacity=154_000.0)
+        self.assertEqual(health["health"], "WARNING",
+                         "drawdown=9% but account_pct<6% → should be WARNING not CRITICAL")
+
+    def test_critical_fires_on_drawdown_above_12_regardless_of_account_pct(self):
+        """drawdown=13% always → CRITICAL regardless of position size."""
+        import portfolio_intelligence as pi
+        pos = self._make_pos(100.0, 87.0, qty=1)   # mv=87, tiny position
+        health = pi.compute_position_health(pos, equity=100_000.0, total_capacity=500_000.0)
+        self.assertEqual(health["health"], "CRITICAL")
+
+    def test_fallback_to_equity_when_total_capacity_zero(self):
+        """total_capacity=0 falls back to equity denominator without crashing."""
+        import portfolio_intelligence as pi
+        equity = 100_000.0
+        pos    = self._make_pos(100.0, 100.0, qty=100)   # mv=10_000
+        health = pi.compute_position_health(pos, equity, total_capacity=0.0)
+        expected = round(10_000.0 / equity * 100, 2)
+        self.assertAlmostEqual(health["account_pct"], expected, places=1)
+
+    def test_get_forced_exits_passes_total_capacity_through(self):
+        """get_forced_exits with total_capacity=500K suppresses false CRITICAL on small position."""
+        import portfolio_intelligence as pi
+        # drawdown=9%, mv=9100, total_capacity=500_000 → account_pct=1.8% → WARNING not CRITICAL
+        pos = self._make_pos(100.0, 91.0, qty=100)   # mv=9_100
+        forced = pi.get_forced_exits([pos], equity=100_000.0, total_capacity=500_000.0)
+        self.assertEqual(forced, [], "position should be WARNING not CRITICAL with large total_capacity")
+
+    def test_format_positions_with_health_computes_total_capacity_internally(self):
+        """format_positions_with_health computes _total_cap from positions+bp; no false CRITICAL."""
+        import portfolio_intelligence as pi
+        # Single position: mv=9100, buying_power=180_000
+        # _total_cap = 9100 + 180_000 = 189_100 → account_pct = 4.8% < 6% → WARNING not CRITICAL
+        pos = self._make_pos(100.0, 91.0, qty=100)   # mv=9_100, drawdown=9%
+        out = pi.format_positions_with_health([pos], equity=100_000.0, buying_power=180_000.0)
+        self.assertNotIn("CRITICAL DRAWDOWN", out,
+                         "9% drawdown at 4.8% of total_capacity must not trigger CRITICAL")

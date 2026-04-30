@@ -207,15 +207,19 @@ def format_dynamic_sizes_section(sizes: dict, equity: float) -> str:
 # UPGRADE 2 — Per-position drawdown tracking
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_position_health(position, equity: float) -> dict:
+def compute_position_health(position, equity: float, total_capacity: float = 0.0) -> dict:
     """
     For an open Alpaca position, compute health metrics and classify status.
 
     Health classifications:
-      CRITICAL   — drawdown > 12%, OR drawdown > 8% with position > 10% of account
+      CRITICAL   — drawdown > 12%, OR drawdown > 8% with position > 6% of total_capacity
       WARNING    — drawdown > 6%
       HEALTHY    — unrealized P&L positive
       MONITORING — unrealized P&L <= 0 but no warning threshold crossed
+
+    account_pct is denominated by total_capacity (exposure + buying_power) when provided,
+    falling back to equity. The 6% threshold on total_capacity is equivalent to the prior
+    10% threshold on equity (10% of $107K equity ≈ 6% of $289K total_capacity).
 
     Returns dict suitable for prompt injection and forced-exit logic.
 
@@ -227,10 +231,11 @@ def compute_position_health(position, equity: float) -> dict:
     market_value  = float(position.market_value)
     unrealized_pl = float(position.unrealized_pl)
 
+    _denom       = total_capacity if total_capacity > 0 else equity
     drawdown_pct = ((entry_price - current_price) / entry_price * 100) if entry_price > 0 else 0.0
-    account_pct  = (market_value / equity * 100) if equity > 0 else 0.0
+    account_pct  = (market_value / _denom * 100) if _denom > 0 else 0.0
 
-    if drawdown_pct > 12 or (drawdown_pct > 8 and account_pct > 10):
+    if drawdown_pct > 12 or (drawdown_pct > 8 and account_pct > 6):
         health = "CRITICAL"
     elif drawdown_pct > 6:
         health = "WARNING"
@@ -249,7 +254,7 @@ def compute_position_health(position, equity: float) -> dict:
     }
 
 
-def get_forced_exits(positions: list, equity: float) -> list[dict]:
+def get_forced_exits(positions: list, equity: float, total_capacity: float = 0.0) -> list[dict]:
     """
     Return list of CRITICAL positions that require a forced half-exit.
 
@@ -268,7 +273,7 @@ def get_forced_exits(positions: list, equity: float) -> list[dict]:
     for pos in positions:
         if float(pos.qty) <= 0:
             continue
-        health = compute_position_health(pos, equity)
+        health = compute_position_health(pos, equity, total_capacity)
         if health["health"] == "CRITICAL":
             full_qty = int(float(pos.qty))
             half_qty = max(1, full_qty // 2)
@@ -348,10 +353,14 @@ def format_positions_with_health(
         return "  (none)"
 
     bp = buying_power if buying_power > 0 else equity
+    _total_cap = (
+        sum(float(p.market_value) for p in positions if float(p.qty) > 0)
+        + (buying_power if buying_power > 0 else 0.0)
+    )
 
     rows = []
     for p in positions:
-        health = compute_position_health(p, equity)
+        health = compute_position_health(p, equity, _total_cap)
         unreal = float(p.unrealized_pl)
         sign   = "+" if unreal >= 0 else ""
         pnl_pct = (unreal / (float(p.avg_entry_price) * float(p.qty)) * 100
@@ -1069,14 +1078,15 @@ def build_portfolio_intelligence(
     # 1. Dynamic sizes
     long_exposure = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
     sizes = compute_dynamic_sizes(equity, config, long_exposure, buying_power=buying_power)
+    _total_cap = long_exposure + buying_power
 
     # 2. Per-position health
     health_map: dict[str, dict] = {}
     for pos in positions:
         if float(pos.qty) > 0:
-            health_map[pos.symbol] = compute_position_health(pos, equity)
+            health_map[pos.symbol] = compute_position_health(pos, equity, _total_cap)
 
-    forced_exits   = get_forced_exits(positions, equity)
+    forced_exits   = get_forced_exits(positions, equity, _total_cap)
     deadline_exits = get_deadline_exits(config, positions)
 
     # 3. Correlation (only if 2+ positions — avoid unnecessary yfinance calls)

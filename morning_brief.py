@@ -25,10 +25,50 @@ log = get_logger(__name__)
 _BASE_DIR   = Path(__file__).parent
 _DATA_DIR   = _BASE_DIR / "data" / "market"
 _ARCHIVE    = _BASE_DIR / "data" / "archive"
-_BRIEF_FILE = _DATA_DIR / "morning_brief.json"
+_BRIEF_FILE        = _DATA_DIR / "morning_brief.json"
+_FULL_BRIEF_FILE   = _DATA_DIR / "morning_brief_full.json"
+_SONNET_BRIEF_FILE = _DATA_DIR / "morning_brief_sonnet.json"
 
 _claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 _MODEL  = "claude-sonnet-4-6"
+
+_INTELLIGENCE_SYSTEM = """You are a senior portfolio manager producing a comprehensive structured intelligence brief for an autonomous AI trading bot.
+
+Return ONLY valid JSON with these exact top-level keys:
+market_regime, sector_snapshot, high_conviction_longs, high_conviction_bearish, current_positions, watch_list, earnings_pipeline, insider_activity, macro_wire_alerts, avoid_list, latest_updates
+
+SCHEMAS:
+market_regime: {"regime": "risk_on|caution|defensive|risk_off", "score": 0-100, "confidence": "high|medium|low", "vix": float, "tone": "1-2 sentences", "key_drivers": ["≤5 strings"], "todays_events": [{"time": str, "event": str, "impact": "high|medium|low"}]}
+
+sector_snapshot: [{"sector": str, "etf": str, "etf_change_pct": float (use provided value exactly), "status": "LEADING|BULLISH|NEUTRAL|BEARISH|WEAK", "summary": "1 sentence", "news": ["≤3 headlines"], "symbols": [str]}]
+  status rules: LEADING >+2%, BULLISH 0 to +2%, NEUTRAL ±0.5%, BEARISH -2% to 0%, WEAK < -2%
+
+high_conviction_longs: [{"symbol": str, "score": int, "conviction": "HIGH|MEDIUM", "rank": int, "catalyst": "specific named event", "entry_zone": "EQUITY price range only — never commodity spot price", "stop": float, "stop_pct": float, "target": float, "target_pct": float, "risk_reward": float, "technical_summary": "1 sentence", "a2_strategy_note": "iv_rank=N → RULE_NAME → strategy or N/A if no options", "risk_note": "1 sentence"}]
+  conviction: HIGH if score≥70, MEDIUM if 50-69
+  risk_reward: (target - entry_mid) / (entry_mid - stop), 1 decimal
+  Include up to 20 items ordered by score desc
+
+high_conviction_bearish: same schema as longs, up to 10 items ordered by score desc (bearish)
+
+current_positions: {"a1_equity": [{"symbol": str, "shares": int, "entry": float, "current": float, "unrealized_pct": float, "unrealized_usd": float, "stop": float, "trail_tier": str, "binary_event_flag": bool, "binary_event_note": str}], "a2_options": [{"symbol": str, "strategy": str, "contracts": int, "fill_price": float, "current_value": float, "pnl_pct": float, "dte": int, "breakeven": float, "target": float, "stop": float, "pct_of_max_gain": float}]}
+
+watch_list: [{"symbol": str, "score": int, "direction": str, "entry_trigger": str}] — symbols worth watching but not yet entering
+
+earnings_pipeline: [{"symbol": str, "timing": "today_postmarket|tomorrow_premarket|tomorrow_postmarket|this_week", "iv_rank": float or null, "beat_history": str, "held_by_a1": bool, "a1_notes": str, "a2_rule": str, "a2_notes": str}]
+
+insider_activity: {"high_conviction": ["str descriptions"], "congressional": ["str descriptions"], "form4_purchases": ["str descriptions"]}
+
+macro_wire_alerts: [{"tier": "critical|high|medium", "score": float, "headline": str, "impact": str, "affected_sectors": [str]}]
+
+avoid_list: [{"symbol": str, "reason": str}]
+
+latest_updates: [{"timestamp": "ISO", "category": "new_catalyst|thesis_change|position_update|macro_alert", "symbol": str, "summary": str}] — only populate for intraday_update brief_type with material changes; empty list otherwise
+
+HARD RULES:
+1. entry_zone/stop/target MUST be equity or ETF share prices — NEVER commodity spot prices (WTI, gold, copper)
+2. a2_strategy_note: iv_rank<15→RULE1_CHEAP_BUY→single_leg_call/put; 15-35→RULE2_ATM_DEBIT→debit_spread; 35-65→RULE3_NEUTRAL→debit_or_credit; 65-80→RULE4_CREDIT→credit_spread; >80→RULE5_AVOID; use N/A if no iv_rank data
+3. risk_reward must be calculated, not estimated
+4. latest_updates empty list [] unless brief_type is intraday_update"""
 
 _SYSTEM = """You are a senior portfolio manager running a morning briefing for your trading desk. Based on overnight intelligence, identify the 3-5 highest conviction trade ideas for today's session.
 
@@ -746,6 +786,575 @@ def _send_whatsapp_brief(brief: dict) -> None:
         log.info("[MORNING] WhatsApp sent: %s", msg[:80])
     except Exception as exc:
         log.warning("[MORNING] WhatsApp error: %s", exc)
+
+
+def _load_signal_scores_for_brief() -> list[dict]:
+    """Load scored_symbols from signal_scores.json. Non-fatal."""
+    try:
+        path = _BASE_DIR / "data" / "market" / "signal_scores.json"
+        if not path.exists():
+            return []
+        d = json.loads(path.read_text())
+        return d.get("scored_symbols", []) if isinstance(d, dict) else []
+    except Exception:
+        return []
+
+
+def _load_iv_ranks_for_brief(symbols: list) -> dict:
+    """Load most recent IV rank for symbols from iv_history files. Non-fatal."""
+    ranks: dict = {}
+    iv_dir = _BASE_DIR / "data" / "options" / "iv_history"
+    if not iv_dir.exists():
+        return ranks
+    for sym in symbols:
+        try:
+            path = iv_dir / f"{sym}_iv_history.json"
+            if not path.exists():
+                continue
+            history = json.loads(path.read_text())
+            if history and isinstance(history, list):
+                latest = history[-1]
+                rank = latest.get("iv_rank") or latest.get("iv_percentile")
+                if rank is not None:
+                    ranks[sym] = float(rank)
+        except Exception:
+            pass
+    return ranks
+
+
+def _load_intelligence_context(brief_type: str) -> str:
+    """Assemble full context for intelligence brief generation."""
+    import zoneinfo as _zi
+    ET_ZONE = _zi.ZoneInfo("America/New_York")
+    now_et = datetime.now(ET_ZONE)
+    parts: list[str] = []
+
+    parts.append(f"Brief type: {brief_type}")
+    parts.append(f"Current time: {now_et.strftime('%Y-%m-%d %H:%M ET, %A')}")
+
+    # Signal scores
+    signals = _load_signal_scores_for_brief()
+    if signals:
+        bullish = sorted(
+            [s for s in signals if s.get("direction", "").lower() in ("bullish", "long", "") or s.get("score", 0) >= 50],
+            key=lambda x: x.get("score", 0), reverse=True
+        )
+        bearish = sorted(
+            [s for s in signals if s.get("direction", "").lower() in ("bearish", "short") or s.get("score", 0) < 40],
+            key=lambda x: x.get("score", 0)
+        )
+        parts.append(f"\n=== SIGNAL SCORES ({len(signals)} symbols) ===")
+        for s in bullish[:25]:
+            sym = s.get("symbol", "?")
+            score = s.get("score", 0)
+            direction = s.get("direction", "?")
+            cat = str(s.get("catalyst", ""))[:70]
+            parts.append(f"  {sym}: score={score} dir={direction} catalyst={cat}")
+        if bearish:
+            parts.append("  [BEARISH SIGNALS]")
+            for s in bearish[:10]:
+                parts.append(f"  {s.get('symbol','?')}: score={s.get('score',0)} dir={s.get('direction','?')}")
+
+        # IV ranks for top signals
+        top_syms = [s.get("symbol", "") for s in bullish[:20] + bearish[:10] if s.get("symbol")]
+        iv_ranks = _load_iv_ranks_for_brief(top_syms)
+        if iv_ranks:
+            parts.append("  IV Ranks (for A2 strategy notes):")
+            for sym, rank in sorted(iv_ranks.items(), key=lambda x: x[1], reverse=True)[:15]:
+                env = "cheap" if rank < 25 else ("neutral" if rank < 60 else ("expensive" if rank < 80 else "very_expensive"))
+                parts.append(f"    {sym}: iv_rank={rank:.0f} ({env})")
+
+    # Overnight context (reuse existing _load_context() data sources)
+    overnight = _load_overnight_digest()
+    if overnight:
+        parts.append(overnight)
+
+    # Global session + VIX + macro
+    try:
+        from data_warehouse import load_global_indices  # noqa: PLC0415
+        gi = load_global_indices()
+        if gi.get("indices"):
+            parts.append("\n=== GLOBAL SESSION ===")
+            for ticker, v in gi["indices"].items():
+                parts.append(f"  {v.get('name', ticker)}: {v.get('chg_pct', 0):+.1f}%")
+    except Exception:
+        pass
+
+    try:
+        from data_warehouse import load_macro_snapshot  # noqa: PLC0415
+        macro = load_macro_snapshot()
+        vix_snap = macro.get("vix", {})
+        if isinstance(vix_snap, dict) and vix_snap:
+            vix_val = vix_snap.get("price", "?")
+            vix_chg = vix_snap.get("chg_pct", 0)
+        elif isinstance(vix_snap, (int, float)):
+            vix_val = round(float(vix_snap), 2)
+            vix_chg = 0
+        else:
+            vix_val = None
+        if vix_val:
+            parts.append(f"\nVIX: {vix_val} ({vix_chg:+.1f}%)")
+        oil = macro.get("oil", {})
+        if oil:
+            parts.append(f"WTI crude spot (NOT equity price): ${oil.get('price','?')} ({oil.get('chg_pct',0):+.1f}%)")
+    except Exception:
+        pass
+
+    # Sector performance with ETF prices
+    try:
+        from data_warehouse import load_sector_perf, load_bars_cached  # noqa: PLC0415
+        sp = load_sector_perf()
+        sectors = sp.get("sectors", {})
+        if sectors:
+            parts.append("\n=== SECTOR PERFORMANCE ===")
+            for sec, d in sorted(sectors.items(), key=lambda x: x[1].get("day_chg", 0), reverse=True):
+                day = d.get("day_chg", 0)
+                wk = d.get("week_chg", 0)
+                etf = d.get("etf", "")
+                etf_price = ""
+                if etf:
+                    try:
+                        bars = load_bars_cached(etf) or []
+                        if bars:
+                            price = float(bars[-1].get("close", 0) or 0)
+                            if price > 0:
+                                etf_price = f" | {etf}=${price:.2f}"
+                    except Exception:
+                        pass
+                parts.append(f"  {sec}: day {day:+.1f}% week {wk:+.1f}%{etf_price}")
+    except Exception:
+        pass
+
+    # Current prices for top signal symbols
+    try:
+        from data_warehouse import load_bars_cached as _lbc  # noqa: PLC0415
+        if signals:
+            top_syms_price = [s.get("symbol", "") for s in signals[:30] if s.get("symbol")]
+            price_lines: list[str] = []
+            for sym in top_syms_price:
+                try:
+                    bars = _lbc(sym) or []
+                    if bars:
+                        price = float(bars[-1].get("close", 0) or 0)
+                        if price > 0:
+                            price_lines.append(f"  {sym}: ${price:.2f}")
+                except Exception:
+                    pass
+            if price_lines:
+                parts.append("\n=== CURRENT PRICES (use for entry_zone/stop/target) ===")
+                parts.extend(price_lines)
+    except Exception:
+        pass
+
+    # Earnings calendar (next 7 days)
+    try:
+        from datetime import date as _date  # noqa: PLC0415
+        from data_warehouse import load_earnings_calendar  # noqa: PLC0415
+        ec = load_earnings_calendar()
+        today_str = _date.today().isoformat()
+        upcoming = [e for e in ec.get("calendar", []) if e.get("earnings_date", "") >= today_str][:8]
+        held = _get_held_symbols()
+        if upcoming:
+            parts.append("\n=== EARNINGS PIPELINE (next 7 days) ===")
+            for e in upcoming:
+                sym = e.get("symbol", "?")
+                iso = str(e.get("earnings_date", ""))[:10]
+                try:
+                    n = (_date.fromisoformat(iso) - _date.today()).days
+                    timing = f"in {n}d" if n > 1 else ("today" if n == 0 else "tomorrow")
+                except Exception:
+                    timing = iso
+                held_tag = " [HELD A1]" if sym in held else ""
+                timing_tag = e.get("timing", "")
+                parts.append(f"  {sym}{held_tag}: {timing} ({timing_tag})")
+    except Exception:
+        pass
+
+    # Pre-earnings intel section
+    _pe_section = _build_pre_earnings_intel_section()
+    if _pe_section:
+        parts.append(_pe_section)
+
+    # Insider / congressional activity
+    try:
+        import watchlist_manager as wm  # noqa: PLC0415
+        from insider_intelligence import (  # noqa: PLC0415
+            fetch_congressional_trades,
+            fetch_form4_insider_trades,
+        )
+        wl = wm.get_active_watchlist()
+        all_syms = [s["symbol"] for s in wl["all"]]
+        cong  = list(fetch_congressional_trades(all_syms, days_back=5))
+        form4 = list(fetch_form4_insider_trades(all_syms, days_back=5))
+        if cong or form4:
+            parts.append("\n=== INSIDER ACTIVITY (last 5 days) ===")
+            for t in cong[:5]:
+                parts.append(
+                    f"  CONGRESSIONAL: {t['ticker']} — {t.get('politician','?')} "
+                    f"{'BOUGHT' if t.get('action')=='buy' else 'SOLD'} {t.get('amount_range','?')}"
+                )
+            for t in form4[:5]:
+                parts.append(
+                    f"  FORM4: {t['ticker']} — Insider filed {t.get('filing_date','?')}"
+                )
+    except Exception:
+        pass
+
+    # Macro wire (recent significant events)
+    try:
+        from macro_wire import get_recent_events  # noqa: PLC0415
+        events = get_recent_events(hours=4, min_score=5.0)
+        if events:
+            parts.append("\n=== MACRO WIRE (last 4h, score≥5) ===")
+            for e in events[:8]:
+                parts.append(
+                    f"  [{e.get('tier','?').upper()}] score={e.get('score',0):.1f} "
+                    f"{e.get('headline','?')[:100]}"
+                )
+    except Exception:
+        pass
+
+    # A2 open structures
+    try:
+        from options_state import format_a2_summary_section  # noqa: PLC0415
+        _a2_open = format_a2_summary_section()
+        if _a2_open and "no open" not in _a2_open.lower():
+            parts.append("\n=== A2 OPEN OPTIONS STRUCTURES ===")
+            parts.append(_a2_open)
+    except Exception:
+        pass
+
+    # Previous brief summary (for intraday diff)
+    if brief_type == "intraday_update":
+        try:
+            prev = load_intelligence_brief()
+            if prev:
+                prev_longs = [(s.get("symbol"), s.get("score")) for s in prev.get("high_conviction_longs", [])[:10]]
+                if prev_longs:
+                    parts.append("\n=== PREVIOUS BRIEF (for diff) ===")
+                    prev_gen = prev.get("generated_at", "?")[:16]
+                    parts.append(f"  Generated: {prev_gen}")
+                    parts.append("  Previous top longs: " + ", ".join(f"{sym}({sc})" for sym, sc in prev_longs))
+                    prev_avoid = [a.get("symbol") for a in prev.get("avoid_list", [])[:5]]
+                    if prev_avoid:
+                        parts.append("  Previous avoid list: " + ", ".join(prev_avoid))
+        except Exception:
+            pass
+
+    # Held positions with current prices
+    try:
+        held_syms = _get_held_symbols()
+        if held_syms:
+            from data_warehouse import load_bars_cached as _lbc2  # noqa: PLC0415
+            parts.append("\n=== HELD POSITIONS (use for current_positions section) ===")
+            for sym in sorted(held_syms):
+                bars = _lbc2(sym) or []
+                price_str = f"current=${float(bars[-1].get('close',0)):.2f}" if bars else ""
+                parts.append(f"  {sym} (currently held A1) {price_str}")
+    except Exception:
+        pass
+
+    return "\n".join(parts) if parts else "No context available."
+
+
+def _catalyst_3char(catalyst: str) -> str:
+    """Extract a 3-char catalyst code from a catalyst string."""
+    c = catalyst.lower()
+    if "earn" in c:
+        return "ern"
+    if "congress" in c or "senator" in c or "representative" in c:
+        return "cng"
+    if "insider" in c or "form4" in c or "form 4" in c:
+        return "ins"
+    if "macro" in c or "rate" in c or "fed" in c or "fomc" in c:
+        return "mac"
+    if "momentum" in c or "breakout" in c or "technical" in c:
+        return "tec"
+    if "news" in c or "headline" in c:
+        return "nws"
+    if "beat" in c or "exceed" in c:
+        return "bet"
+    if "upgrade" in c or "analyst" in c:
+        return "upg"
+    if "miss" in c or "disappoint" in c:
+        return "mis"
+    if "sell" in c or "bearish" in c or "short" in c:
+        return "sel"
+    return "oth"
+
+
+def _build_conviction_state(full_brief: dict) -> str:
+    """Render compressed conviction state string for Sonnet prompt. Target ≤350 tokens (~1400 chars)."""
+    import zoneinfo as _zi
+    ET_ZONE = _zi.ZoneInfo("America/New_York")
+    now_str = datetime.now(ET_ZONE).strftime("%-I:%M %p ET")
+
+    longs = full_brief.get("high_conviction_longs", [])[:20]
+    bears = full_brief.get("high_conviction_bearish", [])[:10]
+
+    def fmt_entry(item: dict) -> str:
+        sym = item.get("symbol", "?")
+        score = item.get("score", 0)
+        cat = item.get("catalyst", "")
+        code = _catalyst_3char(str(cat))
+        return f"{sym}({score},{code})"
+
+    # Build lines
+    lines = [f"CONVICTION STATE [updated {now_str}]"]
+
+    if longs:
+        # Wrap at ~80 chars per line
+        entries = [fmt_entry(s) for s in longs]
+        prefix_long = "HIGH LONG:    "
+        prefix_cont = "              "
+        current_line = prefix_long
+        first_line = True
+        for i, entry in enumerate(entries):
+            if len(current_line) + len(entry) + 2 > 90 and not first_line:
+                lines.append(current_line.rstrip())
+                current_line = prefix_cont + entry + "  "
+            else:
+                current_line += entry + "  "
+                first_line = False
+        if current_line.strip():
+            lines.append(current_line.rstrip())
+
+    if bears:
+        entries = [fmt_entry(s) for s in bears]
+        prefix_bear = "HIGH BEARISH: "
+        prefix_cont = "              "
+        current_line = prefix_bear
+        first_line = True
+        for entry in entries:
+            if len(current_line) + len(entry) + 2 > 90 and not first_line:
+                lines.append(current_line.rstrip())
+                current_line = prefix_cont + entry + "  "
+            else:
+                current_line += entry + "  "
+                first_line = False
+        if current_line.strip():
+            lines.append(current_line.rstrip())
+
+    result = "\n".join(lines)
+
+    # Hard truncation: if over ~1400 chars (~350 tokens), trim from bottom of lists
+    if len(result) > 1400:
+        result = result[:1400].rsplit("\n", 1)[0] + "\n[truncated — token limit]"
+
+    return result
+
+
+def _build_regime_line(full_brief: dict) -> str:
+    """Single-line regime summary for Sonnet prompt."""
+    mr = full_brief.get("market_regime", {})
+    regime = mr.get("regime", "?")
+    score = mr.get("score", 0)
+    vix = mr.get("vix", 0)
+    drivers = mr.get("key_drivers", [])
+    # Compress drivers to short tags
+    tags = []
+    for d in drivers[:3]:
+        words = str(d).lower().split()
+        if words:
+            tags.append("_".join(words[:2]))
+    tags_str = " ".join(tags) if tags else ""
+    return f"{regime}({score}) VIX={vix:.1f} {tags_str}".strip()
+
+
+def _build_positions_line(full_brief: dict) -> str:
+    """Single-line positions summary for Sonnet prompt."""
+    a1 = full_brief.get("current_positions", {}).get("a1_equity", [])
+    a2 = full_brief.get("current_positions", {}).get("a2_options", [])
+    parts: list[str] = []
+    for p in a1[:6]:
+        sym = p.get("symbol", "?")
+        pct = p.get("unrealized_pct", 0)
+        sign = "+" if pct >= 0 else ""
+        parts.append(f"{sym}{sign}{pct:.1f}%")
+    a1_str = " ".join(parts) if parts else "none"
+    a2_parts: list[str] = []
+    for s in a2[:3]:
+        sym = s.get("symbol", "?")
+        strat = s.get("strategy", "?")
+        a2_parts.append(f"{sym}_{strat}")
+    a2_str = " ".join(a2_parts) if a2_parts else "none"
+    return f"A1: {a1_str} | A2: {a2_str}"
+
+
+def _build_avoid_line(full_brief: dict) -> str:
+    """Single-line avoid list for Sonnet prompt."""
+    avoid = full_brief.get("avoid_list", [])[:8]
+    if not avoid:
+        return "AVOID: none"
+    syms = [a.get("symbol", "?") for a in avoid]
+    return "AVOID: " + " ".join(syms)
+
+
+def _save_intelligence_briefs(full_brief: dict) -> None:
+    """Write morning_brief_full.json, morning_brief_sonnet.json, and legacy morning_brief.json."""
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    now_iso = datetime.now().isoformat()
+    full_brief["generated_at"] = now_iso
+
+    # Write full brief
+    _FULL_BRIEF_FILE.write_text(json.dumps(full_brief, indent=2))
+
+    # Build and write sonnet brief (compressed)
+    conviction_state = _build_conviction_state(full_brief)
+    regime_line = _build_regime_line(full_brief)
+    positions_line = _build_positions_line(full_brief)
+    avoid_line = _build_avoid_line(full_brief)
+
+    sonnet_brief = {
+        "generated_at": now_iso,
+        "brief_type": full_brief.get("brief_type", "unknown"),
+        "next_update_at": full_brief.get("next_update_at", ""),
+        "conviction_state": conviction_state,
+        "regime_line": regime_line,
+        "positions_line": positions_line,
+        "avoid_line": avoid_line,
+    }
+    _SONNET_BRIEF_FILE.write_text(json.dumps(sonnet_brief, indent=2))
+
+    # Write legacy morning_brief.json for backward compat
+    # Map new format → old format so existing consumers don't break
+    mr = full_brief.get("market_regime", {})
+    regime = mr.get("regime", "neutral")
+    tone_map = {"risk_on": "bullish", "caution": "mixed", "defensive": "mixed", "risk_off": "bearish"}
+    legacy_tone = tone_map.get(regime, "neutral")
+
+    longs = full_brief.get("high_conviction_longs", [])[:5]
+    legacy_picks = []
+    for p in longs:
+        legacy_picks.append({
+            "symbol": p.get("symbol"),
+            "direction": "long",
+            "catalyst": {"type": "other", "short_text": p.get("catalyst", "")[:80], "date_iso": None, "days_away": None},
+            "risk": p.get("risk_note", ""),
+            "entry_zone": p.get("entry_zone", ""),
+            "stop": str(p.get("stop", "")),
+            "target": str(p.get("target", "")),
+            "conviction": "high" if p.get("conviction") == "HIGH" else "medium",
+        })
+    avoid_syms = [a.get("symbol") for a in full_brief.get("avoid_list", [])[:5] if a.get("symbol")]
+    legacy = {
+        "market_tone": legacy_tone,
+        "key_themes": mr.get("key_drivers", [])[:3],
+        "conviction_picks": legacy_picks,
+        "avoid_today": avoid_syms,
+        "brief_summary": mr.get("tone", ""),
+        "generated_at": now_iso,
+    }
+    _BRIEF_FILE.write_text(json.dumps(legacy, indent=2))
+
+    # Archive full brief
+    today = datetime.now().strftime("%Y-%m-%d")
+    archive_dir = _ARCHIVE / today
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    (archive_dir / "morning_brief_full.json").write_text(json.dumps(full_brief, indent=2))
+
+
+def load_intelligence_brief() -> dict:
+    """Load the full intelligence brief. Returns {} if not yet generated."""
+    if not _FULL_BRIEF_FILE.exists():
+        return {}
+    try:
+        return json.loads(_FULL_BRIEF_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def load_sonnet_brief() -> dict:
+    """Load the compressed sonnet brief. Returns {} if not yet generated."""
+    if not _SONNET_BRIEF_FILE.exists():
+        return {}
+    try:
+        return json.loads(_SONNET_BRIEF_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
+    """
+    Generate a comprehensive intelligence brief. Saves morning_brief_full.json,
+    morning_brief_sonnet.json, and legacy morning_brief.json.
+    Returns the full brief dict (or {} on failure).
+    brief_type: "premarket" | "market_open" | "intraday_update"
+    """
+    log.info("[INTELLIGENCE] Generating %s intelligence brief", brief_type)
+    context = _load_intelligence_context(brief_type)
+
+    # Compute next_update_at based on brief_type
+    import zoneinfo as _zi
+    ET_ZONE = _zi.ZoneInfo("America/New_York")
+    now_et = datetime.now(ET_ZONE)
+    if brief_type == "premarket":
+        # Next update: market_open at 9:25 AM
+        from datetime import timedelta as _td  # noqa: PLC0415
+        next_update = now_et.replace(hour=9, minute=25, second=0, microsecond=0)
+        if next_update <= now_et:
+            next_update = next_update + _td(days=1)
+    elif brief_type == "market_open":
+        # Next update: 10:30 AM
+        next_update = now_et.replace(hour=10, minute=30, second=0, microsecond=0)
+    else:
+        # intraday_update: next hour on the slot schedule
+        slots = [10, 11, 12, 13, 14, 15]
+        next_hour = next((h for h in slots if h > now_et.hour), None)
+        if next_hour:
+            next_update = now_et.replace(hour=next_hour, minute=30, second=0, microsecond=0)
+        else:
+            next_update = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    next_update_iso = next_update.isoformat()
+
+    user_content = (
+        f"Generate a {brief_type} intelligence brief for the trading bot based on this market data:\n\n"
+        f"{context}\n\n"
+        f"Return the full JSON document. Be specific with prices and catalysts. "
+        f"Use actual signal scores and current prices from the data above."
+    )
+
+    try:
+        response = _claude.messages.create(
+            model=_MODEL,
+            max_tokens=4096,
+            system=[
+                {
+                    "type": "text",
+                    "text": _INTELLIGENCE_SYSTEM,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user_content}],
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+        )
+        raw = response.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        full_brief = json.loads(raw)
+    except Exception as exc:
+        log.error("[INTELLIGENCE] Brief generation failed: %s", exc)
+        # Return minimal valid structure
+        full_brief = {
+            "market_regime": {"regime": "caution", "score": 50, "confidence": "low", "vix": 20.0,
+                              "tone": f"Intelligence brief generation failed: {exc}",
+                              "key_drivers": [], "todays_events": []},
+            "sector_snapshot": [], "high_conviction_longs": [], "high_conviction_bearish": [],
+            "current_positions": {"a1_equity": [], "a2_options": []},
+            "watch_list": [], "earnings_pipeline": [], "macro_wire_alerts": [],
+            "insider_activity": {"high_conviction": [], "congressional": [], "form4_purchases": []},
+            "avoid_list": [], "latest_updates": [],
+        }
+
+    full_brief["brief_type"] = brief_type
+    full_brief["next_update_at"] = next_update_iso
+
+    _save_intelligence_briefs(full_brief)
+
+    picks_count = len(full_brief.get("high_conviction_longs", []))
+    log.info("[INTELLIGENCE] Brief complete — type=%s regime=%s longs=%d",
+             brief_type, full_brief.get("market_regime", {}).get("regime", "?"), picks_count)
+    return full_brief
 
 
 if __name__ == "__main__":

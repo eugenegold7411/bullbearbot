@@ -29,8 +29,11 @@ Sector rotation : {sector_table}
 === MARKET REGIME (pre-classified) ===
 {regime_summary}
 
-=== MORNING CONVICTION BRIEF ===
-{morning_brief_section}
+=== CONVICTION STATE ===
+{conviction_state}
+Regime: {regime_line}
+Positions: {positions_line}
+Avoid: {avoid_line}
 
 === INSIDER & CONGRESSIONAL ACTIVITY ===
 {insider_section}

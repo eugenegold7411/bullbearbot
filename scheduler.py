@@ -304,6 +304,7 @@ _session_reset_done:           str = ""   # "YYYY-MM-DD" of last 8PM reset
 _weekly_summary_date:          str = ""
 _global_indices_refresh_key:   str = ""   # "YYYY-MM-DD-HH" of last refresh
 _morning_brief_ran_date:       str = ""   # "YYYY-MM-DD" of last morning brief
+_intelligence_brief_slots_ran: set = set()  # slot keys fired today
 _reddit_refresh_key:           str = ""   # "YYYY-MM-DD-HH" of last Reddit refresh
 _form4_refresh_key:            str = ""   # "YYYY-MM-DD-HH:mm/4" key for 4h refresh
 _crypto_sentiment_refresh_key: str = ""   # "YYYY-MM-DD-N" key for 4h refresh
@@ -861,6 +862,84 @@ def _maybe_run_morning_brief(dry_run: bool = False) -> None:
         log.info("[dry-run] Skipping morning brief")
 
     _morning_brief_ran_date = today
+
+
+def _maybe_run_intelligence_brief(dry_run: bool = False) -> None:
+    """Generate intelligence brief at scheduled slots:
+    - 4:00 AM ET: premarket
+    - 9:25 AM ET: market_open
+    - Hourly intraday: 10:30, 11:30, 12:30, 1:30, 2:30, 3:30 PM ET
+    """
+    global _intelligence_brief_slots_ran
+    now_et  = datetime.now(ET)
+    today   = _today()
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+
+    if weekday >= 5:
+        return
+
+    # Reset slot tracking at midnight
+    slot_day = now_et.strftime("%Y-%m-%d")
+
+    # Determine which slot applies now
+    # Slot windows (each slot fires within a 3-minute window)
+    slots: list[tuple[int, int, str]] = [
+        (4 * 60,      4 * 60 + 15,  "premarket"),       # 4:00–4:15 AM
+        (9 * 60 + 25, 9 * 60 + 35,  "market_open"),     # 9:25–9:35 AM
+        (10 * 60 + 30, 10 * 60 + 40, "intraday_update"), # 10:30–10:40 AM
+        (11 * 60 + 30, 11 * 60 + 40, "intraday_update"), # 11:30–11:40 AM
+        (12 * 60 + 30, 12 * 60 + 40, "intraday_update"), # 12:30–12:40 PM
+        (13 * 60 + 30, 13 * 60 + 40, "intraday_update"), # 1:30–1:40 PM
+        (14 * 60 + 30, 14 * 60 + 40, "intraday_update"), # 2:30–2:40 PM
+        (15 * 60 + 30, 15 * 60 + 40, "intraday_update"), # 3:30–3:40 PM
+    ]
+
+    for (start_min, end_min, brief_type) in slots:
+        if not (start_min <= now_min < end_min):
+            continue
+        # Build a unique key per slot per day
+        slot_key = f"{slot_day}-{start_min}"
+        if slot_key in _intelligence_brief_slots_ran:
+            return  # already ran this slot
+
+        if not dry_run:
+            try:
+                from morning_brief import generate_intelligence_brief  # noqa: PLC0415
+                brief = generate_intelligence_brief(brief_type=brief_type)
+                log.info("[INTELLIGENCE] %s brief generated — regime=%s longs=%d",
+                         brief_type,
+                         brief.get("market_regime", {}).get("regime", "?"),
+                         len(brief.get("high_conviction_longs", [])))
+
+                # For premarket brief, also publish to Twitter
+                if brief_type == "premarket":
+                    try:
+                        from trade_publisher import TradePublisher  # noqa: PLC0415
+                        _pub = TradePublisher()
+                        if _pub.enabled and brief:
+                            # Build legacy-compatible brief for publisher
+                            legacy_brief = {
+                                "market_tone": brief.get("market_regime", {}).get("regime", "neutral"),
+                                "conviction_picks": [
+                                    {"symbol": p.get("symbol"), "direction": "long",
+                                     "catalyst": {"short_text": p.get("catalyst", "")[:80]},
+                                     "stop": p.get("stop"), "target": p.get("target")}
+                                    for p in brief.get("high_conviction_longs", [])[:3]
+                                ],
+                                "brief_summary": brief.get("market_regime", {}).get("tone", ""),
+                            }
+                            _pub.publish_premarket_brief(legacy_brief)
+                    except Exception:
+                        log.debug("[INTELLIGENCE] Premarket tweet failed (non-fatal)", exc_info=True)
+
+            except Exception as exc:
+                log.error("[INTELLIGENCE] Brief generation failed: %s", exc, exc_info=True)
+        else:
+            log.info("[dry-run] Skipping intelligence brief slot=%s type=%s", slot_key, brief_type)
+
+        _intelligence_brief_slots_ran.add(slot_key)
+        return  # only fire one slot per call
 
 
 def _maybe_refresh_reddit_sentiment(dry_run: bool = False) -> None:
@@ -1600,7 +1679,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_refresh_iv_history(dry_run)
         _maybe_refresh_economic_calendar(dry_run)  # intraday econ slots
         _maybe_write_overnight_digest(dry_run)
-        _maybe_run_morning_brief(dry_run)
+        _maybe_run_intelligence_brief(dry_run)
         _maybe_run_orb_scan(dry_run)
         _maybe_run_readiness_check(dry_run)
         _maybe_refresh_global_indices(dry_run)

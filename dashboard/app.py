@@ -733,6 +733,13 @@ def _morning_brief_mtime_float() -> float:
         return 0.0
 
 
+def _intelligence_brief_full() -> dict:
+    try:
+        return json.loads((BOT_DIR / "data/market/morning_brief_full.json").read_text())
+    except Exception:
+        return {}
+
+
 def _brief_staleness_html(mtime_float: float) -> str:
     if not mtime_float or not _is_market_hours():
         return ""
@@ -1105,7 +1112,7 @@ def _warnings_html(warnings: list) -> str:
 
 # ── Navigation ────────────────────────────────────────────────────────────────
 def _nav_html(active_page: str, now_et: str, a1_color: str, a2_color: str) -> str:
-    pages = [("overview", "/", "Overview"), ("a1", "/a1", "A1 Equities"), ("a2", "/a2", "A2 Options")]
+    pages = [("overview", "/", "Overview"), ("a1", "/a1", "A1 Equities"), ("a2", "/a2", "A2 Options"), ("brief", "/brief", "Intelligence Brief")]
     links = ""
     for pid, href, label in pages:
         if pid == active_page:
@@ -1875,6 +1882,302 @@ def _page_a2(status: dict, now_et: str) -> str:
     return _page_shell("A2 Options", nav, body)
 
 
+def _page_brief(status: dict, now_et: str) -> str:
+    a1_mode = status["a1_mode"].get("mode", "unknown").upper()
+    a2_mode = status["a2_mode"].get("mode", "unknown").upper()
+    a1_color = _mode_color(a1_mode)
+    a2_color = _mode_color(a2_mode)
+    nav = _nav_html("brief", now_et, a1_color, a2_color)
+
+    brief = status.get("intelligence_brief", {})
+    if not brief:
+        body = '<div style="padding:40px;color:#8b949e;text-align:center;font-size:16px">Intelligence brief not yet generated.<br>Runs at 4:00 AM ET (premarket) and 9:25 AM ET (market open).</div>'
+        return _page_shell("Intelligence Brief", nav, body)
+
+    gen_at = brief.get("generated_at", "")
+    brief_type = brief.get("brief_type", "?")
+    next_update = brief.get("next_update_at", "")
+
+    # Staleness warning
+    stale_html = ""
+    if gen_at and _is_market_hours():
+        try:
+            gen_ts = datetime.fromisoformat(gen_at)
+            if gen_ts.tzinfo is None:
+                gen_ts = gen_ts.replace(tzinfo=timezone.utc)
+            age_min = (datetime.now(timezone.utc) - gen_ts.astimezone(timezone.utc)).total_seconds() / 60
+            if age_min > 90:
+                stale_html = f'<div style="background:#2d1a00;border:1px solid #d29922;border-radius:6px;padding:10px 16px;margin-bottom:12px;color:#d29922">&#x26A0;&#xFE0F; Brief is stale ({age_min:.0f} min old). Next update: {next_update[:16] if next_update else "?"}.</div>'
+        except Exception:
+            pass
+
+    gen_display = gen_at[:16].replace("T", " ") if gen_at else "?"
+    next_display = next_update[:16].replace("T", " ") if next_update else "?"
+    type_color = "#58a6ff" if brief_type == "market_open" else ("#3fb950" if brief_type == "intraday_update" else "#8b949e")
+
+    header_html = f'''
+    <div style="margin-bottom:16px">
+      <div style="font-size:20px;font-weight:700;color:#e6edf3;margin-bottom:6px">&#x1F4CA; Intelligence Brief</div>
+      <div style="font-size:12px;color:#8b949e">
+        Generated: <b style="color:#e6edf3">{gen_display}</b> &nbsp;|&nbsp;
+        Type: <b style="color:{type_color}">{brief_type}</b> &nbsp;|&nbsp;
+        Next: <b style="color:#e6edf3">{next_display}</b>
+      </div>
+    </div>'''
+
+    # Latest updates box
+    updates = brief.get("latest_updates", [])[:5]
+    updates_html = ""
+    if updates:
+        update_items = ""
+        for u in updates:
+            ts = u.get("timestamp", "")[:16].replace("T", " ")
+            cat = u.get("category", "?")
+            sym = u.get("symbol", "")
+            summary = u.get("summary", "")
+            cat_color = "#d29922" if "catalyst" in cat else ("#58a6ff" if "macro" in cat else "#8b949e")
+            update_items += f'<div style="padding:6px 0;border-bottom:1px solid #2d2208;font-size:13px"><span style="color:#8b949e">{ts}</span> <span style="color:{cat_color}">[{cat}]</span> <b style="color:#58a6ff">{sym}</b> — {summary}</div>'
+        updates_html = f'<div style="background:#2d2208;border:1px solid #d29922;border-radius:6px;padding:12px 16px;margin-bottom:16px"><div style="font-size:12px;font-weight:700;color:#d29922;margin-bottom:8px">&#x1F534; LATEST UPDATES</div>{update_items}</div>'
+
+    # Market Regime
+    mr = brief.get("market_regime", {})
+    regime = mr.get("regime", "?")
+    score = mr.get("score", 0)
+    conf = mr.get("confidence", "?")
+    vix = mr.get("vix", 0)
+    tone = mr.get("tone", "")
+    drivers = mr.get("key_drivers", [])
+    events = mr.get("todays_events", [])
+    regime_color = "#3fb950" if "risk_on" in regime else ("#f85149" if "risk_off" in regime or "defensive" in regime else "#d29922")
+    drivers_html = "".join(f'<li style="margin:2px 0;color:#c9d1d9">{d}</li>' for d in drivers)
+    events_html = ""
+    for e in events[:4]:
+        impact = e.get("impact", "low")
+        ic = "#f85149" if impact == "high" else ("#d29922" if impact == "medium" else "#8b949e")
+        events_html += f'<div style="padding:3px 0;font-size:12px"><span style="color:{ic}">&#x25CF;</span> <b>{e.get("time","?")}</b> — {e.get("event","?")} <span style="color:#8b949e">({impact})</span></div>'
+    regime_html = f'''
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">Market Regime</div>
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:10px">
+        <div><span style="font-size:22px;font-weight:700;color:{regime_color}">{regime.replace("_"," ").upper()}</span> <span style="color:#8b949e;font-size:14px">({score}/100, {conf})</span></div>
+        <div style="font-size:14px;color:#e6edf3">VIX: <b>{vix:.1f}</b></div>
+      </div>
+      <div style="font-size:13px;color:#c9d1d9;margin-bottom:8px">{tone}</div>
+      {'<ul style="margin:0;padding-left:20px;font-size:13px">' + drivers_html + '</ul>' if drivers else ''}
+      {('<div style="margin-top:10px">' + events_html + '</div>') if events_html else ''}
+    </div>'''
+
+    # Sector Snapshot
+    sectors = brief.get("sector_snapshot", [])
+    sector_rows = ""
+    for sec in sectors:
+        chg = sec.get("etf_change_pct", 0) or 0
+        status_val = sec.get("status", "NEUTRAL")
+        sc = "#3fb950" if status_val in ("LEADING", "BULLISH") else ("#f85149" if status_val in ("BEARISH", "WEAK") else "#8b949e")
+        news_items = sec.get("news", [])[:2]
+        news_str = " · ".join(news_items) if news_items else ""
+        sector_rows += f'''
+        <tr>
+          <td style="color:#e6edf3;font-weight:600">{sec.get("sector","?")}</td>
+          <td style="color:#8b949e;text-align:center">{sec.get("etf","?")}</td>
+          <td style="text-align:right;color:{"#3fb950" if chg>=0 else "#f85149"}">{chg:+.1f}%</td>
+          <td style="text-align:center"><span style="background:#21262d;color:{sc};padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">{status_val}</span></td>
+          <td style="color:#8b949e;font-size:12px">{sec.get("summary","")[:80]}</td>
+          <td style="color:#8b949e;font-size:11px">{news_str[:80]}</td>
+        </tr>'''
+    sectors_html = f'''
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">Sector Snapshot</div>
+      <div class="table-wrap"><table class="pos-table">
+        <thead><tr><th>Sector</th><th style="text-align:center">ETF</th><th style="text-align:right">Change</th><th style="text-align:center">Status</th><th>Summary</th><th>News</th></tr></thead>
+        <tbody>{sector_rows}</tbody>
+      </table></div>
+    </div>''' if sectors else ""
+
+    # High Conviction Longs
+    longs = brief.get("high_conviction_longs", [])
+    long_cards = ""
+    for p in longs:
+        rank = p.get("rank", 0)
+        sym = p.get("symbol", "?")
+        score_v = p.get("score", 0)
+        conv = p.get("conviction", "MEDIUM")
+        cat = p.get("catalyst", "")[:100]
+        entry = p.get("entry_zone", "?")
+        stop = p.get("stop", 0)
+        target = p.get("target", 0)
+        rr = p.get("risk_reward", 0)
+        tech = p.get("technical_summary", "")[:80]
+        a2_note = p.get("a2_strategy_note", "")
+        risk = p.get("risk_note", "")[:80]
+        conv_c = "#3fb950" if conv == "HIGH" else "#d29922"
+        rr_c = "#3fb950" if rr >= 2.0 else ("#d29922" if rr >= 1.5 else "#8b949e")
+        long_cards += f'''
+        <div style="border:1px solid #21262d;border-radius:6px;padding:10px 14px;margin-bottom:8px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <span style="color:#8b949e;font-size:12px">#{rank}</span>
+            <b style="color:#3fb950;font-size:16px">{sym}</b>
+            <span style="background:#0d2018;color:{conv_c};padding:1px 6px;border-radius:3px;font-size:11px;font-weight:700">{conv}</span>
+            <span style="color:#8b949e;font-size:12px">score={score_v}</span>
+            <span style="color:{rr_c};font-size:13px;font-weight:700;margin-left:auto">R/R {rr:.1f}x</span>
+          </div>
+          <div style="font-size:13px;color:#c9d1d9;margin-bottom:4px">{cat}</div>
+          <div style="font-size:12px;color:#8b949e;margin-bottom:4px">entry={entry} &nbsp; stop={stop} &nbsp; target={target}</div>
+          <div style="font-size:12px;color:#8b949e;margin-bottom:2px">{tech}</div>
+          {f'<div style="font-size:11px;color:#58a6ff">{a2_note}</div>' if a2_note else ''}
+          {f'<div style="font-size:11px;color:#f85149">Risk: {risk}</div>' if risk else ''}
+        </div>'''
+    longs_html = f'''
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#3fb950;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">High Conviction Longs ({len(longs)})</div>
+      {long_cards if long_cards else '<div style="color:#8b949e;font-size:13px">No high conviction longs.</div>'}
+    </div>''' if longs is not None else ""
+
+    # High Conviction Bearish
+    bears = brief.get("high_conviction_bearish", [])
+    bear_cards = ""
+    for p in bears:
+        rank = p.get("rank", 0)
+        sym = p.get("symbol", "?")
+        score_v = p.get("score", 0)
+        conv = p.get("conviction", "MEDIUM")
+        cat = p.get("catalyst", "")[:100]
+        entry = p.get("entry_zone", "?")
+        stop = p.get("stop", 0)
+        target = p.get("target", 0)
+        rr = p.get("risk_reward", 0)
+        risk = p.get("risk_note", "")[:80]
+        conv_c = "#f85149" if conv == "HIGH" else "#d29922"
+        bear_cards += f'''
+        <div style="border:1px solid #21262d;border-radius:6px;padding:10px 14px;margin-bottom:8px;border-left:3px solid #f85149">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <span style="color:#8b949e;font-size:12px">#{rank}</span>
+            <b style="color:#f85149;font-size:16px">{sym}</b>
+            <span style="background:#2d0c0c;color:{conv_c};padding:1px 6px;border-radius:3px;font-size:11px;font-weight:700">{conv}</span>
+            <span style="color:#8b949e;font-size:12px">score={score_v}</span>
+            <span style="color:#8b949e;font-size:13px;margin-left:auto">R/R {rr:.1f}x</span>
+          </div>
+          <div style="font-size:13px;color:#c9d1d9;margin-bottom:4px">{cat}</div>
+          <div style="font-size:12px;color:#8b949e;margin-bottom:4px">entry={entry} &nbsp; stop={stop} &nbsp; target={target}</div>
+          {f'<div style="font-size:11px;color:#f85149">Risk: {risk}</div>' if risk else ''}
+        </div>'''
+    bears_html = f'''
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#f85149;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">High Conviction Bearish ({len(bears)})</div>
+      {bear_cards if bear_cards else '<div style="color:#8b949e;font-size:13px">No bearish signals.</div>'}
+    </div>''' if bears is not None else ""
+
+    # Earnings Pipeline
+    earnings = brief.get("earnings_pipeline", [])
+    earn_rows = ""
+    for e in earnings:
+        timing = e.get("timing", "?")
+        tc = "#f85149" if "today" in timing else ("#d29922" if "tomorrow" in timing else "#8b949e")
+        held = e.get("held_by_a1", False)
+        held_badge = ' <span style="background:#0d2018;color:#3fb950;padding:1px 4px;border-radius:3px;font-size:10px">HELD</span>' if held else ""
+        iv = e.get("iv_rank")
+        iv_str = f"{iv:.0f}" if iv is not None else "—"
+        earn_rows += f'''
+        <tr>
+          <td><b style="color:#58a6ff">{e.get("symbol","?")}</b>{held_badge}</td>
+          <td><span style="color:{tc}">{timing}</span></td>
+          <td style="text-align:right">{iv_str}</td>
+          <td style="color:#8b949e;font-size:12px">{e.get("beat_history","")[:40]}</td>
+          <td style="color:#8b949e;font-size:12px">{e.get("a2_rule","")[:40]}</td>
+        </tr>'''
+    earnings_html = f'''
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">Earnings Pipeline</div>
+      <div class="table-wrap"><table class="pos-table">
+        <thead><tr><th>Symbol</th><th>Timing</th><th style="text-align:right">IV Rank</th><th>Beat History</th><th>A2 Rule</th></tr></thead>
+        <tbody>{earn_rows}</tbody>
+      </table></div>
+    </div>''' if earnings else ""
+
+    # Macro Wire Alerts
+    macro_alerts = brief.get("macro_wire_alerts", [])
+    alert_cards = ""
+    for a in macro_alerts:
+        tier = a.get("tier", "medium")
+        tc = "#f85149" if tier == "critical" else ("#d29922" if tier == "high" else "#8b949e")
+        bg = "#2d0c0c" if tier == "critical" else ("#2d2208" if tier == "high" else "#161b22")
+        sectors_affected = ", ".join(a.get("affected_sectors", [])[:3])
+        alert_cards += f'''
+        <div style="background:{bg};border:1px solid {tc};border-radius:6px;padding:8px 12px;margin-bottom:6px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <span style="color:{tc};font-weight:700;font-size:12px;text-transform:uppercase">{tier}</span>
+            <span style="color:#8b949e;font-size:11px">score={a.get("score",0):.1f}</span>
+            {f'<span style="color:#8b949e;font-size:11px">{sectors_affected}</span>' if sectors_affected else ''}
+          </div>
+          <div style="font-size:13px;color:#e6edf3">{a.get("headline","")[:120]}</div>
+          <div style="font-size:12px;color:#8b949e;margin-top:3px">{a.get("impact","")[:80]}</div>
+        </div>'''
+    macro_html = f'''
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">Macro Wire Alerts</div>
+      {alert_cards if alert_cards else '<div style="color:#8b949e;font-size:13px">No significant macro alerts.</div>'}
+    </div>''' if macro_alerts is not None else ""
+
+    # Avoid List
+    avoid = brief.get("avoid_list", [])
+    avoid_cards = ""
+    for a in avoid:
+        avoid_cards += f'''
+        <div style="display:inline-block;margin:4px;padding:6px 12px;background:#2d0c0c;border:1px solid #f85149;border-radius:6px;font-size:13px">
+          <b style="color:#f85149">{a.get("symbol","?")}</b> <span style="color:#8b949e;font-size:11px">— {a.get("reason","")[:60]}</span>
+        </div>'''
+    avoid_html = f'''
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#f85149;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">Avoid List</div>
+      {avoid_cards if avoid_cards else '<div style="color:#8b949e;font-size:13px">No symbols flagged to avoid.</div>'}
+    </div>''' if avoid is not None else ""
+
+    # Insider Activity
+    insider = brief.get("insider_activity", {})
+    hc = insider.get("high_conviction", [])
+    cong = insider.get("congressional", [])
+    f4 = insider.get("form4_purchases", [])
+    insider_items = ""
+    for item in (hc + cong + f4)[:8]:
+        insider_items += f'<div style="font-size:13px;color:#c9d1d9;padding:3px 0">{item}</div>'
+    insider_html = f'''
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">Insider Activity</div>
+      {insider_items if insider_items else '<div style="color:#8b949e;font-size:13px">No insider activity.</div>'}
+    </div>''' if (hc or cong or f4) else ""
+
+    # Watch List
+    watch = brief.get("watch_list", [])[:10]
+    watch_rows = ""
+    for w in watch:
+        dir_color = "#3fb950" if w.get("direction", "").lower() == "bullish" else ("#f85149" if w.get("direction", "").lower() == "bearish" else "#8b949e")
+        watch_rows += f'''
+        <tr>
+          <td><b style="color:#58a6ff">{w.get("symbol","?")}</b></td>
+          <td style="text-align:right">{w.get("score",0)}</td>
+          <td><span style="color:{dir_color}">{w.get("direction","?")}</span></td>
+          <td style="color:#8b949e;font-size:12px">{w.get("entry_trigger","")[:60]}</td>
+        </tr>'''
+    watch_html = f'''
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">Watch List</div>
+      <div class="table-wrap"><table class="pos-table">
+        <thead><tr><th>Symbol</th><th style="text-align:right">Score</th><th>Direction</th><th>Entry Trigger</th></tr></thead>
+        <tbody>{watch_rows}</tbody>
+      </table></div>
+    </div>''' if watch else ""
+
+    body = (
+        f'<div style="max-width:1200px;margin:0 auto;padding:0 8px">'
+        + header_html + stale_html + updates_html
+        + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:0">'
+        + '<div>' + regime_html + sectors_html + earnings_html + insider_html + macro_html + '</div>'
+        + '<div>' + longs_html + bears_html + watch_html + avoid_html + '</div>'
+        + '</div></div>'
+    )
+    return _page_shell("Intelligence Brief", nav, body)
+
+
 # ── Build status dict ─────────────────────────────────────────────────────────
 def _build_status() -> dict:
     a1d = _alpaca_a1()
@@ -1952,6 +2255,7 @@ def _build_status() -> dict:
         "morning_brief": _morning_brief(),
         "morning_brief_time": _morning_brief_time(),
         "morning_brief_mtime": _morning_brief_mtime_float(),
+        "intelligence_brief": _intelligence_brief_full(),
         "a1_decisions": a1_decs,
         "a2_decisions": a2_decs,
         "a2_pos_cards": _build_a2_position_cards(a2_structs, a2_live_pos),
@@ -1987,6 +2291,13 @@ def page_a1():
 def page_a2():
     status = _build_status()
     return _page_a2(status, _now_et())
+
+
+@app.route("/brief")
+@requires_auth
+def page_brief():
+    status = _build_status()
+    return _page_brief(status, _now_et())
 
 
 @app.route("/api/status")

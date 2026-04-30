@@ -282,7 +282,40 @@ def build_user_prompt(
     # C4: Extended session omits market-hours-only sections to reduce prompt size.
     _is_extended   = (session_tier == "extended")
     _sector_table  = "  (not shown — extended session)" if _is_extended else md.get("sector_table", "  (not available)")
-    _morning_brief = "  (not shown — extended session)" if _is_extended else md.get("morning_brief_section", "  (morning brief not yet generated)")
+
+    # Load conviction state from morning_brief_sonnet.json (new format) with fallback
+    _conviction_state  = "  (conviction brief not yet generated)"
+    _regime_line       = ""
+    _positions_line    = ""
+    _avoid_line        = ""
+    if not _is_extended:
+        try:
+            from morning_brief import load_sonnet_brief  # noqa: PLC0415
+            from datetime import datetime as _dt2, timezone as _tz2  # noqa: PLC0415
+            _sb = load_sonnet_brief()
+            if _sb:
+                _gen = _sb.get("generated_at", "")
+                _stale = False
+                if _gen:
+                    try:
+                        _sb_dt = _dt2.fromisoformat(_gen)
+                        if _sb_dt.tzinfo is None:
+                            _sb_dt = _sb_dt.replace(tzinfo=_tz2.utc)
+                        _age_h = (_dt2.now(_tz2.utc) - _sb_dt.astimezone(_tz2.utc)).total_seconds() / 3600
+                        _stale = _age_h > 2.0
+                    except Exception:
+                        pass
+                if not _stale:
+                    _conviction_state = _sb.get("conviction_state", _conviction_state)
+                    _regime_line      = _sb.get("regime_line", "")
+                    _positions_line   = _sb.get("positions_line", "")
+                    _avoid_line       = _sb.get("avoid_line", "")
+                else:
+                    log.debug("[BRIEF] sonnet brief is stale (%.1fh) — using signal scores only", _age_h)
+        except Exception as _sb_exc:
+            log.debug("[BRIEF] load_sonnet_brief failed (non-fatal): %s", _sb_exc)
+    else:
+        _conviction_state = "  (not shown — extended session)"
     _orb_section   = "  (not shown — extended session)" if _is_extended else md.get("orb_section", "  No ORB candidates identified for today.")
     _intraday_mom  = "  (not shown — extended session)" if _is_extended else (intraday_momentum or "  (unavailable)")
     _sector_news   = "  (not shown — extended session)" if _is_extended else md.get("sector_news", "  (none)")
@@ -333,7 +366,10 @@ def build_user_prompt(
         breaking_news=md.get("breaking_news", "  (none)"),
         sector_news=_sector_news,
         strategy_config_note=strategy_config_note or "  (using system prompt defaults)",
-        morning_brief_section=_morning_brief,
+        conviction_state=_conviction_state,
+        regime_line=_regime_line,
+        positions_line=_positions_line,
+        avoid_line=_avoid_line,
         insider_section=md.get("insider_section", "  (insider intelligence unavailable)"),
         reddit_section=md.get("reddit_section", "  (Reddit sentiment unavailable)"),
         earnings_intel_section=md.get("earnings_intel_section", "  (no symbols near earnings)"),

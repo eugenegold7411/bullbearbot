@@ -81,9 +81,14 @@ def load_structures() -> list[OptionsStructure]:
         try:
             result.append(OptionsStructure.from_dict(entry))
         except Exception as exc:
+            _eid = (
+                entry.get("structure_id", "?")
+                if isinstance(entry, dict)
+                else repr(entry)[:60]
+            )
             log.warning(
                 "[OPTIONS_STATE] skipping malformed structure entry: %s — %s",
-                entry.get("structure_id", "?"),
+                _eid,
                 exc,
             )
     return result

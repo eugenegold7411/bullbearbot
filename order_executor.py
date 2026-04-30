@@ -517,6 +517,142 @@ def _submit_sell(action: dict) -> tuple:
     return str(order.id), fp, fq, ft
 
 
+def _replace_stop(symbol: str, qty: int, stop_price: float) -> None:
+    """Re-place a GTC stop order after a sell. Non-fatal."""
+    try:
+        req = StopOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=OrderSide.SELL,
+            time_in_force=TimeInForce.GTC,
+            stop_price=round(stop_price, 2),
+        )
+        order = _get_alpaca().submit_order(req)
+        log.info(
+            "[EXECUTOR] %s: re-placed stop qty=%d @ $%.2f  order_id=%s",
+            symbol, qty, stop_price, order.id,
+        )
+    except Exception as exc:
+        log.warning("[EXECUTOR] %s: stop re-placement failed (non-fatal): %s", symbol, exc)
+
+
+def _sell_cancel_stop_and_sell(
+    symbol: str,
+    sell_qty: int,
+    positions: list,
+) -> tuple:
+    """
+    Cancel all open stop orders for symbol, submit market sell, then re-place
+    stop for any remaining shares.  Used when all shares are OCA-locked.
+    Non-fatal on stop re-placement — the sell executes even if re-placement fails.
+    """
+    from alpaca.trading.enums import QueryOrderStatus  # noqa: PLC0415
+    from alpaca.trading.requests import GetOrdersRequest  # noqa: PLC0415
+
+    alpaca = _get_alpaca()
+    stop_price: float | None = None
+
+    # Find and cancel stop orders
+    try:
+        open_orders = alpaca.get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.OPEN,
+            symbols=[symbol],
+        ))
+        stop_orders = [
+            o for o in open_orders
+            if o.side == OrderSide.SELL
+            and str(o.order_type).lower().split(".")[-1]
+            in ("stop", "stop_limit", "trailing_stop")
+        ]
+    except Exception as exc:
+        log.warning(
+            "[EXECUTOR] %s: OCA cancel-stop path — could not fetch open orders: %s",
+            symbol, exc,
+        )
+        stop_orders = []
+
+    for so in stop_orders:
+        sp = float(getattr(so, "stop_price", None) or 0)
+        if sp > 0 and stop_price is None:
+            stop_price = sp
+        try:
+            alpaca.cancel_order_by_id(str(so.id))
+            log.info(
+                "[EXECUTOR] %s: cancelled stop order %s (stop_price=$%.2f) for OCA-unlock sell",
+                symbol, so.id, sp,
+            )
+        except Exception as exc:
+            log.warning("[EXECUTOR] %s: cancel stop %s failed: %s", symbol, so.id, exc)
+
+    # Submit the sell
+    try:
+        oid, fp, fq, ft = _submit_sell({"symbol": symbol, "qty": sell_qty})
+    except Exception as exc:
+        # Sell failed even after stop cancel — re-place stop then re-raise
+        pos_qty = int(float(next(
+            (p.qty for p in positions if p.symbol == symbol), sell_qty
+        )))
+        if stop_price and stop_price > 0 and pos_qty > 0:
+            _replace_stop(symbol, pos_qty, stop_price)
+        raise
+
+    # Re-place stop for remaining shares
+    pos_qty = int(float(next(
+        (p.qty for p in positions if p.symbol == symbol), sell_qty
+    )))
+    remaining_qty = pos_qty - sell_qty
+    if remaining_qty > 0 and stop_price and stop_price > 0:
+        _replace_stop(symbol, remaining_qty, stop_price)
+    else:
+        log.info(
+            "[EXECUTOR] %s: no stop re-placement needed (remaining=%d stop=$%s)",
+            symbol, remaining_qty, stop_price,
+        )
+
+    return oid, fp, fq, ft
+
+
+def _sell_with_oca_retry(action: dict, positions: list) -> tuple:
+    """
+    Sell with OCA share-lock retry (Alpaca error 40310000).
+
+    The Alpaca error JSON includes "available" — the number of unencumbered shares.
+    - available > 0: retry with the available qty (partial sell).
+    - available == 0: cancel stop order(s), sell, re-place stop for remainder.
+
+    Returns (order_id, fill_price, filled_qty, fill_timestamp).
+    """
+    import re as _re  # noqa: PLC0415
+
+    symbol = action["symbol"]
+    requested_qty = int(float(action.get("qty", 0)))
+
+    try:
+        return _submit_sell(action)
+    except Exception as exc:
+        exc_str = str(exc)
+        if "40310000" not in exc_str:
+            raise
+
+        _m = _re.search(r'"available"\s*:\s*"(\d+)"', exc_str)
+        available_qty = int(_m.group(1)) if _m else 0
+
+        log.info(
+            "[EXECUTOR] %s: OCA share-lock (40310000) — requested=%d available=%d",
+            symbol, requested_qty, available_qty,
+        )
+
+        if available_qty > 0:
+            log.info(
+                "[EXECUTOR] %s: OCA retry — selling available %d of %d shares",
+                symbol, available_qty, requested_qty,
+            )
+            return _submit_sell({**action, "qty": available_qty})
+
+        log.info("[EXECUTOR] %s: OCA cancel-stop path — all %d shares locked", symbol, requested_qty)
+        return _sell_cancel_stop_and_sell(symbol, requested_qty, positions)
+
+
 def _find_option_contract(
     symbol: str,
     expiration: str,
@@ -819,7 +955,7 @@ def execute_all(
             elif act == "close":
                 oid = _submit_close(symbol)
             elif act == "sell":
-                oid, _fp, _fq, _ft = _submit_sell(action)
+                oid, _fp, _fq, _ft = _sell_with_oca_retry(action, positions)
             elif act in ("buy_option", "sell_option_spread",
                          "buy_straddle", "close_option"):
                 oid = _submit_options(action)

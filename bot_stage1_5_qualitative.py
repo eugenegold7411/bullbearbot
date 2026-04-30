@@ -212,6 +212,12 @@ def run_qualitative_sweep(
     if not symbols:
         return {}
 
+    # Cap to 30 symbols — ~100 output tokens/symbol × 80 symbols was hitting
+    # the 8192 max_tokens ceiling every call ($0.12/call × 28 calls/day = $3.45/day).
+    # 30 symbols × ~100 tokens + ~300 overhead ≈ 3300 tokens, well within 6000.
+    if len(symbols) > 30:
+        symbols = symbols[:30]
+
     try:
         from bot_clients import MODEL as _MODEL_SONNET_CONST  # noqa: PLC0415
         from bot_clients import _get_claude  # noqa: PLC0415
@@ -224,12 +230,12 @@ def run_qualitative_sweep(
 
     t_start = time.monotonic()
     try:
-        # max_tokens budget: ~60 tokens per symbol_context entry × up to 100
-        # tracked symbols + ~300 tokens for regime_context = ~6500 worst case.
-        # 8192 headroom to avoid mid-JSON truncation.
+        # max_tokens budget: ~100 tokens/symbol × 30 symbols + ~300 overhead ≈ 3300.
+        # 6000 provides headroom without hitting the 8192 ceiling that was
+        # truncating output and causing parse failures on 57% of calls.
         resp = _get_claude().messages.create(
             model=model,
-            max_tokens=8192,
+            max_tokens=6000,
             system=[{
                 "type": "text",
                 "text": _SYSTEM_PROMPT,

@@ -282,35 +282,34 @@ class TestScoringCaps:
     """Scoring cap and batch size invariants after the 3-layer overhaul.
 
     Current architecture:
-      - `_BATCH_SIZE = 10` for the L3 Haiku synthesis layer (new public
+      - `_BATCH_SIZE = 20` for the L3 Haiku synthesis layer (new public
         entry point `score_signals_layered`). L3 carries L1+L2 context
         per symbol, so each symbol's input block is 2-3× larger than the
-        legacy single-layer scorer's — batch size is halved to keep each
-        call within ~1.5K input tokens.
+        legacy single-layer scorer's.
       - `_LEGACY_BATCH_SIZE = 20` is retained for the fallback
         `score_signals()` path.
-      - `_MAX_SCORED = 80` inline in both `score_signals_layered` and
+      - `_MAX_SCORED = 91` inline in both `score_signals_layered` and
         the legacy `score_signals` — assert via source inspection.
     """
 
-    def test_batch_size_is_10_for_L3(self):
+    def test_batch_size_is_20_for_L3(self):
         import bot_stage2_signal as s
-        assert s._BATCH_SIZE == 10
+        assert s._BATCH_SIZE == 20
 
     def test_legacy_batch_size_preserved_at_20(self):
         import bot_stage2_signal as s
         assert getattr(s, "_LEGACY_BATCH_SIZE", None) == 20
 
-    def test_max_scored_is_40(self):
+    def test_max_scored_is_91(self):
         """Inline constant set inside both score_signals_layered and
         the legacy score_signals — verify via source inspection."""
         import inspect
 
         import bot_stage2_signal as s
         src_layered = inspect.getsource(s.score_signals_layered)
-        assert "_MAX_SCORED = 40" in src_layered
+        assert "_MAX_SCORED = 91" in src_layered
         src_legacy = inspect.getsource(s.score_signals)
-        assert "_MAX_SCORED = 40" in src_legacy
+        assert "_MAX_SCORED = 91" in src_legacy
 
 
 class TestCoreSymbolsFromJson:

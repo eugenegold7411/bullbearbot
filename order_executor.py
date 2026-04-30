@@ -230,14 +230,10 @@ def validate_action(action: dict, account, positions: list, market_status: str,
         _validate_options_action(action, account)
         return
 
-    # ORB formation window: block new stock/ETF entries 9:30-9:45 AM ET
     is_crypto = "/" in symbol
     if not is_crypto and act == "buy" and 0 < minutes_since_open <= 15:
         if _in_orb_formation_window():
-            raise ValueError(
-                "ORB formation window (9:30-9:45 AM ET) — observation only, "
-                "no new entries until 9:45 AM ET"
-            )
+            log.debug("[ORB] Formation window active but entry not blocked — ORB data available for scoring")
 
     # HOLDs are exempt — stop/limit refreshes on existing positions don't require an open market.
     # Session + timing checks are kernel-primary: log warnings only (kernel already enforced upstream).
@@ -587,7 +583,7 @@ def _sell_cancel_stop_and_sell(
     # Submit the sell
     try:
         oid, fp, fq, ft = _submit_sell({"symbol": symbol, "qty": sell_qty})
-    except Exception as exc:
+    except Exception:
         # Sell failed even after stop cancel — re-place stop then re-raise
         pos_qty = int(float(next(
             (p.qty for p in positions if p.symbol == symbol), sell_qty

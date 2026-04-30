@@ -385,7 +385,69 @@ class TestConfigDefaults:
         for key in self.NEW_KEYS:
             assert key in router, f"strategy_config.json a2_router missing: {key}"
 
-    def test_strategy_config_pre_earnings_disabled(self):
+    def test_strategy_config_pre_earnings_enabled(self):
         from pathlib import Path
         cfg = json.loads((Path(__file__).parent.parent / "strategy_config.json").read_text())
-        assert cfg["a2_router"]["pre_earnings_credit_spread_enabled"] is False
+        assert cfg["a2_router"]["pre_earnings_credit_spread_enabled"] is True
+
+
+# ── EHI-01..06: RULE_EARNINGS_HIGH_IV enabled-state coverage ─────────────────
+
+class TestEarningsHighIVEnabled:
+    """EHI-01..06 — RULE_EARNINGS_HIGH_IV behaviour with the flag live-enabled."""
+
+    def _cfg_enabled(self, overrides: dict | None = None) -> dict:
+        router = {**_A2_ROUTER_DEFAULTS,
+                  "pre_earnings_credit_spread_enabled": True,
+                  "pre_earnings_iv_rank_min": 85,
+                  "pre_earnings_dte_min": 7,
+                  "pre_earnings_dte_max": 14,
+                  "earnings_dte_blackout": 2}
+        if overrides:
+            router.update(overrides)
+        return {"a2_router": router}
+
+    def test_ehi01_fires_bullish_within_window(self):
+        """EHI-01: iv_rank>=85, eda in [7,14], bullish → fires."""
+        pack = MockPack(earnings_days_away=10, iv_rank=90.0,
+                        iv_environment="very_expensive", a1_direction="bullish")
+        result = _route_strategy(pack, self._cfg_enabled())
+        assert result == ["credit_put_spread"]
+
+    def test_ehi02_bullish_returns_credit_put_spread(self):
+        """EHI-02: bullish direction → credit_put_spread specifically."""
+        pack = MockPack(earnings_days_away=9, iv_rank=88.0,
+                        iv_environment="very_expensive", a1_direction="bullish")
+        assert _route_strategy(pack, self._cfg_enabled()) == ["credit_put_spread"]
+
+    def test_ehi03_bearish_returns_credit_call_spread(self):
+        """EHI-03: bearish direction → credit_call_spread."""
+        pack = MockPack(earnings_days_away=9, iv_rank=88.0,
+                        iv_environment="very_expensive", a1_direction="bearish")
+        assert _route_strategy(pack, self._cfg_enabled()) == ["credit_call_spread"]
+
+    def test_ehi04_eda_at_blackout_boundary_blocked_by_rule1(self):
+        """EHI-04: eda=2 <= blackout=2, EHI window is dte_min=7, so RULE1 fires."""
+        pack = MockPack(earnings_days_away=2, iv_rank=95.0,
+                        iv_environment="very_expensive", a1_direction="bullish")
+        result = _route_strategy(pack, self._cfg_enabled())
+        assert result == []  # RULE1 blocks
+
+    def test_ehi05_below_iv_floor_does_not_fire(self):
+        """EHI-05: iv_rank=80 < 85 → EHI misses; another rule fires."""
+        pack = MockPack(earnings_days_away=10, iv_rank=80.0,
+                        iv_environment="expensive", a1_direction="bullish")
+        result = _route_strategy(pack, self._cfg_enabled())
+        assert result != ["credit_put_spread"]  # EHI did NOT fire exclusively
+
+    def test_ehi06_flag_false_disables_rule(self):
+        """EHI-06: pre_earnings_credit_spread_enabled=False skips EHI; subsequent rules fire."""
+        cfg = self._cfg_enabled({"pre_earnings_credit_spread_enabled": False})
+        # iv_environment="expensive" (not very_expensive) means RULE2_CREDIT won't fire.
+        # iv_rank=87 satisfies EHI when enabled, but iv_rank >= earnings_iv_rank_gate=70
+        # so RULE_EARNINGS also misses. With EHI off, RULE_IRON fires for iv_rank >= 85.
+        pack = MockPack(earnings_days_away=10, iv_rank=87.0,
+                        iv_environment="expensive", a1_direction="bullish")
+        result = _route_strategy(pack, cfg)
+        assert result != ["credit_put_spread"]  # EHI did NOT fire
+        assert any(s in result for s in ("iron_butterfly", "iron_condor"))

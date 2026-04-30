@@ -291,7 +291,7 @@
     "post_earnings_window_unknown": 1,
     "post_earnings_iv_rank_min": 55,
     "post_earnings_iv_already_crushed_threshold": 15,
-    "pre_earnings_credit_spread_enabled": false,
+    "pre_earnings_credit_spread_enabled": true,
     "pre_earnings_iv_rank_min": 85,
     "pre_earnings_dte_min": 7,
     "pre_earnings_dte_max": 14,

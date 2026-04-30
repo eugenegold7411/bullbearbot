@@ -112,20 +112,27 @@ def compute_capital_utilization(
     buying_power: float = 0.0,
 ) -> tuple[float, float]:
     """
-    Compute the fraction of total capacity deployed in open structures.
+    Compute the fraction of capacity deployed in open structures.
 
-    total_capacity = deployed_usd + buying_power (what is deployed + what is still available).
-    This gives true utilization regardless of margin multiplier — a margin account at 1.5×
-    equity no longer reads as 150%+ utilization.
+    Returns (utilization_pct, deployed_usd).
 
-    Returns (utilization_pct, deployed_usd) where utilization_pct is 0.0–1.0.
+    When buying_power > 0 (Alpaca paper accounts return this):
+        utilization_pct = deployed / (deployed + buying_power)  — always ≤ 1.0
+    Otherwise:
+        utilization_pct = deployed / equity  — may exceed 1.0 for oversized positions
+    Returns 0.0 utilization (not ZeroDivisionError) when both denominators are zero.
     """
     deployed_usd = sum(
         abs(s.max_cost_usd or 0.0)
         for s in structures
     )
-    total_capacity = deployed_usd + buying_power
-    utilization_pct = deployed_usd / total_capacity if total_capacity > 0 else 0.0
+    if buying_power > 0:
+        total_capacity = deployed_usd + buying_power
+        utilization_pct = deployed_usd / total_capacity
+    elif equity > 0:
+        utilization_pct = deployed_usd / equity
+    else:
+        utilization_pct = 0.0
     return utilization_pct, deployed_usd
 
 

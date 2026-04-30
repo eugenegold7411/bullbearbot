@@ -1294,13 +1294,13 @@ class TestDenominatorFix:
     # 5. SIZE TRIM trigger uses equity denominator, not buying_power ──────────
 
     def test_size_trim_uses_equity_denominator(self):
-        """AMZN (core) at 25% of equity (> 17% threshold) fires SIZE TRIM; reason says 'equity'.
+        """AMZN (core) at 27% of equity (> 17% threshold) fires SIZE TRIM; reason says 'equity'.
 
-        With BP=$214K, 25% equity = $27.1K → 12.7% of BP — old code missed SIZE TRIM here.
-        With equity=$108.5K, 27.1K/108.5K = 25% > tier_max(15%)+tol(2%)=17% → fires.
+        With BP=$214K, 27% equity = $29.3K → 13.7% of BP — old code missed SIZE TRIM here.
+        With equity=$108.5K, 29.3K/108.5K = 27% > tier_max(15%)+tol(2%)=17% → fires.
         """
         equity = self._EQUITY   # $108,472
-        mv     = equity * 0.25  # 25% of equity → $27,118; as % of BP = 12.7% (old: missed)
+        mv     = equity * 0.27  # 27% of equity → $29,287; as % of BP = 13.7% (old: missed)
         inc = {
             "symbol":                  "AMZN",   # core watchlist → tier_max = 0.15
             "market_value":            mv,
@@ -1322,7 +1322,7 @@ class TestDenominatorFix:
         trim = next((p for p in proposed if p["symbol"] == "AMZN" and p["action"] == "TRIM"), None)
         assert trim is not None, (
             f"SIZE TRIM must fire for AMZN at {mv/equity*100:.1f}% of equity "
-            f"(> tier_max+tol=17%); old BP denominator gave {mv/self._BP*100:.1f}% → missed"
+            f"(> tier_max+tol=17%); with old BP denominator: {mv/self._BP*100:.1f}% → missed"
         )
         assert "equity" in trim["reason"], "SIZE TRIM reason must reference 'equity' not 'BP'"
 
@@ -1387,6 +1387,6 @@ class TestDenominatorFix:
         proposed, _ = pa._decide_actions([inc], [], pi, cfg, pa_cfg, sizes, equity)
         ma = next(p for p in proposed if p["symbol"] == "MA")
         assert ma["action"] == "ADD", (
-            f"MA at 10% equity with thesis=9 should ADD; "
-            f"10% < tier_max-deadband=13% and < max_pos_pct=25% — no block"
+            "MA at 10% equity with thesis=9 should ADD; "
+            "10% < tier_max-deadband=13% and < max_pos_pct=25% — no block"
         )

@@ -334,13 +334,17 @@ class TestSizeTrimGateItem3(unittest.TestCase):
     """Item 3 (S8): size-based TRIM gate fires for score≥6 + oversized positions."""
 
     def test_size_trim_fires_when_equity_pct_exceeds_tier_plus_tolerance(self):
-        """STNG (core, tier_max=20%) at 23K/100K equity = 23% > 22% → SIZE TRIM."""
-        inc = _make_incumbent("STNG", score=7, mv=23_000.0)
+        """STNG (core, tier_max=20%) at 27K / total_capacity(bp=120K) = 22.5% > 22% → SIZE TRIM.
+
+        total_capacity = current_exposure(0) + bp(120K) = 120K.
+        cap_frac = 27K/120K = 22.5% > tier_max(20%) + tol(2%) = 22% → fires.
+        """
+        inc = _make_incumbent("STNG", score=7, mv=27_000.0)
         proposed = _run_decide([inc], bp=120_000.0)
         actions  = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(actions), 1)
         self.assertIn("SIZE TRIM", actions[0]["reason"])
-        self.assertIn("equity", actions[0]["reason"])
+        self.assertIn("total capacity", actions[0]["reason"])
 
     def test_size_trim_does_not_fire_within_tolerance(self):
         """STNG at 16.5K/100K equity = 16.5% — within 20% + 2% = 22% → no size TRIM."""
@@ -359,8 +363,11 @@ class TestSizeTrimGateItem3(unittest.TestCase):
         self.assertIn("thesis_score=4", trim_actions[0]["reason"])
 
     def test_score_6_triggers_size_trim_not_thesis_trim(self):
-        """score=6 is above trim_thresh (5) → size TRIM path (not thesis TRIM)."""
-        inc = _make_incumbent("STNG", score=6, mv=23_000.0)
+        """score=6 is above trim_thresh (5) → size TRIM path (not thesis TRIM).
+
+        MV=27K, total_capacity=120K → cap_frac=22.5% > 22% → SIZE TRIM, not thesis TRIM.
+        """
+        inc = _make_incumbent("STNG", score=6, mv=27_000.0)
         proposed = _run_decide([inc], bp=120_000.0)
         trim_actions = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(trim_actions), 1)

@@ -225,13 +225,18 @@ def _enrich_incumbents_with_signal_data(incumbents: list[dict]) -> None:
 # Incumbent ranking
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _rank_incumbents(pi_data: dict, positions: list, equity: float = 0.0) -> list[dict]:
+def _rank_incumbents(
+    pi_data: dict,
+    positions: list,
+    equity: float = 0.0,
+    total_capacity: float = 0.0,
+) -> list[dict]:
     """
     Build ranked incumbent list from pi_data thesis_scores + positions.
     Returns list sorted by thesis_score ascending (weakest first).
 
-    equity — caller's snapshot.equity (used as account_pct denominator).  Falls back
-    to sum of market values when not supplied.
+    total_capacity — total_market_value + buying_power (matches risk_kernel denominator).
+    equity — fallback when total_capacity is not supplied.
     """
     thesis_scores = pi_data.get("thesis_scores", [])
     health_map    = pi_data.get("health_map", {})
@@ -246,15 +251,14 @@ def _rank_incumbents(pi_data: dict, positions: list, equity: float = 0.0) -> lis
         except Exception:
             pass
 
-    if equity <= 0:
-        equity = sum(mv_by_symbol.values()) or 1.0
+    denom = total_capacity if total_capacity > 0 else (equity if equity > 0 else sum(mv_by_symbol.values()) or 1.0)
 
     incumbents = []
     for sym, mv in mv_by_symbol.items():
         ts       = ts_by_symbol.get(sym, {})
         health   = health_map.get(sym, {})
         score    = int(ts.get("thesis_score", 5))
-        account_pct = round(mv / equity * 100, 2) if equity > 0 else 0.0
+        account_pct = round(mv / denom * 100, 2) if denom > 0 else 0.0
 
         incumbents.append({
             "symbol":                   sym,
@@ -503,23 +507,19 @@ def _decide_actions(
         # SIZE TRIM: strong thesis but position exceeds tier max by more than tolerance.
         # Fires independently of thesis-score TRIM (exclusive paths: score ≤ trim_thresh
         # goes to thesis TRIM above; score > trim_thresh falls through to here).
-        # Denominator is equity for the trigger; trim target uses total_capacity denominator
-        # to match risk_kernel.size_position() max_position_pct_capacity enforcement.
-        if size_trim_enabled and score >= 6 and equity > 0 and mv > min_notional:
-            eq_frac = mv / equity
-            if eq_frac > tier_max + size_trim_tol:
-                target_mv     = (
-                    min(tier_max * bp, max_pos_cap_dollars)
-                    if bp > 0
-                    else max_pos_cap_dollars
-                )
+        # Denominator is total_capacity (exposure + buying_power) — same basis as
+        # risk_kernel.size_position() max_position_pct_capacity enforcement.
+        if size_trim_enabled and score >= 6 and total_capacity > 0 and mv > min_notional:
+            cap_frac = mv / total_capacity
+            if cap_frac > tier_max + size_trim_tol:
+                target_mv     = min(tier_max * total_capacity, max_pos_cap_dollars)
                 trim_notional = round(mv - target_mv, 2)
                 if trim_notional >= min_notional:
                     proposed.append({
                         "action":           "TRIM",
                         "symbol":           sym,
                         "reason":           (
-                            f"SIZE TRIM — {sym} at {eq_frac*100:.1f}% of equity exceeds "
+                            f"SIZE TRIM — {sym} at {cap_frac*100:.1f}% of total capacity exceeds "
                             f"{tier_max*100:.0f}% {_SYMBOL_TIER_MAP.get(sym.upper(), 'inferred')} "
                             f"tier max (tol={size_trim_tol*100:.1f}%) — "
                             f"trim ~${trim_notional:,.0f} to target ${target_mv:,.0f}"
@@ -703,11 +703,14 @@ def run_allocator_shadow(
             except Exception:
                 pass
 
-        sizes  = pi_data.get("sizes", {})
-        eq_val = equity or (float(sizes.get("max_exposure", 0) or 0) / 0.30)
+        sizes    = pi_data.get("sizes", {})
+        eq_val   = equity or (float(sizes.get("max_exposure", 0) or 0) / 0.30)
+        bp_cap   = float(sizes.get("buying_power", 0) or 0)
+        exp_cap  = float(sizes.get("current_exposure", 0) or 0)
+        cap_val  = exp_cap + bp_cap   # total_capacity: matches risk_kernel denominator
 
-        # 2. Rank incumbents (pass equity so account_pct uses same denominator as kernel)
-        incumbents = _rank_incumbents(pi_data, positions, equity=eq_val)
+        # 2. Rank incumbents using total_capacity so account_pct matches kernel basis
+        incumbents = _rank_incumbents(pi_data, positions, equity=eq_val, total_capacity=cap_val)
 
         # 2a. Attach signal catalyst/signals to incumbents (held symbols excluded from candidates)
         _enrich_incumbents_with_signal_data(incumbents)

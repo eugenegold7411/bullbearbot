@@ -121,6 +121,8 @@
     "enabled": true,
     "max_spread_cost_pct": 0.05,
     "stale_cleanup_max_age_hours": 2,
+    "auto_cancel_unfilled_orders": true,
+    "duplicate_submission_min_hours_after_fill": 2.0,
     "observation_mode_days": 20,
     "equity_floor": 25000,
     "scheduler_offset_seconds": 90,

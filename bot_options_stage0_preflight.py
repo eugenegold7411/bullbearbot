@@ -168,6 +168,98 @@ def is_observation_mode() -> bool:
     return not state.get("observation_complete", False)
 
 
+def _any_leg_has_fill(structure, alpaca_client) -> bool:
+    """Return True if any Alpaca order for this structure has filled_qty > 0."""
+    for order_id in (structure.order_ids or []):
+        try:
+            order = alpaca_client.get_order_by_id(order_id)
+            if float(getattr(order, "filled_qty", 0) or 0) > 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _cancel_and_clear_unfilled_orders(
+    alpaca_client,
+    config: dict,
+) -> int:
+    """
+    For every SUBMITTED structure with zero filled qty:
+      1. Cancel all Alpaca orders for that structure
+      2. Set lifecycle to CANCELLED so the symbol re-enters the candidate pool
+
+    This ensures A2 always re-prices on fresh mid values each cycle rather
+    than leaving stale limit orders open indefinitely (GTC single legs) or
+    waiting for DAY spread orders to expire silently at close.
+
+    Gated by account2.auto_cancel_unfilled_orders (default True).
+    Returns count of structures cancelled. Non-fatal per structure.
+    """
+    if not config.get("account2", {}).get("auto_cancel_unfilled_orders", True):
+        return 0
+
+    import options_state as _os  # noqa: PLC0415
+    from schemas import StructureLifecycle  # noqa: PLC0415
+
+    all_structs = _os.load_structures()
+    cancelled = 0
+
+    for s in all_structs:
+        try:
+            if s.lifecycle != StructureLifecycle.SUBMITTED:
+                continue
+            if not s.order_ids:
+                continue
+            if _any_leg_has_fill(s, alpaca_client):
+                continue  # partial or full fill — do not cancel
+
+            for order_id in s.order_ids:
+                try:
+                    alpaca_client.cancel_order_by_id(order_id)
+                    log.info(
+                        "[PREFLIGHT] Cancelled unfilled order %s for %s (%s)",
+                        order_id[:8], s.underlying, s.strategy.value,
+                    )
+                except Exception as _ce:
+                    log.debug(
+                        "[PREFLIGHT] Cancel order %s failed (non-fatal): %s",
+                        order_id[:8], _ce,
+                    )
+
+            s.lifecycle = StructureLifecycle.CANCELLED
+            s.add_audit(
+                "auto-cancelled: unfilled order — resubmitting with fresh pricing next cycle"
+            )
+            _os.save_structure(s)
+            cancelled += 1
+        except Exception as _e:
+            log.debug("[PREFLIGHT] _cancel_and_clear_unfilled_orders skip (non-fatal): %s", _e)
+
+    if cancelled:
+        log.info(
+            "[PREFLIGHT] Cancelled %d unfilled order(s) — symbols re-enter candidate pool",
+            cancelled,
+        )
+    return cancelled
+
+
+def _is_duplicate_submission(symbol: str, structures: list) -> bool:
+    """
+    Return True if a new structure for this symbol should be blocked.
+
+    Blocks only when a SUBMITTED structure exists (in-flight, not yet cancelled).
+    CANCELLED and FULLY_FILLED structures never block re-entry.
+    After _cancel_and_clear_unfilled_orders() runs, any remaining SUBMITTED
+    structure has at least a partial fill — blocking is correct.
+    """
+    from schemas import StructureLifecycle  # noqa: PLC0415
+    return any(
+        s.underlying == symbol and s.lifecycle == StructureLifecycle.SUBMITTED
+        for s in structures
+    )
+
+
 def _cleanup_stale_proposed_structures(
     structures: list,
     max_age_hours: float = 2.0,
@@ -396,11 +488,17 @@ def run_a2_preflight(
     except Exception as _div_exc:
         log.warning("[DIV] A2 mode load failed (non-fatal): %s", _div_exc)
 
+    # Load config once for all preflight cleanup steps
+    _cfg_path = Path(__file__).parent / "strategy_config.json"
+    _s_cfg: dict = {}
+    try:
+        _s_cfg = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
+    except Exception:
+        pass
+
     # Stale PROPOSED structure cleanup (before reconciliation)
     try:
         import options_state as _oss  # noqa: PLC0415
-        _cfg_path = Path(__file__).parent / "strategy_config.json"
-        _s_cfg = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
         _max_age = float(_s_cfg.get("account2", {}).get("stale_cleanup_max_age_hours", 2.0))
         _all_structs = _oss.load_structures()
         _n_cleaned = _cleanup_stale_proposed_structures(_all_structs, _max_age)
@@ -408,6 +506,13 @@ def run_a2_preflight(
             log.info("[PREFLIGHT] Cancelled %d stale PROPOSED structure(s)", _n_cleaned)
     except Exception as _cleanup_err:
         log.debug("[PREFLIGHT] stale PROPOSED cleanup failed (non-fatal): %s", _cleanup_err)
+
+    # Cancel unfilled SUBMITTED orders and reset lifecycle so symbols re-enter pool.
+    # Runs before reconciliation so the pending_underlyings guard sees fresh state.
+    try:
+        _n_cancelled = _cancel_and_clear_unfilled_orders(alpaca_client, _s_cfg)
+    except Exception as _cancel_err:
+        log.debug("[PREFLIGHT] _cancel_and_clear_unfilled_orders failed (non-fatal): %s", _cancel_err)
 
     # Options structure reconciliation (before new proposals)
     try:
@@ -458,19 +563,23 @@ def run_a2_preflight(
         else:
             log.debug("[OPTS_RECON] No open structures — skipping reconciliation")
 
-        # Pending mleg guard: SUBMITTED = DAY order in flight; skip re-submission
-        # this cycle for any underlying that already has an order pending.
+        # Pending in-flight guard: after _cancel_and_clear_unfilled_orders() has run,
+        # any remaining SUBMITTED structure has at least a partial fill from a prior
+        # cycle. Block re-submission for those underlyings to avoid double-positioning.
+        # Uses load_structures() (all lifecycle states) — get_open_structures() returns
+        # only FULLY_FILLED/PARTIALLY_FILLED and would never see SUBMITTED.
         try:
             from schemas import StructureLifecycle  # noqa: PLC0415
+            _all_for_guard = options_state.load_structures()
             _submitted = [
-                s for s in _open_structs
+                s for s in _all_for_guard
                 if s.lifecycle == StructureLifecycle.SUBMITTED
             ]
             if _submitted:
                 result.pending_underlyings = frozenset(
                     s.underlying for s in _submitted
                 )
-                log.info("[OPTS] Pending mleg — skip new candidates for: %s",
+                log.info("[OPTS] Pending in-flight orders — skip new candidates for: %s",
                          ", ".join(sorted(result.pending_underlyings)))
         except Exception as _pe:
             log.debug("[OPTS] pending_underlyings check failed (non-fatal): %s", _pe)

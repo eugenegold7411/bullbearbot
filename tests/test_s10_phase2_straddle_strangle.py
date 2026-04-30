@@ -39,9 +39,23 @@ class _OrderClass:
     MLEG = "mleg"
 
 
+class _TIFValue:
+    """Enum-like with a .value attribute so code using tif.value doesn't crash."""
+    def __init__(self, v: str):
+        self.value = v
+
+    def __eq__(self, other):
+        if isinstance(other, _TIFValue):
+            return self.value == other.value
+        return self.value == other
+
+    def __repr__(self):
+        return self.value
+
+
 class _TimeInForce:
-    DAY = "day"
-    GTC = "gtc"
+    DAY = _TIFValue("day")
+    GTC = _TIFValue("gtc")
 
 
 class _PositionIntent:
@@ -364,9 +378,14 @@ class TestRuleStraddleStrangle(unittest.TestCase):
         self.assertNotEqual(result, ["straddle", "strangle"])
 
     def test_st11b_eda_at_blackout_boundary_blocked(self):
-        """ST-11b: eda=2 (exactly at blackout boundary) → RULE1 fires → []."""
-        result = self._route(iv_rank=35, eda=2)
-        self.assertEqual(result, [])
+        """ST-11b: eda=2 at blackout boundary → RULE1 smart router fires.
+        neutral direction → blocked; directional → routed to debit/credit spread."""
+        # Neutral direction → RULE1 blocks (no directional thesis)
+        result_neutral = self._route(iv_rank=35, eda=2, direction="neutral")
+        self.assertEqual(result_neutral, [])
+        # Bullish direction + cheap iv → routed to debit_call_spread
+        result_bullish = self._route(iv_rank=35, eda=2, direction="bullish")
+        self.assertIn("debit_call_spread", result_bullish)
 
     def test_st12_eda_outside_window_does_not_fire(self):
         """ST-12: eda=16 (outside straddle_dte_max=14) → rule does not fire."""

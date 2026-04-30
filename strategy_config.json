@@ -182,7 +182,8 @@
       "auto_close_on_crush": false,
       "crush_threshold": 0.3,
       "min_pre_event_history_days": 3
-    }
+    },
+    "min_credit_usd": 0.15
   },
   "scratchpad": {
     "enabled": true,
@@ -300,7 +301,15 @@
     "straddle_dte_max": 14,
     "short_put_iv_rank_min": 50,
     "iron_iv_rank_min": 70,
-    "v1_defaults_note": "These are v1 safety defaults added 2026-04-20. Each is a candidate for tuning after shadow validation."
+    "v1_defaults_note": "These are v1 safety defaults added 2026-04-20. Each is a candidate for tuning after shadow validation.",
+    "earnings_dte_premarket_credit_iv_min": 85,
+    "earnings_dte_premarket_debit_iv_max": 40,
+    "earnings_dte_1_premarket_enabled": true,
+    "earnings_dte_2_enabled": true,
+    "macro_event_routing_enabled": true,
+    "macro_event_credit_iv_min": 85,
+    "macro_event_condor_iv_min": 70,
+    "macro_event_debit_iv_max": 70
   },
   "a2_veto_thresholds": {
     "max_bid_ask_spread_pct": 0.18,

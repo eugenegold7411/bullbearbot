@@ -230,11 +230,12 @@ class TestBR08Regressions(unittest.TestCase):
         self.assertEqual(result, ["credit_call_spread"])
 
     def test_earnings_blackout_still_blocks(self):
-        """RULE1: earnings ≤ blackout → empty list."""
+        """RULE1 smart router: eda=1 unknown timing routes to debit spread (cheap IV + bullish)."""
         pack = _make_pack(iv_environment="cheap", iv_rank=20.0, a1_direction="bullish",
                           earnings_days_away=1)
         result = _route(pack)
-        self.assertEqual(result, [])
+        # eda=1 + no calendar → timing=unknown → treated as eda=2 → iv_rank=20 < debit_iv_max=40
+        self.assertIn("debit_call_spread", result)
 
     def test_rule5_bearish_not_in_cheap_bullish_result(self):
         """Bearish traces for cheap+bullish: no put structures in result."""

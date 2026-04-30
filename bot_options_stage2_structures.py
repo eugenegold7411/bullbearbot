@@ -67,6 +67,16 @@ _A2_ROUTER_DEFAULTS: dict = {
     "short_put_iv_rank_min": 50,   # minimum IV rank to enter short put
     # RULE_IRON: iron condor/butterfly when IV is very elevated + neutral outlook
     "iron_iv_rank_min": 70,        # minimum IV rank for iron structures
+    # RULE1 smart earnings router (replaces blanket blackout for eda 0-2)
+    "earnings_dte_premarket_credit_iv_min": 85,   # IV floor for eda=1 pre-market credit spread
+    "earnings_dte_premarket_debit_iv_max":  40,   # IV ceiling for eda=1 pre-market debit spread
+    "earnings_dte_1_premarket_enabled":    True,  # enable eda=1 pre-market routing
+    "earnings_dte_2_enabled":              True,  # enable eda=2 routing (non-neutral, any IV)
+    # RULE4 macro event routing (replaces blanket block)
+    "macro_event_routing_enabled":         True,  # False = revert to original block behavior
+    "macro_event_credit_iv_min":           85,    # IV floor for macro credit spread (directional)
+    "macro_event_condor_iv_min":           70,    # IV floor for macro iron condor/butterfly (neutral)
+    "macro_event_debit_iv_max":            70,    # IV ceiling for macro debit spread (directional)
 }
 
 
@@ -87,6 +97,33 @@ def _get_earnings_timing(sym: str, earnings_calendar_data: dict) -> str:
             eda_date = date.fromisoformat(str(raw)[:10])
             if eda_date < today:
                 if best is None or eda_date > best[0]:
+                    raw_timing = str(entry.get("timing", "")).lower()
+                    norm = ("pre_market"  if any(k in raw_timing for k in ("pre", "bmo")) else
+                            "post_market" if any(k in raw_timing for k in ("post", "amc", "after")) else
+                            "unknown")
+                    best = (eda_date, norm)
+        except Exception:
+            continue
+    return best[1] if best is not None else "unknown"
+
+
+def _get_upcoming_earnings_timing(sym: str, earnings_calendar_data: dict) -> str:
+    """
+    Return 'pre_market', 'post_market', or 'unknown' for the nearest upcoming
+    earnings event for a symbol. Used by RULE1 smart router for eda 0-2.
+    """
+    today = date.today()
+    best: tuple | None = None   # (earnings_date, timing_str)
+    for entry in earnings_calendar_data.get("calendar", []):
+        if entry.get("symbol", "").upper() != sym.upper():
+            continue
+        raw = entry.get("earnings_date", "")
+        if not raw:
+            continue
+        try:
+            eda_date = date.fromisoformat(str(raw)[:10])
+            if eda_date >= today:
+                if best is None or eda_date < best[0]:
                     raw_timing = str(entry.get("timing", "")).lower()
                     norm = ("pre_market"  if any(k in raw_timing for k in ("pre", "bmo")) else
                             "post_market" if any(k in raw_timing for k in ("post", "amc", "after")) else
@@ -152,10 +189,10 @@ def _route_strategy(
 
     Rule order:
       RULE_EARNINGS_HIGH_IV  — pre-earnings credit spread (disabled by default)
-      RULE1                  — upcoming earnings blackout (0 <= eda <= blackout)
+      RULE1                  — smart earnings router (eda 0-2); routes or blocks per timing+IV
       RULE2                  — IV environment blackout
       RULE3                  — liquidity floor
-      RULE4                  — macro event + elevated IV
+      RULE4                  — macro event router; routes or blocks per IV+direction
       RULE_POST_EARNINGS     — post-earnings IV crush trade (eda < 0)
       RULE_EARNINGS          — near-earnings direction split
       RULE2_CREDIT           — very_expensive IV -> credit structures
@@ -186,6 +223,18 @@ def _route_strategy(
     pre_earn_dte_min = int(rcfg.get("pre_earnings_dte_min", 7))
     pre_earn_dte_max = int(rcfg.get("pre_earnings_dte_max", 14))
 
+    # RULE1 smart earnings router config
+    rule1_premarket_credit_iv_min = float(rcfg.get("earnings_dte_premarket_credit_iv_min", 85))
+    rule1_premarket_debit_iv_max  = float(rcfg.get("earnings_dte_premarket_debit_iv_max", 40))
+    rule1_dte1_premarket_enabled  = bool(rcfg.get("earnings_dte_1_premarket_enabled", True))
+    rule1_dte2_enabled            = bool(rcfg.get("earnings_dte_2_enabled", True))
+
+    # RULE4 macro event routing config
+    macro_routing_enabled     = bool(rcfg.get("macro_event_routing_enabled", True))
+    macro_credit_iv_min       = float(rcfg.get("macro_event_credit_iv_min", 85))
+    macro_condor_iv_min       = float(rcfg.get("macro_event_condor_iv_min", 70))
+    macro_debit_iv_max        = float(rcfg.get("macro_event_debit_iv_max", 70))
+
     eda = pack.earnings_days_away
 
     # RULE_EARNINGS_HIGH_IV — disabled by default; preempts RULE1 for very-high IV pre-earnings.
@@ -207,12 +256,104 @@ def _route_strategy(
             )
             return _pehi
 
-    # RULE1: upcoming earnings blackout — block all trades within N days of earnings.
-    # Uses 0 <= eda to exclude past earnings (negative eda handled by RULE_POST_EARNINGS).
+    # RULE1: smart earnings router — replaces blanket blackout for eda 0-2.
+    # earnings_dte_blackout controls the outer boundary (default 2).
+    # eda < 0 is handled by RULE_POST_EARNINGS below; skip that case here.
     if eda is not None and 0 <= eda <= earnings_dte_blackout:
-        log.debug("[OPTS] _route_strategy %s: RULE1 earnings_blackout days=%s <= %d -> []",
-                  sym, eda, earnings_dte_blackout)
-        return []
+        # Lazy-load earnings calendar for upcoming timing if not already loaded
+        if earnings_calendar_data is None:
+            try:
+                import json as _json  # noqa: PLC0415
+                from pathlib import Path as _Path  # noqa: PLC0415
+                cal_path = _Path(__file__).parent / "data" / "market" / "earnings_calendar.json"
+                earnings_calendar_data = _json.loads(cal_path.read_text()) if cal_path.exists() else {}
+            except Exception:
+                earnings_calendar_data = {}
+        upcoming_timing = _get_upcoming_earnings_timing(sym, earnings_calendar_data)
+
+        direction = pack.a1_direction
+
+        if eda == 0:
+            # Results today: post-market print means results are already out → RULE_POST_EARNINGS
+            # handles negative eda; eda=0 post-market means print is tonight → block (binary event)
+            # pre-market means print was this morning → treat as eda<0, fall through to POST_EARNINGS
+            if upcoming_timing == "pre_market":
+                # Earnings were this morning (pre-market print on eda=0) — results already in.
+                # Fall through to RULE_POST_EARNINGS by not blocking here.
+                pass
+            else:
+                # post_market or unknown: results after close tonight — binary event, block.
+                log.debug(
+                    "[OPTS] _route_strategy %s: RULE1 eda=0 timing=%s -> [] (binary event)",
+                    sym, upcoming_timing,
+                )
+                return []
+
+        elif eda == 1 and rule1_dte1_premarket_enabled:
+            # Earnings tomorrow: timing-aware routing
+            if upcoming_timing == "pre_market":
+                # Report before open tomorrow — IV elevated now, will crush at open.
+                # High IV: sell credit spread to capture the premium.
+                # Low IV: buy cheap premium for the move.
+                # Middle ground (40–85) or neutral: too uncertain, block.
+                if direction != "neutral" and pack.iv_rank >= rule1_premarket_credit_iv_min:
+                    _r1 = (["credit_put_spread"] if direction == "bullish"
+                           else ["credit_call_spread"])
+                    log.debug(
+                        "[OPTS] _route_strategy %s: RULE1 eda=1 pre_market iv_rank=%.1f dir=%s -> %s",
+                        sym, pack.iv_rank, direction, _r1,
+                    )
+                    return _r1
+                if direction != "neutral" and pack.iv_rank < rule1_premarket_debit_iv_max:
+                    _r1 = (["debit_call_spread"] if direction == "bullish"
+                           else ["debit_put_spread"])
+                    log.debug(
+                        "[OPTS] _route_strategy %s: RULE1 eda=1 pre_market iv_rank=%.1f dir=%s -> %s",
+                        sym, pack.iv_rank, direction, _r1,
+                    )
+                    return _r1
+                # Middle-ground IV or neutral direction: block
+                log.debug(
+                    "[OPTS] _route_strategy %s: RULE1 eda=1 pre_market iv_rank=%.1f dir=%s -> [] "
+                    "(middle-ground or neutral)",
+                    sym, pack.iv_rank, direction,
+                )
+                return []
+            else:
+                # post_market tomorrow or unknown: treat like eda=2
+                if not rule1_dte2_enabled:
+                    log.debug(
+                        "[OPTS] _route_strategy %s: RULE1 eda=1 timing=%s dte2_disabled -> []",
+                        sym, upcoming_timing,
+                    )
+                    return []
+                # Fall through to eda==2 routing below by not returning
+                eda = 2  # noqa: PLW2901 — reassign to reuse eda=2 logic path
+
+        if eda == 2 and rule1_dte2_enabled:
+            # Two days out: direction required; any IV routes to appropriate structure.
+            if direction == "neutral":
+                log.debug(
+                    "[OPTS] _route_strategy %s: RULE1 eda=2 direction=neutral -> [] "
+                    "(no directional thesis for earnings play)",
+                    sym,
+                )
+                return []
+            if pack.iv_rank >= rule1_premarket_credit_iv_min:
+                _r1 = (["credit_put_spread"] if direction == "bullish"
+                       else ["credit_call_spread"])
+            else:
+                _r1 = (["debit_call_spread"] if direction == "bullish"
+                       else ["debit_put_spread"])
+            log.debug(
+                "[OPTS] _route_strategy %s: RULE1 eda=2 iv_rank=%.1f dir=%s -> %s",
+                sym, pack.iv_rank, direction, _r1,
+            )
+            return _r1
+
+        # eda=0 pre_market fall-through: results already in — fall through to RULE_POST_EARNINGS.
+        # (eda is still 0 here; RULE_POST_EARNINGS checks eda < 0 so it won't fire;
+        # let it fall to RULE2/RULE3/RULE4 and normal routing for the rest of the day.)
 
     # RULE2: no long premium in blacklisted IV environments
     if pack.iv_environment in iv_env_blackout:
@@ -226,11 +367,51 @@ def _route_strategy(
                   sym, pack.liquidity_score, min_liquidity_score)
         return []
 
-    # RULE4: macro event + elevated IV
-    if pack.macro_event_flag and pack.iv_rank > macro_iv_gate_rank:
-        log.debug("[OPTS] _route_strategy %s: RULE4 macro_event + iv_rank=%.1f > %.1f -> []",
-                  sym, pack.iv_rank, macro_iv_gate_rank)
-        return []
+    # RULE4: macro event router — macro events are catalysts, not blockers.
+    # When macro_event_routing_enabled=False, falls back to original block behavior.
+    if pack.macro_event_flag:
+        if not macro_routing_enabled:
+            # Original behavior: block when IV > gate
+            if pack.iv_rank > macro_iv_gate_rank:
+                log.debug(
+                    "[OPTS] _route_strategy %s: RULE4 macro_event + iv_rank=%.1f > %.1f "
+                    "(routing disabled) -> []",
+                    sym, pack.iv_rank, macro_iv_gate_rank,
+                )
+                return []
+        else:
+            direction = pack.a1_direction
+            if direction == "neutral" and pack.iv_rank >= macro_condor_iv_min:
+                # Elevated IV + no directional thesis: range-bound macro play
+                _r4 = ["iron_condor", "iron_butterfly"]
+                log.debug(
+                    "[OPTS] _route_strategy %s: RULE4 macro_event iv_rank=%.1f neutral -> %s",
+                    sym, pack.iv_rank, _r4,
+                )
+                return _r4
+            if direction != "neutral" and pack.iv_rank >= macro_credit_iv_min:
+                # Very elevated IV + directional: sell premium with thesis
+                _r4 = ["credit_put_spread"] if direction == "bullish" else ["credit_call_spread"]
+                log.debug(
+                    "[OPTS] _route_strategy %s: RULE4 macro_event iv_rank=%.1f dir=%s -> %s",
+                    sym, pack.iv_rank, direction, _r4,
+                )
+                return _r4
+            if direction != "neutral" and pack.iv_rank < macro_debit_iv_max:
+                # Moderate/cheap IV + directional thesis from macro event: buy premium
+                _r4 = ["debit_call_spread"] if direction == "bullish" else ["debit_put_spread"]
+                log.debug(
+                    "[OPTS] _route_strategy %s: RULE4 macro_event iv_rank=%.1f dir=%s -> %s",
+                    sym, pack.iv_rank, direction, _r4,
+                )
+                return _r4
+            # No directional thesis and IV not elevated enough for condor, or no clear route
+            log.debug(
+                "[OPTS] _route_strategy %s: RULE4 macro_event iv_rank=%.1f dir=%s -> [] "
+                "(no clear macro route)",
+                sym, pack.iv_rank, direction,
+            )
+            return []
 
     # RULE_POST_EARNINGS: sell IV premium after earnings print when IV still elevated.
     # eda < 0 means earnings already happened (abs(eda) = days since print).
@@ -398,7 +579,6 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
     earnings_dte_blackout = int(rcfg["earnings_dte_blackout"])
     earnings_dte_window   = int(rcfg.get("earnings_dte_window", 14))
     min_liquidity_score   = float(rcfg["min_liquidity_score"])
-    macro_iv_gate_rank    = float(rcfg["macro_iv_gate_rank"])
     iv_env_blackout       = list(rcfg["iv_env_blackout"])
     pre_earn_enabled      = bool(rcfg.get("pre_earnings_credit_spread_enabled", False))
     pre_earn_iv_min       = float(rcfg.get("pre_earnings_iv_rank_min", 85))
@@ -420,7 +600,7 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
             return "RULE2"
         if pack.liquidity_score < min_liquidity_score:
             return "RULE3"
-        if pack.macro_event_flag and pack.iv_rank > macro_iv_gate_rank:
+        if pack.macro_event_flag:
             return "RULE4"
         return "RULE8"
 

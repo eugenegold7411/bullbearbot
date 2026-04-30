@@ -100,15 +100,21 @@ def submit_structure(
       single_call / single_put:
         1. Build OCC symbol from leg data
         2. Compute mid = (bid + ask) / 2 from leg; fall back to leg.mid
-        3. Submit LimitOrderRequest(GTC) at mid price
+        3. Submit LimitOrderRequest(GTC) at mid price rounded to 2dp
         4. On success → lifecycle = SUBMITTED, leg.order_id = order.id
         5. On rejection → lifecycle = REJECTED, add_audit("rejected: {error}")
 
-      call_debit_spread / put_debit_spread /
-      call_credit_spread / put_credit_spread:
+      call_debit_spread / put_debit_spread:
         Single atomic mleg order (OrderClass.MLEG, TimeInForce.DAY).
-        limit_price = net debit/credit computed from leg mids:
-          positive = debit paid, negative = credit received.
+        limit_price = net debit rounded to nearest $0.05 tick, capped at 2dp.
+        On success → lifecycle = SUBMITTED, single order_id on all legs.
+        On rejection → lifecycle = REJECTED.
+
+      call_credit_spread / put_credit_spread / iron_condor / iron_butterfly:
+        Single atomic mleg order (OrderClass.MLEG, TimeInForce.GTC).
+        limit_price = net credit × 0.90 (accept 10% less than mid to improve fill),
+        rounded to nearest $0.05 tick, capped at 2dp.
+        GTC so the order persists past the current session.
         On success → lifecycle = SUBMITTED, single order_id on all legs.
         On rejection → lifecycle = REJECTED.
 
@@ -131,7 +137,7 @@ def submit_structure(
     if is_single:
         return _submit_single_leg(structure, trading_client)
     else:
-        return _submit_spread_mleg(structure, trading_client)
+        return _submit_spread_mleg(structure, trading_client, config)
 
 
 def _submit_single_leg(
@@ -155,7 +161,7 @@ def _submit_single_leg(
             f"cannot compute mid price for {occ_sym} (bid={leg.bid}, ask={leg.ask})"
         )
 
-    limit_price = _round_limit(mid)
+    limit_price = round(_round_limit(mid), 2)
 
     try:
         from alpaca.trading.enums import OrderSide, TimeInForce
@@ -213,21 +219,44 @@ def _compute_net_mid(structure: OptionsStructure) -> Optional[float]:
     return round(total, 4)
 
 
+_CREDIT_STRATEGIES: frozenset[OptionStrategy] = frozenset({
+    OptionStrategy.CALL_CREDIT_SPREAD,
+    OptionStrategy.PUT_CREDIT_SPREAD,
+    OptionStrategy.SHORT_PUT,
+    OptionStrategy.IRON_CONDOR,
+    OptionStrategy.IRON_BUTTERFLY,
+})
+
+# Credit spread fill aggressiveness: accept this fraction of mid credit to improve fill rate.
+# 0.90 = accept 10% less than mid, making the order more competitive at the cost of
+# slightly lower credit received. Debit spreads are unaffected.
+_CREDIT_FILL_FACTOR = 0.90
+
+
 def _submit_spread_mleg(
     structure:      OptionsStructure,
     trading_client,
+    config:         dict | None = None,
 ) -> OptionsStructure:
     """
-    Submit a spread as a single atomic mleg order (OrderClass.MLEG, DAY).
+    Submit a spread as a single atomic mleg order (OrderClass.MLEG).
 
-    limit_price = net debit/credit from leg mids:
-      positive = debit paid (debit spreads)
-      negative = credit received (credit spreads)
+    Debit spreads: limit_price = net debit at mid, TIF=DAY.
+    Credit spreads: limit_price = net credit × 0.90 (more aggressive to get filled),
+                    TIF=GTC so the order persists past the current session.
 
-    A single order_id is assigned to both legs. lifecycle = SUBMITTED.
-    The DAY time_in_force means the order expires at close if unfilled;
-    the next cycle re-evaluates with fresh mids and re-submits if still selected.
+    limit_price is always rounded to nearest $0.05 tick and capped at 2 decimal places
+    before submission to satisfy Alpaca's 42210000 "must be limited to 2 decimal places"
+    requirement.
+
+    Credit spreads with net credit below config account2.min_credit_usd are rejected
+    before submission — sub-threshold credits don't justify the risk.
+
+    A single order_id is assigned to all legs. lifecycle = SUBMITTED on success.
     """
+    if config is None:
+        config = {}
+
     if len(structure.legs) < 2:
         return _set_lifecycle(
             structure, StructureLifecycle.REJECTED,
@@ -241,14 +270,41 @@ def _submit_spread_mleg(
             "cannot compute net mid price for mleg order — leg bid/ask unavailable"
         )
 
-    # Round to $0.05 tick, preserve debit/credit sign.
-    abs_rounded = round(round(abs(net_mid) / 0.05) * 0.05, 2)
+    is_credit = structure.strategy in _CREDIT_STRATEGIES
+
+    # min_credit_usd gate: reject sub-threshold credit structures before submission
+    if is_credit and net_mid < 0:
+        a2_cfg = config.get("account2", config)
+        min_credit = float(a2_cfg.get("min_credit_usd", 0.15))
+        credit_per_share = abs(net_mid)
+        if credit_per_share < min_credit:
+            return _set_lifecycle(
+                structure, StructureLifecycle.REJECTED,
+                f"credit ${credit_per_share:.3f}/share < min_credit_usd=${min_credit:.2f} — not submitted"
+            )
+
+    if is_credit and net_mid < 0:
+        # For credit structures: accept slightly less than mid to improve fill probability.
+        # net_mid is negative (credit received); scaling by _CREDIT_FILL_FACTOR reduces
+        # the absolute credit we demand, making our limit more competitive.
+        adjusted = net_mid * _CREDIT_FILL_FACTOR
+    else:
+        adjusted = net_mid
+
+    # Round to $0.05 tick, then enforce 2dp. Preserve debit/credit sign.
+    abs_rounded = round(round(abs(adjusted) / 0.05) * 0.05, 2)
     abs_rounded = max(0.05, abs_rounded)
-    limit_price = abs_rounded if net_mid >= 0 else -abs_rounded
+    limit_price = round(abs_rounded if adjusted >= 0 else -abs_rounded, 2)
+
+    tif_day   = False  # GTC unless explicitly debit
+    if not is_credit:
+        tif_day = True  # debit spreads expire at close; re-priced next cycle if missed
 
     try:
         from alpaca.trading.enums import OrderClass, PositionIntent, TimeInForce
         from alpaca.trading.requests import LimitOrderRequest, OptionLegRequest
+
+        tif = TimeInForce.DAY if tif_day else TimeInForce.GTC
 
         leg_requests = []
         for leg in structure.legs:
@@ -268,7 +324,7 @@ def _submit_spread_mleg(
         req = LimitOrderRequest(
             qty=structure.contracts,
             order_class=OrderClass.MLEG,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=tif,
             limit_price=limit_price,
             legs=leg_requests,
         )
@@ -279,12 +335,14 @@ def _submit_spread_mleg(
             leg.order_id = order_id
         structure.order_ids.append(order_id)
         structure = _set_lifecycle(structure, StructureLifecycle.SUBMITTED, None)
+        tif_str = tif.value if hasattr(tif, "value") else str(tif)
         structure.add_audit(
             f"mleg submitted: {structure.underlying} {structure.strategy.value} "
-            f"qty={structure.contracts} net_limit={limit_price:.2f} order_id={order_id}"
+            f"qty={structure.contracts} net_limit={limit_price:.2f} tif={tif_str} "
+            f"order_id={order_id}"
         )
-        log.info("[EXECUTOR] %s mleg submitted: net_limit=%.2f order=%s",
-                 structure.underlying, limit_price, order_id)
+        log.info("[EXECUTOR] %s mleg submitted: net_limit=%.2f tif=%s order=%s",
+                 structure.underlying, limit_price, tif_str, order_id)
 
     except Exception as exc:
         err = str(exc)

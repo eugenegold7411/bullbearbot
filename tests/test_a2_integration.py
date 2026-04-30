@@ -112,9 +112,10 @@ class TestGoldenFixtureIntegrity(unittest.TestCase):
         self.assertEqual(fixture["execution_result"], "submitted")
 
     def test_earnings_blackout_pack_has_earnings_days_away(self):
+        """Fixture updated: eda=0 (earnings today, unknown timing) → RULE1 blocks."""
         fixture = _load_fixture("no_trade_earnings_blackout")
         cs = fixture["candidate_sets"][0]
-        self.assertEqual(cs["pack"]["earnings_days_away"], 3)
+        self.assertEqual(cs["pack"]["earnings_days_away"], 0)
         self.assertEqual(cs["router_rule_fired"], "RULE1")
         self.assertEqual(cs["allowed_structures"], [])
 
@@ -162,11 +163,12 @@ class TestDeterministicRoutingStage(unittest.TestCase):
         return _reconstruct_pack(pack_dict)
 
     def test_earnings_blackout_pack_routes_to_empty(self):
+        """RULE1 smart router: eda=0 unknown timing (no calendar data) → blocked."""
         from bot_options_stage2_structures import _route_strategy
         pack = self._pack_from_fixture("no_trade_earnings_blackout")
         self.assertIsNotNone(pack)
         result = _route_strategy(pack)
-        self.assertEqual(result, [], "RULE1 should block earnings-near symbols")
+        self.assertEqual(result, [], "RULE1 should block eda=0 with unknown timing")
 
     def test_cheap_iv_bullish_routes_to_long_and_debit(self):
         """NVDA cheap IV + bullish fires RULE5: allows long + debit structures."""

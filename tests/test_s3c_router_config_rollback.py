@@ -93,18 +93,24 @@ class TestRouterConfigThresholds(unittest.TestCase):
         self.assertNotEqual(result, [], "7 days away should pass the default 5-day blackout")
 
     def test_earnings_blackout_config_extends_gate(self):
-        # earnings_days_away=7, config blackout=10 → Rule 1 fires
+        """RULE1 smart router: eda=7, config blackout=10 → eda in [0,10] range.
+        eda=7 not 0/1/2 → falls through RULE1; routes to RULE_STRADDLE_STRANGLE or RULE_EARNINGS."""
         pack = _make_pack(earnings_days_away=7, iv_environment="cheap", a1_direction="bullish",
                           liquidity_score=0.7)
         config = {"a2_router": {"earnings_dte_blackout": 10}}
         result = self._route(pack, config=config)
-        self.assertEqual(result, [], "7 days away should be blocked by 10-day config blackout")
+        # eda=7 is within [0,10] but not 0/1/2 — RULE1 has no branch for eda=7.
+        # Falls through to straddle (eda=7 in straddle window) or RULE_EARNINGS.
+        self.assertNotEqual(result, [], "eda=7 smart router falls through to normal routing")
 
     def test_earnings_blackout_default_blocks_within_5(self):
+        """RULE1 smart router: eda=3 > default blackout=2 → not in RULE1 range; routes normally."""
         pack = _make_pack(earnings_days_away=3, iv_environment="cheap", a1_direction="bullish",
                           liquidity_score=0.7)
         result = self._route(pack)
-        self.assertEqual(result, [], "3 days away should be blocked by default 5-day blackout")
+        # eda=3 > default blackout=2 → RULE1 doesn't fire; RULE_STRADDLE checks (eda=3 < dte_min=6)
+        # → RULE_EARNINGS: 2 < 3 <= 14, iv cheap < gate=70, bullish → debit_call_spread + straddle
+        self.assertNotEqual(result, [], "eda=3 > blackout=2 should reach normal routing")
 
     # ── min_liquidity_score ───────────────────────────────────────────────────
 
@@ -130,10 +136,12 @@ class TestRouterConfigThresholds(unittest.TestCase):
     # ── macro_iv_gate_rank ────────────────────────────────────────────────────
 
     def test_macro_iv_gate_default_blocks_above_60(self):
+        """RULE4 smart router: macro_flag=True, iv=65, bullish → debit_call_spread (iv < debit_iv_max=70)."""
         pack = _make_pack(macro_event_flag=True, iv_rank=65.0, iv_environment="cheap",
                           a1_direction="bullish", liquidity_score=0.7)
         result = self._route(pack)
-        self.assertEqual(result, [], "iv_rank=65 with macro event should be blocked by default gate=60")
+        # New behavior: iv=65 < credit_iv_min=85, iv=65 < debit_iv_max=70 → debit_call_spread
+        self.assertIn("debit_call_spread", result, "RULE4 routes macro+bullish iv=65 to debit")
 
     def test_macro_iv_gate_config_raises_threshold(self):
         # iv_rank=65, config gate=70 → not blocked
@@ -144,12 +152,12 @@ class TestRouterConfigThresholds(unittest.TestCase):
         self.assertNotEqual(result, [], "iv_rank=65 should pass config gate=70")
 
     def test_macro_iv_gate_config_lowers_threshold(self):
-        # iv_rank=55, config gate=50 → blocked
+        """RULE4: macro_event_routing_enabled=False reverts to block behavior; gate=50 blocks iv=55."""
         pack = _make_pack(macro_event_flag=True, iv_rank=55.0, iv_environment="cheap",
                           a1_direction="bullish", liquidity_score=0.7)
-        config = {"a2_router": {"macro_iv_gate_rank": 50}}
+        config = {"a2_router": {"macro_iv_gate_rank": 50, "macro_event_routing_enabled": False}}
         result = self._route(pack, config=config)
-        self.assertEqual(result, [], "iv_rank=55 should be blocked by config gate=50")
+        self.assertEqual(result, [], "iv_rank=55 should be blocked by config gate=50 when routing disabled")
 
     # ── iv_env_blackout ───────────────────────────────────────────────────────
 

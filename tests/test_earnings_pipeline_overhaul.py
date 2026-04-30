@@ -675,10 +675,13 @@ class TestRuleEarningsDirectional:
         assert allowed == ["straddle"]
 
     def test_blackout_earnings_dte_le_5_returns_empty(self):
+        """RULE1 smart router: eda=3 > blackout=2, does not hit RULE1; falls through to RULE_EARNINGS."""
         from bot_options_stage2_structures import _route_strategy
         pack = self._pack("bullish", dte=3)
         allowed = _route_strategy(pack)
-        assert allowed == []
+        # eda=3 > default blackout=2 → RULE1 doesn't fire; RULE_EARNINGS fires (3 in (2,14])
+        # iv_rank=40 < earnings_iv_rank_gate=70 + bullish → debit_call_spread + straddle
+        assert "debit_call_spread" in allowed
 
     def test_elevated_iv_rank_skips_earnings_rule(self):
         """iv_rank >= 70 bypasses RULE_EARNINGS — different rule fires."""

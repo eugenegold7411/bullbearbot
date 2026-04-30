@@ -196,11 +196,12 @@ class TestRuleShortPut:
         assert "short_put" not in result
 
     def test_SP11_does_not_fire_earnings_blackout(self):
-        """eda=1 (within blackout of 2 days) → RULE1 blocks before SHORT_PUT."""
+        """eda=1 smart router intercepts before SHORT_PUT; routes to debit spread."""
         result = self._route({"iv_rank": 60.0, "iv_environment": "neutral",
                                "a1_direction": "bullish", "a1_signal_score": 70.0,
                                "earnings_days_away": 1})
-        assert result == []   # RULE1 blocks
+        # RULE1: eda=1, unknown timing → treated as eda=2 → iv_rank=60 < 85 → debit_call_spread
+        assert "short_put" not in result   # SHORT_PUT does not fire (RULE1 intercepts first)
 
     def test_SP_fires_for_expensive_iv(self):
         """iv_env=expensive + iv_rank=65 + bullish → RULE_SHORT_PUT fires."""

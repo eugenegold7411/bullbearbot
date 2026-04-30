@@ -39,9 +39,23 @@ class _OrderClass:
     BRACKET = "bracket"
 
 
+class _TIFValue:
+    """Enum-like with a .value attribute so code using tif.value doesn't crash."""
+    def __init__(self, v: str):
+        self.value = v
+
+    def __eq__(self, other):
+        if isinstance(other, _TIFValue):
+            return self.value == other.value
+        return self.value == other
+
+    def __repr__(self):
+        return self.value
+
+
 class _TimeInForce:
-    DAY = "day"
-    GTC = "gtc"
+    DAY = _TIFValue("day")
+    GTC = _TIFValue("gtc")
 
 
 class _PositionIntent:
@@ -228,10 +242,11 @@ class TestSubmitSpreadMlegSuccess(unittest.TestCase):
         req = client.submit_order.call_args[0][0]
         self.assertEqual(req.order_class, _OrderClass.MLEG)
 
-    def test_uses_time_in_force_day(self):
-        _, client = _run_mleg()
+    def test_uses_time_in_force_gtc_for_credit_spread(self):
+        # Credit spreads now use GTC so the order persists past the session.
+        _, client = _run_mleg()  # default structure is put_credit_spread
         req = client.submit_order.call_args[0][0]
-        self.assertEqual(req.time_in_force, _TimeInForce.DAY)
+        self.assertEqual(req.time_in_force, _TimeInForce.GTC)
 
     def test_qty_equals_contracts(self):
         structure = _make_structure(contracts=7)

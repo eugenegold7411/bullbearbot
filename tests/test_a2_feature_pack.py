@@ -154,10 +154,15 @@ class TestRouteStrategy(unittest.TestCase):
         return _route_strategy(self._make_pack(**kw))
 
     def test_rule1_earnings_blackout(self):
-        """Earnings within 5 days → block."""
-        self.assertEqual(self._route(earnings_days_away=5), [])
-        self.assertEqual(self._route(earnings_days_away=1), [])
+        """RULE1 smart router: eda=0 unknown timing still blocks (binary event)."""
+        # eda=0 with no calendar data → timing=unknown → post_market path → block
         self.assertEqual(self._route(earnings_days_away=0), [])
+        # eda=1 now routes (smart router: unknown timing treated as eda=2 → debit spread)
+        result_1 = self._route(earnings_days_away=1)
+        self.assertNotEqual(result_1, [], "eda=1 smart router should route, not block")
+        # eda=5 falls through RULE1 (no 0/1/2 branch fires) → routes normally
+        result_5 = self._route(earnings_days_away=5)
+        self.assertNotEqual(result_5, [], "eda=5 should reach normal routing")
 
     def test_rule1_earnings_clear(self):
         """Earnings > 5 days → not blocked by rule 1."""
@@ -184,9 +189,18 @@ class TestRouteStrategy(unittest.TestCase):
         self.assertNotEqual(result, [])
 
     def test_rule4_macro_elevated_iv(self):
-        """Macro event flag + iv_rank > 60 → block."""
-        self.assertEqual(self._route(macro_event_flag=True, iv_rank=61.0), [])
-        self.assertEqual(self._route(macro_event_flag=True, iv_rank=80.0), [])
+        """RULE4 macro router: elevated IV + neutral → iron structure (not a block)."""
+        # iv_rank=72 >= condor_iv_min=70, neutral → iron_condor/iron_butterfly
+        result_72 = self._route(macro_event_flag=True, iv_rank=72.0,
+                                iv_environment="expensive", a1_direction="neutral")
+        self.assertTrue(
+            any(s in result_72 for s in ("iron_condor", "iron_butterfly")),
+            f"Expected iron structure for macro neutral iv=72, got {result_72}",
+        )
+        # iv_rank=88 >= credit_iv_min=85, bullish → credit spread
+        result_88 = self._route(macro_event_flag=True, iv_rank=88.0,
+                                iv_environment="very_expensive", a1_direction="bullish")
+        self.assertEqual(result_88, ["credit_put_spread"])
 
     def test_rule4_macro_low_iv_passes(self):
         """Macro event but iv_rank <= 60 → not blocked by rule 4."""

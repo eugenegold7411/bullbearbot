@@ -7,6 +7,7 @@ Public API:
 """
 
 import json
+import re
 
 from bot_clients import MODEL_FAST, _get_claude
 from log_setup import get_logger, log_trade
@@ -110,7 +111,7 @@ def classify_regime(md: dict, calendar: dict) -> dict:
             f"SECTOR ROTATION (top+bottom 3):\n{sec_str}"
         )
         resp = _get_claude().messages.create(
-            model=MODEL_FAST, max_tokens=300,
+            model=MODEL_FAST, max_tokens=600,
             system=[{"type": "text", "text": _REGIME_SYS}],
             messages=[{"role": "user", "content": user_content}],
         )
@@ -122,6 +123,10 @@ def classify_regime(md: dict, calendar: dict) -> dict:
         raw = resp.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        # Extract outermost JSON object in case of preamble/postamble
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            raw = m.group(0)
         result = _normalize_regime_labels(json.loads(raw))
         cr = getattr(resp.usage, "cache_read_input_tokens", 0) or 0
         log.debug("[REGIME] score=%d bias=%s confidence=%s cache_read=%d",

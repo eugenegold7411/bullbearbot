@@ -158,7 +158,8 @@ class TestRule1Fix:
         assert result == []
 
     def test_rule1_fires_for_eda_equal_to_blackout(self):  # PE-02
-        pack = MockPack(earnings_days_away=2, iv_environment="neutral")
+        # eda=2 with neutral direction → RULE1 blocks (no directional thesis for earnings play)
+        pack = MockPack(earnings_days_away=2, iv_environment="neutral", a1_direction="neutral")
         result = _route_strategy(pack, _cfg({"earnings_dte_blackout": 2}))
         assert result == []
 
@@ -427,11 +428,13 @@ class TestEarningsHighIVEnabled:
         assert _route_strategy(pack, self._cfg_enabled()) == ["credit_call_spread"]
 
     def test_ehi04_eda_at_blackout_boundary_blocked_by_rule1(self):
-        """EHI-04: eda=2 <= blackout=2, EHI window is dte_min=7, so RULE1 fires."""
+        """EHI-04: eda=2 <= blackout=2, EHI window is dte_min=7, so RULE1 smart router fires.
+        High IV + bullish → RULE1 routes to credit_put_spread (not blocked)."""
         pack = MockPack(earnings_days_away=2, iv_rank=95.0,
                         iv_environment="very_expensive", a1_direction="bullish")
         result = _route_strategy(pack, self._cfg_enabled())
-        assert result == []  # RULE1 blocks
+        # eda=2 in [0, blackout=2]: RULE1 fires; iv_rank=95 >= credit_iv_min=85 + bullish
+        assert result == ["credit_put_spread"]
 
     def test_ehi05_below_iv_floor_does_not_fire(self):
         """EHI-05: iv_rank=80 < 85 → EHI misses; another rule fires."""

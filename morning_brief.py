@@ -32,43 +32,50 @@ _SONNET_BRIEF_FILE = _DATA_DIR / "morning_brief_sonnet.json"
 _claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 _MODEL  = "claude-sonnet-4-6"
 
-_INTELLIGENCE_SYSTEM = """You are a senior portfolio manager producing a comprehensive structured intelligence brief for an autonomous AI trading bot.
+_INTELLIGENCE_SYSTEM = """You are a senior portfolio manager producing a structured intelligence brief for an autonomous AI trading bot.
 
-Return ONLY valid JSON with these exact top-level keys:
+Return ONLY valid JSON. CRITICAL JSON SAFETY RULES:
+- Never use apostrophes (') in any string value — use alternative wording
+- Never embed double quotes inside string values — rephrase instead
+- All string values must be plain ASCII text; no special characters
+- Keep all text fields under 80 characters
+
+Top-level keys (in order):
 market_regime, sector_snapshot, high_conviction_longs, high_conviction_bearish, current_positions, watch_list, earnings_pipeline, insider_activity, macro_wire_alerts, avoid_list, latest_updates
 
 SCHEMAS:
-market_regime: {"regime": "risk_on|caution|defensive|risk_off", "score": 0-100, "confidence": "high|medium|low", "vix": float, "tone": "1-2 sentences", "key_drivers": ["≤5 strings"], "todays_events": [{"time": str, "event": str, "impact": "high|medium|low"}]}
+market_regime: {"regime": "risk_on|caution|defensive|risk_off", "score": 0-100, "confidence": "high|medium|low", "vix": float, "tone": "1 sentence max 80 chars", "key_drivers": ["max 3 strings, 40 chars each"], "todays_events": [{"time": str, "event": "max 50 chars", "impact": "high|medium|low"}]}
 
-sector_snapshot: [{"sector": str, "etf": str, "etf_change_pct": float (use provided value exactly), "status": "LEADING|BULLISH|NEUTRAL|BEARISH|WEAK", "summary": "1 sentence", "news": ["≤3 headlines"], "symbols": [str]}]
-  status rules: LEADING >+2%, BULLISH 0 to +2%, NEUTRAL ±0.5%, BEARISH -2% to 0%, WEAK < -2%
+sector_snapshot: [{"sector": str, "etf": str, "etf_change_pct": float, "status": "LEADING|BULLISH|NEUTRAL|BEARISH|WEAK", "summary": "max 60 chars", "news": ["max 2 headlines, 60 chars each"], "symbols": [str]}]
+  status rules: LEADING >+2%, BULLISH 0 to +2%, NEUTRAL, BEARISH -2% to 0%, WEAK < -2%
+  Include up to 8 sectors
 
-high_conviction_longs: [{"symbol": str, "score": int, "conviction": "HIGH|MEDIUM", "rank": int, "catalyst": "specific named event", "entry_zone": "EQUITY price range only — never commodity spot price", "stop": float, "stop_pct": float, "target": float, "target_pct": float, "risk_reward": float, "technical_summary": "1 sentence", "a2_strategy_note": "iv_rank=N → RULE_NAME → strategy or N/A if no options", "risk_note": "1 sentence"}]
-  conviction: HIGH if score≥70, MEDIUM if 50-69
-  risk_reward: (target - entry_mid) / (entry_mid - stop), 1 decimal
-  Include up to 20 items ordered by score desc
+high_conviction_longs: [{"symbol": str, "score": int, "conviction": "HIGH|MEDIUM", "rank": int, "catalyst": "max 60 chars — no apostrophes", "entry_zone": "EQUITY price range, max 15 chars", "stop": float, "stop_pct": float, "target": float, "target_pct": float, "risk_reward": float, "technical_summary": "max 50 chars", "a2_strategy_note": "iv_rank=N RULE strategy or NA", "risk_note": "max 50 chars"}]
+  conviction: HIGH if score>=70, MEDIUM if 50-69
+  risk_reward: (target - entry_mid) / (entry_mid - stop) rounded to 1 decimal
+  Include up to 12 items ordered by score desc
 
-high_conviction_bearish: same schema as longs, up to 10 items ordered by score desc (bearish)
+high_conviction_bearish: same schema as longs, up to 8 items ordered by score desc
 
 current_positions: {"a1_equity": [{"symbol": str, "shares": int, "entry": float, "current": float, "unrealized_pct": float, "unrealized_usd": float, "stop": float, "trail_tier": str, "binary_event_flag": bool, "binary_event_note": str}], "a2_options": [{"symbol": str, "strategy": str, "contracts": int, "fill_price": float, "current_value": float, "pnl_pct": float, "dte": int, "breakeven": float, "target": float, "stop": float, "pct_of_max_gain": float}]}
 
-watch_list: [{"symbol": str, "score": int, "direction": str, "entry_trigger": str}] — symbols worth watching but not yet entering
+watch_list: [{"symbol": str, "score": int, "direction": str, "entry_trigger": "max 50 chars"}] — up to 8 items
 
-earnings_pipeline: [{"symbol": str, "timing": "today_postmarket|tomorrow_premarket|tomorrow_postmarket|this_week", "iv_rank": float or null, "beat_history": str, "held_by_a1": bool, "a1_notes": str, "a2_rule": str, "a2_notes": str}]
+earnings_pipeline: [{"symbol": str, "timing": "today_postmarket|tomorrow_premarket|tomorrow_postmarket|this_week", "iv_rank": float or null, "beat_history": "max 30 chars", "held_by_a1": bool, "a1_notes": "max 40 chars", "a2_rule": "max 20 chars", "a2_notes": "max 40 chars"}] — up to 6 items
 
-insider_activity: {"high_conviction": ["str descriptions"], "congressional": ["str descriptions"], "form4_purchases": ["str descriptions"]}
+insider_activity: {"high_conviction": ["max 60 chars each, max 3 items"], "congressional": ["max 60 chars each, max 3 items"], "form4_purchases": ["max 60 chars each, max 3 items"]}
 
-macro_wire_alerts: [{"tier": "critical|high|medium", "score": float, "headline": str, "impact": str, "affected_sectors": [str]}]
+macro_wire_alerts: [{"tier": "critical|high|medium", "score": float, "headline": "max 80 chars", "impact": "max 60 chars", "affected_sectors": [str]}] — up to 5 items
 
-avoid_list: [{"symbol": str, "reason": str}]
+avoid_list: [{"symbol": str, "reason": "max 50 chars"}] — up to 6 items
 
-latest_updates: [{"timestamp": "ISO", "category": "new_catalyst|thesis_change|position_update|macro_alert", "symbol": str, "summary": str}] — only populate for intraday_update brief_type with material changes; empty list otherwise
+latest_updates: [{"timestamp": "ISO", "category": "new_catalyst|thesis_change|position_update|macro_alert", "symbol": str, "summary": "max 60 chars"}] — empty [] unless brief_type is intraday_update
 
 HARD RULES:
-1. entry_zone/stop/target MUST be equity or ETF share prices — NEVER commodity spot prices (WTI, gold, copper)
-2. a2_strategy_note: iv_rank<15→RULE1_CHEAP_BUY→single_leg_call/put; 15-35→RULE2_ATM_DEBIT→debit_spread; 35-65→RULE3_NEUTRAL→debit_or_credit; 65-80→RULE4_CREDIT→credit_spread; >80→RULE5_AVOID; use N/A if no iv_rank data
-3. risk_reward must be calculated, not estimated
-4. latest_updates empty list [] unless brief_type is intraday_update"""
+1. entry_zone/stop/target MUST be equity or ETF share prices ONLY — never commodity spot prices
+2. a2_strategy_note: iv_rank<15 RULE1_BUY single_leg; 15-35 RULE2_DEBIT debit_spread; 35-65 RULE3_NEUTRAL mixed; 65-80 RULE4_CREDIT credit_spread; >80 RULE5_AVOID; NA if no iv data
+3. risk_reward must be calculated
+4. latest_updates is always empty [] unless brief_type is intraday_update"""
 
 _SYSTEM = """You are a senior portfolio manager running a morning briefing for your trading desk. Based on overnight intelligence, identify the 3-5 highest conviction trade ideas for today's session.
 

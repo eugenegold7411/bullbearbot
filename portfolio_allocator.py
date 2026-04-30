@@ -187,7 +187,8 @@ def _load_candidates(held_symbols: set[str]) -> list[dict]:
                 "symbol":       sym,
                 "signal_score": score,
                 "direction":    info.get("direction", "neutral"),
-                "catalyst":     (info.get("catalyst", "") or "")[:120],
+                "catalyst":     (info.get("primary_catalyst") or info.get("catalyst") or "")[:120],
+                "signals":      [str(s) for s in (info.get("signals") or [])[:3]],
                 "price":        float(info.get("price", 0) or 0),
             })
         candidates.sort(key=lambda c: c["signal_score"], reverse=True)
@@ -195,6 +196,29 @@ def _load_candidates(held_symbols: set[str]) -> list[dict]:
     except Exception as exc:
         log.debug("[ALLOC] candidate load failed (non-fatal): %s", exc)
         return []
+
+
+def _enrich_incumbents_with_signal_data(incumbents: list[dict]) -> None:
+    """
+    Attach signal catalyst + signal list from signal_scores.json to each incumbent.
+    Mutates incumbents in-place. Non-fatal — missing/stale data silently skipped.
+    Incumbents are held positions excluded from _load_candidates, so they need
+    their own enrichment pass to surface fresh signal context in ADD reasons.
+    """
+    try:
+        data   = json.loads(_SIGNAL_SCORES_PATH.read_text())
+        scored = data.get("scored_symbols", {})
+        for inc in incumbents:
+            sym  = inc["symbol"]
+            info = scored.get(sym)
+            if not isinstance(info, dict):
+                continue
+            inc["signal_catalyst"] = (
+                info.get("primary_catalyst") or info.get("catalyst") or ""
+            )[:120]
+            inc["signal_signals"] = [str(s) for s in (info.get("signals") or [])[:3]]
+    except Exception as exc:
+        log.debug("[ALLOC] incumbent signal enrich failed (non-fatal): %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -513,6 +537,7 @@ def _decide_actions(
                 and available_for_new > min_notional
                 and acct_pct < tier_max - weight_deadband
                 and acct_pct < max_pos_pct_equity):
+            _cat = (inc.get("signal_catalyst") or "")[:80]
             proposed.append({
                 "action":           "ADD",
                 "symbol":           sym,
@@ -520,7 +545,10 @@ def _decide_actions(
                     f"thesis_score={score}/10 (conviction={norm/100:.2f}) — strong; room to add "
                     f"(acct_pct={acct_pct:.1%} < tier_max={tier_max:.0%}), "
                     f"available_for_new=${available_for_new:,.0f}"
+                    + (f"; catalyst: {_cat}" if _cat else "")
                 ),
+                "catalyst":         inc.get("signal_catalyst", ""),
+                "signals":          inc.get("signal_signals", []),
                 "score_gap":        None,
                 "target_weight_pct": tier_max,
                 "exit_symbol":      None,
@@ -558,6 +586,7 @@ def _decide_actions(
             ok_cool, reason_cool = _check_cooldown(weak_sym, pa_cfg)
 
             if ok_corr and ok_tba and ok_cool:
+                _ccat = (strongest.get("catalyst") or "")[:80]
                 proposed.append({
                     "action":           "REPLACE",
                     "symbol":           cand_sym,
@@ -565,7 +594,10 @@ def _decide_actions(
                         f"candidate signal_score={cand_scr:.0f} vs weakest "
                         f"{weak_sym} normalized={weak_norm} — gap={gap:.0f} "
                         f">= threshold={replace_score_gap:.0f}"
+                        + (f"; catalyst: {_ccat}" if _ccat else "")
                     ),
+                    "catalyst":         strongest.get("catalyst", ""),
+                    "signals":          strongest.get("signals", []),
                     "score_gap":        round(gap, 1),
                     "target_weight_pct": target_wts.get(weak_sym, 0.08),
                     "exit_symbol":      weak_sym,
@@ -675,6 +707,9 @@ def run_allocator_shadow(
 
         # 2. Rank incumbents (pass equity so account_pct uses same denominator as kernel)
         incumbents = _rank_incumbents(pi_data, positions, equity=eq_val)
+
+        # 2a. Attach signal catalyst/signals to incumbents (held symbols excluded from candidates)
+        _enrich_incumbents_with_signal_data(incumbents)
 
         # 3. Load candidates from last cycle's signal scores
         candidates = _load_candidates(held_symbols)

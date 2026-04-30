@@ -1390,3 +1390,207 @@ class TestDenominatorFix:
             "MA at 10% equity with thesis=9 should ADD; "
             "10% < tier_max-deadband=13% and < max_pos_pct=25% — no block"
         )
+
+
+# ---------------------------------------------------------------------------
+# Suite 11 — Catalyst threading (Fix 3)
+# ---------------------------------------------------------------------------
+
+class TestCatalystThreading:
+    """Suite 11: primary_catalyst + signals flow from signal_scores into recommendations."""
+
+    # ── helpers ────────────────────────────────────────────────────────────
+
+    def _make_signal_scores(self, *, candidate_catalyst="breakout above 52w high",
+                            candidate_signals=None, incumbent_catalyst="momentum surge",
+                            incumbent_signals=None) -> dict:
+        if candidate_signals is None:
+            candidate_signals = ["RSI > 70", "volume 3× avg"]
+        if incumbent_signals is None:
+            incumbent_signals = ["price above EMA9", "sector rotation in"]
+        return {
+            "scored_symbols": {
+                "NVDA": {
+                    "score": 88,
+                    "primary_catalyst": candidate_catalyst,
+                    "signals":  candidate_signals,
+                    "direction": "long",
+                    "price": 900.0,
+                },
+                "AMZN": {
+                    "score": 75,
+                    "primary_catalyst": incumbent_catalyst,
+                    "signals":  incumbent_signals,
+                    "direction": "long",
+                    "price": 200.0,
+                },
+            }
+        }
+
+    def _make_incumbent(self, score: int = 9) -> dict:
+        return {
+            "symbol":                  "AMZN",
+            "market_value":            10_000.0,
+            "account_pct":             10.0,
+            "thesis_score":            score,
+            "thesis_score_normalized": score * 10,
+            "health":                  "OK",
+            "recommended_pi_action":   "hold",
+            "override_flag":           None,
+            "weakest_factor":          "",
+        }
+
+    # 1. _load_candidates reads primary_catalyst correctly ──────────────────
+
+    def test_load_candidates_reads_primary_catalyst(self, tmp_path, monkeypatch):
+        """_load_candidates uses primary_catalyst field (not legacy 'catalyst')."""
+        import portfolio_allocator as pa
+        scores = {
+            "scored_symbols": {
+                "TSLA": {
+                    "score": 72,
+                    "primary_catalyst": "short squeeze setup",
+                    "catalyst":         "stale fallback",
+                    "signals":          ["RSI oversold"],
+                    "direction":        "long",
+                    "price":            250.0,
+                }
+            }
+        }
+        path = tmp_path / "signal_scores.json"
+        path.write_text(json.dumps(scores))
+        monkeypatch.setattr(pa, "_SIGNAL_SCORES_PATH", path)
+
+        candidates = pa._load_candidates(set())
+        assert len(candidates) == 1
+        assert candidates[0]["catalyst"] == "short squeeze setup"
+
+    # 2. _load_candidates includes signals list ─────────────────────────────
+
+    def test_load_candidates_includes_signals(self, tmp_path, monkeypatch):
+        """_load_candidates attaches up to 3 signals strings."""
+        import portfolio_allocator as pa
+        scores = {
+            "scored_symbols": {
+                "TSLA": {
+                    "score": 72,
+                    "primary_catalyst": "breakout",
+                    "signals":          ["sig1", "sig2", "sig3", "sig4"],  # 4 → capped at 3
+                    "direction":        "long",
+                    "price":            250.0,
+                }
+            }
+        }
+        path = tmp_path / "signal_scores.json"
+        path.write_text(json.dumps(scores))
+        monkeypatch.setattr(pa, "_SIGNAL_SCORES_PATH", path)
+
+        candidates = pa._load_candidates(set())
+        assert candidates[0]["signals"] == ["sig1", "sig2", "sig3"]
+
+    # 3. _enrich_incumbents attaches signal_catalyst ────────────────────────
+
+    def test_enrich_incumbents_attaches_signal_catalyst(self, tmp_path, monkeypatch):
+        """_enrich_incumbents_with_signal_data sets signal_catalyst on each incumbent."""
+        import portfolio_allocator as pa
+        scores = self._make_signal_scores()
+        path   = tmp_path / "signal_scores.json"
+        path.write_text(json.dumps(scores))
+        monkeypatch.setattr(pa, "_SIGNAL_SCORES_PATH", path)
+
+        inc = self._make_incumbent()
+        pa._enrich_incumbents_with_signal_data([inc])
+
+        assert inc.get("signal_catalyst") == "momentum surge"
+        assert inc.get("signal_signals") == ["price above EMA9", "sector rotation in"]
+
+    # 4. _enrich_incumbents is non-fatal when file missing ──────────────────
+
+    def test_enrich_incumbents_non_fatal_on_missing_file(self, tmp_path, monkeypatch):
+        """_enrich_incumbents_with_signal_data swallows FileNotFoundError gracefully."""
+        import portfolio_allocator as pa
+        monkeypatch.setattr(pa, "_SIGNAL_SCORES_PATH", tmp_path / "nonexistent.json")
+
+        inc = self._make_incumbent()
+        pa._enrich_incumbents_with_signal_data([inc])   # must not raise
+        assert "signal_catalyst" not in inc
+
+    # 5. ADD recommendation includes catalyst + signals ─────────────────────
+
+    def test_add_recommendation_carries_catalyst_and_signals(self, tmp_path, monkeypatch):
+        """ADD dict has 'catalyst' and 'signals' keys when signal data is available."""
+        import portfolio_allocator as pa
+        scores = self._make_signal_scores(incumbent_catalyst="strong EPS beat",
+                                          incumbent_signals=["RSI > 60", "vol up"])
+        path   = tmp_path / "signal_scores.json"
+        path.write_text(json.dumps(scores))
+        monkeypatch.setattr(pa, "_SIGNAL_SCORES_PATH", path)
+
+        inc = self._make_incumbent(score=9)
+        pa._enrich_incumbents_with_signal_data([inc])
+
+        cfg    = _base_cfg()
+        pa_cfg = pa._get_pa_config(cfg)
+        sizes  = {
+            "buying_power":      100_000.0,
+            "core":              15_000.0,
+            "standard":          8_000.0,
+            "available_for_new": 20_000.0,
+            "max_exposure":      30_000.0,
+        }
+        pi_data = _make_pi_data([], equity=100_000.0)
+        proposed, _ = pa._decide_actions([inc], [], pi_data, cfg, pa_cfg, sizes, 100_000.0)
+        add = next(p for p in proposed if p["action"] == "ADD")
+
+        assert add["catalyst"] == "strong EPS beat"
+        assert add["signals"] == ["RSI > 60", "vol up"]
+        assert "strong EPS beat" in add["reason"]
+
+    # 6. REPLACE recommendation carries catalyst from candidate ─────────────
+
+    def test_replace_recommendation_carries_candidate_catalyst(self, tmp_path, monkeypatch):
+        """REPLACE dict has 'catalyst' and 'signals' from the winning candidate."""
+        import portfolio_allocator as pa
+        scores = self._make_signal_scores(
+            candidate_catalyst="product launch catalyst",
+            candidate_signals=["gap up", "news volume"],
+        )
+        path = tmp_path / "signal_scores.json"
+        path.write_text(json.dumps(scores))
+        monkeypatch.setattr(pa, "_SIGNAL_SCORES_PATH", path)
+
+        # Weak incumbent to guarantee a REPLACE fires
+        weak_inc = {
+            "symbol":                  "AMZN",
+            "market_value":            8_000.0,
+            "account_pct":             8.0,
+            "thesis_score":            3,
+            "thesis_score_normalized": 30,
+            "health":                  "OK",
+            "recommended_pi_action":   "hold",
+            "override_flag":           None,
+            "weakest_factor":          "",
+        }
+        # NVDA candidate with score=88; weak_inc normalized=30; gap=58 > default replace_gap=30
+        candidates = pa._load_candidates({"AMZN"})  # exclude held symbol
+
+        cfg    = _base_cfg()
+        pa_cfg = pa._get_pa_config(cfg)
+        # Disable cooldown check to avoid disk side-effects
+        pa_cfg["replace_score_gap"] = 30.0
+        sizes  = {
+            "buying_power":      100_000.0,
+            "core":              15_000.0,
+            "standard":          8_000.0,
+            "available_for_new": 20_000.0,
+            "max_exposure":      30_000.0,
+        }
+        pi_data = _make_pi_data([], equity=100_000.0)
+        proposed, _ = pa._decide_actions(
+            [weak_inc], candidates, pi_data, cfg, pa_cfg, sizes, 100_000.0
+        )
+        replace = next((p for p in proposed if p["action"] == "REPLACE"), None)
+        assert replace is not None, "REPLACE must fire when candidate gap > threshold"
+        assert replace["catalyst"] == "product launch catalyst"
+        assert replace["signals"] == ["gap up", "news volume"]
+        assert "product launch catalyst" in replace["reason"]

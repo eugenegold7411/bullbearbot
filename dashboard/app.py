@@ -108,6 +108,17 @@ table.pos-table tr:hover td { background: #1c2128; }
 .dec-panel { max-height: 340px; overflow-y: auto; }
 .thesis-card { border-left: 3px solid #58a6ff; background: #0d1117; padding: 10px 14px; border-radius: 0 6px 6px 0; margin-bottom: 8px; }
 .thesis-card:last-child { margin-bottom: 0; }
+.hero-pnl { text-align: center; padding: 20px 16px; }
+.hero-number { font-size: 44px; font-weight: 800; line-height: 1.1; }
+.hero-sub { font-size: 14px; margin-top: 2px; }
+.watch-bullet { padding: 5px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+.watch-bullet:last-child { border-bottom: none; }
+.compact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.trail-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.trail-table th { background: #21262d; color: #8b949e; font-weight: 600; padding: 6px 10px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.trail-table td { padding: 6px 10px; border-bottom: 1px solid #21262d; }
+.trail-table tr:last-child td { border-bottom: none; }
+@media (max-width: 520px) { .compact-grid { grid-template-columns: 1fr; } }
 """
 
 # Plain string — no escaping needed when injected via {_COUNTDOWN_JS} in f-strings
@@ -668,6 +679,7 @@ def _build_a2_position_cards(structures: list, a2_live_positions: list) -> list:
             "iv_env": iv_env, "iv_rank_str": iv_rank_str,
             "profit_line": profit_line, "max_gain_str": max_gain_str, "max_loss_str": max_loss_str,
             "pnl_str": pnl_str, "pnl_color": pnl_color, "rationale": rationale,
+            "progress_html": _a2_position_progress_html(net_pnl, max_cost, max_profit),
         })
     return cards[:10]
 
@@ -713,6 +725,330 @@ def _fmt_orders_html(recent_orders, is_options: bool = False, limit: int = 6) ->
     return html or '<div style="color:#8b949e;font-size:13px">No recent orders</div>'
 
 
+# ── New UX helpers ────────────────────────────────────────────────────────────
+def _morning_brief_mtime_float() -> float:
+    try:
+        return (BOT_DIR / "data/market/morning_brief.json").stat().st_mtime
+    except Exception:
+        return 0.0
+
+
+def _brief_staleness_html(mtime_float: float) -> str:
+    if not mtime_float or not _is_market_hours():
+        return ""
+    age_h = (time.time() - mtime_float) / 3600
+    if age_h < 2:
+        return ""
+    if age_h < 6:
+        return f' <span style="color:#d29922;font-size:11px">&#x26A0;&#xFE0F; {age_h:.0f}h ago</span>'
+    return f' <span style="color:#f85149;font-size:11px">&#x1F534; {age_h:.0f}h ago (stale)</span>'
+
+
+def _a2_position_progress_html(net_pnl: float, max_cost, max_profit) -> str:
+    try:
+        if not max_cost or max_cost <= 0:
+            return ""
+        max_l = float(max_cost)
+        max_p = float(max_profit) if max_profit else max_l
+        span = max_l + max_p
+        if span <= 0:
+            return ""
+        clamped = max(-max_l, min(max_p, net_pnl))
+        pos_pct = (clamped + max_l) / span * 100
+        stop_pct = (max_l * 0.5) / span * 100
+        be_pct = max_l / span * 100
+        target_pct = (max_l + max_p * 0.8) / span * 100
+        fill_color = "#3fb950" if net_pnl >= 0 else "#f85149"
+        if net_pnl >= 0:
+            fill_from, fill_to = be_pct, pos_pct
+        else:
+            fill_from, fill_to = pos_pct, be_pct
+        fill_width = abs(fill_to - fill_from)
+        dist_to_target = max_p * 0.8 - net_pnl
+        dist_to_stop = net_pnl - (-max_l * 0.5)
+        dist_to_stop_sign = "+" if dist_to_stop >= 0 else ""
+        dist_to_target_arrow = "&#x2191; " if dist_to_target > 0 else "&#x2713; "
+        return (
+            f'<div style="position:relative;height:18px;background:#21262d;border-radius:4px;margin:8px 0;overflow:hidden">'
+            f'<div style="position:absolute;left:{fill_from:.1f}%;width:{fill_width:.1f}%;height:100%;background:{fill_color};opacity:0.6"></div>'
+            f'<div style="position:absolute;left:{stop_pct:.1f}%;top:0;width:2px;height:100%;background:#f85149;opacity:0.8" title="50% stop"></div>'
+            f'<div style="position:absolute;left:{be_pct:.1f}%;top:0;width:2px;height:100%;background:#58a6ff;opacity:0.8" title="breakeven"></div>'
+            f'<div style="position:absolute;left:{target_pct:.1f}%;top:0;width:2px;height:100%;background:#3fb950;opacity:0.8" title="80% target"></div>'
+            f'<div style="position:absolute;left:calc({pos_pct:.1f}% - 3px);top:3px;width:6px;height:12px;background:#fff;border-radius:2px;opacity:0.9"></div>'
+            f'</div>'
+            f'<div style="font-size:10px;color:#8b949e;display:flex;justify-content:space-between;margin-bottom:3px">'
+            f'<span style="color:#f85149">-{_fm(max_l)}</span>'
+            f'<span style="color:#58a6ff">BE</span>'
+            f'<span style="color:#3fb950">+{_fm(max_p*0.8)}</span>'
+            f'<span>+{_fm(max_p)}</span>'
+            f'</div>'
+            f'<div style="font-size:11px;color:#8b949e">'
+            f'{dist_to_target_arrow}{_fm(abs(dist_to_target))} to target &nbsp;|&nbsp; '
+            f'{dist_to_stop_sign}{_fm(abs(dist_to_stop))} margin above stop'
+            f'</div>'
+        )
+    except Exception:
+        return ""
+
+
+def _trail_table_html(positions: list, trail_tiers: list) -> str:
+    if not positions:
+        return '<div style="color:#8b949e;font-size:13px">No open positions.</div>'
+    rows = ""
+    for p in positions:
+        entry = p.get("entry", 0.0)
+        current = p.get("current", 0.0)
+        stop = p.get("stop")
+        if not entry or not current:
+            continue
+        sym = p["symbol"]
+        gain_pct = (current - entry) / entry * 100
+        current_tier_idx = -1
+        for i, tier in enumerate(trail_tiers):
+            if gain_pct >= tier.get("gain_pct", 0) * 100:
+                current_tier_idx = i
+        if gain_pct < 0 or current_tier_idx < 0:
+            tier_label = "No trail"
+            tier_color = "#8b949e"
+        else:
+            stop_floor = trail_tiers[current_tier_idx].get("stop_pct", 0) * 100
+            tier_label = f"T{current_tier_idx+1} (stop &ge;+{stop_floor:.0f}%)"
+            tier_color = "#3fb950"
+        next_idx = current_tier_idx + 1
+        if next_idx < len(trail_tiers):
+            nt = trail_tiers[next_idx]
+            trig_price = entry * (1 + nt.get("gain_pct", 0))
+            next_trigger = f"${trig_price:.2f} (+{nt.get('gain_pct',0)*100:.0f}%)"
+        elif trail_tiers and current_tier_idx < 0:
+            t1 = trail_tiers[0]
+            trig_price = entry * (1 + t1.get("gain_pct", 0))
+            next_trigger = f"${trig_price:.2f} (+{t1.get('gain_pct',0)*100:.0f}%)"
+        else:
+            next_trigger = "max tier"
+        if stop is None:
+            stop_str, stop_color = "—", "#f85149"
+        elif stop >= entry * 1.001:
+            stop_str, stop_color = f"${stop:.2f}", "#3fb950"
+        elif stop >= entry * 0.998:
+            stop_str, stop_color = f"${stop:.2f}", "#58a6ff"
+        else:
+            stop_str, stop_color = f"${stop:.2f}", "#d29922"
+        gain_color = "#3fb950" if gain_pct >= 0 else "#f85149"
+        gain_sign = "+" if gain_pct >= 0 else ""
+        rows += (
+            f'<tr>'
+            f'<td><b>{sym}</b></td>'
+            f'<td style="color:{gain_color}">{gain_sign}{gain_pct:.1f}%</td>'
+            f'<td style="color:{tier_color}">{tier_label}</td>'
+            f'<td style="color:#8b949e">{next_trigger}</td>'
+            f'<td style="color:{stop_color}">{stop_str}</td>'
+            f'</tr>'
+        )
+    if not rows:
+        return '<div style="color:#8b949e;font-size:13px">No position data.</div>'
+    return (
+        '<div class="table-wrap"><table class="trail-table">'
+        '<thead><tr><th>Symbol</th><th>Gain %</th><th>Trail Tier</th><th>Next Trigger</th><th>Stop</th></tr></thead>'
+        f'<tbody>{rows}</tbody></table></div>'
+    )
+
+
+def _allocator_shadow_compact() -> str:
+    try:
+        path = BOT_DIR / "data/analytics/portfolio_allocator_shadow.jsonl"
+        entries = _jsonl_last(path, n=1)
+        if not entries:
+            return ""
+        entry = entries[0]
+        actions = entry.get("proposed_actions", [])
+        if not actions:
+            return ""
+        ts = entry.get("timestamp", "")
+        ts_label = ""
+        if ts:
+            try:
+                s = ts.replace("Z", "+00:00")
+                if "T" not in s:
+                    s = s[:19].replace(" ", "T") + "+00:00"
+                dt = datetime.fromisoformat(s)
+                et = dt + ET_OFFSET
+                ts_label = et.strftime("%-I:%M %p")
+            except Exception:
+                ts_label = ""
+        parts = [f"{a.get('action','').upper()} {a.get('symbol','')}"
+                 for a in actions if a.get("action","").upper() != "HOLD" and a.get("symbol")]
+        if not parts:
+            parts = [f"{a.get('action','').upper()} {a.get('symbol','')}"
+                     for a in actions[:3] if a.get("symbol")]
+        action_str = " | ".join(parts[:5])
+        if len(actions) > 5:
+            action_str += f" +{len(actions)-5}"
+        ts_part = (f' <span style="color:#8b949e">[updated {ts_label}]</span>' if ts_label else "")
+        return (
+            f'<div style="font-size:13px;padding:8px 0">'
+            f'<span style="color:#d29922;font-weight:600;font-family:monospace">ALLOCATOR (shadow):</span> '
+            f'<span style="color:#c9d1d9;font-family:monospace">{action_str}</span>{ts_part}'
+            f'</div>'
+        )
+    except Exception:
+        return ""
+
+
+def _a2_pipeline_today() -> dict:
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    out = {"total": 0, "submitted": 0, "fully_filled": 0, "cancelled": 0, "proposed": 0}
+    try:
+        raw = json.loads((BOT_DIR / "data/account2/positions/structures.json").read_text())
+        for s in raw:
+            if not isinstance(s, dict):
+                continue
+            opened = str(s.get("opened_at", ""))
+            if not opened.startswith(today_str):
+                continue
+            out["total"] += 1
+            lc = s.get("lifecycle", "")
+            if lc in out:
+                out[lc] += 1
+    except Exception:
+        pass
+    return out
+
+
+def _a1_decisions_compact_html(decisions: list) -> str:
+    if not decisions:
+        return '<div style="color:#8b949e;font-size:12px">No decisions yet.</div>'
+    rows = ""
+    for d in decisions[:5]:
+        ts = _to_et(d.get("ts", ""))
+        regime = d.get("regime", d.get("regime_view", "?"))
+        score = d.get("regime_score", "")
+        actions = d.get("actions", d.get("ideas", []))
+        act_parts = []
+        for a in actions[:4]:
+            sym = a.get("symbol", "")
+            intent = (a.get("action") or a.get("intent") or "").upper()
+            if sym and intent:
+                c = "#3fb950" if intent in ("BUY", "ADD") else ("#f85149" if intent in ("SELL", "EXIT", "TRIM") else "#8b949e")
+                act_parts.append(f'<span style="color:{c}">{intent} {sym}</span>')
+        acts_line = " &middot; ".join(act_parts) if act_parts else '<span style="color:#8b949e">HOLD</span>'
+        score_str = f"({score})" if score != "" else ""
+        rc = "#3fb950" if "risk_on" in str(regime) or "bullish" in str(regime) else (
+             "#f85149" if "risk_off" in str(regime) or "bearish" in str(regime) else "#d29922")
+        rows += (
+            f'<div style="font-size:12px;padding:3px 0;border-bottom:1px solid #21262d;'
+            f'font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+            f'<span style="color:#8b949e">[{ts}]</span> '
+            f'<span style="color:{rc}">{regime}</span><span style="color:#8b949e">{score_str}</span> '
+            f'{acts_line}</div>'
+        )
+    return rows
+
+
+def _a2_decisions_compact_html(decs: list) -> str:
+    if not decs:
+        return '<div style="color:#8b949e;font-size:12px">No A2 decisions yet.</div>'
+    rows = ""
+    for d in decs[:5]:
+        ts = _to_et(d.get("built_at", ""))
+        result = d.get("execution_result", "?")
+        cand = d.get("selected_candidate") or {}
+        sym = cand.get("symbol", "") if isinstance(cand, dict) else ""
+        st = cand.get("structure_type", "") if isinstance(cand, dict) else ""
+        cand_str = f"{sym} {st}".strip() if sym else "—"
+        reason = d.get("no_trade_reason", "") or ""
+        rc = "#3fb950" if result == "submitted" else ("#d29922" if result == "no_trade" else "#8b949e")
+        reason_part = f' <span style="color:#8b949e">({reason[:30]})</span>' if reason else ""
+        rows += (
+            f'<div style="font-size:12px;padding:3px 0;border-bottom:1px solid #21262d;'
+            f'font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+            f'<span style="color:#8b949e">[{ts}]</span> '
+            f'<span style="color:{rc}">{result}</span>{reason_part} '
+            f'<span style="color:#8b949e">{cand_str}</span></div>'
+        )
+    return rows
+
+
+def _watch_now_bullets(status: dict) -> list:
+    bullets = []
+
+    # 1. Earnings binary events
+    for p in status.get("positions", []):
+        earn = p.get("earnings", "")
+        if earn:
+            sym = p["symbol"]
+            entry = p.get("entry", 1)
+            current = p.get("current", entry)
+            gain = (current - entry) / entry * 100 if entry else 0
+            bullets.append(("critical",
+                f"<b>{sym}</b>: {earn} &mdash; {gain:+.1f}% open. Consider sizing before binary event."))
+            if len(bullets) >= 6:
+                return bullets
+
+    # 2. Trail triggers — within 1% of next tier
+    trail_tiers = status.get("trail_tiers", [])
+    for p in status.get("positions", []):
+        entry = p.get("entry", 0)
+        current = p.get("current", 0)
+        if not entry or not current:
+            continue
+        gain_pct = (current - entry) / entry * 100
+        for i, tier in enumerate(trail_tiers):
+            tier_gain = tier.get("gain_pct", 0) * 100
+            if 0 < tier_gain - gain_pct < 1.0:
+                trig = entry * (1 + tier.get("gain_pct", 0))
+                bullets.append(("orange",
+                    f"<b>{p['symbol']}</b>: {gain_pct:.1f}% gain &mdash; {tier_gain-gain_pct:.1f}% from T{i+1} trail trigger at ${trig:.2f}"))
+                break
+        if len(bullets) >= 6:
+            return bullets
+
+    # 3. Entries primed — most recent decision has BUY/ADD
+    a1_decs = status.get("a1_decisions", [])
+    if a1_decs:
+        d = a1_decs[0]
+        actions = d.get("actions", d.get("ideas", []))
+        buys = [a.get("symbol", "") for a in actions
+                if (a.get("action") or a.get("intent") or "").upper() in ("BUY", "ADD") and a.get("symbol")]
+        if buys:
+            bullets.append(("orange", f"Bot eyeing entries: <b>{', '.join(buys[:3])}</b> &mdash; last decision has BUY/ADD intent"))
+            if len(bullets) >= 6:
+                return bullets
+
+    # 4. A2 duplicate-block streak
+    a2_decs = status.get("a2_decisions", [])
+    dup_count = sum(1 for d in a2_decs if d.get("no_trade_reason") == "duplicate_submission_blocked")
+    if dup_count >= 2:
+        bullets.append(("orange",
+            f"A2: {dup_count} of last 5 cycles blocked as duplicate submissions &mdash; possible stale structure"))
+        if len(bullets) >= 6:
+            return bullets
+
+    # 5. Cost burn
+    costs = status.get("costs", {})
+    daily_cost = float(costs.get("daily_cost", 0) or 0)
+    proj = daily_cost * 22
+    if proj > 400:
+        bullets.append(("critical", f"Cost burn &#x1F534; <b>{_fm(proj)}/month</b> projected ({_fm(daily_cost)}/day &times; 22 days)"))
+    elif proj > 250:
+        bullets.append(("orange", f"Cost burn &#x26A0;&#xFE0F; <b>{_fm(proj)}/month</b> projected ({_fm(daily_cost)}/day &times; 22 days)"))
+    if len(bullets) >= 6:
+        return bullets
+
+    # 6. Regime score
+    decision = status.get("decision", {})
+    regime = decision.get("regime", decision.get("regime_view", ""))
+    try:
+        rs = float(decision.get("regime_score", 50) or 50)
+        if rs < 25:
+            bullets.append(("critical", f"Regime score {rs:.0f}/100 &mdash; risk-off: <b>{regime}</b>"))
+        elif rs < 40:
+            bullets.append(("orange", f"Regime score {rs:.0f}/100 &mdash; defensive: <b>{regime}</b>"))
+    except Exception:
+        pass
+
+    return bullets[:6]
+
+
 # ── Warning helpers ───────────────────────────────────────────────────────────
 def _build_warnings(status: dict) -> list:
     warnings = []
@@ -720,9 +1056,26 @@ def _build_warnings(status: dict) -> list:
     a2_mode = status["a2_mode"].get("mode", "normal").upper()
     if a1_mode != "NORMAL":
         detail = status["a1_mode"].get("reason_detail", "")[:100]
-        warnings.append(("critical", f"&#x26A0; A1 MODE: {a1_mode} — {detail}"))
+        # Find pending SELL/TRIM actions from recent decisions
+        pending_exits = []
+        for d in status.get("a1_decisions", [])[:3]:
+            for a in d.get("actions", d.get("ideas", [])):
+                intent = (a.get("action") or a.get("intent") or "").upper()
+                sym = a.get("symbol", "")
+                if intent in ("SELL", "EXIT", "TRIM") and sym:
+                    pending_exits.append(f"{intent} {sym}")
+        blocked_str = ""
+        if pending_exits:
+            blocked_str = f" | Bot wants: {', '.join(pending_exits[:3])}"
+        since = status["a1_mode"].get("entered_at", "")
+        since_str = f" since {_to_et(since)}" if since else ""
+        warnings.append(("critical", f"&#x26A0; A1 MODE: {a1_mode} &mdash; {detail}{since_str}{blocked_str}"))
     if a2_mode != "NORMAL":
-        warnings.append(("orange", f"&#x26A0; A2 MODE: {a2_mode}"))
+        # Check for A2 duplicate-block streak
+        a2_decs = status.get("a2_decisions", [])
+        dup_count = sum(1 for d in a2_decs if d.get("no_trade_reason") == "duplicate_submission_blocked")
+        dup_note = f" ({dup_count} consecutive duplicate-blocks)" if dup_count >= 2 else ""
+        warnings.append(("orange", f"&#x26A0; A2 MODE: {a2_mode}{dup_note}"))
     if not status["a1"].get("ok"):
         warnings.append(("critical", f"&#x26A0; A1 API ERROR: {status['a1'].get('error','?')[:80]}"))
     if not status["a2"].get("ok"):
@@ -734,7 +1087,7 @@ def _build_warnings(status: dict) -> list:
         elif ov in ("core", "dynamic"):
             warnings.append(("orange", f"&#x26A1; {p['symbol']}: OVERSIZE {ov.upper()} ({_fp(p['pct_of_bp'])} of BP)"))
         if p.get("gap_to_stop") is not None and p["gap_to_stop"] < 2.0:
-            warnings.append(("orange", f"&#x1F534; {p['symbol']}: near stop — gap {p['gap_to_stop']:.1f}%"))
+            warnings.append(("orange", f"&#x1F534; {p['symbol']}: near stop &mdash; gap {p['gap_to_stop']:.1f}%"))
         if p.get("earnings"):
             warnings.append(("orange", f"&#x1F4C5; {p['symbol']}: {p['earnings']}"))
     return warnings
@@ -830,10 +1183,31 @@ def _page_overview(status: dict, now_et: str) -> str:
     gate = status["gate"]
     daily_cost = float(costs.get("daily_cost", 0) or 0)
     daily_calls = costs.get("daily_calls", 0)
-    proj_color = "#f85149" if daily_cost * 30 > 150 else "#3fb950"
+    proj_monthly = daily_cost * 22
+    if proj_monthly > 400:
+        proj_color = "#f85149"
+        proj_icon = "&#x1F534; "
+    elif proj_monthly > 250:
+        proj_color = "#d29922"
+        proj_icon = "&#x26A0;&#xFE0F; "
+    else:
+        proj_color = "#3fb950"
+        proj_icon = ""
     sonnet_calls = gate.get("total_calls_today", "—")
     buys = status["buys_today"]
     sells = status["sells_today"]
+
+    # Top-3 callers by cost
+    by_caller = costs.get("by_caller", {}) if isinstance(costs, dict) else {}
+    top_callers = sorted(by_caller.items(), key=lambda x: float(x[1].get("cost", 0) if isinstance(x[1], dict) else 0), reverse=True)[:3]
+    callers_html = ""
+    for caller, cdata in top_callers:
+        c_cost = float(cdata.get("cost", 0) if isinstance(cdata, dict) else 0)
+        c_calls = cdata.get("calls", 0) if isinstance(cdata, dict) else 0
+        callers_html += (
+            f'<div style="font-size:11px;color:#8b949e;padding:2px 0">'
+            f'<span style="color:#c9d1d9">{caller}</span>: {_fm(c_cost)} ({c_calls} calls)</div>'
+        )
 
     flags_list = []
     for p in status["positions"]:
@@ -857,9 +1231,72 @@ def _page_overview(status: dict, now_et: str) -> str:
     git_hash = status["git_hash"]
     svc_uptime = status["service_uptime"]
 
+    # P&L hero
+    combined_pnl = a1_pnl + a2_pnl
+    combined_color = "#3fb950" if combined_pnl >= 0 else "#f85149"
+    combined_sign = "+" if combined_pnl >= 0 else ""
+
+    # Watch Now
+    watch_bullets = _watch_now_bullets(status)
+    watch_html = ""
+    if watch_bullets:
+        items = ""
+        for sev, text in watch_bullets:
+            icon = "&#x1F534;" if sev == "critical" else "&#x26A0;&#xFE0F;"
+            color = "#f85149" if sev == "critical" else "#d29922"
+            items += f'<div class="watch-bullet"><span style="color:{color}">{icon}</span> {text}</div>'
+        watch_html = f'<div class="card" style="padding:10px 14px">{items}</div>'
+
+    # Trail table
+    trail_tiers = status.get("trail_tiers", [])
+    trail_html = _trail_table_html(status["positions"], trail_tiers)
+
+    # Allocator compact line
+    allocator_line = status.get("allocator_line", "") or ""
+
+    # Compact decisions (two-column grid)
+    a1_comp = _a1_decisions_compact_html(status.get("a1_decisions", []))
+    a2_comp = _a2_decisions_compact_html(status.get("a2_decisions", []))
+
+    # A2 pipeline today
+    a2_pipe = status.get("a2_pipeline", {})
+    a2_pipe_total = a2_pipe.get("total", 0)
+    a2_pipe_str = (
+        f'Today: {a2_pipe_total} structures &mdash; '
+        f'{a2_pipe.get("fully_filled",0)} filled / '
+        f'{a2_pipe.get("submitted",0)} submitted / '
+        f'{a2_pipe.get("cancelled",0)} cancelled / '
+        f'{a2_pipe.get("proposed",0)} proposed'
+    ) if a2_pipe_total else "No A2 structures today."
+
     body = f"""
 <div class="container">
+
+<div class="section-label">Today&apos;s P&amp;L</div>
+<div class="card hero-pnl">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+    <div>
+      <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">A1 Equities</div>
+      <div class="hero-number" style="color:{a1_pnl_color}">{a1_pnl_sign}{_fm(a1_pnl)}</div>
+      <div class="hero-sub" style="color:{a1_pnl_color}">{a1_pnl_sign}{a1_pnl_pct:.2f}%</div>
+    </div>
+    <div>
+      <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">A2 Options</div>
+      <div class="hero-number" style="color:{a2_pnl_color}">{a2_pnl_sign}{_fm(a2_pnl)}</div>
+      <div class="hero-sub" style="color:{a2_pnl_color}">{a2_pnl_sign}{a2_pnl_pct:.2f}%</div>
+    </div>
+  </div>
+  <div style="border-top:1px solid #30363d;padding-top:12px">
+    <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Combined</div>
+    <div style="font-size:28px;font-weight:700;color:{combined_color}">{combined_sign}{_fm(combined_pnl)}</div>
+  </div>
+</div>
+
+<div class="section-label">Watch Now</div>
+{watch_html if watch_html else '<div class="card"><div style="color:#3fb950;font-size:13px">&#x2713; Nothing urgent to watch.</div></div>'}
+
 {warn_html}
+
 <div class="section-label">Accounts</div>
 <div class="accounts">
   <div class="card">
@@ -867,7 +1304,6 @@ def _page_overview(status: dict, now_et: str) -> str:
     <div class="acct-row"><span class="acct-label">Equity</span><span class="acct-val">{_fm(a1_equity)}</span></div>
     <div class="acct-row"><span class="acct-label">Buying Power</span><span class="acct-val">{_fm(a1_bp)}</span></div>
     <div class="acct-row"><span class="acct-label">Positions</span><span class="acct-val">{a1_pos_count}</span></div>
-    <div class="acct-row"><span class="acct-label">Today P&amp;L</span><span class="acct-val" style="color:{a1_pnl_color}">{a1_pnl_sign}{_fm(a1_pnl)} ({a1_pnl_sign}{a1_pnl_pct:.2f}%)</span></div>
     <div class="acct-row"><span class="acct-label">Unrealized P&amp;L</span><span class="acct-val" style="color:{a1_unreal_c}">{a1_unreal_s}{_fm(a1_unreal)}</span></div>
     <div style="margin-top:8px">
       <div style="font-size:11px;color:#8b949e;margin-bottom:3px">Capital utilization {a1_util:.0f}%</div>
@@ -880,9 +1316,25 @@ def _page_overview(status: dict, now_et: str) -> str:
     <div class="acct-row"><span class="acct-label">Equity</span><span class="acct-val">{_fm(a2_equity)}</span></div>
     <div class="acct-row"><span class="acct-label">Buying Power</span><span class="acct-val">{_fm(a2_bp)}</span></div>
     <div class="acct-row"><span class="acct-label">Positions</span><span class="acct-val">{a2_pos_count}</span></div>
-    <div class="acct-row"><span class="acct-label">Today P&amp;L</span><span class="acct-val" style="color:{a2_pnl_color}">{a2_pnl_sign}{_fm(a2_pnl)} ({a2_pnl_sign}{a2_pnl_pct:.2f}%)</span></div>
     <div class="acct-row"><span class="acct-label">Last cycle</span><span class="acct-val muted">{a2_ts}</span></div>
     <div style="margin-top:10px;font-size:12px;text-align:right"><a href="/a2">Full detail &rarr;</a></div>
+  </div>
+</div>
+
+<div class="section-label">Trail Status</div>
+<div class="card" style="padding:0 0 4px">{trail_html}</div>
+
+{f'<div class="section-label">Allocator</div><div class="card">{allocator_line}</div>' if allocator_line else ''}
+
+<div class="section-label">Recent Decisions</div>
+<div class="compact-grid">
+  <div class="card" style="padding:10px 12px">
+    <div style="font-size:11px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">A1</div>
+    {a1_comp}
+  </div>
+  <div class="card" style="padding:10px 12px">
+    <div style="font-size:11px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">A2</div>
+    {a2_comp}
   </div>
 </div>
 
@@ -897,9 +1349,15 @@ def _page_overview(status: dict, now_et: str) -> str:
       <tr><td>Sonnet Calls Today</td><td>{sonnet_calls}</td><td>—</td></tr>
       <tr><td>Buys / Sells</td><td>{buys} / {sells}</td><td>—</td></tr>
       <tr><td>Claude Cost Today</td><td style="color:{proj_color}">{_fm(daily_cost)} ({daily_calls:,} calls)</td><td>—</td></tr>
-      <tr><td>30-day Projection</td><td style="color:{proj_color}">{_fm(daily_cost * 30)}</td><td>—</td></tr>
+      <tr><td>Proj/Month (22d)</td><td style="color:{proj_color}">{proj_icon}{_fm(proj_monthly)}</td><td>—</td></tr>
     </tbody>
   </table>
+  {f'<div style="padding:8px 12px;border-top:1px solid #21262d"><div style="font-size:11px;color:#8b949e;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">Top callers</div>{callers_html}</div>' if callers_html else ''}
+</div>
+
+<div class="section-label">A2 Pipeline Today</div>
+<div class="card">
+  <div style="font-size:13px;color:#c9d1d9;font-family:monospace">{a2_pipe_str}</div>
 </div>
 
 <div class="section-label">Active Flags</div>
@@ -974,10 +1432,11 @@ def _page_a1(status: dict, now_et: str) -> str:
                 f'<b style="color:{dir_color}">{dir_icon} {sym}</b>{conv_badge}'
                 f' <span style="color:#8b949e">— {cat_text[:90]}</span></div>'
             )
+        stale_html = _brief_staleness_html(status.get("morning_brief_mtime", 0))
         brief_html = (
             f'<div style="font-size:12px;color:#8b949e;margin-bottom:8px">'
             f'Tone: <b style="color:{tone_color}">{tone}</b> &nbsp;|&nbsp; {len(picks)} picks'
-            f' &nbsp;|&nbsp; {brief_time_str}</div>{picks_html}'
+            f' &nbsp;|&nbsp; {brief_time_str}{stale_html}</div>{picks_html}'
         )
     else:
         brief_html = '<div style="color:#8b949e;font-size:13px">Morning brief not yet generated.</div>'
@@ -1096,7 +1555,13 @@ def _page_a1(status: dict, now_et: str) -> str:
     last_regime = gate.get("last_regime", "—")
     daily_cost = float(costs.get("daily_cost", 0) or 0)
     daily_calls = costs.get("daily_calls", 0)
-    proj_color = "#f85149" if daily_cost * 30 > 150 else "#3fb950"
+    proj_monthly_a1 = daily_cost * 22
+    if proj_monthly_a1 > 400:
+        proj_color = "#f85149"
+    elif proj_monthly_a1 > 250:
+        proj_color = "#d29922"
+    else:
+        proj_color = "#3fb950"
     buys_today = status["buys_today"]
     sells_today = status["sells_today"]
     rejected = [t for t in trades if t.get("status") == "rejected"]
@@ -1194,7 +1659,7 @@ def _page_a1(status: dict, now_et: str) -> str:
     <div class="stat-box"><div class="stat-label">Rejected</div><div class="stat-val orange">{len(rejected)}</div></div>
     <div class="stat-box"><div class="stat-label">Stop Trails</div><div class="stat-val">{len(trail_stops)}</div></div>
     <div class="stat-box"><div class="stat-label">Cost Today</div><div class="stat-val" style="font-size:14px;color:{proj_color}">{_fm(daily_cost)}</div></div>
-    <div class="stat-box"><div class="stat-label">Proj/Month</div><div class="stat-val" style="font-size:14px;color:{proj_color}">{_fm(daily_cost*30)}</div></div>
+    <div class="stat-box"><div class="stat-label">Proj/Month (22d)</div><div class="stat-val" style="font-size:14px;color:{proj_color}">{_fm(proj_monthly_a1)}</div></div>
   </div>
   <div class="kv"><span class="kv-label">Last Sonnet</span><span class="kv-val">{last_sonnet_ts}</span></div>
   <div class="kv"><span class="kv-label">Regime</span><span class="kv-val">{last_regime} (score {regime_score}) &middot; {dec_session}</span></div>
@@ -1270,6 +1735,7 @@ def _page_a2(status: dict, now_et: str) -> str:
     # A2 position cards
     a2_cards_html = ""
     for card in status.get("a2_pos_cards", []):
+        prog_html = card.get("progress_html", "")
         a2_cards_html += (
             f'<div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px 14px;margin-bottom:8px">'
             f'<div style="font-weight:700;font-size:14px;color:#58a6ff;margin-bottom:4px">{card["title"]}</div>'
@@ -1277,7 +1743,8 @@ def _page_a2(status: dict, now_et: str) -> str:
             f'Strategy: {card["strategy_label"]} &nbsp;|&nbsp; IV: {card["iv_env"]} (rank {card["iv_rank_str"]})</div>'
             f'<div style="font-size:13px;margin-bottom:3px">&#x1F4C8; {card["profit_line"]}</div>'
             f'<div style="font-size:13px;margin-bottom:3px">Max gain: {card["max_gain_str"]} &nbsp;|&nbsp; Max loss: {card["max_loss_str"]}</div>'
-            f'<div style="font-size:13px;margin-bottom:3px;color:{card["pnl_color"]}">Current P&amp;L: {card["pnl_str"]}</div>'
+            f'<div style="font-size:13px;margin-bottom:6px;color:{card["pnl_color"]}">Current P&amp;L: {card["pnl_str"]}</div>'
+            f'{prog_html}'
             f'<div style="font-size:12px;color:#d29922;margin-bottom:6px">Auto-close: 80% of max gain or 50% of max loss</div>'
             f'<div style="font-size:12px;color:#8b949e;border-top:1px solid #21262d;padding-top:6px">{card["rationale"]}</div>'
             f'</div>'
@@ -1458,6 +1925,14 @@ def _build_status() -> dict:
     today_pnl_a1 = _today_pnl_a1()
     today_pnl_a2 = _today_pnl_a2()
 
+    # Load trail tiers from strategy_config
+    trail_tiers = []
+    try:
+        cfg = json.loads((BOT_DIR / "strategy_config.json").read_text())
+        trail_tiers = cfg.get("exit_management", {}).get("trail_tiers", [])
+    except Exception:
+        pass
+
     st = {
         "a1": a1d, "a2": a2d,
         "positions": positions,
@@ -1476,6 +1951,7 @@ def _build_status() -> dict:
         "a2_decision": a2_dec,
         "morning_brief": _morning_brief(),
         "morning_brief_time": _morning_brief_time(),
+        "morning_brief_mtime": _morning_brief_mtime_float(),
         "a1_decisions": a1_decs,
         "a2_decisions": a2_decs,
         "a2_pos_cards": _build_a2_position_cards(a2_structs, a2_live_pos),
@@ -1483,6 +1959,9 @@ def _build_status() -> dict:
         "a2_theses": _a2_top_theses(a2_decs),
         "today_pnl_a1": today_pnl_a1,
         "today_pnl_a2": today_pnl_a2,
+        "trail_tiers": trail_tiers,
+        "a2_pipeline": _a2_pipeline_today(),
+        "allocator_line": _allocator_shadow_compact(),
     }
     st["warnings"] = _build_warnings(st)
     return st

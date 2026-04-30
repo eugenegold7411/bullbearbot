@@ -379,9 +379,9 @@ class TestSizingComparisonTable:
         expected = {
             0.45: (153, 15_300),   # LOW:    15% × equity $102K / $100 = 153
             0.55: (174, 17_400),   # MEDIUM: 15% × BP $116K / $100 = 174 (base CORE)
-            0.68: (232, 23_200),   # HIGH-A: 20% × BP $116K / $100 = 232 (P1 fix)
-            0.72: (232, 23_200),   # HIGH-B: same as HIGH-A
-            0.80: (232, 23_200),   # HIGH-C: 20% × BP $116K / $100 = 232
+            0.68: (290, 29_000),   # HIGH-A: 25% × BP $116K / $100 = 290 (updated 20%→25%)
+            0.72: (290, 29_000),   # HIGH-B: same as HIGH-A
+            0.80: (290, 29_000),   # HIGH-C: 25% × BP $116K / $100 = 290
         }
 
         print("\n=== SIZING COMPARISON TABLE (CORE, VIX=18, price=$100, cfg_65) ===")

@@ -1470,16 +1470,16 @@ class TestRiskKernelSizing(unittest.TestCase):
         self.assertEqual(qty, 150)
         self.assertAlmostEqual(val, 15_000.0, places=0)
 
-    def test_high_conviction_core_20pct_bump(self):
-        """HIGH conviction CORE → 20% instead of 15%."""
+    def test_high_conviction_core_25pct_bump(self):
+        """HIGH conviction CORE → 25% instead of 15%."""
         snap = self._snapshot(equity=100_000.0, exposure=0.0)
         qty, val = self.size_position(
             self._idea(conviction=0.80, tier=self.Tier.CORE),
             snap, self._CONFIG, current_price=100.0, vix=20.0,
         )
-        # 20% of $100k = $20,000 → 200 shares
-        self.assertEqual(qty, 200)
-        self.assertAlmostEqual(val, 20_000.0, places=0)
+        # 25% of $100k = $25,000 → 250 shares
+        self.assertEqual(qty, 250)
+        self.assertAlmostEqual(val, 25_000.0, places=0)
 
     def test_vix_caution_halves_size(self):
         """VIX >= VIX_CAUTION (25) → 50% size reduction."""

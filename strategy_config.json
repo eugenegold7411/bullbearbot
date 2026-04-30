@@ -5,8 +5,8 @@
   "active_strategy": "hybrid",
   "backtest_results": {},
   "position_sizing": {
-    "core_tier_pct": 0.15,
-    "dynamic_tier_pct": 0.1,
+    "core_tier_pct": 0.20,
+    "dynamic_tier_pct": 0.15,
     "intraday_tier_pct": 0.05,
     "max_total_exposure_pct": 0.95,
     "_max_total_exposure_pct_note": "unused \u2014 do not rely on this field. Only consumed by portfolio_intelligence.compute_dynamic_sizes() for prompt display; not enforced by risk_kernel or order_executor.",
@@ -14,13 +14,13 @@
   },
   "parameters": {
     "min_confidence_threshold": "medium",
-    "max_positions": 20,
+    "max_positions": 30,
     "preferred_sessions": [
       "market",
       "extended"
     ],
     "sector_rotation_bias": "neutral",
-    "vix_threshold_caution": 22,
+    "vix_threshold_caution": 25,
     "stop_loss_pct_core": 0.03,
     "stop_loss_pct_intraday": 0.018,
     "take_profit_multiple": 2.5,
@@ -29,8 +29,8 @@
       "dynamic"
     ],
     "stop_loss_pct_overnight": 0.02,
-    "max_position_pct_equity": 0.25,
-    "_max_position_pct_equity_note": "Enforced by risk_kernel.size_position() as single-name cap upper bound. Raised to 0.25 in Sprint 2.5 2026-04-27 for aggressive paper trading (was 0.07).",
+    "max_position_pct_capacity": 0.15,
+    "_max_position_pct_capacity_note": "Enforced by risk_kernel.size_position() as single-name cap upper bound. Denominator is exposure_dollars + buying_power (total_capacity), not equity. Changed from max_position_pct_equity=0.25 (equity-based) in Sprint 10 aggressiveness pass.",
     "max_daily_drawdown_pct": 0.025,
     "max_weekly_drawdown_pct": 0.035,
     "max_day_trades_rolling_5day": 999,
@@ -69,8 +69,10 @@
     "min_dollar_risk_per_trade": 5.0,
     "vector_memory_status": "disabled \u2014 restore before confidence calibration is meaningful",
     "backtest_minimum_sample_before_recalibration": 30,
-    "add_conviction_gate": 0.65,
+    "add_conviction_gate": 0.60,
     "_add_conviction_gate_note": "S7-H: minimum conviction required to ADD to an existing position. BUY on already-held symbol rejected below this threshold.",
+    "capital_utilization_target": 0.70,
+    "_capital_utilization_target_note": "A1 guidance only — no hard gate. When exposure_pct < 70% and regime supports it, prefer entries over holding cash.",
     "research_pipeline_candidates": [
       {
         "name": "TradingAgents Multi-Agent LLM Framework",
@@ -320,7 +322,7 @@
     "trim_score_threshold": 5,
     "weight_deadband": 0.02,
     "min_rebalance_notional": 500,
-    "max_recommendations_per_cycle": 5,
+    "max_recommendations_per_cycle": 10,
     "same_symbol_daily_cooldown_enabled": true,
     "same_day_replace_block_hours": 6,
     "trim_severity": [

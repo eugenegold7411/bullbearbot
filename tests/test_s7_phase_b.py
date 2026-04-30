@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestPositionCapHeadroom(unittest.TestCase):
-    """size_position() subtracts existing position value before applying max_position_pct_equity."""
+    """size_position() subtracts existing position value before applying max_position_pct_capacity."""
 
     @classmethod
     def setUpClass(cls):
@@ -37,9 +37,11 @@ class TestPositionCapHeadroom(unittest.TestCase):
         cls.Conviction = Conviction
         cls.Tier = Tier
 
-    # equity=$100k, cap=15% → $15k hard ceiling per position
+    # equity=$100k, cap=15% of capacity.
+    # Tests set buying_power so that total_capacity = exposure + bp = $100K,
+    # making capacity-based cap equivalent to equity-based cap ($15K).
     _CONFIG = {
-        "parameters": {"max_position_pct_equity": 0.15},
+        "parameters": {"max_position_pct_capacity": 0.15},
         "position_sizing": {
             "core_tier_pct": 0.15,
             "dynamic_tier_pct": 0.08,
@@ -61,11 +63,14 @@ class TestPositionCapHeadroom(unittest.TestCase):
             is_crypto_pos=False,
         )
 
-    def _snapshot(self, positions=None, equity=100_000.0):
+    def _snapshot(self, positions=None, equity=100_000.0, buying_power=None):
+        """Build snapshot. Pass buying_power explicitly to control total_capacity."""
+        if buying_power is None:
+            buying_power = equity * 2
         return self.BrokerSnapshot(
             equity=equity,
             cash=equity,
-            buying_power=equity * 2,
+            buying_power=buying_power,
             open_orders=[],
             positions=positions or [],
         )
@@ -81,8 +86,11 @@ class TestPositionCapHeadroom(unittest.TestCase):
         )
 
     def test_add_into_existing_position_reduces_budget(self):
-        """ADD with $5k existing → cap headroom = $10k, not $15k."""
-        snap = self._snapshot(positions=[self._pos("AAPL", 5_000.0)])
+        """ADD with $5k existing → cap headroom = $10k, not $15k.
+
+        Set bp=$95K so total_capacity=$5K+$95K=$100K → cap=0.15×$100K=$15K → headroom=$10K.
+        """
+        snap = self._snapshot(positions=[self._pos("AAPL", 5_000.0)], buying_power=95_000.0)
         result = self.size_position(
             self._idea("AAPL"), snap, self._CONFIG,
             current_price=100.0, vix=20.0,
@@ -95,25 +103,31 @@ class TestPositionCapHeadroom(unittest.TestCase):
         self.assertEqual(qty, 100)
 
     def test_add_where_existing_at_cap_is_blocked(self):
-        """ADD with existing already at $15k cap → headroom=$0 → rejected."""
-        snap = self._snapshot(positions=[self._pos("AAPL", 15_000.0)])
+        """ADD with existing already at $15k cap → headroom=$0 → rejected.
+
+        bp=$85K → total_capacity=$15K+$85K=$100K → cap=$15K → max_pos_after=0 → rejected.
+        """
+        snap = self._snapshot(positions=[self._pos("AAPL", 15_000.0)], buying_power=85_000.0)
         result = self.size_position(
             self._idea("AAPL"), snap, self._CONFIG,
             current_price=100.0, vix=20.0,
         )
         self.assertIsInstance(result, str,
                               "Expected rejection string when existing position fills cap")
-        self.assertIn("max_position_pct_equity", result)
+        self.assertIn("max_position_pct_capacity", result)
 
     def test_add_where_existing_exceeds_cap_is_blocked(self):
-        """ADD with existing $20k (above $15k cap) → headroom=0 → rejected."""
-        snap = self._snapshot(positions=[self._pos("AAPL", 20_000.0)])
+        """ADD with existing $20k (above $15k cap) → headroom=0 → rejected.
+
+        bp=$80K → total_capacity=$20K+$80K=$100K → cap=$15K → max_pos_after<0 → rejected.
+        """
+        snap = self._snapshot(positions=[self._pos("AAPL", 20_000.0)], buying_power=80_000.0)
         result = self.size_position(
             self._idea("AAPL"), snap, self._CONFIG,
             current_price=100.0, vix=20.0,
         )
         self.assertIsInstance(result, str)
-        self.assertIn("max_position_pct_equity", result)
+        self.assertIn("max_position_pct_capacity", result)
 
     def test_zero_existing_unchanged_from_pre_fix(self):
         """With no existing position, behavior is identical to pre-S7-P: full $15k budget."""
@@ -141,8 +155,11 @@ class TestPositionCapHeadroom(unittest.TestCase):
         self.assertEqual(qty, 150)
 
     def test_existing_just_below_cap_gives_minimal_headroom(self):
-        """Existing $14,900 → headroom $100 → 1 share at $100 allowed."""
-        snap = self._snapshot(positions=[self._pos("AAPL", 14_900.0)])
+        """Existing $14,900 → headroom $100 → 1 share at $100 allowed.
+
+        bp=$85,100 → total_capacity=$14,900+$85,100=$100K → cap=$15K → headroom=$100.
+        """
+        snap = self._snapshot(positions=[self._pos("AAPL", 14_900.0)], buying_power=85_100.0)
         result = self.size_position(
             self._idea("AAPL"), snap, self._CONFIG,
             current_price=100.0, vix=20.0,

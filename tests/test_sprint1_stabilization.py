@@ -136,7 +136,7 @@ def _idea(
 
 
 def _cap_config(max_pct: float = 0.07) -> dict:
-    """Config with max_position_pct_equity set."""
+    """Config with max_position_pct_capacity set."""
     return {
         "parameters": {
             "max_positions": 15,
@@ -145,7 +145,7 @@ def _cap_config(max_pct: float = 0.07) -> dict:
             "take_profit_multiple": 2.5,
             "catalyst_tag_required_for_entry": False,
             "session_gate_enforce": False,
-            "max_position_pct_equity": max_pct,
+            "max_position_pct_capacity": max_pct,
         },
         "position_sizing": {
             "core_tier_pct": 0.15,
@@ -157,7 +157,7 @@ def _cap_config(max_pct: float = 0.07) -> dict:
 
 
 def _no_cap_config() -> dict:
-    """Config without max_position_pct_equity (absent key)."""
+    """Config without max_position_pct_capacity (absent key)."""
     return {
         "parameters": {
             "max_positions": 15,
@@ -178,7 +178,7 @@ def _no_cap_config() -> dict:
 
 class TestMaxPositionCap:
     def test_position_capped_at_max_pct(self):
-        """size_position must not exceed max_position_pct_equity * equity."""
+        """size_position must not exceed max_position_pct_capacity * total_capacity."""
         equity = 100_000.0
         # Core tier at MEDIUM conviction = 15% of $100K = $15K, but cap is 7% = $7K
         snap = _snapshot(equity=equity)
@@ -209,7 +209,7 @@ class TestMaxPositionCap:
         )
 
     def test_cap_missing_from_config_does_not_crash(self):
-        """If max_position_pct_equity absent from config, existing logic runs unchanged."""
+        """If max_position_pct_capacity absent from config, existing logic runs unchanged."""
         snap = _snapshot(equity=100_000.0)
         config = _no_cap_config()
         result = size_position(_idea(tier=Tier.CORE, conviction=0.60), snap, config,

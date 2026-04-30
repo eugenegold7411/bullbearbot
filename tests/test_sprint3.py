@@ -245,15 +245,15 @@ class TestUtcnowFixed:
 
 class TestStrategyConfigNote:
     def test_note_is_not_stale(self):
-        """_max_position_pct_equity_note must not say 'unused'."""
+        """_max_position_pct_capacity_note must not say 'unused'."""
         cfg = json.loads(Path("strategy_config.json").read_text())
-        note = cfg.get("parameters", {}).get("_max_position_pct_equity_note", "")
+        note = cfg.get("parameters", {}).get("_max_position_pct_capacity_note", "")
         assert "unused" not in note.lower(), \
             f"Stale note still present: {note}"
 
     def test_note_mentions_enforcement(self):
         """Note should reference risk_kernel enforcement (was fixed in Sprint 1)."""
         cfg = json.loads(Path("strategy_config.json").read_text())
-        note = cfg.get("parameters", {}).get("_max_position_pct_equity_note", "")
+        note = cfg.get("parameters", {}).get("_max_position_pct_capacity_note", "")
         assert "risk_kernel" in note.lower() or "enforced" in note.lower(), \
             f"Note does not mention enforcement: {note}"

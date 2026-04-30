@@ -365,17 +365,17 @@ def format_positions_with_health(
         bp_pct = float(p.market_value) / bp * 100 if bp > 0 else 0.0
         if bp_pct > 25.0:
             oversize_flag = (
-                f"\n             !! OVERSIZE — {bp_pct:.1f}% of BP exceeds max tier ceiling 25%"
+                f"\n             !! OVERSIZE — {bp_pct:.1f}% of BP exceeds HIGH conviction core ceiling 25%"
                 f" — TRIM or close regardless of tier"
+            )
+        elif bp_pct > 20.0:
+            oversize_flag = (
+                f"\n             !! OVERSIZE — {bp_pct:.1f}% of BP exceeds standard core max 20%"
+                f" — confirm HIGH conviction core or TRIM"
             )
         elif bp_pct > 15.0:
             oversize_flag = (
-                f"\n             !! OVERSIZE — {bp_pct:.1f}% of BP exceeds standard core max 15%"
-                f" — confirm HIGH conviction core or TRIM"
-            )
-        elif bp_pct > 8.0:
-            oversize_flag = (
-                f"\n             !! OVERSIZE for dynamic/intraday tier — {bp_pct:.1f}% of BP exceeds 8%"
+                f"\n             !! OVERSIZE for dynamic/intraday tier — {bp_pct:.1f}% of BP exceeds 15%"
                 f" — TRIM or confirm core tier intended"
             )
         else:

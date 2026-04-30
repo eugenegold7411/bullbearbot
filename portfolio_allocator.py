@@ -85,18 +85,18 @@ def _tier_max_for_symbol(symbol: str, mv: float, sizes: dict) -> float:
     """
     tier = _SYMBOL_TIER_MAP.get((symbol or "").upper())
     if tier == "core":
-        return 0.15
+        return 0.20
     if tier == "dynamic":
-        return 0.08
+        return 0.15
     if tier == "intraday":
         return 0.05
     # Size-inference fallback
     core_max = float(sizes.get("core", 0) or 0)
     dyn_max  = float(sizes.get("standard", 0) or 0)
     if core_max > 0 and mv >= core_max * 0.50:
-        return 0.15
+        return 0.20
     if dyn_max > 0 and mv >= dyn_max * 0.50:
-        return 0.08
+        return 0.15
     return 0.05
 
 
@@ -230,8 +230,7 @@ def _rank_incumbents(pi_data: dict, positions: list, equity: float = 0.0) -> lis
     Build ranked incumbent list from pi_data thesis_scores + positions.
     Returns list sorted by thesis_score ascending (weakest first).
 
-    equity — caller's snapshot.equity (used as account_pct denominator so it
-    matches the risk kernel's max_position_pct_equity enforcement).  Falls back
+    equity — caller's snapshot.equity (used as account_pct denominator).  Falls back
     to sum of market values when not supplied.
     """
     thesis_scores = pi_data.get("thesis_scores", [])
@@ -458,10 +457,14 @@ def _decide_actions(
     trim_thresh         = int(pa_cfg["trim_score_threshold"])   # S7-F: config-driven
     size_trim_enabled   = bool(pa_cfg.get("size_trim_enabled", True))
     size_trim_tol       = float(pa_cfg.get("size_trim_tolerance_pct", 2.0)) / 100.0
-    available_for_new   = float(sizes.get("available_for_new", 0) or 0)
-    bp                  = float(sizes.get("buying_power", 0) or 0)
+    available_for_new    = float(sizes.get("available_for_new", 0) or 0)
+    bp                   = float(sizes.get("buying_power", 0) or 0)
+    current_exposure     = float(sizes.get("current_exposure", 0) or 0)
+    total_capacity       = current_exposure + bp
     # Single-name cap from risk_kernel — ADD and SIZE TRIM must respect this ceiling.
-    max_pos_pct_equity  = float(cfg.get("parameters", {}).get("max_position_pct_equity", 0.25))
+    # Denominator is total_capacity (exposure + buying_power), matching risk_kernel.size_position().
+    max_pos_pct_capacity = float(cfg.get("parameters", {}).get("max_position_pct_capacity", 0.15))
+    max_pos_cap_dollars  = max_pos_pct_capacity * total_capacity if total_capacity > 0 else float("inf")
 
     target_wts = _target_weights(incumbents, sizes)
     proposed:   list[dict] = []
@@ -500,16 +503,15 @@ def _decide_actions(
         # SIZE TRIM: strong thesis but position exceeds tier max by more than tolerance.
         # Fires independently of thesis-score TRIM (exclusive paths: score ≤ trim_thresh
         # goes to thesis TRIM above; score > trim_thresh falls through to here).
-        # Denominator is equity — same basis the risk kernel uses for max_position_pct_equity.
-        # Trim target is min(tier_max × BP, max_pos_pct_equity × equity) so the recommended
-        # target is always kernel-consistent (never above the single-name equity cap).
+        # Denominator is equity for the trigger; trim target uses total_capacity denominator
+        # to match risk_kernel.size_position() max_position_pct_capacity enforcement.
         if size_trim_enabled and score >= 6 and equity > 0 and mv > min_notional:
             eq_frac = mv / equity
             if eq_frac > tier_max + size_trim_tol:
                 target_mv     = (
-                    min(tier_max * bp, max_pos_pct_equity * equity)
+                    min(tier_max * bp, max_pos_cap_dollars)
                     if bp > 0
-                    else max_pos_pct_equity * equity
+                    else max_pos_cap_dollars
                 )
                 trim_notional = round(mv - target_mv, 2)
                 if trim_notional >= min_notional:
@@ -529,14 +531,13 @@ def _decide_actions(
                     continue
 
         # ADD: thesis strong AND room to grow below tier ceiling AND below kernel cap.
-        # acct_pct is mv/equity (equity-denominated, same basis as risk_kernel).
-        # max_pos_pct_equity check aligns with risk_kernel.size_position() — prevents
-        # phantom ADD recommendations that the kernel would silently reject.
+        # max_pos_cap_dollars = max_position_pct_capacity × (exposure + buying_power) — same
+        # basis as risk_kernel.size_position() — prevents ADD recs the kernel would reject.
         # threshold: thesis_score >= 7 (normalized >= 70)
         if (score >= 7
                 and available_for_new > min_notional
                 and acct_pct < tier_max - weight_deadband
-                and acct_pct < max_pos_pct_equity):
+                and mv < max_pos_cap_dollars):
             _cat = (inc.get("signal_catalyst") or "")[:80]
             proposed.append({
                 "action":           "ADD",

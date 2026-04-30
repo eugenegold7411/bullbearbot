@@ -1144,17 +1144,17 @@ class TestPersistentCooldown:
 # ---------------------------------------------------------------------------
 
 class TestDenominatorFix:
-    """Suite 10: account_pct and SIZE TRIM use equity denominator, not buying_power."""
+    """Suite 10: account_pct uses equity denominator; SIZE TRIM target uses capacity-based cap."""
 
-    # ── Scenario constants matching the task brief ──────────────────────────
-    # equity ≈ $108,472, BP ≈ $214,000, max_position_pct_equity = 0.25
+    # ── Scenario constants ──────────────────────────────────────────────────
+    # equity ≈ $108,472, BP ≈ $214,000, max_position_pct_capacity = 0.15
     _EQUITY       = 108_472.0
     _BP           = 214_000.0
-    _MAX_POS_PCT  = 0.25
+    _MAX_POS_PCT  = 0.15   # max_position_pct_capacity (capacity-denominated)
 
     def _cfg(self) -> dict:
         cfg = _base_cfg()
-        cfg["parameters"] = {"max_positions": 14, "max_position_pct_equity": self._MAX_POS_PCT}
+        cfg["parameters"] = {"max_positions": 14, "max_position_pct_capacity": self._MAX_POS_PCT}
         cfg["position_sizing"]["max_total_exposure_pct"] = 0.95  # production value
         return cfg
 
@@ -1186,10 +1186,10 @@ class TestDenominatorFix:
             f"(equity-based); old code used max_exposure/0.30 which gave wrong denominator"
         )
 
-    # 2. ADD blocked when mv / equity >= max_position_pct_equity ─────────────
+    # 2. ADD blocked when position exceeds SIZE TRIM threshold ───────────────
 
     def test_add_blocked_when_at_max_position_pct_equity(self):
-        """Position at 25.9% of equity (>= 25% cap) must block ADD even if thesis=8."""
+        """Position at 25.9% of equity (> 22% SIZE TRIM threshold) must block ADD even if thesis=8."""
         equity  = self._EQUITY
         mv      = equity * 0.259   # 25.9% of equity
         inc = {
@@ -1214,13 +1214,13 @@ class TestDenominatorFix:
         googl = next(p for p in proposed if p["symbol"] == "GOOGL")
         assert googl["action"] != "ADD", (
             f"ADD must be blocked at {mv/equity*100:.1f}% equity "
-            f"(>= max_position_pct_equity={self._MAX_POS_PCT*100:.0f}%)"
+            f"(SIZE TRIM threshold {self._MAX_POS_PCT*100:.0f}% capacity cap or tier breach)"
         )
 
-    # 3. ADD allowed when mv / equity < max_position_pct_equity ──────────────
+    # 3. ADD allowed when mv / equity < tier_max - deadband ──────────────────
 
     def test_add_allowed_when_below_max_position_pct_equity(self):
-        """MA at 14.6% of equity (< 15% tier, < 25% cap) → ADD allowed when thesis=8."""
+        """MA at 14.6% of equity (< 20% tier - 2% deadband = 18%) → ADD allowed when thesis=8."""
         equity = self._EQUITY
         mv     = equity * 0.146   # 14.6% of equity — below 15% tier max
         inc = {
@@ -1253,17 +1253,24 @@ class TestDenominatorFix:
     # 4. TRIM target = min(tier_max × BP, equity_cap × equity) ───────────────
 
     def test_size_trim_target_kernel_consistent(self):
-        """V at 34.9% equity → SIZE TRIM target = min(0.15×BP, 0.25×equity) = $27,118."""
+        """V at 45% equity → SIZE TRIM target = min(tier_max×BP, cap×total_capacity).
+
+        tier_max=0.20 (core), total_capacity=exposure+BP=$289,930, cap=0.15 → $43,490.
+        min(0.20×$214K, $43,490) = min($42,800, $43,490) = $42,800.
+        MV must exceed $42,800 so trim_notional > 0: use 45% × $108,472 = $48,812.
+        """
         equity = self._EQUITY   # $108,472
         bp     = self._BP       # $214,000
-        # min(0.15 × 214000, 0.25 × 108472) = min(32100, 27118) = 27118
-        expected_target = min(0.15 * bp, self._MAX_POS_PCT * equity)
+        current_exposure = equity * 0.70   # from _sizes()
+        total_cap = current_exposure + bp
+        # tier_max for V (core) = 0.20; cap_dollars = 0.15 × total_cap
+        expected_target = min(0.20 * bp, self._MAX_POS_PCT * total_cap)
 
-        mv = equity * 0.349  # ~$37,857 — 34.9% of equity (above 15+2=17% threshold)
+        mv = equity * 0.45   # ~$48,812 — 45% of equity; above 22% trigger AND above $42,800 target
         inc = {
             "symbol":                  "V",
             "market_value":            mv,
-            "account_pct":             34.9,
+            "account_pct":             45.0,
             "thesis_score":            7,   # >= 6 → SIZE TRIM path
             "thesis_score_normalized": 70,
             "health":                  "HEALTHY",
@@ -1280,7 +1287,7 @@ class TestDenominatorFix:
         pa_cfg = pa._get_pa_config(cfg)
         proposed, _ = pa._decide_actions([inc], [], pi, cfg, pa_cfg, sizes, equity)
         v_trim = next((p for p in proposed if p["symbol"] == "V" and p["action"] == "TRIM"), None)
-        assert v_trim is not None, "V at 34.9% equity should trigger SIZE TRIM"
+        assert v_trim is not None, "V at 45% equity should trigger SIZE TRIM"
         # Extract target from reason string: "to target $XX,XXX"
         import re
         match = re.search(r"to target \$([0-9,]+)", v_trim["reason"])
@@ -1288,23 +1295,24 @@ class TestDenominatorFix:
         actual_target = float(match.group(1).replace(",", ""))
         assert actual_target == pytest.approx(expected_target, abs=1.0), (
             f"TRIM target ${actual_target:,.0f} should be "
-            f"min(tier×BP, cap×equity) = ${expected_target:,.0f}"
+            f"min(tier×BP, cap×total_capacity) = ${expected_target:,.0f}"
         )
 
     # 5. SIZE TRIM trigger uses equity denominator, not buying_power ──────────
 
     def test_size_trim_uses_equity_denominator(self):
-        """AMZN (core) at 27% of equity (> 17% threshold) fires SIZE TRIM; reason says 'equity'.
+        """AMZN (core) at 40% of equity (> 22% threshold) fires SIZE TRIM; reason says 'equity'.
 
-        With BP=$214K, 27% equity = $29.3K → 13.7% of BP — old code missed SIZE TRIM here.
-        With equity=$108.5K, 29.3K/108.5K = 27% > tier_max(15%)+tol(2%)=17% → fires.
+        With BP=$214K, 40% equity = $43,389 → 20.3% of BP — old BP-denominator code missed this.
+        Equity denominator: $43,389/$108,472 = 40% > tier_max(20%)+tol(2%)=22% → fires.
+        trim_notional = $43,389 - target($42,800) = $589 ≥ $500 min_notional → TRIM emitted.
         """
         equity = self._EQUITY   # $108,472
-        mv     = equity * 0.27  # 27% of equity → $29,287; as % of BP = 13.7% (old: missed)
+        mv     = equity * 0.40  # 40% of equity → $43,389; as % of BP = 20.3% (old: missed)
         inc = {
-            "symbol":                  "AMZN",   # core watchlist → tier_max = 0.15
+            "symbol":                  "AMZN",   # core watchlist → tier_max = 0.20
             "market_value":            mv,
-            "account_pct":             25.0,
+            "account_pct":             40.0,
             "thesis_score":            7,         # >= 6 → SIZE TRIM path
             "thesis_score_normalized": 70,
             "health":                  "HEALTHY",
@@ -1322,7 +1330,7 @@ class TestDenominatorFix:
         trim = next((p for p in proposed if p["symbol"] == "AMZN" and p["action"] == "TRIM"), None)
         assert trim is not None, (
             f"SIZE TRIM must fire for AMZN at {mv/equity*100:.1f}% of equity "
-            f"(> tier_max+tol=17%); with old BP denominator: {mv/self._BP*100:.1f}% → missed"
+            f"(> tier_max+tol=22%); with old BP denominator: {mv/self._BP*100:.1f}% → missed"
         )
         assert "equity" in trim["reason"], "SIZE TRIM reason must reference 'equity' not 'BP'"
 
@@ -1353,7 +1361,7 @@ class TestDenominatorFix:
         proposed, _ = pa._decide_actions([inc], [], pi, cfg, pa_cfg, sizes, equity)
         googl = next(p for p in proposed if p["symbol"] == "GOOGL")
         assert googl["action"] == "TRIM" or googl["action"] in ("HOLD", "TRIM"), (
-            "GOOGL at 25.9% equity must not ADD — exceeds max_position_pct_equity=25%"
+            "GOOGL at 25.9% equity must not ADD — exceeds SIZE TRIM threshold (22%) or cap"
         )
         assert googl["action"] != "ADD", (
             "ADD must be blocked: kernel rejects any ADD when existing position >= 25% equity"

@@ -19,11 +19,11 @@ class TestAggressiveConfig:
     def _cfg(self):
         return json.loads(Path("strategy_config.json").read_text())
 
-    def test_max_position_pct_equity_raised(self):
-        assert self._cfg()["parameters"]["max_position_pct_equity"] == 0.25
+    def test_max_position_pct_capacity_set(self):
+        assert self._cfg()["parameters"]["max_position_pct_capacity"] == 0.15
 
     def test_max_positions_raised(self):
-        assert self._cfg()["parameters"]["max_positions"] == 20
+        assert self._cfg()["parameters"]["max_positions"] == 30
 
     def test_margin_multiplier_raised(self):
         assert self._cfg()["parameters"]["margin_sizing_multiplier"] == 4.0
@@ -44,12 +44,12 @@ class TestAggressiveConfig:
 
     def test_param_ranges_accommodate_new_max_position_pct(self):
         import weekly_review as wr
-        lo, hi = wr._PARAM_RANGES["max_position_pct_equity"]
-        assert lo <= 0.25 <= hi, f"0.25 not within _PARAM_RANGES bounds ({lo}, {hi})"
+        lo, hi = wr._PARAM_RANGES["max_position_pct_capacity"]
+        assert lo <= 0.15 <= hi, f"0.15 not within _PARAM_RANGES bounds ({lo}, {hi})"
 
     def test_param_ranges_hi_raised(self):
         import weekly_review as wr
-        assert wr._PARAM_RANGES["max_position_pct_equity"][1] >= 0.30
+        assert wr._PARAM_RANGES["max_position_pct_capacity"][1] >= 0.30
 
     def test_risk_kernel_uses_new_cap(self):
         """risk_kernel.size_position() must cap at 0.25 × equity, not 0.07."""
@@ -85,10 +85,10 @@ class TestAggressiveConfig:
         result = rk.size_position(idea, snap, cfg, current_price=200.0, vix=15.0)
         assert isinstance(result, tuple), f"Expected tuple, got rejection: {result}"
         qty, val = result
-        # With max_position_pct_equity=0.25 × $100K equity = $25K max
-        # HIGH conviction CORE = 20% of sizing_basis = 20% × min(120K, 400K) = 20% × 120K = $24K
-        # $24K < $25K cap → val should be ~$24K (not capped down to $7K)
-        assert val >= 20_000, f"Expected val >= $20K with 0.25 cap, got ${val:,.0f}"
+        # With max_position_pct_capacity=0.15 × (exposure=0 + buying_power=120K) = $18K cap
+        # HIGH conviction CORE = 25% of sizing_basis = 25% × 120K = $30K → capped at $18K
+        # Key check: val well above old 7% cap ($7K) — confirms capacity-based cap active
+        assert val >= 15_000, f"Expected val >= $15K with capacity cap, got ${val:,.0f}"
 
     def test_validate_config_passes_no_failures(self):
         server_dir = Path("/home/trading-bot")

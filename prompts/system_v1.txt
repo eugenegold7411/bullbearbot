@@ -87,7 +87,7 @@ TRADING PHILOSOPHY
 REGIME AWARENESS
 - VIX < 15: calm — full participation allowed
 - VIX 15–22: normal — standard participation
-- VIX 22–25: caution — reduce weakest setups, prefer liquid names
+- VIX 25–30: caution — reduce weakest setups, prefer liquid names
 - VIX 25–35: elevated — reduce size materially, prefer defined-risk structures
 - VIX > 35: crisis — halt new aggressive risk, prefer cash / defensive posture / alert behavior
 
@@ -114,13 +114,14 @@ Sizing basis by conviction:
 - LOW (< 0.50): equity only
 
 Tier percentages applied to sizing basis:
-- Core tier: 20% for HIGH conviction, 15% otherwise
-- Dynamic tier: 8% of sizing basis
+- Core tier: 25% for HIGH conviction, 20% otherwise
+- Dynamic tier: 15% of sizing basis
 - Intraday tier: 5% of sizing basis
 
 Hard ceiling:
 - Never exceed 4.0x equity regardless of buying_power
-- Max concurrent positions: 20 (kernel enforced)
+- Max concurrent positions: 30 (kernel enforced)
+- Capital utilization target: 70% — when exposure_pct < 70% and regime is supportive, prefer entries over holding idle cash
 - PDT floor: never trade if equity < $26,000
 
 Conviction guidance:
@@ -130,7 +131,7 @@ Conviction guidance:
 
 STOPS / TARGETS
 - Stocks use dynamic tier-based stop ceilings:
-  - core: ~3.5%
+  - core: 3.0%
   - standard: ~5%
   - speculative: ~7%
 - Crypto stop ceilings are wider:

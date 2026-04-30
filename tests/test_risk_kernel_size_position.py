@@ -96,15 +96,15 @@ class TestTierSizing:
         assert qty == 50
         assert abs(value - 5_000.0) < 1.0
 
-    def test_high_conviction_core_bumps_to_20pct(self, kernel_config):
-        # conviction >= 0.75 AND tier == CORE → _CORE_HIGH_CONVICTION_PCT = 20%
+    def test_high_conviction_core_bumps_to_25pct(self, kernel_config):
+        # conviction >= 0.75 AND tier == CORE → _CORE_HIGH_CONVICTION_PCT = 25%
         qty, value = size_position(
             _idea(tier=Tier.CORE, conviction=0.80), _snapshot(), kernel_config,
             current_price=100.0,
         )
-        # 20% of 100K = 20,000; at $100 → 200 shares
-        assert qty == 200
-        assert abs(value - 20_000.0) < 1.0
+        # 25% of 100K = 25,000; at $100 → 250 shares
+        assert qty == 250
+        assert abs(value - 25_000.0) < 1.0
 
     def test_medium_conviction_core_stays_at_15pct(self, kernel_config):
         # conviction=0.60 is MEDIUM — no high-conv bump
@@ -265,14 +265,14 @@ class TestBPAwareSizing:
     def test_high_conviction_margin_3x_basis(self, kernel_config):
         # HIGH (0.80) + margin_authorized + 3.0 multiplier
         # sizing_basis = min(BP=300K, equity*3=300K) = 300K
-        # core HIGH bump 20% → 60K; at $100 → 600 shares
+        # core HIGH bump 25% → 75K; at $100 → 750 shares
         cfg = _margin_config(kernel_config, multiplier=3.0)
         qty, value = size_position(
             _idea(tier=Tier.CORE, conviction=0.80), _margin_snapshot(),
             cfg, current_price=100.0,
         )
-        assert abs(value - 60_000.0) < 1.0
-        assert qty == 600
+        assert abs(value - 75_000.0) < 1.0
+        assert qty == 750
 
     def test_medium_conviction_margin_capped_at_15x(self, kernel_config):
         # MEDIUM (0.60): sizing_basis = min(BP=300K, equity * min(3, 1.5)=150K) = 150K
@@ -296,13 +296,13 @@ class TestBPAwareSizing:
 
     def test_margin_authorized_false_disables_basis(self, kernel_config):
         # margin_authorized=False, HIGH conviction:
-        # sizing_basis = equity → core HIGH bump (20%) = 20,000
+        # sizing_basis = equity → core HIGH bump (25%) = 25,000
         cfg = _margin_config(kernel_config, margin_authorized=False, multiplier=3.0)
         qty, value = size_position(
             _idea(tier=Tier.CORE, conviction=0.80), _margin_snapshot(),
             cfg, current_price=100.0,
         )
-        assert abs(value - 20_000.0) < 1.0
+        assert abs(value - 25_000.0) < 1.0
 
 
 class TestBPAwareEligibility:

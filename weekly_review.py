@@ -502,7 +502,7 @@ def _extract_json_block(text: str) -> dict | None:
 _NUMERIC_PARAM_FIELDS: frozenset = frozenset({
     "stop_loss_pct_core", "stop_loss_pct_intraday", "stop_loss_pct_overnight",
     "take_profit_multiple", "vix_threshold_caution",
-    "max_position_pct_equity", "max_daily_drawdown_pct", "max_weekly_drawdown_pct",
+    "max_position_pct_capacity", "max_daily_drawdown_pct", "max_weekly_drawdown_pct",
     "max_sector_exposure_pct", "max_single_name_pct", "max_overnight_position_pct_equity",
     "max_crypto_exposure_pct", "max_daily_drawdown_position_gate",
     "min_dollar_risk_per_trade", "backtest_minimum_sample_before_recalibration",
@@ -519,7 +519,7 @@ _PARAM_RANGES: dict[str, tuple[float, float]] = {
     "stop_loss_pct_overnight":                     (0.005, 0.10),
     "take_profit_multiple":                        (0.5,   5.0),
     "vix_threshold_caution":                       (15.0,  50.0),
-    "max_position_pct_equity":                     (0.03,  0.30),  # raised hi 0.20→0.30 Sprint 2.5
+    "max_position_pct_capacity":                    (0.03,  0.30),
     "max_daily_drawdown_pct":                      (0.005, 0.15),
     "max_weekly_drawdown_pct":                     (0.01,  0.25),
     "max_sector_exposure_pct":                     (0.05,  0.50),

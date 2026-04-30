@@ -158,48 +158,48 @@ class TestOversizeFlagInPositionsHealth(unittest.TestCase):
         return self._fmt([pos], equity, buying_power=buying_power)
 
     def test_above_25_fires_top_band(self):
-        """26% of BP → top band: 'exceeds max tier ceiling 25%'."""
+        """26% of BP → top band: 'exceeds HIGH conviction core ceiling 25%'."""
         out = self._render(26.0)
         self.assertIn("OVERSIZE", out)
-        self.assertIn("exceeds max tier ceiling 25%", out)
+        self.assertIn("exceeds HIGH conviction core ceiling 25%", out)
         self.assertIn("of BP", out)
         self.assertIn("TRIM or close regardless of tier", out)
 
-    def test_above_15_below_25_fires_core_band(self):
-        """16% of BP → core band: 'exceeds standard core max 15%'."""
-        out = self._render(16.0)
+    def test_above_20_below_25_fires_core_band(self):
+        """22% of BP → core band (>20%, ≤25%): 'exceeds standard core max 20%'."""
+        out = self._render(22.0)
         self.assertIn("OVERSIZE", out)
-        self.assertIn("exceeds standard core max 15%", out)
+        self.assertIn("exceeds standard core max 20%", out)
         self.assertIn("of BP", out)
         self.assertIn("confirm HIGH conviction core or TRIM", out)
 
-    def test_above_8_below_15_fires_dynamic_band(self):
-        """9% of BP → dynamic band: 'exceeds 8%'."""
-        out = self._render(9.0)
+    def test_above_15_below_20_fires_dynamic_band(self):
+        """17% of BP → dynamic band (>15%, ≤20%): 'exceeds 15%'."""
+        out = self._render(17.0)
         self.assertIn("OVERSIZE for dynamic/intraday tier", out)
-        self.assertIn("exceeds 8%", out)
+        self.assertIn("exceeds 15%", out)
         self.assertIn("of BP", out)
         self.assertIn("TRIM or confirm core tier intended", out)
 
-    def test_exactly_8_no_flag(self):
-        """8.0% of BP → at dynamic tier max boundary, no flag fires."""
-        out = self._render(8.0)
+    def test_exactly_15_no_flag(self):
+        """15.0% of BP → at dynamic tier max boundary, no flag fires."""
+        out = self._render(15.0)
         self.assertNotIn("OVERSIZE", out)
 
-    def test_below_8_no_flag(self):
+    def test_below_15_no_flag(self):
         """5.0% of BP → well within any tier max, no flag."""
         out = self._render(5.0)
         self.assertNotIn("OVERSIZE", out)
 
     def test_exactly_25_fires_core_band_not_top(self):
-        """25.0% of BP → core band (>15%, not strictly >25%)."""
+        """25.0% of BP → core band (>20%, not strictly >25%)."""
         out = self._render(25.0)
-        self.assertIn("exceeds standard core max 15%", out)
-        self.assertNotIn("exceeds max tier ceiling 25%", out)
+        self.assertIn("exceeds standard core max 20%", out)
+        self.assertNotIn("exceeds HIGH conviction core ceiling 25%", out)
 
-    def test_14_pct_of_bp_fires_dynamic_band(self):
-        """14% of BP → dynamic band (>8%, <15%)."""
-        out = self._render(14.0)
+    def test_16_pct_of_bp_fires_dynamic_band(self):
+        """16% of BP → dynamic band (>15%, <20%)."""
+        out = self._render(16.0)
         self.assertIn("OVERSIZE for dynamic/intraday tier", out)
 
     def test_buying_power_zero_falls_back_to_equity(self):
@@ -210,7 +210,7 @@ class TestOversizeFlagInPositionsHealth(unittest.TestCase):
         import portfolio_intelligence as pi
         out    = pi.format_positions_with_health([pos], equity, buying_power=0.0)
         self.assertIn("OVERSIZE", out)
-        self.assertIn("exceeds max tier ceiling 25%", out)
+        self.assertIn("exceeds HIGH conviction core ceiling 25%", out)
 
     def test_existing_health_fields_still_present(self):
         """Adding oversize flag does not remove existing health output."""
@@ -334,8 +334,8 @@ class TestSizeTrimGateItem3(unittest.TestCase):
     """Item 3 (S8): size-based TRIM gate fires for score≥6 + oversized positions."""
 
     def test_size_trim_fires_when_equity_pct_exceeds_tier_plus_tolerance(self):
-        """STNG (core, tier_max=15%) at 22K/100K equity = 22% > 17% → SIZE TRIM."""
-        inc = _make_incumbent("STNG", score=7, mv=22_000.0)
+        """STNG (core, tier_max=20%) at 23K/100K equity = 23% > 22% → SIZE TRIM."""
+        inc = _make_incumbent("STNG", score=7, mv=23_000.0)
         proposed = _run_decide([inc], bp=120_000.0)
         actions  = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(actions), 1)
@@ -343,7 +343,7 @@ class TestSizeTrimGateItem3(unittest.TestCase):
         self.assertIn("equity", actions[0]["reason"])
 
     def test_size_trim_does_not_fire_within_tolerance(self):
-        """STNG at 16.5K/100K equity = 16.5% — within 15% + 2% = 17% → no size TRIM."""
+        """STNG at 16.5K/100K equity = 16.5% — within 20% + 2% = 22% → no size TRIM."""
         inc = _make_incumbent("STNG", score=7, mv=16_500.0)
         proposed = _run_decide([inc], bp=120_000.0)
         trim_actions = [p for p in proposed if p["action"] == "TRIM"]
@@ -351,7 +351,7 @@ class TestSizeTrimGateItem3(unittest.TestCase):
 
     def test_low_score_uses_thesis_trim_not_size_trim(self):
         """score=4 (≤ trim_thresh=5) → thesis TRIM fires, not size TRIM."""
-        inc = _make_incumbent("STNG", score=4, mv=22_000.0)
+        inc = _make_incumbent("STNG", score=4, mv=23_000.0)
         proposed = _run_decide([inc], bp=120_000.0)
         trim_actions = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(trim_actions), 1)
@@ -360,7 +360,7 @@ class TestSizeTrimGateItem3(unittest.TestCase):
 
     def test_score_6_triggers_size_trim_not_thesis_trim(self):
         """score=6 is above trim_thresh (5) → size TRIM path (not thesis TRIM)."""
-        inc = _make_incumbent("STNG", score=6, mv=22_000.0)
+        inc = _make_incumbent("STNG", score=6, mv=23_000.0)
         proposed = _run_decide([inc], bp=120_000.0)
         trim_actions = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(trim_actions), 1)

@@ -236,7 +236,7 @@ class TestRiskManagerGates(unittest.TestCase):
             "position_sizing": {"cash_reserve_pct": 0.2},
             "parameters": {
                 "max_positions": 12,
-                "max_position_pct_equity": 0.07,
+                "max_position_pct_capacity": 0.07,
                 "max_day_trades_rolling_5day": 3,
                 "sector_rotation_bias": "neutral",
             },
@@ -248,32 +248,31 @@ class TestRiskManagerGates(unittest.TestCase):
 
     def test_t014_passes_when_product_lte_100pct(self):
         """12 × 7% = 84% — must pass."""
-        cfg = self._cfg(max_positions=12, max_position_pct_equity=0.07)
-        gross = cfg["parameters"]["max_positions"] * cfg["parameters"]["max_position_pct_equity"]
+        cfg = self._cfg(max_positions=12, max_position_pct_capacity=0.07)
+        gross = cfg["parameters"]["max_positions"] * cfg["parameters"]["max_position_pct_capacity"]
         self.assertLessEqual(gross, 1.0, f"Expected ≤ 1.0, got {gross}")
 
     def test_t014_fails_when_product_gt_100pct(self):
         """15 × 7% = 105% — must fail the gate."""
-        cfg = self._cfg(max_positions=15, max_position_pct_equity=0.07)
-        gross = cfg["parameters"]["max_positions"] * cfg["parameters"]["max_position_pct_equity"]
+        cfg = self._cfg(max_positions=15, max_position_pct_capacity=0.07)
+        gross = cfg["parameters"]["max_positions"] * cfg["parameters"]["max_position_pct_capacity"]
         self.assertGreater(gross, 1.0, f"Expected > 1.0, got {gross}")
 
     def test_t014_live_config_passes(self):
         """Live strategy_config.json must pass the T-014 gate.
 
-        Updated Sprint 2.5 (2026-04-27): when margin_authorized=True, gross exposure > 100%
-        is WARN (not FAIL) because risk_kernel._effective_exposure_cap() enforces the real
-        hard cap. Only gross > 600% is a hard FAIL regardless of margin.
+        Capacity-based cap (max_position_pct_capacity): when margin_authorized=True, gross > 100%
+        is WARN (not FAIL). Only gross > 600% is a hard FAIL regardless of margin.
         """
         if not CONFIG_PATH.exists():
             self.skipTest("strategy_config.json not found")
         cfg = json.loads(CONFIG_PATH.read_text())
         p = cfg.get("parameters", {})
         mp      = p.get("max_positions")
-        mpe     = p.get("max_position_pct_equity")
+        mpe     = p.get("max_position_pct_capacity")
         margin  = bool(p.get("margin_authorized", False))
         if mp is None or mpe is None:
-            self.skipTest("max_positions or max_position_pct_equity missing from config")
+            self.skipTest("max_positions or max_position_pct_capacity missing from config")
         gross = int(mp) * float(mpe)
         # Hard FAIL only at extreme gross (>600%) regardless of margin
         self.assertLessEqual(gross, 6.0,

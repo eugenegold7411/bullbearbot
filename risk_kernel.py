@@ -71,12 +71,12 @@ MAX_OPTIONS_USD   = 5_000.0    # max cost per options trade
 
 # Per-tier max position as fraction of equity (hard ceilings)
 _TIER_MAX_PCT: dict[str, float] = {
-    "core":     0.15,
-    "dynamic":  0.08,
+    "core":     0.20,
+    "dynamic":  0.15,
     "intraday": 0.05,
 }
 # High-conviction core bump: matches executor's special case
-_CORE_HIGH_CONVICTION_PCT = 0.20
+_CORE_HIGH_CONVICTION_PCT = 0.25
 
 # Stop loss ceilings by tier and asset class
 # These cap the stop — Claude may request tighter but never wider
@@ -499,7 +499,7 @@ def size_position(
         _params(config).get("margin_sizing_conviction_thresholds", {}).get("high", 0.75)
     )
     if idea.conviction >= _high_thresh and idea.tier == Tier.CORE:
-        tier_pct = _CORE_HIGH_CONVICTION_PCT  # 20%
+        tier_pct = _CORE_HIGH_CONVICTION_PCT  # 25%
 
     # ── VIX scaling ───────────────────────────────────────────────────────────
     size_mult = 0.5 if vix >= VIX_CAUTION else 1.0
@@ -523,30 +523,32 @@ def size_position(
             f"(not enough for 1 share/unit)"
         )
 
-    # ── max_position_pct_equity hard cap ─────────────────────────────────────
-    max_pos_pct = _params(config).get("max_position_pct_equity")
+    # ── max_position_pct_capacity hard cap ───────────────────────────────────
+    # Denominator is total_capacity = exposure_dollars + buying_power, not equity.
+    max_pos_pct = _params(config).get("max_position_pct_capacity")
     if max_pos_pct is not None:
-        max_pos_dollars = equity * float(max_pos_pct)
-        # S7-P: subtract existing position value so ADD orders don't breach cap.
+        total_capacity = snapshot.exposure_dollars + snapshot.buying_power
+        max_pos_dollars = total_capacity * float(max_pos_pct)
+        # Subtract existing position value so ADD orders don't breach cap.
         existing_val = next(
             (p.market_value for p in snapshot.positions if p.symbol == idea.symbol), 0.0
         )
         max_pos_dollars = max(0.0, max_pos_dollars - existing_val)
         if existing_val:
             log.debug(
-                "[RISK] %s: max_position_pct_equity headroom adjusted by existing $%.0f → $%.0f",
+                "[RISK] %s: max_position_pct_capacity headroom adjusted by existing $%.0f → $%.0f",
                 idea.symbol, existing_val, max_pos_dollars,
             )
         if max_dollars > max_pos_dollars:
             log.debug(
-                "[RISK] %s: budget $%.0f capped to $%.0f by max_position_pct_equity=%.0f%%",
+                "[RISK] %s: budget $%.0f capped to $%.0f by max_position_pct_capacity=%.0f%%",
                 idea.symbol, max_dollars, max_pos_dollars, float(max_pos_pct) * 100,
             )
             max_dollars = max_pos_dollars
         if max_dollars < current_price:
             return (
                 f"budget ${max_dollars:,.0f} < price ${current_price:,.2f} "
-                f"after max_position_pct_equity cap"
+                f"after max_position_pct_capacity cap"
             )
 
     # ── Qty ──────────────────────────────────────────────────────────────────

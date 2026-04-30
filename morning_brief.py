@@ -1333,7 +1333,7 @@ def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
     try:
         response = _claude.messages.create(
             model=_MODEL,
-            max_tokens=4096,
+            max_tokens=8192,
             system=[
                 {
                     "type": "text",
@@ -1347,7 +1347,16 @@ def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
         raw = response.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        full_brief = json.loads(raw)
+        # Attempt direct parse; fall back to outermost-object extraction on failure
+        try:
+            full_brief = json.loads(raw)
+        except json.JSONDecodeError:
+            import re as _re
+            m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+            if m:
+                full_brief = json.loads(m.group(0))
+            else:
+                raise
     except Exception as exc:
         log.error("[INTELLIGENCE] Brief generation failed: %s", exc)
         # Return minimal valid structure

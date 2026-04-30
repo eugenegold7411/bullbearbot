@@ -141,7 +141,9 @@ class TestSubmitOptionsOrderDtbpFallback(unittest.TestCase):
         mock_executor.submit_structure.return_value = mock_submit_result
 
         import order_executor_options as oe_opts
-        with patch.dict(sys.modules, {"options_executor": mock_executor}), \
+        mock_os = MagicMock()
+        with patch.dict(sys.modules, {"options_executor": mock_executor,
+                                      "options_state": mock_os}), \
              patch.object(oe_opts, "_get_options_client", return_value=mock_client), \
              patch.object(oe_opts, "_log_result"):
             with self.assertLogs("order_executor_options", level="DEBUG") as log_ctx:

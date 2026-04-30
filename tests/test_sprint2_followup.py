@@ -105,7 +105,8 @@ class TestDTBPTestsDoNotContaminateProductionLog(unittest.TestCase):
             try:
                 oe._LOG_PATH = tmp_log
                 with mock.patch.object(oe, "_get_options_client", return_value=mock_client), \
-                     mock.patch.dict(sys.modules, {"options_executor": mock_executor}):
+                     mock.patch.dict(sys.modules, {"options_executor": mock_executor,
+                                                   "options_state": MagicMock()}):
                     result = oe.submit_options_order(structure, equity=50000.0)
             finally:
                 oe._LOG_PATH = original_log_path

@@ -66,6 +66,8 @@ def test_dtbp_zero_guard_skips_submission(tmp_path, monkeypatch):
 
     # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
     monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
+    # Isolate structures.json — submit_options_order lazily imports options_state
+    monkeypatch.setitem(sys.modules, "options_state", MagicMock())
 
     structure = _make_mock_structure()
 
@@ -105,6 +107,8 @@ def test_dtbp_nonzero_proceeds_normally(tmp_path, monkeypatch):
 
     # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
     monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
+    # Isolate structures.json — submit_options_order lazily imports options_state
+    monkeypatch.setitem(sys.modules, "options_state", MagicMock())
 
     structure = _make_mock_structure()
 
@@ -138,6 +142,8 @@ def test_dtbp_check_failure_fails_open(tmp_path, monkeypatch):
 
     # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
     monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
+    # Isolate structures.json — submit_options_order lazily imports options_state
+    monkeypatch.setitem(sys.modules, "options_state", MagicMock())
 
     structure = _make_mock_structure()
 

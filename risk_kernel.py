@@ -363,6 +363,12 @@ def _check_time_bound_actions(
     return True, ""
 
 
+def _get_et_now():
+    """Return current datetime in US/Eastern. Extracted for testability."""
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+    return datetime.now(ZoneInfo("America/New_York"))
+
+
 def eligibility_check(
     idea: TradeIdea,
     snapshot: BrokerSnapshot,
@@ -418,6 +424,21 @@ def eligibility_check(
     # ── 4. Intraday tier gate ─────────────────────────────────────────────────
     if act == AccountAction.BUY and idea.tier == Tier.INTRADAY and session_tier != "market":
         return "intraday tier requires market session"
+
+    # ── 4.5. Near-close gate ──────────────────────────────────────────────────
+    # Block DYNAMIC/INTRADAY buys after 15:55 ET; CORE exempt until 16:00.
+    # Exits and stops are never blocked. Non-fatal: allows trade if clock fails.
+    if act == AccountAction.BUY and session_tier == "market":
+        try:
+            _et = _get_et_now()
+            if _et.hour == 15 and _et.minute >= 55:
+                _tier = getattr(idea, "tier", None)
+                if _tier and _tier != Tier.CORE:
+                    return (
+                        f"near_close_gate: {_tier.value} entries blocked after 15:55 ET"
+                    )
+        except Exception:
+            pass  # non-fatal — allow trade if timezone check fails
 
     # ── 5. Max positions ──────────────────────────────────────────────────────
     if act == AccountAction.BUY:

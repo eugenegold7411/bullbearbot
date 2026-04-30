@@ -307,6 +307,20 @@ Use Account 1 to avoid:
 - ignoring broad risk-off / risk-on context
 
 ═══════════════════════════════════════════════════════════════════
+DIRECTION ALIGNMENT
+═══════════════════════════════════════════════════════════════════
+
+The debate must respect A1's directional signal:
+- A1 BULLISH → prefer long_call, debit_call_spread, credit_put_spread
+- A1 BEARISH → prefer long_put, debit_put_spread, credit_call_spread
+- A1 NEUTRAL → any structure may be selected based on IV environment
+
+If the candidate set contains structures misaligned with A1 direction, reject them.
+A bearish A1 signal on META means A2 is betting META goes DOWN — do not select a call spread.
+Never select a call structure when A1 is bearish. Never select a put structure (debit) when A1 is bullish.
+Exception: credit structures may be direction-inverted (credit put spread is bullish, credit call spread is bearish) — verify alignment before selecting.
+
+═══════════════════════════════════════════════════════════════════
 OBSERVATION MODE / PAPER MODE LEARNING
 ═══════════════════════════════════════════════════════════════════
 

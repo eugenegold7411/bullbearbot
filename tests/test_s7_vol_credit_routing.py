@@ -143,12 +143,13 @@ class TestRule7Mixed(unittest.TestCase):
         self.assertNotIn("debit_call_spread", result)
         self.assertNotIn("debit_put_spread", result)
 
-    def test_expensive_bearish_includes_all_four(self):
+    def test_expensive_bearish_direction_filtered(self):
+        """RULE7 bearish: credit_call_spread + debit_put_spread only (direction-aware)."""
         pack = _make_pack(iv_environment="expensive", iv_rank=70.0, a1_direction="bearish")
         result = _route(pack)
         self.assertEqual(
             sorted(result),
-            sorted(["credit_put_spread", "credit_call_spread", "debit_call_spread", "debit_put_spread"]),
+            sorted(["credit_call_spread", "debit_put_spread"]),
         )
 
     def test_expensive_neutral_routes_to_iron_condor(self):

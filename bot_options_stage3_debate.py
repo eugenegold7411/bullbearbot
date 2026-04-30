@@ -201,13 +201,26 @@ def run_options_debate(
                 f"\n A1 signal: {a1_dir_c} | conviction={a1_conv} | score={a1_sc_s}"
                 + (f" | {a1_cat}" if a1_cat else "")
             ) if (a1_dir_c or a1_conv) else ""
+            _dir_lower = (a1_dir_c or "").lower()
+            if _dir_lower == "bearish":
+                mandate_line = (
+                    f"\n ⚡ DIRECTION MANDATE: A1 is BEARISH on {sym}"
+                    " — only select PUT structures or BEARISH CALL structures"
+                )
+            elif _dir_lower == "bullish":
+                mandate_line = (
+                    f"\n ⚡ DIRECTION MANDATE: A1 is BULLISH on {sym}"
+                    " — only select CALL structures or BULLISH PUT structures"
+                )
+            else:
+                mandate_line = ""
             candidate_blocks.append(
                 f"[Candidate {cid} — {stype} {sym} {exp} {strike_str}\n"
                 f" Debit: ${debit:.2f}/share | Max loss: ${max_loss:.0f} | "
                 f"Max gain: {gain_str} | Breakeven: {beven:.2f}\n"
                 f" Delta: {delta_s} | Theta: {theta_s} | Vega: {vega_s} | "
                 f"EV: {ev_s} | DTE: {dte} | OI: {oi_s} | P(profit): {prob_s}"
-                f"{a1_line}]"
+                f"{a1_line}{mandate_line}]"
             )
             allowed_actions_parts.append(f"prefer {cid}")
         allowed_actions_parts.append("reject_all")
@@ -247,6 +260,10 @@ where max gain is meaningfully larger than the stop-loss trigger.
 === DEBATE ROLES ===
 - DIRECTIONAL ADVOCATE: Is the underlying thesis real and is now the right time?
 - VOL/STRUCTURE ANALYST: Which candidate has better premium geometry for this thesis?
+  Also verify: the selected structure's directional exposure matches A1's signal direction.
+  A long_put profits when the stock falls — correct for a bearish signal.
+  A debit_call_spread profits when the stock rises — correct for a bullish signal.
+  Flag any candidate whose profit direction contradicts A1's signal.
 - TAPE/FLOW SKEPTIC: Does flow imbalance and positioning support or challenge this?
 - RISK OFFICER: Which candidate best fits risk budget, theta horizon, and expiry?
 

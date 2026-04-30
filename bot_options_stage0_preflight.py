@@ -22,6 +22,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+
+def _get_et_now():
+    """Return current datetime in US/Eastern. Extracted for testability."""
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+    return datetime.now(ZoneInfo("America/New_York"))
 from pathlib import Path
 from typing import Any
 
@@ -430,6 +436,19 @@ def run_a2_preflight(
     if session_tier not in ("market", "pre_market"):
         log.info("[OPTS] Session=%s — options cycle skipped (market hours only)", session_tier)
         return A2PreflightResult(halt=True, halt_reason="session_not_market")
+
+    # Near-close gate: no new options structures after 15:50 ET.
+    # Options need time to fill; returning halt=True skips new proposals.
+    # Non-fatal: proceeds normally if timezone check raises.
+    try:
+        _et = _get_et_now()
+        if _et.hour == 15 and _et.minute >= 50:
+            log.info("[PREFLIGHT] near_close_gate: blocking new structures after 15:50 ET")
+            result.halt = True
+            result.halt_reason = "near_close_gate: no new options structures after 15:50 ET"
+            return result
+    except Exception:
+        pass  # non-fatal — proceed if timezone check fails
 
     # Account equity check
     try:

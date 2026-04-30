@@ -28,7 +28,7 @@
         "built_at": "2026-04-21T11:00:00+00:00",
         "data_sources": ["signal_scores", "iv_history", "options_chain", "flow_signals"]
       },
-      "allowed_structures": ["long_call", "long_put", "debit_call_spread", "debit_put_spread"],
+      "allowed_structures": ["long_call", "debit_call_spread"],
       "router_rule_fired": "RULE5",
       "generated_candidates": [
         {

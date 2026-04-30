@@ -350,24 +350,39 @@ def _route_strategy(
             )
             return ["short_put"]
 
-    # RULE5: cheap IV + directional signal
+    # RULE5: cheap IV + directional signal (direction-aware)
     if pack.iv_environment in ("very_cheap", "cheap") and pack.a1_direction != "neutral":
-        allowed = ["long_call", "long_put", "debit_call_spread", "debit_put_spread"]
+        if pack.a1_direction == "bullish":
+            allowed = ["long_call", "debit_call_spread"]
+        elif pack.a1_direction == "bearish":
+            allowed = ["long_put", "debit_put_spread"]
+        else:
+            allowed = ["long_call", "long_put", "debit_call_spread", "debit_put_spread"]
         log.debug("[OPTS] _route_strategy %s: RULE5 iv_env=%s dir=%s -> %s",
                   sym, pack.iv_environment, pack.a1_direction, allowed)
         return allowed
 
-    # RULE6: neutral IV + directional signal
+    # RULE6: neutral IV + directional signal (direction-aware)
     if pack.iv_environment == "neutral" and pack.a1_direction != "neutral":
-        allowed = ["debit_call_spread", "debit_put_spread"]
+        if pack.a1_direction == "bullish":
+            allowed = ["debit_call_spread"]
+        elif pack.a1_direction == "bearish":
+            allowed = ["debit_put_spread"]
+        else:
+            allowed = ["debit_call_spread", "debit_put_spread"]
         log.debug("[OPTS] _route_strategy %s: RULE6 iv_env=neutral dir=%s -> %s",
                   sym, pack.a1_direction, allowed)
         return allowed
 
-    # RULE7: expensive IV + directional signal (mixed: credit preferred, debit allowed)
+    # RULE7: expensive IV + directional signal (direction-aware; credit preferred, debit allowed)
     if pack.iv_environment == "expensive" and pack.a1_direction != "neutral":
-        allowed = ["credit_put_spread", "credit_call_spread", "debit_call_spread", "debit_put_spread"]
-        log.debug("[OPTS] _route_strategy %s: RULE7_MIXED iv_env=expensive dir=%s -> %s",
+        if pack.a1_direction == "bullish":
+            allowed = ["credit_put_spread", "debit_call_spread"]
+        elif pack.a1_direction == "bearish":
+            allowed = ["credit_call_spread", "debit_put_spread"]
+        else:
+            allowed = ["credit_put_spread", "credit_call_spread", "debit_call_spread", "debit_put_spread"]
+        log.debug("[OPTS] _route_strategy %s: RULE7 iv_env=expensive dir=%s -> %s",
                   sym, pack.a1_direction, allowed)
         return allowed
 

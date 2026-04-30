@@ -29,6 +29,7 @@ Constraints
 """
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -194,45 +195,174 @@ def _build_user_prompt(md: dict, regime: dict, symbols: list[str]) -> str:
     )
 
 
-# ── Main entrypoint ──────────────────────────────────────────────────────────
+# ── Priority-ordered symbol selection ────────────────────────────────────────
 
-def run_qualitative_sweep(
+_A1_POSITIONS_PATH   = _BASE / "data" / "market" / "signal_scores.json"
+_A2_STRUCTURES_PATH  = _BASE / "data" / "account2" / "positions" / "structures.json"
+_MORNING_BRIEF_PATH  = _BASE / "data" / "market" / "morning_brief.json"
+
+# Two parallel Haiku calls: ≤47 symbols each covers a 93-symbol universe.
+# Cost doubles vs the old single-call-capped-at-30 approach: ~$0.042/sweep
+# (5 sweeps/day ≈ $0.21/day vs $0.10/day — negligible for the coverage gain).
+_BATCH1_SIZE = 47
+_BATCH2_SIZE = 46
+
+
+def _get_a1_held_symbols() -> list[str]:
+    """Return A1 held position symbols from signal_scores.json, preserving no order."""
+    held: list[str] = []
+    try:
+        if not _A1_POSITIONS_PATH.exists():
+            return held
+        ss = json.loads(_A1_POSITIONS_PATH.read_text())
+        # signal_scores.json also contains a positions snapshot under 'positions'
+        positions = ss.get("positions") or {}
+        if isinstance(positions, dict):
+            for sym in positions:
+                s = str(sym or "").upper()
+                if s:
+                    held.append(s)
+        elif isinstance(positions, list):
+            for p in positions:
+                s = (p.get("symbol") or "").upper() if isinstance(p, dict) else str(p).upper()
+                if s:
+                    held.append(s)
+    except Exception as exc:
+        log.debug("[L1] held symbols read failed (non-fatal): %s", exc)
+    return held
+
+
+def _get_a2_underlying_symbols() -> list[str]:
+    """Return underlying symbols for open A2 options structures."""
+    syms: list[str] = []
+    try:
+        if not _A2_STRUCTURES_PATH.exists():
+            return syms
+        data = json.loads(_A2_STRUCTURES_PATH.read_text())
+        if isinstance(data, list):
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                lifecycle = (entry.get("lifecycle") or "").lower()
+                # Only open structures — anything not closed/expired/rolled_away
+                if lifecycle in ("closed", "expired", "rolled_away"):
+                    continue
+                s = (entry.get("underlying") or entry.get("symbol") or "").upper()
+                if s:
+                    syms.append(s)
+    except Exception as exc:
+        log.debug("[L1] A2 structures read failed (non-fatal): %s", exc)
+    return syms
+
+
+def _get_morning_brief_symbols() -> list[str]:
+    """Return conviction_picks symbols from today's morning brief."""
+    syms: list[str] = []
+    try:
+        if not _MORNING_BRIEF_PATH.exists():
+            return syms
+        brief = json.loads(_MORNING_BRIEF_PATH.read_text())
+        for pick in (brief.get("conviction_picks") or []):
+            s = (pick.get("symbol") or "").upper() if isinstance(pick, dict) else str(pick).upper()
+            if s:
+                syms.append(s)
+    except Exception as exc:
+        log.debug("[L1] morning brief read failed (non-fatal): %s", exc)
+    return syms
+
+
+def _get_signal_score_ranked_symbols() -> list[str]:
+    """Return all scored symbols ordered by descending score."""
+    syms: list[str] = []
+    try:
+        if not _A1_POSITIONS_PATH.exists():
+            return syms
+        ss = json.loads(_A1_POSITIONS_PATH.read_text())
+        scored = ss.get("scored_symbols") or {}
+        if isinstance(scored, dict):
+            ranked = sorted(
+                scored.items(),
+                key=lambda kv: float(kv[1].get("score", 0)) if isinstance(kv[1], dict) else 0,
+                reverse=True,
+            )
+            syms = [str(sym or "").upper() for sym, _ in ranked if sym]
+        elif isinstance(scored, list):
+            ranked_list = sorted(
+                scored,
+                key=lambda x: float(x.get("score", 0)) if isinstance(x, dict) else 0,
+                reverse=True,
+            )
+            syms = [(x.get("symbol") or "").upper() for x in ranked_list if isinstance(x, dict)]
+    except Exception as exc:
+        log.debug("[L1] signal score ranking failed (non-fatal): %s", exc)
+    return [s for s in syms if s]
+
+
+def build_priority_ordered_symbols(all_symbols: list[str]) -> list[str]:
+    """Return all_symbols reordered by priority, deduplicated.
+
+    Priority (highest to lowest):
+      1. A1 held positions
+      2. A2 open structure underlyings
+      3. Morning brief conviction picks
+      4. Highest signal-score symbols (descending)
+      5. Remaining watchlist symbols (alphabetical)
+
+    Returns a deduplicated list preserving priority order. Symbols not in
+    all_symbols are ignored — the output is a permutation of all_symbols.
+    """
+    universe = set(s.upper() for s in all_symbols if s)
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def _add(sym: str) -> None:
+        s = sym.upper()
+        if s in universe and s not in seen:
+            seen.add(s)
+            ordered.append(s)
+
+    for s in _get_a1_held_symbols():
+        _add(s)
+    for s in _get_a2_underlying_symbols():
+        _add(s)
+    for s in _get_morning_brief_symbols():
+        _add(s)
+    for s in _get_signal_score_ranked_symbols():
+        _add(s)
+    # Remaining symbols alphabetically
+    for s in sorted(universe - seen):
+        _add(s)
+
+    return ordered
+
+
+# ── Single-batch API call ────────────────────────────────────────────────────
+
+def _run_single_batch(
     md: dict,
     regime: dict,
     symbols: list[str],
-) -> dict:
-    """Run a single Sonnet qualitative sweep and persist the result.
+    batch_num: int,
+) -> tuple[dict, dict]:
+    """Run one Haiku qualitative sweep call for a slice of symbols.
 
-    Returns the dict that was written to disk. Returns {} on any error
-    (the prior file on disk is left untouched).
-
-    This function is synchronous. The scheduler calls it from a background
-    thread so it never blocks the main cycle.
+    Returns (sym_ctx_out, regime_context_dict). On any failure returns ({}, {}).
+    Non-fatal — the caller merges both batches and one failure doesn't block the other.
     """
     if not symbols:
-        return {}
-
-    # Cap to 30 symbols — ~100 output tokens/symbol × 80 symbols was hitting
-    # the 8192 max_tokens ceiling every call ($0.12/call × 28 calls/day = $3.45/day).
-    # 30 symbols × ~100 tokens + ~300 overhead ≈ 3300 tokens, well within 6000.
-    if len(symbols) > 30:
-        symbols = symbols[:30]
+        return {}, {}
 
     try:
         from bot_clients import MODEL_FAST as _MODEL_FAST_CONST  # noqa: PLC0415
         from bot_clients import _get_claude  # noqa: PLC0415
-        model = _MODEL_FAST_CONST  # claude-haiku-4-5-20251001 — ~15× cheaper
+        model = _MODEL_FAST_CONST
     except Exception as exc:
-        log.warning("[L1] bot_clients import failed: %s", exc)
-        return {}
+        log.warning("[L1] batch%d bot_clients import failed: %s", batch_num, exc)
+        return {}, {}
 
     user_content = _build_user_prompt(md, regime, symbols)
 
-    t_start = time.monotonic()
     try:
-        # max_tokens budget: ~100 tokens/symbol × 30 symbols + ~300 overhead ≈ 3300.
-        # 6000 provides headroom without hitting the 8192 ceiling that was
-        # truncating output and causing parse failures on 57% of calls.
         resp = _get_claude().messages.create(
             model=model,
             max_tokens=6000,
@@ -245,10 +375,9 @@ def run_qualitative_sweep(
             extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
     except Exception as exc:
-        log.warning("[L1] Sonnet call failed: %s", exc)
-        return {}
+        log.warning("[L1] batch%d API call failed (non-fatal): %s", batch_num, exc)
+        return {}, {}
 
-    # Cost tracking (non-fatal)
     try:
         from cost_tracker import get_tracker  # noqa: PLC0415
         get_tracker().record_api_call(model, resp.usage, caller="qualitative_sweep")
@@ -268,18 +397,18 @@ def run_qualitative_sweep(
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         parsed = json.loads(raw)
     except Exception as exc:
-        log.warning("[L1] JSON parse failed: %s (raw head=%r)", exc, raw[:120])
-        return {}
+        log.warning("[L1] batch%d JSON parse failed: %s (raw head=%r)", batch_num, exc, raw[:120])
+        return {}, {}
 
     if not isinstance(parsed, dict):
-        log.warning("[L1] response not a dict")
-        return {}
+        log.warning("[L1] batch%d response not a dict", batch_num)
+        return {}, {}
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    news_hash = news_hash_fingerprint(md)
 
-    # Normalize symbol keys to upper and stamp refreshed_at per entry
-    sym_ctx_in = parsed.get("symbol_context", {}) if isinstance(parsed.get("symbol_context"), dict) else {}
+    sym_ctx_in = parsed.get("symbol_context", {})
+    if not isinstance(sym_ctx_in, dict):
+        sym_ctx_in = {}
     sym_ctx_out: dict = {}
     for sym, ctx in sym_ctx_in.items():
         key = str(sym or "").upper()
@@ -290,8 +419,6 @@ def run_qualitative_sweep(
             continue
         if not isinstance(ctx, dict):
             continue
-        # Strip anything that looks like a numeric field — belt-and-braces
-        # in case Sonnet ignores the system prompt and includes a price.
         ctx = dict(ctx)
         for forbidden in ("entry_zone", "stop", "target", "price", "score", "entry"):
             ctx.pop(forbidden, None)
@@ -301,23 +428,112 @@ def run_qualitative_sweep(
         ctx["refreshed_at"] = now_iso
         sym_ctx_out[key] = ctx
 
+    regime_ctx = parsed.get("regime_context")
+    if not isinstance(regime_ctx, dict):
+        regime_ctx = {}
+
+    log.debug("[L1] batch%d complete  symbols=%d", batch_num, len(sym_ctx_out))
+    return sym_ctx_out, regime_ctx
+
+
+# ── Main entrypoint ──────────────────────────────────────────────────────────
+
+def run_qualitative_sweep(
+    md: dict,
+    regime: dict,
+    symbols: list[str],
+) -> dict:
+    """Run two parallel Haiku qualitative sweeps covering all symbols.
+
+    Splits symbols into two batches (≤47 and ≤46) and runs them simultaneously
+    via ThreadPoolExecutor. Results are merged into a single payload. If one
+    batch fails, the other batch's results are still saved.
+
+    Returns the dict that was written to disk. Returns {} on total failure
+    (both batches fail or no symbols). The prior file on disk is left untouched
+    on total failure.
+
+    This function is synchronous. The scheduler calls it from a background
+    thread so it never blocks the main cycle.
+    """
+    if not symbols:
+        return {}
+
+    # Priority-order before splitting so highest-priority symbols land in batch 1
+    ordered = build_priority_ordered_symbols(symbols)
+    if not ordered:
+        ordered = [s.upper() for s in symbols if s]
+
+    batch1 = ordered[:_BATCH1_SIZE]
+    batch2 = ordered[_BATCH1_SIZE:_BATCH1_SIZE + _BATCH2_SIZE]
+
+    t_start = time.monotonic()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        fut1 = pool.submit(_run_single_batch, md, regime, batch1, 1)
+        fut2 = pool.submit(_run_single_batch, md, regime, batch2, 2) if batch2 else None
+
+        sym_ctx1, regime_ctx1 = {}, {}
+        sym_ctx2, regime_ctx2 = {}, {}
+
+        try:
+            sym_ctx1, regime_ctx1 = fut1.result(timeout=120)
+        except Exception as exc:
+            log.warning("[L1] batch1 result failed (non-fatal): %s", exc)
+
+        if fut2 is not None:
+            try:
+                sym_ctx2, regime_ctx2 = fut2.result(timeout=120)
+            except Exception as exc:
+                log.warning("[L1] batch2 result failed (non-fatal): %s", exc)
+
+    if not sym_ctx1 and not sym_ctx2:
+        log.warning("[L1] both batches produced no output — sweep aborted")
+        return {}
+
+    # Merge: prefer the entry with the more recent refreshed_at if a symbol
+    # somehow appears in both (should not happen, but handle gracefully).
+    merged: dict = {}
+    merged.update(sym_ctx1)
+    for sym, ctx in sym_ctx2.items():
+        if sym not in merged:
+            merged[sym] = ctx
+        else:
+            # Keep the one with the later refreshed_at
+            try:
+                existing_ts = (merged[sym] or {}).get("refreshed_at", "") if isinstance(merged[sym], dict) else ""
+                new_ts = (ctx or {}).get("refreshed_at", "") if isinstance(ctx, dict) else ""
+                if new_ts > existing_ts:
+                    merged[sym] = ctx
+            except Exception:
+                pass  # keep existing on any comparison error
+
+    # Use regime_context from batch1 (covers the priority symbols); batch2 is a fallback.
+    regime_context_out = regime_ctx1 if regime_ctx1 else regime_ctx2
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    news_hash = news_hash_fingerprint(md)
+    all_input_syms = sorted(set(s.upper() for s in ordered if s))
+
     payload = {
         "generated_at":    now_iso,
         "generated_by":    "layer1_haiku",
-        "model":           model,
+        "model":           _MODEL_HAIKU,
         "news_hash":       news_hash,
-        "regime_context":  parsed.get("regime_context") if isinstance(parsed.get("regime_context"), dict) else {},
-        "symbol_context":  sym_ctx_out,
+        "regime_context":  regime_context_out,
+        "symbol_context":  merged,
         "staleness_minutes": 0,
         "elapsed_seconds": round(time.monotonic() - t_start, 2),
-        "input_symbols":   sorted(set(s.upper() for s in symbols if s)),
+        "input_symbols":   all_input_syms,
+        "batch_count":     2 if batch2 else 1,
     }
 
     try:
         _atomic_write(_OUT_PATH, payload)
         log.info(
-            "[L1] qualitative sweep complete  symbols=%d  dt=%.1fs  news_hash=%s",
-            len(sym_ctx_out), payload["elapsed_seconds"], news_hash,
+            "[L1] qualitative sweep complete  symbols=%d/%d  batches=%d  dt=%.1fs  news_hash=%s",
+            len(merged), len(all_input_syms), payload["batch_count"],
+            payload["elapsed_seconds"], news_hash,
         )
     except Exception as exc:
         log.warning("[L1] atomic write failed: %s", exc)

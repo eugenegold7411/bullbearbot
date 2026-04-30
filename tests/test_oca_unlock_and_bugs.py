@@ -320,22 +320,26 @@ class TestQualitativeSweepSymbolCap(unittest.TestCase):
             fake_client.messages.create.return_value = create_return or fake_resp
         return fake_client, fake_resp
 
-    def test_symbols_capped_at_30(self):
-        """run_qualitative_sweep must trim to 30 symbols before calling Claude."""
+    def test_80_symbols_split_into_two_batches(self):
+        """run_qualitative_sweep splits 80 symbols into 2 batches (≤47 and ≤46)."""
         symbols_80 = [f"SYM{i:02d}" for i in range(80)]
-        captured_symbols = []
+        captured_per_batch: list[tuple[int, list]] = []
 
-        def fake_build(md, regime, syms):
-            captured_symbols.extend(syms)
-            return "prompt"
+        def fake_batch(md, regime, syms, batch_num):
+            captured_per_batch.append((batch_num, list(syms)))
+            ctx = {s: None for s in syms}
+            return ctx, {}
 
-        fake_client, _ = self._make_fake_client()
-        with patch.object(self._q, "_build_user_prompt", side_effect=fake_build):
-            with patch("bot_clients._get_claude", return_value=fake_client):
-                with patch("bot_stage1_5_qualitative._atomic_write"):
-                    self._q.run_qualitative_sweep({}, {}, symbols_80)
+        with patch.object(self._q, "_run_single_batch", side_effect=fake_batch):
+            with patch("bot_stage1_5_qualitative._atomic_write"):
+                self._q.run_qualitative_sweep({}, {}, symbols_80)
 
-        self.assertLessEqual(len(captured_symbols), 30)
+        self.assertEqual(len(captured_per_batch), 2)
+        b1_len = next(len(syms) for bn, syms in captured_per_batch if bn == 1)
+        b2_len = next(len(syms) for bn, syms in captured_per_batch if bn == 2)
+        self.assertLessEqual(b1_len, 47)
+        self.assertLessEqual(b2_len, 46)
+        self.assertEqual(b1_len + b2_len, 80)
 
     def test_max_tokens_is_6000(self):
         """The Claude call must use max_tokens=6000, not 8192."""

@@ -47,12 +47,9 @@ _REGISTRY_JSON_PATH  = _ROOT / "data" / "reports" / "shadow_status_latest.json"
 _WL_CORE_PATH        = _ROOT / "watchlist_core.json"
 _WL_DYNAMIC_PATH     = _ROOT / "watchlist_dynamic.json"
 _WL_INTRA_PATH       = _ROOT / "watchlist_intraday.json"
+_COOLDOWN_PATH       = _ROOT / "data" / "runtime" / "allocator_cooldown.json"
 
 SCHEMA_VERSION = 1
-
-# Module-level same-day cooldown: symbol → "YYYY-MM-DD" of last recommendation.
-# Cleared implicitly when the date changes. Not persisted across restarts.
-_daily_cooldown: dict[str, str] = {}
 
 
 def _build_watchlist_tier_map() -> dict[str, str]:
@@ -204,10 +201,14 @@ def _load_candidates(held_symbols: set[str]) -> list[dict]:
 # Incumbent ranking
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _rank_incumbents(pi_data: dict, positions: list) -> list[dict]:
+def _rank_incumbents(pi_data: dict, positions: list, equity: float = 0.0) -> list[dict]:
     """
     Build ranked incumbent list from pi_data thesis_scores + positions.
     Returns list sorted by thesis_score ascending (weakest first).
+
+    equity — caller's snapshot.equity (used as account_pct denominator so it
+    matches the risk kernel's max_position_pct_equity enforcement).  Falls back
+    to sum of market values when not supplied.
     """
     thesis_scores = pi_data.get("thesis_scores", [])
     health_map    = pi_data.get("health_map", {})
@@ -222,9 +223,7 @@ def _rank_incumbents(pi_data: dict, positions: list) -> list[dict]:
         except Exception:
             pass
 
-    equity = float(pi_data.get("sizes", {}).get("max_exposure", 0) or 0) / 0.30
     if equity <= 0:
-        # fallback: sum of all market values
         equity = sum(mv_by_symbol.values()) or 1.0
 
     incumbents = []
@@ -254,13 +253,68 @@ def _rank_incumbents(pi_data: dict, positions: list) -> list[dict]:
 # Anti-churn friction checks
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _load_cooldown() -> dict:
+    """
+    Load cooldown state from disk. Returns empty dict if file missing or stale.
+    Stale = date field != today's UTC date → treat as fresh day, no cooldowns active.
+    Non-fatal — returns empty dict on any error.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        if not _COOLDOWN_PATH.exists():
+            return {}
+        data = json.loads(_COOLDOWN_PATH.read_text())
+        if data.get("date") != today:
+            return {}
+        return data.get("cooldowns", {})
+    except Exception as exc:
+        log.debug("[ALLOC] _load_cooldown failed (non-fatal): %s", exc)
+        return {}
+
+
+def _save_cooldown(cooldown: dict) -> None:
+    """
+    Save cooldown state to disk.
+    Writes: {"date": today_utc, "cooldowns": {symbol: {action, timestamp}}}
+    Non-fatal — logs warning on failure, does not raise.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        _COOLDOWN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _COOLDOWN_PATH.write_text(
+            json.dumps({"date": today, "cooldowns": cooldown}, indent=2)
+        )
+    except Exception as exc:
+        log.warning("[ALLOC] _save_cooldown failed (non-fatal): %s", exc)
+
+
+def _is_on_cooldown(symbol: str, action: str, cooldown: dict) -> bool:
+    """Returns True if symbol+action is in today's cooldown state."""
+    entry = cooldown.get(symbol)
+    if entry is None:
+        return False
+    return entry.get("action") == action
+
+
+def _add_to_cooldown(symbol: str, action: str, cooldown: dict) -> dict:
+    """
+    Returns updated cooldown dict with symbol+action added.
+    Does NOT save to disk — caller must call _save_cooldown().
+    """
+    updated = dict(cooldown)
+    updated[symbol] = {
+        "action":    action,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    return updated
+
+
 def _check_cooldown(symbol: str, pa_cfg: dict) -> tuple[bool, str]:
     """Returns (passes, reason). passes=True means no cooldown block."""
     if not pa_cfg["same_symbol_daily_cooldown_enabled"]:
         return True, ""
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    recorded  = _daily_cooldown.get(symbol)
-    if recorded == today_str:
+    cooldown = _load_cooldown()
+    if _is_on_cooldown(symbol, "REPLACE", cooldown):
         return False, f"{symbol} already received a recommendation today (daily cooldown)"
     return True, ""
 
@@ -382,6 +436,8 @@ def _decide_actions(
     size_trim_tol       = float(pa_cfg.get("size_trim_tolerance_pct", 2.0)) / 100.0
     available_for_new   = float(sizes.get("available_for_new", 0) or 0)
     bp                  = float(sizes.get("buying_power", 0) or 0)
+    # Single-name cap from risk_kernel — ADD and SIZE TRIM must respect this ceiling.
+    max_pos_pct_equity  = float(cfg.get("parameters", {}).get("max_position_pct_equity", 0.25))
 
     target_wts = _target_weights(incumbents, sizes)
     proposed:   list[dict] = []
@@ -420,17 +476,24 @@ def _decide_actions(
         # SIZE TRIM: strong thesis but position exceeds tier max by more than tolerance.
         # Fires independently of thesis-score TRIM (exclusive paths: score ≤ trim_thresh
         # goes to thesis TRIM above; score > trim_thresh falls through to here).
-        if size_trim_enabled and score >= 6 and bp > 0 and mv > min_notional:
-            bp_frac = mv / bp
-            if bp_frac > tier_max + size_trim_tol:
-                target_mv     = tier_max * bp
+        # Denominator is equity — same basis the risk kernel uses for max_position_pct_equity.
+        # Trim target is min(tier_max × BP, max_pos_pct_equity × equity) so the recommended
+        # target is always kernel-consistent (never above the single-name equity cap).
+        if size_trim_enabled and score >= 6 and equity > 0 and mv > min_notional:
+            eq_frac = mv / equity
+            if eq_frac > tier_max + size_trim_tol:
+                target_mv     = (
+                    min(tier_max * bp, max_pos_pct_equity * equity)
+                    if bp > 0
+                    else max_pos_pct_equity * equity
+                )
                 trim_notional = round(mv - target_mv, 2)
                 if trim_notional >= min_notional:
                     proposed.append({
                         "action":           "TRIM",
                         "symbol":           sym,
                         "reason":           (
-                            f"SIZE TRIM — {sym} at {bp_frac*100:.1f}% of BP exceeds "
+                            f"SIZE TRIM — {sym} at {eq_frac*100:.1f}% of equity exceeds "
                             f"{tier_max*100:.0f}% {_SYMBOL_TIER_MAP.get(sym.upper(), 'inferred')} "
                             f"tier max (tol={size_trim_tol*100:.1f}%) — "
                             f"trim ~${trim_notional:,.0f} to target ${target_mv:,.0f}"
@@ -441,11 +504,15 @@ def _decide_actions(
                     })
                     continue
 
-        # ADD: thesis strong AND room to grow below tier ceiling
+        # ADD: thesis strong AND room to grow below tier ceiling AND below kernel cap.
+        # acct_pct is mv/equity (equity-denominated, same basis as risk_kernel).
+        # max_pos_pct_equity check aligns with risk_kernel.size_position() — prevents
+        # phantom ADD recommendations that the kernel would silently reject.
         # threshold: thesis_score >= 7 (normalized >= 70)
         if (score >= 7
                 and available_for_new > min_notional
-                and acct_pct < tier_max - weight_deadband):
+                and acct_pct < tier_max - weight_deadband
+                and acct_pct < max_pos_pct_equity):
             proposed.append({
                 "action":           "ADD",
                 "symbol":           sym,
@@ -549,11 +616,13 @@ def _decide_actions(
             })
     proposed = non_hold + holds
 
-    # ── Record cooldown for non-HOLD recommendations ──────────────────────────
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    for p in proposed:
-        if p["action"] != "HOLD":
-            _daily_cooldown[p["symbol"]] = today_str
+    # ── Record cooldown for non-HOLD recommendations (disk-backed) ──────────
+    non_hold_actions = [p for p in proposed if p["action"] != "HOLD"]
+    if non_hold_actions:
+        cooldown = _load_cooldown()
+        for p in non_hold_actions:
+            cooldown = _add_to_cooldown(p["symbol"], p["action"], cooldown)
+        _save_cooldown(cooldown)
 
     return proposed, suppressed
 
@@ -601,14 +670,14 @@ def run_allocator_shadow(
             except Exception:
                 pass
 
-        # 2. Rank incumbents
-        incumbents = _rank_incumbents(pi_data, positions)
+        sizes  = pi_data.get("sizes", {})
+        eq_val = equity or (float(sizes.get("max_exposure", 0) or 0) / 0.30)
+
+        # 2. Rank incumbents (pass equity so account_pct uses same denominator as kernel)
+        incumbents = _rank_incumbents(pi_data, positions, equity=eq_val)
 
         # 3. Load candidates from last cycle's signal scores
         candidates = _load_candidates(held_symbols)
-
-        sizes  = pi_data.get("sizes", {})
-        eq_val = equity or (float(sizes.get("max_exposure", 0) or 0) / 0.30)
 
         # 4. Run decision logic
         proposed, suppressed = _decide_actions(

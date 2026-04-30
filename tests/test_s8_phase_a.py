@@ -333,18 +333,18 @@ def _run_decide(
 class TestSizeTrimGateItem3(unittest.TestCase):
     """Item 3 (S8): size-based TRIM gate fires for score≥6 + oversized positions."""
 
-    def test_size_trim_fires_when_bp_pct_exceeds_tier_plus_tolerance(self):
-        """STNG (core, tier_max=15%) at 22K/120K BP = 18.3% > 17% → SIZE TRIM."""
+    def test_size_trim_fires_when_equity_pct_exceeds_tier_plus_tolerance(self):
+        """STNG (core, tier_max=15%) at 22K/100K equity = 22% > 17% → SIZE TRIM."""
         inc = _make_incumbent("STNG", score=7, mv=22_000.0)
         proposed = _run_decide([inc], bp=120_000.0)
         actions  = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(actions), 1)
         self.assertIn("SIZE TRIM", actions[0]["reason"])
-        self.assertIn("BP", actions[0]["reason"])
+        self.assertIn("equity", actions[0]["reason"])
 
     def test_size_trim_does_not_fire_within_tolerance(self):
-        """STNG at 19K/120K BP = 15.8% — within 15% + 2% = 17% → no size TRIM."""
-        inc = _make_incumbent("STNG", score=7, mv=19_000.0)
+        """STNG at 16.5K/100K equity = 16.5% — within 15% + 2% = 17% → no size TRIM."""
+        inc = _make_incumbent("STNG", score=7, mv=16_500.0)
         proposed = _run_decide([inc], bp=120_000.0)
         trim_actions = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(trim_actions), 0)

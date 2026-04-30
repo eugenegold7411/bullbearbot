@@ -302,7 +302,7 @@ class TestP6CapitalUtilization(unittest.TestCase):
     def test_config_has_capital_utilization_target(self):
         cfg = json.loads((_BOT_DIR / "strategy_config.json").read_text())
         cut = cfg["account2"]["capital_utilization_target"]
-        self.assertAlmostEqual(float(cut), 0.80, places=3)
+        self.assertAlmostEqual(float(cut), 0.90, places=3)
 
     def test_compute_utilization_zero_when_no_structures(self):
         from options_state import compute_capital_utilization
@@ -311,13 +311,13 @@ class TestP6CapitalUtilization(unittest.TestCase):
         self.assertAlmostEqual(deployed, 0.0)
 
     def test_compute_utilization_correct_formula(self):
-        """deployed = abs(max_cost_usd) per structure."""
+        """deployed / (deployed + buying_power) = correct capacity fraction."""
         from options_state import compute_capital_utilization
-        # 2 credit spreads: max_cost_usd=-450.0 each (= -1.50 × 3 × 100)
-        # → abs(-450) = 450 per structure → 900 total
+        # 2 credit spreads: max_cost_usd=-450.0 each → abs = 450 each → 900 total
+        # buying_power=99_100 → total_capacity=100_000 → pct=900/100_000=0.009
         s1 = self._make_structure(max_cost_usd=-450.0)
         s2 = self._make_structure(max_cost_usd=-450.0)
-        pct, deployed = compute_capital_utilization([s1, s2], 100_000.0)
+        pct, deployed = compute_capital_utilization([s1, s2], 100_000.0, buying_power=99_100.0)
         self.assertAlmostEqual(deployed, 900.0)
         self.assertAlmostEqual(pct, 0.009)
 
@@ -330,13 +330,15 @@ class TestP6CapitalUtilization(unittest.TestCase):
         self.assertAlmostEqual(pct, 0.0)
 
     def test_compute_utilization_above_100pct(self):
-        """Utilization can exceed 1.0 for large positions."""
+        """Utilization is always ≤ 1.0: deployed/(deployed+buying_power) caps at 100%."""
         from options_state import compute_capital_utilization
-        # 10 structures × max_cost_usd=-20_000 each → 200,000 total
+        # 10 structures × $20K = $200K deployed, $100K buying_power remaining
+        # total_capacity = 300K → pct = 200K/300K ≈ 0.667, always ≤ 1.0
         structs = [self._make_structure(max_cost_usd=-20_000.0)] * 10
-        pct, deployed = compute_capital_utilization(structs, 100_000.0)
+        pct, deployed = compute_capital_utilization(structs, 100_000.0, buying_power=100_000.0)
         self.assertAlmostEqual(deployed, 200_000.0)
-        self.assertGreater(pct, 1.0)
+        self.assertAlmostEqual(pct, 200_000.0 / 300_000.0, places=4)
+        self.assertLessEqual(pct, 1.0)
 
     def test_gate_logic_below_target_allows_entries(self):
         """Utilization at 0.79 (< 0.80 target) → no suppression."""
@@ -366,12 +368,11 @@ class TestP6CapitalUtilization(unittest.TestCase):
         self.assertFalse(pf_allow_new_entries)
 
     def test_compute_utilization_zero_equity_safe(self):
-        """equity=0 returns 0.0, no ZeroDivisionError."""
+        """total_capacity=0 (no deployment, no buying_power) returns 0.0, no ZeroDivisionError."""
         from options_state import compute_capital_utilization
-        s = self._make_structure(max_cost_usd=-100.0)  # = -1.0 × 1 × 100
-        pct, deployed = compute_capital_utilization([s], 0.0)
+        pct, deployed = compute_capital_utilization([], 0.0, buying_power=0.0)
         self.assertAlmostEqual(pct, 0.0)
-        self.assertAlmostEqual(deployed, 100.0)
+        self.assertAlmostEqual(deployed, 0.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

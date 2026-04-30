@@ -446,7 +446,7 @@ def _a1_top_theses(decisions: list, qctx: dict) -> list:
     sym_ctx = qctx.get("symbol_context", {}) if isinstance(qctx, dict) else {}
     result = []
     for sym, info in list(seen.items())[:8]:
-        ctx = sym_ctx.get(sym, {}) if isinstance(sym_ctx, dict) else {}
+        ctx = (sym_ctx.get(sym) or {}) if isinstance(sym_ctx, dict) else {}
         narrative = (ctx.get("narrative", "") or "")[:220]
         tags = ctx.get("thesis_tags", []) or []
         result.append({
@@ -650,12 +650,12 @@ def _build_a2_position_cards(structures: list, a2_live_positions: list) -> list:
         elif "call_credit_spread" in s:
             s_range = f"${ls:.0f}/${ss:.0f}" if ss else f"${ls:.0f}"
             title = f"{underlying} {s_range} Call Credit Spread — {expiry_str} ({dte_str})"
-            profit_line = f"Profit if {underlying} stays below ${ss:.0f}" if ss else f"Profit if flat/down"
+            profit_line = f"Profit if {underlying} stays below ${ss:.0f}" if ss else "Profit if flat/down"
             rationale = f"IV rank {iv_rank_str} ({iv_env}) — selling call premium when vol is elevated."
         elif "put_credit_spread" in s:
             s_range = f"${ls:.0f}/${ss:.0f}" if ss else f"${ls:.0f}"
             title = f"{underlying} {s_range} Put Credit Spread — {expiry_str} ({dte_str})"
-            profit_line = f"Profit if {underlying} stays above ${ss:.0f}" if ss else f"Profit if flat/up"
+            profit_line = f"Profit if {underlying} stays above ${ss:.0f}" if ss else "Profit if flat/up"
             rationale = f"IV rank {iv_rank_str} ({iv_env}) — selling put premium."
         elif "single_call" in s:
             breakeven = (ls + net_debit) if ls and net_debit else None
@@ -1142,6 +1142,148 @@ def _page_shell(title: str, nav: str, body: str) -> str:
     )
 
 
+# ── Performance widget helpers ────────────────────────────────────────────────
+def _insuf_data_card(days: int) -> str:
+    return (
+        '<div class="card"><div style="color:#8b949e;font-size:13px">'
+        f'Insufficient data ({days} day{"s" if days != 1 else ""} of outcomes — need 3+)</div></div>'
+    )
+
+
+def _pct_clr(pct: float | None, good: float = 55.0, warn: float = 45.0) -> str:
+    if pct is None:
+        return "#8b949e"
+    return "#3fb950" if pct >= good else ("#d29922" if pct >= warn else "#f85149")
+
+
+def _kv_row(label: str, val_html: str) -> str:
+    return (
+        f'<div class="kv"><span class="kv-label">{label}</span>'
+        f'<span class="kv-val">{val_html}</span></div>'
+    )
+
+
+def _perf_overview_html(ps: dict) -> str:
+    """One-liner performance card for the overview page."""
+    days = ps.get("data_days", 0)
+    if days < 3:
+        return _insuf_data_card(days)
+    si = ps.get("sonnet_ideas", {})
+    al = ps.get("allocator", {})
+    a2 = ps.get("a2_structures", {})
+    parts = []
+    apr_1d = si.get("approved_profitable_1d_pct")
+    if apr_1d is not None:
+        clr = _pct_clr(apr_1d)
+        parts.append(f'Sonnet approved 1d: <span style="color:{clr};font-weight:600">{apr_1d:.0f}%</span>')
+    follow_pct = al.get("follow_rate_pct")
+    if follow_pct is not None:
+        parts.append(f'Alloc follow: <span style="color:#c9d1d9">{follow_pct:.0f}%</span>')
+    a2_win = a2.get("win_rate_pct")
+    if a2_win is not None:
+        clr = _pct_clr(a2_win)
+        parts.append(f'A2 win: <span style="color:{clr}">{a2_win:.0f}%</span>')
+    body = " &nbsp;|&nbsp; ".join(parts) if parts else "No outcome data yet."
+    return (
+        f'<div class="card"><div style="font-size:13px;color:#c9d1d9">'
+        f'<span style="font-size:11px;color:#8b949e;text-transform:uppercase;'
+        f'letter-spacing:0.5px;margin-right:8px">7d</span>'
+        f'{body}</div></div>'
+    )
+
+
+def _perf_a1_decisions_html(ps: dict) -> str:
+    """A1 Decision Quality widget for the A1 detail page."""
+    days = ps.get("data_days", 0)
+    if days < 3:
+        return _insuf_data_card(days)
+    si = ps.get("sonnet_ideas", {})
+    al = ps.get("allocator", {})
+    lines = []
+
+    n_ideas = si.get("total_ideas_7d")
+    if n_ideas is not None:
+        lines.append(_kv_row("Ideas logged (7d)", f'<span style="color:#c9d1d9">{n_ideas}</span>'))
+    apr_pct = si.get("approved_pct")
+    if apr_pct is not None:
+        lines.append(_kv_row("Approval rate", f'<span style="color:#c9d1d9">{apr_pct:.0f}%</span>'))
+    apr_1d = si.get("approved_profitable_1d_pct")
+    if apr_1d is not None:
+        clr = _pct_clr(apr_1d)
+        lines.append(_kv_row("Approved profitable (1d)", f'<span style="color:{clr}">{apr_1d:.0f}%</span>'))
+    apr_5d = si.get("approved_profitable_5d_pct")
+    if apr_5d is not None:
+        clr = _pct_clr(apr_5d)
+        lines.append(_kv_row("Approved profitable (5d)", f'<span style="color:{clr}">{apr_5d:.0f}%</span>'))
+    rej_1d = si.get("rejected_wouldve_been_profitable_1d_pct")
+    if rej_1d is not None:
+        clr = "#f85149" if rej_1d > 55 else "#8b949e"
+        lines.append(_kv_row("False kernel rejection (1d)", f'<span style="color:{clr}">{rej_1d:.0f}%</span>'))
+
+    n_alloc = al.get("total_recommendations_7d")
+    if n_alloc is not None:
+        lines.append(_kv_row("Allocator recs (7d)", f'<span style="color:#c9d1d9">{n_alloc}</span>'))
+    follow_pct = al.get("follow_rate_pct")
+    if follow_pct is not None:
+        clr = "#3fb950" if follow_pct >= 50 else "#8b949e"
+        lines.append(_kv_row("Alloc follow rate", f'<span style="color:{clr}">{follow_pct:.0f}%</span>'))
+    add_1d = al.get("add_accuracy_1d_pct")
+    if add_1d is not None:
+        clr = _pct_clr(add_1d)
+        lines.append(_kv_row("ADD accuracy (1d)", f'<span style="color:{clr}">{add_1d:.0f}%</span>'))
+
+    if not lines:
+        return '<div class="card"><div style="color:#8b949e;font-size:13px">No decision quality data yet.</div></div>'
+    return '<div class="card">' + "".join(lines) + '</div>'
+
+
+def _perf_a2_strategies_html(ps: dict) -> str:
+    """A2 Strategy Performance widget for the A2 detail page."""
+    days = ps.get("data_days", 0)
+    if days < 3:
+        return _insuf_data_card(days)
+    a2 = ps.get("a2_structures", {})
+    lines = []
+
+    n_sub = a2.get("total_submitted_7d")
+    if n_sub is not None:
+        lines.append(_kv_row("Structures submitted (7d)", f'<span style="color:#c9d1d9">{n_sub}</span>'))
+    fill_pct = a2.get("fill_rate_pct")
+    if fill_pct is not None:
+        clr = "#3fb950" if fill_pct >= 70 else "#d29922"
+        lines.append(_kv_row("Fill rate", f'<span style="color:{clr}">{fill_pct:.0f}%</span>'))
+    win_pct = a2.get("win_rate_pct")
+    if win_pct is not None:
+        clr = _pct_clr(win_pct)
+        lines.append(_kv_row("Win rate", f'<span style="color:{clr}">{win_pct:.0f}%</span>'))
+    avg_pnl = a2.get("avg_pnl_pct_of_max_gain")
+    if avg_pnl is not None:
+        clr = "#3fb950" if avg_pnl >= 0 else "#f85149"
+        sign = "+" if avg_pnl >= 0 else ""
+        lines.append(_kv_row("Avg P&amp;L (% of max gain)", f'<span style="color:{clr}">{sign}{avg_pnl:.1f}%</span>'))
+
+    by_strat = a2.get("by_strategy", {})
+    if by_strat:
+        lines.append(
+            '<div style="margin-top:8px;font-size:11px;color:#8b949e;'
+            'text-transform:uppercase;letter-spacing:0.5px">By Strategy</div>'
+        )
+        for strat, sv in by_strat.items():
+            n = sv.get("count", 0)
+            wr = sv.get("win_rate_pct")
+            wr_str = f'{wr:.0f}%' if wr is not None else "?"
+            wr_clr = _pct_clr(wr)
+            lines.append(
+                f'<div class="kv"><span class="kv-label" style="color:#8b949e">'
+                f'{strat.replace("_", " ")}</span>'
+                f'<span class="kv-val">{n} trades &nbsp;'
+                f'<span style="color:{wr_clr}">{wr_str} WR</span></span></div>'
+            )
+    if not lines:
+        return '<div class="card"><div style="color:#8b949e;font-size:13px">No A2 strategy performance data yet.</div></div>'
+    return '<div class="card">' + "".join(lines) + '</div>'
+
+
 # ── Overview page ─────────────────────────────────────────────────────────────
 def _page_overview(status: dict, now_et: str) -> str:
     a1d = status["a1"]
@@ -1237,6 +1379,39 @@ def _page_overview(status: dict, now_et: str) -> str:
     a2_ts = _to_et(a2_dec.get("built_at", "")) if a2_dec else "—"
     git_hash = status["git_hash"]
     svc_uptime = status["service_uptime"]
+
+    # Earnings calendar staleness
+    try:
+        import sys as _sys  # noqa: PLC0415
+        _bot_dir = str(BOT_DIR)
+        if _bot_dir not in _sys.path:
+            _sys.path.insert(0, _bot_dir)
+        import data_warehouse as _dw  # noqa: PLC0415
+        _ec_stale = _dw.get_earnings_calendar_staleness()
+    except Exception:
+        _ec_stale = {"stale": False, "warning": False, "hours_old": None, "entry_count": 0}
+    _ec_hours = _ec_stale.get("hours_old")
+    _ec_count = _ec_stale.get("entry_count", 0)
+    if _ec_stale.get("warning"):
+        _ec_icon  = "&#x1F534;"
+        _ec_color = "#f85149"
+        _ec_label = f"{_ec_hours:.0f}h ago" if _ec_hours is not None else "unknown age"
+    elif _ec_stale.get("stale"):
+        _ec_icon  = "&#x26A0;&#xFE0F;"
+        _ec_color = "#d29922"
+        _ec_label = f"{_ec_hours:.0f}h ago" if _ec_hours is not None else "unknown age"
+    else:
+        _ec_icon  = "&#x2705;"
+        _ec_color = "#3fb950"
+        _ec_label = f"updated {_ec_hours:.0f}h ago" if _ec_hours is not None else "fresh"
+    earnings_cal_html = (
+        f'<div class="kv"><span class="kv-label">Earnings cal</span>'
+        f'<span class="kv-val" style="color:{_ec_color}">'
+        f'{_ec_icon} {_ec_label} ({_ec_count} entries)</span></div>'
+    )
+
+    # Performance summary widget
+    perf_7d_html = _perf_overview_html(status.get("perf_summary", {}))
 
     # P&L hero
     combined_pnl = a1_pnl + a2_pnl
@@ -1370,10 +1545,14 @@ def _page_overview(status: dict, now_et: str) -> str:
 <div class="section-label">Active Flags</div>
 <div>{flags_html}</div>
 
+<div class="section-label">Performance (7d)</div>
+{perf_7d_html}
+
 <div class="section-label">System</div>
 <div class="card">
   <div class="kv"><span class="kv-label">Git HEAD</span><span class="kv-val" style="font-family:monospace">{git_hash}</span></div>
   <div class="kv"><span class="kv-label">Service up since</span><span class="kv-val muted">{svc_uptime}</span></div>
+  {earnings_cal_html}
 </div>
 <div style="height:24px"></div>
 </div>"""
@@ -1596,6 +1775,9 @@ def _page_a1(status: dict, now_et: str) -> str:
     alloc_st = alloc.get("status", "—")
     alloc_last = _to_et(alloc.get("last_run_at", ""))
 
+    # Decision quality performance widget
+    dec_quality_html = _perf_a1_decisions_html(status.get("perf_summary", {}))
+
     # Recent errors
     log_errors = status["log_errors"]
     errors_html = ""
@@ -1680,6 +1862,9 @@ def _page_a1(status: dict, now_et: str) -> str:
   <div class="kv"><span class="kv-label">Status</span><span class="kv-val">{alloc_st}</span></div>
   <div class="kv"><span class="kv-label">Last Run</span><span class="kv-val muted">{alloc_last}</span></div>
 </div>
+
+<div class="section-label">Decision Quality (7d)</div>
+{dec_quality_html}
 
 <div class="section-label">Recent Log Events</div>
 <div class="card">{errors_html}</div>
@@ -1817,6 +2002,9 @@ def _page_a2(status: dict, now_et: str) -> str:
     debate_dir = debate.get("direction", "?") if isinstance(debate, dict) else "?"
     debate_synth = debate.get("synthesis", "?") if isinstance(debate, dict) else "?"
 
+    # A2 strategy performance widget
+    a2_perf_html = _perf_a2_strategies_html(status.get("perf_summary", {}))
+
     # IV environment summary from structures
     structs_all = _a2_structures()
     iv_summary_html = ""
@@ -1873,6 +2061,9 @@ def _page_a2(status: dict, now_et: str) -> str:
   <div class="kv"><span class="kv-label">Confidence</span><span class="kv-val">{debate_conf}</span></div>
   {pipeline_html}
 </div>
+
+<div class="section-label">Strategy Performance (7d)</div>
+{a2_perf_html}
 
 <div class="section-label">IV Environment &mdash; Open Structures</div>
 <div class="card">{iv_summary_html}</div>
@@ -2168,7 +2359,7 @@ def _page_brief(status: dict, now_et: str) -> str:
     </div>''' if watch else ""
 
     body = (
-        f'<div style="max-width:1200px;margin:0 auto;padding:0 8px">'
+        '<div style="max-width:1200px;margin:0 auto;padding:0 8px">'
         + header_html + stale_html + updates_html
         + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:0">'
         + '<div>' + regime_html + sectors_html + earnings_html + insider_html + macro_html + '</div>'
@@ -2266,9 +2457,21 @@ def _build_status() -> dict:
         "trail_tiers": trail_tiers,
         "a2_pipeline": _a2_pipeline_today(),
         "allocator_line": _allocator_shadow_compact(),
+        "perf_summary": _load_perf_summary(),
     }
     st["warnings"] = _build_warnings(st)
     return st
+
+
+def _load_perf_summary() -> dict:
+    """Load performance_summary.json. Returns {} on any error (non-fatal)."""
+    try:
+        import sys  # noqa: PLC0415
+        sys.path.insert(0, str(BOT_DIR))
+        from performance_tracker import load_performance_summary  # noqa: PLC0415
+        return load_performance_summary()
+    except Exception:
+        return {}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────

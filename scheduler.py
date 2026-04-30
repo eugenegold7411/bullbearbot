@@ -322,9 +322,12 @@ _overnight_digest_written_date:str = ""   # "YYYY-MM-DD" of last 4 AM overnight 
 _eod_digest_written_date:      str = ""   # "YYYY-MM-DD" of last 4:15 PM EOD digest
 _market_impact_backfill_date:  str = ""   # "YYYY-MM-DD" of last backfill
 _outcomes_backfill_date:       str = ""   # "YYYY-MM-DD" of last outcomes backfill
+_perf_tracker_date:            str = ""   # "YYYY-MM-DD" of last overnight perf compute
+_weekly_perf_report_date:      str = ""   # "YYYY-MM-DD" of last weekly perf report
 _readiness_ran_date:           str = ""   # "YYYY-MM-DD" of last readiness check
 _econ_calendar_refresh_key:    str = ""   # "YYYY-MM-DD-HHMM" slot key
 _earnings_av_refresh_key:      str = ""   # ISO-week key — weekly AV calendar refresh
+_earnings_av_daily_ran_date:   str = ""   # "YYYY-MM-DD" of last daily AV refresh
 _earnings_rotation_ran_date:   str = ""   # "YYYY-MM-DD" of last rotation run
 _earnings_cull_ran_date:       str = ""   # "YYYY-MM-DD" of last 2 AM cull
 _earnings_stale_check_date:    str = ""   # "YYYY-MM-DD" of last staleness check
@@ -1010,6 +1013,55 @@ def _maybe_refresh_earnings_calendar_av(dry_run: bool = False) -> None:
         log.warning("[EARNINGS_AV] weekly refresh failed (non-fatal): %s", exc)
 
 
+def _maybe_refresh_earnings_calendar_av_daily(dry_run: bool = False) -> None:
+    """
+    Daily AV earnings calendar refresh — Mon–Sat 4:05–4:20 AM ET.
+    Sundays are handled by the weekly refresh (_maybe_refresh_earnings_calendar_av).
+    Non-fatal: failure leaves the existing file in place.
+    Writes last_daily_refresh_at into the saved JSON after a successful refresh.
+    """
+    global _earnings_av_daily_ran_date
+    now_et  = datetime.now(ET)
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()   # Mon=0 ... Sun=6
+    today   = _today()
+
+    if weekday == 6:                                   # Sunday — handled by weekly
+        return
+    if not (4 * 60 + 5 <= now_min <= 4 * 60 + 20):   # 4:05–4:20 AM ET
+        return
+    if _earnings_av_daily_ran_date == today:
+        return
+
+    if dry_run:
+        log.info("[dry-run] Skipping daily AV earnings refresh (date=%s)", today)
+        _earnings_av_daily_ran_date = today
+        return
+
+    try:
+        import data_warehouse as dw  # noqa: PLC0415
+        result = dw.refresh_earnings_calendar_av()
+        if result:
+            n = len(result.get("calendar", []))
+            # Stamp last_daily_refresh_at so the dashboard can distinguish daily from weekly
+            try:
+                import json as _json  # noqa: PLC0415
+                cal_path = dw.MARKET_DIR / "earnings_calendar.json"
+                saved = _json.loads(cal_path.read_text())
+                saved["last_daily_refresh_at"] = datetime.now(ET).isoformat()
+                tmp = cal_path.with_suffix(".json.tmp")
+                tmp.write_text(_json.dumps(saved, indent=2))
+                tmp.replace(cal_path)
+            except Exception as stamp_exc:
+                log.debug("[EARNINGS_AV] daily stamp failed (non-fatal): %s", stamp_exc)
+            log.info("[EARNINGS_AV] daily refresh complete (entries=%d, date=%s)", n, today)
+            _earnings_av_daily_ran_date = today
+        else:
+            log.warning("[EARNINGS_AV] daily refresh returned empty — will retry next eligible cycle")
+    except Exception as exc:
+        log.warning("[EARNINGS_AV] daily refresh failed (non-fatal): %s", exc)
+
+
 def _maybe_run_earnings_rotation(dry_run: bool = False) -> None:
     """
     Daily rotation run — 4:15–5:00 AM ET weekdays, after premarket jobs.
@@ -1671,6 +1723,7 @@ def run(dry_run: bool = False) -> None:
         # Scheduled jobs (run before each cycle)
         _maybe_cull_post_earnings(dry_run)
         _maybe_refresh_earnings_calendar_av(dry_run)
+        _maybe_refresh_earnings_calendar_av_daily(dry_run)
         _maybe_run_premarket_jobs(dry_run)
         _maybe_run_earnings_rotation(dry_run)
         _maybe_check_earnings_calendar_staleness(dry_run)
@@ -1698,7 +1751,9 @@ def run(dry_run: bool = False) -> None:
         _maybe_write_eod_digest(dry_run)
         _maybe_backfill_market_impact(dry_run)
         _maybe_backfill_decision_outcomes(dry_run)
+        _maybe_compute_overnight_outcomes(dry_run)
         _maybe_generate_weekly_summary()
+        _maybe_generate_weekly_performance_report(dry_run)
         _maybe_publish_flat_day()
         _maybe_publish_lookback()
         _maybe_update_engagement()
@@ -2288,6 +2343,68 @@ def _maybe_backfill_decision_outcomes(dry_run: bool = False) -> None:
             log.warning("[OUTCOMES] Daily backfill failed (non-fatal)", exc_info=True)
 
     _outcomes_backfill_date = today
+
+
+def _maybe_compute_overnight_outcomes(dry_run: bool = False) -> None:
+    """Compute overnight performance outcomes at 4:30–4:45 AM ET weekdays.
+
+    Fills outcome_1d/3d/5d for sonnet_ideas and allocator_recommendations using
+    yfinance daily close prices. Runs once per trading day. Non-fatal.
+    """
+    global _perf_tracker_date
+    now_et  = datetime.now(ET)
+    today   = _today()
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+
+    if _perf_tracker_date == today:
+        return
+    if weekday >= 5:
+        return
+    if not (4 * 60 + 30 <= now_min <= 4 * 60 + 45):   # 4:30–4:45 AM window
+        return
+
+    if not dry_run:
+        try:
+            from performance_tracker import compute_overnight_outcomes  # noqa: PLC0415
+            compute_overnight_outcomes()
+            log.info("[PERF] Overnight outcome compute complete")
+        except Exception:
+            log.warning("[PERF] compute_overnight_outcomes failed (non-fatal)", exc_info=True)
+
+    _perf_tracker_date = today
+
+
+def _maybe_generate_weekly_performance_report(dry_run: bool = False) -> None:
+    """Generate weekly performance report on Sundays at 6:00–6:30 AM ET.
+
+    Calls generate_weekly_performance_report() which uses Haiku to summarise
+    7-day outcome data across Sonnet, allocator, and A2 strategies. Non-fatal.
+    """
+    global _weekly_perf_report_date
+    now_et  = datetime.now(ET)
+    today   = _today()
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+
+    if _weekly_perf_report_date == today:
+        return
+    if weekday != 6:   # Sunday only
+        return
+    if not (6 * 60 <= now_min <= 6 * 60 + 30):   # 6:00–6:30 AM window
+        return
+
+    if not dry_run:
+        try:
+            from performance_tracker import (
+                generate_weekly_performance_report,  # noqa: PLC0415
+            )
+            generate_weekly_performance_report()
+            log.info("[PERF] Weekly performance report generated")
+        except Exception:
+            log.warning("[PERF] generate_weekly_performance_report failed (non-fatal)", exc_info=True)
+
+    _weekly_perf_report_date = today
 
 
 def _maybe_run_options_close_check(dry_run: bool = False) -> None:

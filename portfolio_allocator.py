@@ -786,6 +786,21 @@ def run_allocator_shadow(
         # 9. Write artifact with rotation
         _write_artifact(artifact)
 
+        # 9a. Shadow performance tracker — log allocator recommendations
+        try:
+            from performance_tracker import (  # noqa: PLC0415
+                log_allocator_recommendations as _log_alloc,
+            )
+            _log_alloc(
+                proposed_actions=proposed,
+                incumbents=incumbents,
+                candidates=candidates,
+                positions=positions,
+                cycle_id=now_ts,
+            )
+        except Exception as _pt_exc:
+            log.debug("log_allocator_recommendations failed (non-fatal): %s", _pt_exc)
+
         # 10. Update shadow registry last_run_at
         _update_shadow_registry(now_ts)
 

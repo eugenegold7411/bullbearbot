@@ -785,6 +785,73 @@ def _check_earnings_calendar_staleness() -> str:
     return "ok"
 
 
+def get_earnings_calendar_staleness() -> dict:
+    """
+    Return staleness info for the earnings calendar.
+    Used by the dashboard and morning brief to surface warnings.
+
+    Returns dict with keys:
+      stale       — True when calendar is >25h old (missed a daily refresh)
+      warning     — True when >48h old (serious staleness, two missed refreshes)
+      hours_old   — float, age in hours of the most recent refresh
+      message     — human-readable string when stale, None otherwise
+      entry_count — number of entries in the calendar
+      last_refresh — ISO timestamp of most recent refresh
+    """
+    cal_path = MARKET_DIR / "earnings_calendar.json"
+    if not cal_path.exists():
+        return {
+            "stale": True, "warning": True, "hours_old": None,
+            "message": "Earnings calendar file missing",
+            "entry_count": 0, "last_refresh": None,
+        }
+    try:
+        d = json.loads(cal_path.read_text())
+    except Exception:
+        return {
+            "stale": True, "warning": True, "hours_old": None,
+            "message": "Earnings calendar unreadable",
+            "entry_count": 0, "last_refresh": None,
+        }
+
+    entry_count = len(d.get("calendar", []))
+
+    # Use last_daily_refresh_at if present and more recent than fetched_at
+    fetched_raw   = d.get("fetched_at") or ""
+    daily_raw     = d.get("last_daily_refresh_at") or ""
+    best_raw      = daily_raw if daily_raw > fetched_raw else fetched_raw
+    if not best_raw:
+        return {
+            "stale": True, "warning": True, "hours_old": None,
+            "message": "Earnings calendar has no timestamp",
+            "entry_count": entry_count, "last_refresh": None,
+        }
+
+    try:
+        best_dt   = datetime.fromisoformat(best_raw[:19])
+        if best_dt.tzinfo is None:
+            best_dt = best_dt.replace(tzinfo=timezone.utc)
+        hours_old = (datetime.now(timezone.utc) - best_dt.astimezone(timezone.utc)).total_seconds() / 3600
+    except Exception:
+        return {
+            "stale": True, "warning": True, "hours_old": None,
+            "message": "Earnings calendar timestamp unparseable",
+            "entry_count": entry_count, "last_refresh": best_raw,
+        }
+
+    stale   = hours_old > 25   # missed a daily refresh
+    warning = hours_old > 48   # two missed refreshes
+
+    return {
+        "stale":        stale,
+        "warning":      warning,
+        "hours_old":    round(hours_old, 1),
+        "message":      f"Earnings calendar {round(hours_old, 1):.0f}h old" if stale else None,
+        "entry_count":  entry_count,
+        "last_refresh": best_raw,
+    }
+
+
 def refresh_premarket_movers() -> None:
     """Top movers in pre-market using yfinance."""
     # Use a curated set of highly-liquid names as proxy

@@ -77,15 +77,84 @@ Output schema:
   "summary": "one sentence overall read for this cycle"
 }
 
-Rules:
-- watching: 2-8 symbols with the clearest setups this cycle. Include all held positions.
-- blocking: 1-5 conditions. Can be market-wide ("VIX above 30 — reduce size")
-  or symbol-specific ("AAPL: no catalyst today — skip").
-- triggers: 1-8 entries. Be specific — price levels, volume thresholds, catalyst events.
-- conviction_ranking: every symbol in watching, ordered high→low. notes max 12 words.
-- summary: single sentence, 20 words max.
-- If signal_scores is empty or regime is unknown, return all empty lists and a summary
-  of "Insufficient signal data — holding current positions."
+FIELD RULES:
+
+watching (2-8 symbols):
+- Include ALL currently held positions regardless of score.
+- Include any symbol with score > 65 and conviction = high.
+- Include any symbol flagged orb_candidate=true during ORB window (9:30-9:45 ET).
+- Do NOT include symbols with conviction='avoid' unless currently held.
+- Maximum 8 symbols total.
+
+blocking (1-5 entries):
+- Market-wide blocks go first: "VIX above 30 — reduce all size by 50%"
+- Symbol-specific: "SYMBOL: specific reason to skip this cycle"
+- Common blocking reasons: no fresh catalyst, earnings binary event imminent,
+  sector rotation against, stop too close to current price, PDT restriction active.
+- Omit blocking entirely (empty list) only when no material blocks exist.
+
+triggers (1-8 entries):
+- Format: "SYMBOL: specific observable condition"
+- Must be actionable by Stage 3. Good examples:
+  "NVDA: break above $875 on 2x average volume confirms ORB breakout"
+  "GLD: hold above $2,320 through Fed minutes = add to position"
+  "BTC/USD: drop below $68,000 = stop-loss review needed"
+- Avoid vague triggers like "watch for momentum" — be specific.
+
+conviction_ranking:
+- Every symbol in watching must appear here, ordered high→low conviction.
+- notes: max 12 words explaining the conviction level. Reference score, catalyst, or risk.
+- Conviction mapping: score 75-100 = high, 50-74 = medium, below 50 = low.
+
+summary (1 sentence, 20 words max):
+- Overall read: regime + top setup + key risk.
+- Example: "Risk-on session, NVDA leading on AI spend catalyst, VIX 18 no blocks."
+
+EDGE CASES:
+- Empty signal_scores or regime unknown: return all empty lists, summary =
+  "Insufficient signal data — holding current positions."
+- Held positions always appear in watching even if score < 50 (need exit monitoring).
+- During extended/overnight session: watching = crypto only (BTC/USD, ETH/USD).
+- ORB window (9:30-9:45 ET): prioritize orb_candidate=true symbols in watching.
+- VIX > 30: add market-wide blocking entry, cap watching to 4 symbols max.
+- Earnings within 48h on a held position: add that symbol to blocking with note.
+
+INTEGRATION WITH MORNING BRIEF:
+- If morning brief has conviction_picks, those symbols get elevated priority in watching.
+- If morning brief symbol score < 40 this cycle, note the divergence in its trigger entry.
+- Morning brief picks that are NOT in signal_scores should appear in watching anyway
+  (they are held or tracked) but with notes reflecting stale signal data.
+
+CONVICTION SCORING GUIDE:
+- high conviction criteria (ALL of the following):
+  * score >= 70 from signal scorer
+  * conviction = 'high' from L3
+  * No binary event within 24h
+  * Fresh catalyst (< 4h old or earnings-driven)
+  * Sector not in broad rotation away
+- medium conviction (score 50-69 OR one high criteria missing):
+  * Good technical setup but catalyst is macro/indirect
+  * Score is high but L1 context is stale (>4h)
+  * Held position with healthy unrealized gain and intact thesis
+- low conviction (score < 50 OR multiple criteria missing):
+  * Held positions with deteriorating thesis
+  * Watching for exit, not entry
+  * Regime constraint limits opportunity
+
+STOP RISK MONITORING (for held positions in watching):
+- If a held position is within 1% of its stop level: add blocking entry
+  "SYMBOL: within 1pct of stop — monitor closely"
+- If held position unrealized P&L < -3%: add to blocking with note
+  "SYMBOL: -N% unrealized — thesis review needed"
+- If held position is up >10% unrealized: add trigger
+  "SYMBOL: trail stop candidate at current +10%"
+
+REGIME-ADJUSTED BEHAVIOR:
+- regime_score < 35: watching list = held positions only. No new entries in triggers.
+  Add blocking: "Regime score X — new entries suspended, holding and monitoring only."
+- regime_score 35-50: High conviction only (score >= 75). Max 3 new entry triggers.
+- regime_score 50-65: Standard operation. All score >= 65 qualify for watching.
+- regime_score > 65: Full operation. Score >= 50 can appear in watching if catalyst is strong.
 """
 
 

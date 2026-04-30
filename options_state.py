@@ -67,6 +67,18 @@ def save_structure(structure: OptionsStructure) -> None:
         structure.lifecycle.value,
     )
 
+    # Shadow performance tracker — log A2 outcomes on terminal lifecycle
+    try:
+        from schemas import StructureLifecycle  # noqa: PLC0415
+        _terminal = {StructureLifecycle.CLOSED, StructureLifecycle.CANCELLED}
+        if structure.lifecycle in _terminal:
+            from performance_tracker import (  # noqa: PLC0415
+                log_a2_structure_outcome as _log_a2,
+            )
+            _log_a2(structure)
+    except Exception as _pt_exc:
+        log.debug("log_a2_structure_outcome failed (non-fatal): %s", _pt_exc)
+
 
 def load_structures() -> list[OptionsStructure]:
     """

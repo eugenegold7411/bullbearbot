@@ -19,17 +19,81 @@ _REGIME_SYS = (
     "Output a structured JSON assessment only. No markdown, just valid JSON.\n"
     "Output: {\n"
     '  "regime_score": <0-100>,\n'
-    '  "bias": "risk-on"|"risk-off"|"neutral",\n'
+    '  "bias": "risk_on"|"risk_off"|"neutral",\n'
     '  "session_theme": "<one descriptive phrase>",\n'
     '  "constraints": [<strings>],\n'
     '  "high_impact_warning": null|"<event and minutes away>",\n'
     '  "orb_context": "<one line on opening range>",\n'
     '  "confidence": "high"|"medium"|"low",\n'
-    '  "macro_regime": "reflationary"|"disinflationary"|"stagflationary"|"goldilocks"|"risk-off",\n'
+    '  "macro_regime": "reflationary"|"disinflationary"|"stagflationary"|"goldilocks"|"risk_off",\n'
     '  "commodity_trend": "bullish"|"bearish"|"neutral",\n'
     '  "dollar_trend": "strong"|"weak"|"neutral",\n'
     '  "credit_stress": "tight"|"normal"|"wide"\n'
-    "}"
+    "}\n\n"
+    "REGIME SCORE GUIDE:\n"
+    "  0-15  Crisis/crash: VIX > 40, credit blowout, major index breakdown. "
+    "Constraints: halt_all_new_positions. Bias: risk_off.\n"
+    "  16-30 Risk-off/defensive: VIX 28-40, broad selling, sector rotation to "
+    "utilities and gold. Constraints: reduce_position_size. Bias: risk_off.\n"
+    "  31-45 Cautious: VIX 22-28, mixed signals, macro uncertainty, no clear trend. "
+    "Constraints: high_conviction_only. Bias: neutral or risk_off.\n"
+    "  46-60 Neutral: VIX 16-22, range-bound, balanced flows. No special constraints. "
+    "Bias: neutral.\n"
+    "  61-75 Risk-on: VIX 12-16, broad market rally, momentum favoring risk assets. "
+    "Bias: risk_on.\n"
+    "  76-90 Trending: VIX < 12, sustained rally, high breadth, low volatility. "
+    "Bias: risk_on.\n"
+    "  91-100 Euphoria: VIX < 10, parabolic moves, extreme crowding. "
+    "Constraints: protect_profits. Bias: risk_on but watch for reversal.\n\n"
+    "MACRO REGIME CLASSIFICATION:\n"
+    "  reflationary: Rising inflation + rising growth. Favors commodities, energy, financials.\n"
+    "  disinflationary: Falling inflation + rising growth (Goldilocks). Favors growth tech.\n"
+    "  stagflationary: Rising inflation + falling growth (worst case). Favors cash, gold.\n"
+    "  goldilocks: Low stable inflation + solid growth. Favors equities broadly.\n"
+    "  risk_off: Falling or negative growth dominates. Favors treasuries, utilities, gold.\n\n"
+    "CREDIT STRESS:\n"
+    "  tight: HY spreads < 300bps, IG < 80bps. Credit market healthy.\n"
+    "  normal: HY 300-500bps, IG 80-130bps. Standard credit risk premium.\n"
+    "  wide: HY > 500bps or IG > 130bps. Stress. Add 'credit_stress_elevated' to constraints.\n\n"
+    "COMMON CONSTRAINT VALUES (use exact strings):\n"
+    "  halt_all_new_positions, reduce_position_size, high_conviction_only, no_leverage,\n"
+    "  avoid_earnings_binary, avoid_options_new, crypto_only, defensive_only,\n"
+    "  credit_stress_elevated, orb_formation_active, fed_day_caution,\n"
+    "  major_data_pending, vix_elevated, protect_profits.\n\n"
+    "BIAS FIELD RULES:\n"
+    "  Use underscores: 'risk_on', 'risk_off', 'neutral'. Never hyphens.\n"
+    "  macro_regime also uses underscores: 'risk_off' not 'risk-off'.\n\n"
+    "CONFIDENCE CALIBRATION:\n"
+    "  high: VIX confirms bias, macro data aligns, multiple signals agree.\n"
+    "  medium: Signals mixed or macro data is stale (>2h).\n"
+    "  low: Contradictory signals, missing data, or regime is transitioning.\n\n"
+    "SESSION THEME EXAMPLES (one descriptive phrase):\n"
+    "  'pre-market rally', 'post-data drift', 'fed-watch defensive', 'tech-led risk-on',\n"
+    "  'defensive rotation', 'commodities surge', 'credit risk elevated',\n"
+    "  'ORB formation window', 'overnight crypto drift', 'earnings-driven volatility'.\n\n"
+    "HIGH IMPACT WARNING:\n"
+    "  null when no high-impact event within 60 minutes.\n"
+    "  '<event name> in <N> min' when a HIGH-impact calendar event is ≤60 min away.\n"
+    "  Only flag events with impact='HIGH' from the economic calendar.\n\n"
+    "DOLLAR TREND:\n"
+    "  strong: DXY up >0.3% on the day or clear 5-day uptrend.\n"
+    "  weak: DXY down >0.3% on the day or clear 5-day downtrend.\n"
+    "  neutral: DXY ±0.3% or mixed signals.\n\n"
+    "COMMODITY TREND:\n"
+    "  bullish: Oil (WTI) up >1% OR gold up >0.5% with volume, commodities complex leading.\n"
+    "  bearish: Oil down >1% OR gold down >0.5%, commodities complex lagging.\n"
+    "  neutral: Mixed commodity moves or flat on the day.\n\n"
+    "ORB CONTEXT RULES:\n"
+    "  If market is 9:30-9:45 ET: report 'ORB formation in progress — N symbols tracked'.\n"
+    "  If ORB is locked (post-9:45): report 'ORB locked — top candidates: SYM1, SYM2'.\n"
+    "  If outside market hours or no ORB data: report 'Not in ORB window'.\n\n"
+    "MULTI-FACTOR SCORING GUIDE:\n"
+    "  Start from VIX as base: VIX 10=90, VIX 15=75, VIX 20=60, VIX 25=45, VIX 30=35, "
+    "VIX 40=20.\n"
+    "  Adjust +5 for: strong global session, positive macro data, bullish Fed tone.\n"
+    "  Adjust -5 for: negative global session, bearish macro print, credit stress, "
+    "geopolitical shock.\n"
+    "  Final score should reflect the combined weight of ALL inputs, not just VIX.\n"
 )
 
 
@@ -112,8 +176,10 @@ def classify_regime(md: dict, calendar: dict) -> dict:
         )
         resp = _get_claude().messages.create(
             model=MODEL_FAST, max_tokens=600,
-            system=[{"type": "text", "text": _REGIME_SYS}],
+            system=[{"type": "text", "text": _REGIME_SYS,
+                     "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}],
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
         try:
             from cost_tracker import get_tracker

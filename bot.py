@@ -463,6 +463,7 @@ def run_cycle(
         log.debug("Attribution block failed (non-fatal): %s", _attr_exc)
 
     # Risk kernel loop — process ideas → broker-ready actions
+    _rejection_map: dict = {}
     broker_actions: list = []
     if claude_decision and claude_decision.ideas and regime != "halt" and state.allow_new_entries:
         _prices = state.md.get("current_prices", {})
@@ -524,6 +525,7 @@ def run_cycle(
                          _result.qty, _result.stop_loss)
             else:
                 log.info("[KERNEL] REJECTED %s %s — %s", _idea.intent, _idea.symbol, _result)
+                _rejection_map[_sym] = str(_result)
                 try:
                     from shadow_lane import (
                         log_shadow_event as _log_shadow,  # noqa: PLC0415
@@ -1039,6 +1041,31 @@ def run_cycle(
                 log.warning("[OUTCOMES] blocked_by_mode log failed: %s", _bm_exc)
         else:
             log.info("Execute  no actions this cycle")
+
+    # Shadow performance tracker — log Sonnet ideas with kernel+execution outcomes
+    if _cap_raw is not None and claude_decision and claude_decision.ideas:
+        try:
+            from performance_tracker import (
+                log_sonnet_ideas as _log_ideas,  # noqa: PLC0415
+            )
+            _executed_syms = (
+                {r.symbol for r in results if getattr(r, "status", "") == "submitted"}
+                if "results" in dir()
+                else set()
+            )
+            _log_ideas(
+                ideas=claude_decision.ideas,
+                approved_symbols={ba.symbol for ba in broker_actions},
+                executed_symbols=_executed_syms,
+                rejection_map=_rejection_map,
+                prices=state.md.get("current_prices", {}),
+                signal_scores_obj=signal_scores_obj,
+                session_tier=session_tier,
+                decision_id=_decision_id,
+                broker_actions_map={ba.symbol: ba for ba in broker_actions},
+            )
+        except Exception as _pt_exc:
+            log.debug("log_sonnet_ideas failed (non-fatal): %s", _pt_exc)
 
     elapsed = time.monotonic() - t_start
     log.info("── Cycle done in %.1fs ─────────────────────────────────", elapsed)

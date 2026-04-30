@@ -39,6 +39,8 @@ Return ONLY valid JSON. CRITICAL JSON SAFETY RULES:
 - Never embed double quotes inside string values — rephrase instead
 - All string values must be plain ASCII text; no special characters
 - Keep all text fields under 80 characters
+- Validate that every opening brace has a matching close before outputting
+- Never truncate mid-object — if running long, reduce the number of items in arrays
 
 Top-level keys (in order):
 market_regime, sector_snapshot, high_conviction_longs, high_conviction_bearish, current_positions, watch_list, earnings_pipeline, insider_activity, macro_wire_alerts, avoid_list, latest_updates
@@ -75,7 +77,25 @@ HARD RULES:
 1. entry_zone/stop/target MUST be equity or ETF share prices ONLY — never commodity spot prices
 2. a2_strategy_note: iv_rank<15 RULE1_BUY single_leg; 15-35 RULE2_DEBIT debit_spread; 35-65 RULE3_NEUTRAL mixed; 65-80 RULE4_CREDIT credit_spread; >80 RULE5_AVOID; NA if no iv data
 3. risk_reward must be calculated
-4. latest_updates is always empty [] unless brief_type is intraday_update"""
+4. latest_updates is always empty [] unless brief_type is intraday_update
+
+OUTPUT COMPLETENESS RULES:
+- All 11 top-level keys must be present even if empty (use [] or {} as appropriate).
+- sector_snapshot: include ALL sectors with signal data, minimum 4 sectors.
+- high_conviction_longs: include any symbol with score >= 65 from signal data.
+- high_conviction_bearish: include any symbol with score <= 35 from signal data.
+- current_positions: always populate from portfolio data — never omit held positions.
+- earnings_pipeline: include all symbols with earnings within 5 trading days.
+- insider_activity: populate from insider/congressional data; empty lists if none.
+- macro_wire_alerts: include top 3-5 macro wire events by score; empty list if none.
+- avoid_list: symbols to flag for avoidance; empty list is valid.
+
+JSON SAFETY (CRITICAL):
+- No apostrophes in string values — rephrase using alternative words.
+- No embedded double-quotes in strings — rephrase to avoid them.
+- All numeric fields must be actual numbers, not strings.
+- Validate brace matching before outputting — unclosed objects will crash the parser.
+- If the output would exceed the token limit, reduce items in arrays rather than truncating mid-structure."""
 
 _SYSTEM = """You are a senior portfolio manager running a morning briefing for your trading desk. Based on overnight intelligence, identify the 3-5 highest conviction trade ideas for today's session.
 
@@ -91,6 +111,32 @@ HARD CONSTRAINTS:
 2. `catalyst.date_iso` and `catalyst.days_away` MUST come from the earnings calendar data provided — do NOT infer dates. For non-earnings catalysts, emit null for both.
 3. `catalyst.short_text` MUST use "in N days" (never "today" / "tonight" / "this week") for any future date reference, where N equals `catalyst.days_away`.
 4. If no high-conviction setups, emit `conviction_picks: []` — "no edge today" is a valid output.
+
+TRADE IDEA QUALITY CRITERIA:
+- Catalyst clarity: Is there a specific, time-bound event driving the setup? Vague macro themes score lower.
+- Technical alignment: Does price action confirm the thesis direction?
+- Risk definition: Can you place a clear stop with defined risk?
+- Asymmetry: Is the risk/reward at least 2:1 (target distance >= 2x stop distance)?
+- Catalyst freshness: Overnight news or data release that the market hasn't fully digested yet.
+
+WHAT MAKES A HIGH CONVICTION PICK:
+- Specific near-term catalyst (earnings in 2-5 days, analyst day, FDA date, data print)
+- Insider or congressional buying within 30 days
+- Technical breakout above key resistance on elevated volume
+- Macro tailwind confirmed by sector peers moving in the same direction
+- Citrini Research position alignment
+
+WHAT TO AVOID:
+- "No news" stocks — avoid if there is no identifiable catalyst for today or this week
+- Stocks up >5% pre-market without a clear catalyst (chase risk)
+- Symbols with earnings within 24h if not sizing for the binary event
+- Overowned positions the bot already holds at high concentration
+
+STOP AND TARGET RULES:
+- stop: a specific price level (not a percentage). Must be below entry for longs.
+- target: a specific price level. Must be above entry for longs.
+- entry_zone: a price range like "118-121" or a single price like "118". Equity prices only.
+- Never enter the underlying commodity price as entry_zone (e.g., do NOT write "2,400" for GLD entry — write the GLD share price instead).
 
 Return ONLY valid JSON in this exact format:
 {
@@ -115,7 +161,37 @@ Return ONLY valid JSON in this exact format:
   ],
   "avoid_today": ["symbol1"],
   "brief_summary": "2 sentence market tone summary"
-}"""
+}
+
+FIELD VALIDATION:
+- market_tone: exactly one of bullish/bearish/mixed/neutral.
+- key_themes: 2-4 short phrases (< 8 words each) describing today's dominant themes.
+- conviction_picks: 3-5 items ordered by conviction descending. Empty list is valid.
+- avoid_today: symbols to actively avoid with no rationale needed in the list.
+- brief_summary: exactly 2 sentences. Sentence 1: overall market assessment.
+  Sentence 2: single most important thing to watch today.
+- Return valid JSON only — no markdown fences, no preamble text.
+
+AVOID_TODAY CRITERIA:
+- Symbols with earnings today or tomorrow at full size (binary event risk).
+- Symbols up >5% pre-market without clear fundamental catalyst.
+- Symbols with active class action, SEC investigation, or accounting review.
+- Sectors under regulatory scrutiny with pending decisions.
+- ETFs with structurally declining volume (liquidity risk).
+
+BRIEF_SUMMARY CONSTRUCTION:
+- First sentence: name the regime (bullish/cautious/risk-off), name the key driver
+  (Fed, earnings, macro data, geopolitical), and name the dominant sector.
+- Second sentence: the single highest-conviction setup or the most important risk to watch.
+- Combined length: 30-50 words maximum.
+- Example: "Cautious risk-on session led by AI hardware earnings beats; tech sector outperforming.
+  NVDA earnings in 3 days represents the clearest setup with defined risk at $850."
+
+MARKET TONE CLASSIFICATION:
+- bullish: >60% of signal scores above 55, regime score > 60, VIX below 18.
+- bearish: >60% of signal scores below 45, regime score < 40, VIX above 25.
+- mixed: Broad dispersion in scores across sectors, no clear directional bias.
+- neutral: Scores clustered near 50, VIX 18-25, no dominant catalyst."""
 
 
 def _load_overnight_digest() -> str:
@@ -428,10 +504,10 @@ def _load_context() -> str:
     except Exception:
         pass
 
-    # Earnings calendar (today + tomorrow) — use the structured-date format
-    # helper so every line renders as "reports YYYY-MM-DD (N days away)".
-    # This avoids relative phrases ("reports today", "reports this week") that
-    # Claude can misinterpret as same-session when the brief is hours old.
+    # Earnings calendar (today + upcoming ≤5 days) — enriched with timing,
+    # IV rank, beat history, and A1 held status.
+    # Date anchoring via format_earnings_line() avoids relative-phrase drift
+    # when the brief is hours old.
     try:
         from datetime import date as _date  # noqa: PLC0415
 
@@ -440,20 +516,61 @@ def _load_context() -> str:
         ec = load_earnings_calendar()
         today_dt = _date.today()
         today_str = today_dt.isoformat()
-        upcoming = [
-            e for e in ec.get("calendar", [])
-            if e.get("earnings_date", "") >= today_str
-        ][:5]
+        upcoming = []
+        for _e in ec.get("calendar", []):
+            _iso = str(_e.get("earnings_date", ""))[:10]
+            if not _iso or _iso < today_str:
+                continue
+            try:
+                if (_date.fromisoformat(_iso) - today_dt).days > 5:
+                    continue
+            except Exception:
+                continue
+            upcoming.append(_e)
+            if len(upcoming) >= 8:
+                break
+
         if upcoming:
-            parts.append("\n=== EARNINGS (today + upcoming) ===")
+            # Preload IV ranks and held symbols once for all entries
+            _earn_syms = [e.get("symbol", "") for e in upcoming]
+            _iv_map    = _load_iv_ranks_for_brief(_earn_syms)
+            _held_syms = _get_held_symbols()
+
+            parts.append("\n=== EARNINGS PIPELINE (≤5 days, enriched) ===")
             for e in upcoming:
-                sym = e.get("symbol", "?")
-                iso = str(e.get("earnings_date", ""))[:10]
+                sym    = e.get("symbol", "?")
+                iso    = str(e.get("earnings_date", ""))[:10]
+                timing = e.get("timing", "unknown")
                 try:
                     n_days = (_date.fromisoformat(iso) - today_dt).days
                 except Exception:
                     n_days = None
-                parts.append("  " + format_earnings_line(sym, n_days, iso))
+
+                base = format_earnings_line(sym, n_days, iso)
+                extras: list[str] = [timing]
+
+                iv_rank = _iv_map.get(sym)
+                if iv_rank is not None:
+                    extras.append(f"iv_rank={iv_rank:.0f}")
+
+                # Beat history from analyst intel cache (no network call)
+                try:
+                    import earnings_intel_fetcher as _eif  # noqa: PLC0415
+                    _intel = _eif.load_analyst_intel_cached(sym)
+                    if _intel:
+                        beats = _intel.get("beat_quarters")
+                        total = _intel.get("total_quarters")
+                        avg_s = _intel.get("avg_surprise_pct")
+                        if beats is not None and total:
+                            surp = f" avg {avg_s:+.1f}%" if avg_s is not None else ""
+                            extras.append(f"beat {beats}/{total}{surp}")
+                except Exception:
+                    pass
+
+                if sym in _held_syms:
+                    extras.append("HELD-A1")
+
+                parts.append(f"  {base} — {' | '.join(extras)}")
     except Exception:
         pass
 
@@ -726,8 +843,10 @@ def generate_morning_brief() -> dict:
         response = _claude.messages.create(
             model=_MODEL,
             max_tokens=1500,
-            system=_SYSTEM,
+            system=[{"type": "text", "text": _SYSTEM,
+                     "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}],
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
         raw = response.content[0].text.strip()
         # Strip markdown fences if present
@@ -925,7 +1044,7 @@ def _load_intelligence_context(brief_type: str) -> str:
 
     # Sector performance with ETF prices
     try:
-        from data_warehouse import load_sector_perf, load_bars_cached  # noqa: PLC0415
+        from data_warehouse import load_bars_cached, load_sector_perf  # noqa: PLC0415
         sp = load_sector_perf()
         sectors = sp.get("sectors", {})
         if sectors:
@@ -969,27 +1088,64 @@ def _load_intelligence_context(brief_type: str) -> str:
     except Exception:
         pass
 
-    # Earnings calendar (next 7 days)
+    # Earnings calendar (≤5 days, enriched with timing / IV rank / beat history)
     try:
         from datetime import date as _date  # noqa: PLC0415
+
         from data_warehouse import load_earnings_calendar  # noqa: PLC0415
         ec = load_earnings_calendar()
-        today_str = _date.today().isoformat()
-        upcoming = [e for e in ec.get("calendar", []) if e.get("earnings_date", "") >= today_str][:8]
+        today_dt  = _date.today()
+        today_str = today_dt.isoformat()
+        upcoming = []
+        for _e in ec.get("calendar", []):
+            _iso = str(_e.get("earnings_date", ""))[:10]
+            if not _iso or _iso < today_str:
+                continue
+            try:
+                if (_date.fromisoformat(_iso) - today_dt).days > 5:
+                    continue
+            except Exception:
+                continue
+            upcoming.append(_e)
+            if len(upcoming) >= 8:
+                break
         held = _get_held_symbols()
         if upcoming:
-            parts.append("\n=== EARNINGS PIPELINE (next 7 days) ===")
+            _earn_syms = [e.get("symbol", "") for e in upcoming]
+            _iv_map    = _load_iv_ranks_for_brief(_earn_syms)
+            parts.append("\n=== EARNINGS PIPELINE (≤5 days, enriched) ===")
             for e in upcoming:
-                sym = e.get("symbol", "?")
-                iso = str(e.get("earnings_date", ""))[:10]
+                sym    = e.get("symbol", "?")
+                iso    = str(e.get("earnings_date", ""))[:10]
+                timing = e.get("timing", "unknown")
                 try:
-                    n = (_date.fromisoformat(iso) - _date.today()).days
-                    timing = f"in {n}d" if n > 1 else ("today" if n == 0 else "tomorrow")
+                    n = (_date.fromisoformat(iso) - today_dt).days
                 except Exception:
-                    timing = iso
-                held_tag = " [HELD A1]" if sym in held else ""
-                timing_tag = e.get("timing", "")
-                parts.append(f"  {sym}{held_tag}: {timing} ({timing_tag})")
+                    n = None
+
+                n_str = (f"in {n}d" if n is not None and n > 1
+                         else ("today" if n == 0 else "tomorrow"))
+                extras: list[str] = [timing]
+
+                iv_rank = _iv_map.get(sym)
+                if iv_rank is not None:
+                    extras.append(f"iv_rank={iv_rank:.0f}")
+
+                try:
+                    import earnings_intel_fetcher as _eif  # noqa: PLC0415
+                    _intel = _eif.load_analyst_intel_cached(sym)
+                    if _intel:
+                        beats = _intel.get("beat_quarters")
+                        total = _intel.get("total_quarters")
+                        avg_s = _intel.get("avg_surprise_pct")
+                        if beats is not None and total:
+                            surp = f" avg {avg_s:+.1f}%" if avg_s is not None else ""
+                            extras.append(f"beat {beats}/{total}{surp}")
+                except Exception:
+                    pass
+
+                held_tag = " [HELD-A1]" if sym in held else ""
+                parts.append(f"  {sym}{held_tag}: {n_str} ({' | '.join(extras)})")
     except Exception:
         pass
 

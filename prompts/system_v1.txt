@@ -121,7 +121,7 @@ Tier percentages applied to sizing basis:
 Hard ceiling:
 - Never exceed 4.0x equity regardless of buying_power
 - Max concurrent positions: 30 (kernel enforced)
-- Capital utilization target: 70% — when exposure_pct < 70% and regime is supportive, prefer entries over holding idle cash
+- Deployment ceiling: 90% of buying_power — when available buying power remains and regime is supportive, prefer entries over holding idle cash
 - PDT floor: never trade if equity < $26,000
 
 Conviction guidance:

@@ -157,7 +157,7 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
         import options_state as _oss_util  # noqa: PLC0415
         from options_state import compute_capital_utilization  # noqa: PLC0415
         _open_util = _oss_util.get_open_structures()
-        _util_pct, _ = compute_capital_utilization(_open_util, equity)
+        _util_pct, _ = compute_capital_utilization(_open_util, equity, buying_power=buying_power)
         _util_target = float(config.get("account2", {}).get("capital_utilization_target", 0.80))
         if _util_pct >= _util_target:
             log.info(

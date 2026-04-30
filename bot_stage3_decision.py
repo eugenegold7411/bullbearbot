@@ -241,9 +241,10 @@ def build_user_prompt(
     log.info("PDT      daytrade_count=%d  used=%d  (PDT limit N/A — equity $%.0f above $25K threshold)",
              pdt_used, pdt_used, equity)
 
-    long_value   = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
-    _total_cap   = long_value + buying_power
-    exposure_pct = (long_value / _total_cap * 100) if _total_cap > 0 else ((long_value / equity * 100) if equity > 0 else 0.0)
+    long_value        = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
+    _total_cap        = long_value + buying_power
+    exposure_pct      = (long_value / _total_cap * 100) if _total_cap > 0 else ((long_value / equity * 100) if equity > 0 else 0.0)
+    available_for_new = buying_power
 
     if positions:
         rows = []
@@ -306,6 +307,7 @@ def build_user_prompt(
         equity=f"{equity:,.2f}",
         cash=f"{cash:,.2f}",
         buying_power=f"{buying_power:,.2f}",
+        available_for_new=f"{available_for_new:,.0f}",
         pdt_used=pdt_used,
         pdt_remaining=pdt_remaining,
         exposure_pct=exposure_pct,
@@ -389,10 +391,11 @@ def build_compact_prompt(
     buying_power  = float(account.buying_power)
     pdt_used      = int(getattr(account, "daytrade_count", 0) or 0)
     pdt_remaining = max(0, 3 - pdt_used)
-    long_val      = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
-    _total_cap    = long_val + buying_power
-    exposure_pct  = (long_val / _total_cap * 100) if _total_cap > 0 else ((long_val / equity * 100) if equity > 0 else 0.0)
-    cash_pct      = (cash / equity * 100) if equity > 0 else 0.0
+    long_val          = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
+    _total_cap        = long_val + buying_power
+    exposure_pct      = (long_val / _total_cap * 100) if _total_cap > 0 else ((long_val / equity * 100) if equity > 0 else 0.0)
+    cash_pct          = (cash / equity * 100) if equity > 0 else 0.0
+    available_for_new = buying_power
     vix           = float(md.get("vix", 0) or 0)
 
     _pi          = pi_data or {}
@@ -493,6 +496,7 @@ def build_compact_prompt(
             cash_pct=f"{cash_pct:.1f}",
             exposure_pct=f"{exposure_pct:.1f}",
             buying_power=f"{buying_power:,.2f}",
+            available_for_new=f"{available_for_new:,.0f}",
             pdt_remaining=pdt_remaining,
             drawdown_pct=f"{drawdown_pct:.1f}",
             vix=f"{vix:.1f}",

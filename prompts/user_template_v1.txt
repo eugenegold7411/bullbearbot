@@ -10,7 +10,8 @@ Day Trades Used : {pdt_used}  (PDT day-trade limit NOT applicable — account eq
 Equity          : ${equity}
 Cash            : ${cash}
 Buying Power    : ${buying_power}
-Total Exposure  : {exposure_pct:.1f}% of equity
+Capital deployed: {exposure_pct:.1f}% of capacity
+Available       : ${available_for_new}
 
 === MACRO DIGEST ===
 {macro_backdrop}

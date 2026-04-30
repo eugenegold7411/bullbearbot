@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 _BASE = Path(__file__).parent
 _OUT_PATH = _BASE / "data" / "market" / "qualitative_context.json"
 
-_MODEL_SONNET = "claude-sonnet-4-6"
+_MODEL_HAIKU = "claude-haiku-4-5-20251001"
 
 # Staleness thresholds (minutes)
 _REGIME_STALE_MIN  = 360    # 6h
@@ -219,9 +219,9 @@ def run_qualitative_sweep(
         symbols = symbols[:30]
 
     try:
-        from bot_clients import MODEL as _MODEL_SONNET_CONST  # noqa: PLC0415
+        from bot_clients import MODEL_FAST as _MODEL_FAST_CONST  # noqa: PLC0415
         from bot_clients import _get_claude  # noqa: PLC0415
-        model = _MODEL_SONNET_CONST  # canonical "claude-sonnet-4-6"
+        model = _MODEL_FAST_CONST  # claude-haiku-4-5-20251001 — ~15× cheaper
     except Exception as exc:
         log.warning("[L1] bot_clients import failed: %s", exc)
         return {}
@@ -303,7 +303,7 @@ def run_qualitative_sweep(
 
     payload = {
         "generated_at":    now_iso,
-        "generated_by":    "layer1_sonnet",
+        "generated_by":    "layer1_haiku",
         "model":           model,
         "news_hash":       news_hash,
         "regime_context":  parsed.get("regime_context") if isinstance(parsed.get("regime_context"), dict) else {},

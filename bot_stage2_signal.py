@@ -499,7 +499,7 @@ def score_signals_layered(
         return {}
 
     try:
-        _MAX_SCORED = 80
+        _MAX_SCORED = 40
         scored: list[str] = []
         seen: set[str] = set()
 
@@ -681,7 +681,7 @@ def score_signals(
     if not watchlist_symbols:
         return {}
     try:
-        _MAX_SCORED = 80
+        _MAX_SCORED = 40
         scored: list[str] = []
         seen: set[str] = set()
 

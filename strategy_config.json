@@ -71,8 +71,8 @@
     "backtest_minimum_sample_before_recalibration": 30,
     "add_conviction_gate": 0.60,
     "_add_conviction_gate_note": "S7-H: minimum conviction required to ADD to an existing position. BUY on already-held symbol rejected below this threshold.",
-    "capital_utilization_target": 0.70,
-    "_capital_utilization_target_note": "A1 guidance only — no hard gate. When exposure_pct < 70% and regime supports it, prefer entries over holding cash.",
+    "max_deploy_pct_of_bp": 0.90,
+    "_max_deploy_pct_of_bp_note": "A1 prompt guidance only — no hard gate. Ceiling: prefer new entries when total_market_value < buying_power * 0.90 and regime supports it.",
     "research_pipeline_candidates": [
       {
         "name": "TradingAgents Multi-Agent LLM Framework",
@@ -156,7 +156,7 @@
     "paper_confidence_floor": 0.70,
     "live_confidence_floor": 0.85,
     "max_open_positions": 20,
-    "capital_utilization_target": 0.80,
+    "capital_utilization_target": 0.90,
     "liquidity_gates": {
       "min_open_interest": 50,
       "min_volume": 20,
@@ -287,7 +287,7 @@
     "post_earnings_window_premarket": 2,
     "post_earnings_window_postmarket": 1,
     "post_earnings_window_unknown": 1,
-    "post_earnings_iv_rank_min": 75,
+    "post_earnings_iv_rank_min": 55,
     "post_earnings_iv_already_crushed_threshold": 15,
     "pre_earnings_credit_spread_enabled": false,
     "pre_earnings_iv_rank_min": 85,

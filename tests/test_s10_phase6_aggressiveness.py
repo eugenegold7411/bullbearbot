@@ -293,9 +293,9 @@ class TestP5HighConvictionModifier(unittest.TestCase):
 class TestP6CapitalUtilization(unittest.TestCase):
     """compute_capital_utilization and 80% suppression gate."""
 
-    def _make_structure(self, net_debit=None, contracts=1):
+    def _make_structure(self, max_cost_usd=0.0, contracts=1):
         s = mock.MagicMock()
-        s.net_debit = net_debit
+        s.max_cost_usd = max_cost_usd
         s.contracts = contracts
         return s
 
@@ -311,20 +311,20 @@ class TestP6CapitalUtilization(unittest.TestCase):
         self.assertAlmostEqual(deployed, 0.0)
 
     def test_compute_utilization_correct_formula(self):
-        """deployed = |net_debit| × contracts × 100 per structure."""
+        """deployed = abs(max_cost_usd) per structure."""
         from options_state import compute_capital_utilization
-        # 2 structures: net_debit=-1.50 (credit received), contracts=3
-        # → 1.50 × 3 × 100 = 450 per structure → 900 total
-        s1 = self._make_structure(net_debit=-1.50, contracts=3)
-        s2 = self._make_structure(net_debit=-1.50, contracts=3)
+        # 2 credit spreads: max_cost_usd=-450.0 each (= -1.50 × 3 × 100)
+        # → abs(-450) = 450 per structure → 900 total
+        s1 = self._make_structure(max_cost_usd=-450.0)
+        s2 = self._make_structure(max_cost_usd=-450.0)
         pct, deployed = compute_capital_utilization([s1, s2], 100_000.0)
         self.assertAlmostEqual(deployed, 900.0)
         self.assertAlmostEqual(pct, 0.009)
 
     def test_compute_utilization_none_debit_treated_as_zero(self):
-        """net_debit=None → treated as 0 (conservative, never blocks incorrectly)."""
+        """max_cost_usd=0.0 → treated as 0 (conservative, never blocks incorrectly)."""
         from options_state import compute_capital_utilization
-        s = self._make_structure(net_debit=None, contracts=5)
+        s = self._make_structure(max_cost_usd=0.0)
         pct, deployed = compute_capital_utilization([s], 100_000.0)
         self.assertAlmostEqual(deployed, 0.0)
         self.assertAlmostEqual(pct, 0.0)
@@ -332,8 +332,8 @@ class TestP6CapitalUtilization(unittest.TestCase):
     def test_compute_utilization_above_100pct(self):
         """Utilization can exceed 1.0 for large positions."""
         from options_state import compute_capital_utilization
-        # 10 structures × net_debit=-20 × contracts=10 × 100 = 200,000
-        structs = [self._make_structure(net_debit=-20.0, contracts=10)] * 10
+        # 10 structures × max_cost_usd=-20_000 each → 200,000 total
+        structs = [self._make_structure(max_cost_usd=-20_000.0)] * 10
         pct, deployed = compute_capital_utilization(structs, 100_000.0)
         self.assertAlmostEqual(deployed, 200_000.0)
         self.assertGreater(pct, 1.0)
@@ -368,7 +368,7 @@ class TestP6CapitalUtilization(unittest.TestCase):
     def test_compute_utilization_zero_equity_safe(self):
         """equity=0 returns 0.0, no ZeroDivisionError."""
         from options_state import compute_capital_utilization
-        s = self._make_structure(net_debit=-1.0, contracts=1)
+        s = self._make_structure(max_cost_usd=-100.0)  # = -1.0 × 1 × 100
         pct, deployed = compute_capital_utilization([s], 0.0)
         self.assertAlmostEqual(pct, 0.0)
         self.assertAlmostEqual(deployed, 100.0)

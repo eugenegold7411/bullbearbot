@@ -86,6 +86,8 @@ def normalize_symbol(symbol: str) -> str:
       "BTC-USD"  -> "BTC/USD"
       "AAPL"     -> "AAPL"
     """
+    if not symbol:
+        return ""
     s = symbol.strip().upper()
     if "/" in s:
         return s

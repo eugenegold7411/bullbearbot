@@ -3,7 +3,7 @@ tests/test_earnings_pipeline_overhaul.py
 
 Tests for the earnings pipeline overhaul (Changes 1-7):
   - Change 1: Alpha Vantage earnings calendar builder + yfinance confirm
-  - Change 2: watchlist order (core-first) + _MAX_SCORED=80/_BATCH_SIZE=20
+  - Change 2: watchlist order (core-first) + _MAX_SCORED=40/_BATCH_SIZE=20
               + CORE_SYMBOLS regenerated from JSON
   - Change 3: pending_rotation purge + $3B mkt-cap floor at promotion
               + sector inference + Finnhub removal
@@ -301,16 +301,16 @@ class TestScoringCaps:
         import bot_stage2_signal as s
         assert getattr(s, "_LEGACY_BATCH_SIZE", None) == 20
 
-    def test_max_scored_is_80(self):
+    def test_max_scored_is_40(self):
         """Inline constant set inside both score_signals_layered and
         the legacy score_signals — verify via source inspection."""
         import inspect
 
         import bot_stage2_signal as s
         src_layered = inspect.getsource(s.score_signals_layered)
-        assert "_MAX_SCORED = 80" in src_layered
+        assert "_MAX_SCORED = 40" in src_layered
         src_legacy = inspect.getsource(s.score_signals)
-        assert "_MAX_SCORED = 80" in src_legacy
+        assert "_MAX_SCORED = 40" in src_legacy
 
 
 class TestCoreSymbolsFromJson:

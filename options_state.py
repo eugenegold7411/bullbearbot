@@ -109,21 +109,23 @@ def get_open_structures() -> list[OptionsStructure]:
 def compute_capital_utilization(
     structures: list[OptionsStructure],
     equity: float,
+    buying_power: float = 0.0,
 ) -> tuple[float, float]:
     """
-    Compute how much of equity is deployed in open structures.
+    Compute the fraction of total capacity deployed in open structures.
 
-    Deployed capital = sum of |net_debit| × contracts × 100 across all structures.
-    Structures with net_debit=None are treated as 0 (conservative — undercounts
-    utilization, so the gate never fires incorrectly on missing data).
+    total_capacity = deployed_usd + buying_power (what is deployed + what is still available).
+    This gives true utilization regardless of margin multiplier — a margin account at 1.5×
+    equity no longer reads as 150%+ utilization.
 
-    Returns (utilization_pct, deployed_usd) where utilization_pct is 0.0–1.0+.
+    Returns (utilization_pct, deployed_usd) where utilization_pct is 0.0–1.0.
     """
     deployed_usd = sum(
-        abs(s.net_debit or 0.0) * (s.contracts or 0) * 100
+        abs(s.max_cost_usd or 0.0)
         for s in structures
     )
-    utilization_pct = deployed_usd / equity if equity > 0 else 0.0
+    total_capacity = deployed_usd + buying_power
+    utilization_pct = deployed_usd / total_capacity if total_capacity > 0 else 0.0
     return utilization_pct, deployed_usd
 
 

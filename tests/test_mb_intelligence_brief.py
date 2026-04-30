@@ -240,11 +240,16 @@ def test_mb07_scheduler_slots_are_et():
 # ---------------------------------------------------------------------------
 
 def test_mb08_brief_route_returns_200(tmp_path):
+    import base64
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent / "dashboard"))
     try:
         from dashboard.app import app
-        with patch("dashboard.app._build_status") as mock_status:
+        with (
+            patch("dashboard.app._build_status") as mock_status,
+            patch("dashboard.app.DASHBOARD_USER", "test"),
+            patch("dashboard.app.DASHBOARD_PASSWORD", "testpass"),
+        ):
             mock_status.return_value = {
                 "a1_mode": {"mode": "normal"}, "a2_mode": {"mode": "normal"},
                 "intelligence_brief": {},
@@ -256,14 +261,9 @@ def test_mb08_brief_route_returns_200(tmp_path):
                 "trail_tiers": [],
             }
             app.config["TESTING"] = True
-            app.config["SECRET_KEY"] = "test-secret-key"
-            app.config["DASHBOARD_USERNAME"] = "test"
-            app.config["DASHBOARD_PASSWORD"] = "test"
+            creds = base64.b64encode(b"test:testpass").decode()
             with app.test_client() as client:
-                # Bypass auth for testing
-                with client.session_transaction() as sess:
-                    sess["authenticated"] = True
-                resp = client.get("/brief")
+                resp = client.get("/brief", headers={"Authorization": f"Basic {creds}"})
                 assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
     except ImportError:
         import pytest

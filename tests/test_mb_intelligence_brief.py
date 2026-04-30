@@ -2,10 +2,8 @@
 Tests for the intelligence brief system (MB-01 through MB-10).
 """
 import json
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -90,7 +88,8 @@ def _make_full_brief(brief_type="premarket"):
 # ---------------------------------------------------------------------------
 
 def test_mb01_both_output_files_written(tmp_path):
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import patch
+
     import morning_brief as mb
 
     mock_response = MagicMock()
@@ -161,7 +160,8 @@ def test_mb03_full_brief_has_all_sections(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_mb04_intraday_latest_updates(tmp_path):
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import patch
+
     import morning_brief as mb
 
     # Build brief with latest_updates populated (simulating Claude detecting changes)
@@ -223,8 +223,9 @@ def test_mb06_missing_sonnet_brief_graceful_fallback(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_mb07_scheduler_slots_are_et():
-    import scheduler
     import inspect
+
+    import scheduler
     src = inspect.getsource(scheduler._maybe_run_intelligence_brief)
     # Verify ET timezone is used (not UTC)
     assert "ET" in src, "Scheduler should reference ET timezone"
@@ -240,7 +241,6 @@ def test_mb07_scheduler_slots_are_et():
 
 def test_mb08_brief_route_returns_200(tmp_path):
     import sys
-    import os
     sys.path.insert(0, str(Path(__file__).parent.parent / "dashboard"))
     try:
         from dashboard.app import app
@@ -256,6 +256,7 @@ def test_mb08_brief_route_returns_200(tmp_path):
                 "trail_tiers": [],
             }
             app.config["TESTING"] = True
+            app.config["SECRET_KEY"] = "test-secret-key"
             app.config["DASHBOARD_USERNAME"] = "test"
             app.config["DASHBOARD_PASSWORD"] = "test"
             with app.test_client() as client:
@@ -274,12 +275,10 @@ def test_mb08_brief_route_returns_200(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_mb09_stale_warning_logic():
-    import morning_brief as mb
-    import zoneinfo
-    ET = zoneinfo.ZoneInfo("America/New_York")
-
     # Build a brief that's 2 hours old
     from datetime import datetime, timedelta
+
+    import morning_brief as mb
     old_time = (datetime.now() - timedelta(hours=2, minutes=1)).isoformat()
     old_brief = _make_full_brief()
     old_brief["generated_at"] = old_time

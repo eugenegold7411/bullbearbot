@@ -34,6 +34,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 from unittest import mock
+from unittest.mock import patch
 
 _BOT_DIR = Path(__file__).resolve().parent.parent
 if str(_BOT_DIR) not in sys.path:
@@ -269,7 +270,10 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                           iv_environment="expensive", a1_direction="bearish",
                           liquidity_score=0.8)
         from bot_options_stage2_structures import _route_strategy
-        result = _route_strategy(pack, earnings_calendar_data=cal)
+        # Patch _iv_already_crushed so the test is not sensitive to real IV history files
+        # on the server — this test validates routing logic, not the crush-detection heuristic.
+        with patch("bot_options_stage2_structures._iv_already_crushed", return_value=False):
+            result = _route_strategy(pack, earnings_calendar_data=cal)
         # iv_rank=80 >= post_earnings_iv_rank_min default 75 -> RULE_POST_EARNINGS fires
         self.assertEqual(result, ["credit_call_spread"],
                          f"Expected RULE_POST_EARNINGS for eda=-1, got {result}")

@@ -10,10 +10,10 @@ Parameters tested:
   P6 — Capital utilization gate (compute_capital_utilization + 80% suppression)
 """
 
+import inspect
 import json
 import sys
 import unittest
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -173,7 +173,6 @@ class TestP4BuyingPower(unittest.TestCase):
 
     def test_run_candidate_stage_accepts_buying_power(self):
         """run_candidate_stage signature includes buying_power param."""
-        import inspect
         from bot_options_stage1_candidates import run_candidate_stage
         sig = inspect.signature(run_candidate_stage)
         self.assertIn("buying_power", sig.parameters)
@@ -181,21 +180,18 @@ class TestP4BuyingPower(unittest.TestCase):
 
     def test_build_candidate_set_accepts_buying_power(self):
         """build_candidate_set signature includes buying_power param."""
-        import inspect
         from bot_options_stage1_candidates import build_candidate_set
         sig = inspect.signature(build_candidate_set)
         self.assertIn("buying_power", sig.parameters)
 
     def test_build_candidate_structures_accepts_buying_power(self):
         """build_candidate_structures signature includes buying_power param."""
-        import inspect
         from bot_options_stage2_structures import build_candidate_structures
         sig = inspect.signature(build_candidate_structures)
         self.assertIn("buying_power", sig.parameters)
 
     def test_generate_candidate_structures_accepts_buying_power(self):
         """generate_candidate_structures signature includes buying_power param."""
-        import inspect
         from options_intelligence import generate_candidate_structures
         sig = inspect.signature(generate_candidate_structures)
         self.assertIn("buying_power", sig.parameters)
@@ -203,7 +199,6 @@ class TestP4BuyingPower(unittest.TestCase):
 
     def test_select_options_strategy_accepts_buying_power(self):
         """select_options_strategy signature includes buying_power param."""
-        import inspect
         from options_intelligence import select_options_strategy
         sig = inspect.signature(select_options_strategy)
         self.assertIn("buying_power", sig.parameters)
@@ -211,11 +206,7 @@ class TestP4BuyingPower(unittest.TestCase):
 
     def test_buying_power_fallback_to_equity_when_zero(self):
         """When buying_power=0, sizing falls back to equity (backward compat)."""
-        from options_intelligence import _build_short_put
-        # With buying_power=0 passed, the function uses it but falls back internally in callers
-        # via _bp = buying_power if buying_power > 0 else equity in generate_candidate_structures.
-        # Test the generate_candidate path which has the fallback.
-        import inspect
+        # _bp = buying_power if buying_power > 0 else equity in generate_candidate_structures.
         from options_intelligence import generate_candidate_structures
         sig = inspect.signature(generate_candidate_structures)
         # buying_power defaults to 0.0 — backward compatible

@@ -9,6 +9,7 @@ Only activates when a watchlist symbol is within 3 days of earnings.
 import json
 import os
 import re
+import time as _time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,10 +26,38 @@ _BASE_DIR     = Path(__file__).parent
 _EARNINGS_DIR = _BASE_DIR / "data" / "earnings"
 _TIMEOUT      = 20
 _MAX_CHARS    = 30_000   # ~6 000 words — enough for transcript without overload
+_TRANSCRIPT_CACHE_TTL_H = 24   # 24h keeps transcript available all trading day
+_RATE_LIMIT_DELAY = 0.15       # SEC limits to 10 req/s; 0.15s is safe
 
 _SEC_HEADERS = {
     "User-Agent":      "trading-bot research@tradingbot.ai",
     "Accept-Encoding": "gzip, deflate",
+}
+
+# CIK numbers for watchlist symbols that report US earnings via SEC EDGAR.
+# Foreign private issuers (TSM, ASML, FXI, EWJ, EWM, ECH) file 20-F/6-K on
+# different schedules and are not included here.
+_CIK_MAP: dict[str, str] = {
+    "GOOGL": "1652044",
+    "GOOG":  "1652044",
+    "AMZN":  "1018724",
+    "MSFT":  "789019",
+    "META":  "1326801",
+    "AAPL":  "320193",
+    "NVDA":  "1045810",
+    "TSLA":  "1318605",
+    "JPM":   "19617",
+    "GS":    "886982",
+    "WMT":   "104169",
+    "JNJ":   "200406",
+    "LLY":   "59478",
+    "PLTR":  "1321655",
+    "XOM":   "34088",
+    "CVX":   "93410",
+    "LMT":   "936468",
+    "RTX":   "101829",
+    "CRWV":  "1517396",
+    "RKT":   "1728688",
 }
 
 _claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -59,8 +88,77 @@ Return ONLY valid JSON with this structure:
 
 # ── SEC EDGAR helpers ──────────────────────────────────────────────────────────
 
-def _search_8k_filings(symbol: str, days_back: int = 90) -> list[dict]:
-    """Search EDGAR for recent 8-K filings for this symbol."""
+def _get_recent_8k_via_submissions(cik: str, days_back: int = 120) -> list[dict]:
+    """Use EDGAR submissions API to get recent 8-K filings with accurate accession numbers."""
+    padded = cik.zfill(10)
+    url = f"https://data.sec.gov/submissions/CIK{padded}.json"
+    try:
+        resp = requests.get(url, headers=_SEC_HEADERS, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        recent = data.get("filings", {}).get("recent", {})
+        forms  = recent.get("form", [])
+        dates  = recent.get("filingDate", [])
+        accnos = recent.get("accessionNumber", [])
+        cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        results = []
+        for f, d, a in zip(forms, dates, accnos):
+            if f == "8-K" and d >= cutoff:
+                results.append({"cik": cik, "accession_no": a, "file_date": d})
+        return results
+    except Exception as exc:
+        log.debug("[EARNINGS] Submissions API failed CIK=%s: %s", cik, exc)
+        return []
+
+
+def _find_exhibit_url(cik: str, acc: str) -> str:
+    """Find the EX-99.1 press release URL in the 8-K filing index."""
+    acc_nodash = acc.replace("-", "")
+    index_url = (
+        f"https://www.sec.gov/Archives/edgar/data/{cik}/"
+        f"{acc_nodash}/{acc}-index.htm"
+    )
+    try:
+        resp = requests.get(index_url, headers=_SEC_HEADERS, timeout=_TIMEOUT)
+        if resp.status_code != 200:
+            return ""
+        links = re.findall(
+            r'href="(/Archives/edgar/data/[^"]+\.(?:htm|txt))"', resp.text, re.I
+        )
+        # Prefer named exhibit99/ex-99 patterns (press release)
+        for link in links:
+            lower = link.lower()
+            if any(p in lower for p in (
+                "exhibit99", "ex-99", "ex991", "ex99",
+                "pressrelease", "press_release", "earnings",
+            )):
+                return "https://www.sec.gov" + link
+        # Fall back to first non-XBRL htm document
+        for link in links:
+            lower = link.lower()
+            if ".htm" in lower and not any(
+                s in lower for s in ("_lab.", "_pre.", "_htm.", "_def.", "_cal.", ".xsd")
+            ):
+                return "https://www.sec.gov" + link
+    except Exception as exc:
+        log.debug("[EARNINGS] Index fetch failed %s/%s: %s", cik, acc, exc)
+    return ""
+
+
+def _search_8k_filings(symbol: str, days_back: int = 120) -> list[dict]:
+    """Search EDGAR for recent 8-K filings.
+
+    Uses submissions API when CIK is known (accurate accession numbers).
+    Falls back to EFTS full-text search with corrected field extraction.
+    Returns list of dicts with 'cik', 'accession_no', 'file_date' keys.
+    """
+    cik = _CIK_MAP.get(symbol)
+    if cik:
+        results = _get_recent_8k_via_submissions(cik, days_back)
+        if results:
+            return results
+
+    # EFTS fallback for symbols not in _CIK_MAP
     end_dt   = datetime.now().strftime("%Y-%m-%d")
     start_dt = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     url = (
@@ -71,36 +169,53 @@ def _search_8k_filings(symbol: str, days_back: int = 90) -> list[dict]:
     try:
         resp = requests.get(url, headers=_SEC_HEADERS, timeout=_TIMEOUT)
         resp.raise_for_status()
-        return resp.json().get("hits", {}).get("hits", [])
+        hits = resp.json().get("hits", {}).get("hits", [])
+        results = []
+        for h in hits:
+            src     = h.get("_source", {})
+            adsh    = src.get("adsh", "")        # EDGAR uses 'adsh', not 'accession_no'
+            ciks    = src.get("ciks", [])
+            hit_cik = ciks[0].lstrip("0") if ciks else ""
+            if adsh and hit_cik:
+                results.append({
+                    "cik":          hit_cik,
+                    "accession_no": adsh,
+                    "file_date":    src.get("file_date", ""),
+                })
+        return results
     except Exception as exc:
         log.debug("[EARNINGS] EDGAR 8-K search failed %s: %s", symbol, exc)
         return []
 
 
 def _fetch_filing_text(accession_no: str, cik: str) -> str:
-    """Download the primary document from an 8-K filing."""
-    # Normalise accession number
-    acc = accession_no.replace("-", "")
-    # Try the filing index first
-    index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{accession_no}-index.htm"
+    """Download the EX-99.1 press release from an 8-K filing."""
+    # First: find and fetch the exhibit (EX-99.1 press release)
+    exhibit_url = _find_exhibit_url(cik, accession_no)
+    if exhibit_url:
+        try:
+            _time.sleep(_RATE_LIMIT_DELAY)
+            resp = requests.get(exhibit_url, headers=_SEC_HEADERS, timeout=_TIMEOUT)
+            if resp.status_code == 200 and len(resp.text) > 500:
+                return resp.text
+        except Exception as exc:
+            log.debug("[EARNINGS] Exhibit fetch failed %s: %s", exhibit_url, exc)
+
+    # Fall back: raw .txt filing
+    acc_nodash = accession_no.replace("-", "")
     try:
-        resp = requests.get(index_url, headers=_SEC_HEADERS, timeout=_TIMEOUT)
-        # Find .txt or .htm document link
-        links = re.findall(r'href="(/Archives/edgar/data/[^"]+\.(?:txt|htm))"', resp.text, re.I)
-        if links:
-            doc_url = "https://www.sec.gov" + links[0]
-            doc_resp = requests.get(doc_url, headers=_SEC_HEADERS, timeout=_TIMEOUT)
-            return doc_resp.text
+        _time.sleep(_RATE_LIMIT_DELAY)
+        txt_url = (
+            f"https://www.sec.gov/Archives/edgar/data/{cik}/"
+            f"{acc_nodash}/{accession_no}.txt"
+        )
+        resp = requests.get(txt_url, headers=_SEC_HEADERS, timeout=_TIMEOUT)
+        if resp.status_code == 200:
+            return resp.text
     except Exception:
         pass
 
-    # Fall back: fetch raw filing text directly
-    try:
-        txt_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{accession_no}.txt"
-        resp = requests.get(txt_url, headers=_SEC_HEADERS, timeout=_TIMEOUT)
-        return resp.text
-    except Exception:
-        return ""
+    return ""
 
 
 def _clean_transcript(raw: str) -> str:
@@ -156,15 +271,19 @@ def _transcript_cache_path(symbol: str) -> Path:
 
 
 def _load_transcript_cache(symbol: str) -> str:
-    """Return cached transcript if it exists and is <6 hours old, else ''."""
+    """Return cached transcript if fresh (< 24h) and not a yfinance stub, else ''."""
     p = _transcript_cache_path(symbol)
     if not p.exists():
         return ""
     try:
         data = json.loads(p.read_text())
         cached_at = datetime.fromisoformat(data["cached_at"])
-        if (datetime.now(timezone.utc) - cached_at).total_seconds() < 6 * 3600:
-            return data.get("transcript", "")
+        if (datetime.now(timezone.utc) - cached_at).total_seconds() < _TRANSCRIPT_CACHE_TTL_H * 3600:
+            transcript = data.get("transcript", "")
+            # Treat yfinance stubs as stale so EDGAR is retried next window
+            if transcript.startswith("yfinance fundamentals for"):
+                return ""
+            return transcript
     except Exception:
         pass
     return ""
@@ -183,88 +302,99 @@ def _save_transcript_cache(symbol: str, transcript: str) -> None:
         log.debug("[EARNINGS] Failed to write transcript cache for %s: %s", symbol, exc)
 
 
-def _in_earnings_fetch_window() -> bool:
-    """Return True only during pre-market (4:00–9:15 AM ET) or post-market (4:15–8:00 PM ET)."""
+def _in_earnings_fetch_window(_now: datetime | None = None) -> bool:
+    """Return True during pre-market (4:00–9:30 AM ET) or post-market (4:15 PM–11:00 PM ET).
+
+    _now is injectable for testing (defaults to current local time).
+    """
     try:
-        from zoneinfo import ZoneInfo
-        now_et = datetime.now(ZoneInfo("America/New_York"))
-        h, m = now_et.hour, now_et.minute
-        total_min = h * 60 + m
-        pre_market  = (4 * 60) <= total_min <= (9 * 60 + 15)
-        post_market = (16 * 60 + 15) <= total_min <= (20 * 60)
+        from zoneinfo import ZoneInfo  # noqa: PLC0415
+        now_et = (
+            _now.astimezone(ZoneInfo("America/New_York"))
+            if _now is not None
+            else datetime.now(ZoneInfo("America/New_York"))
+        )
+        total_min = now_et.hour * 60 + now_et.minute
+        pre_market  = (4 * 60) <= total_min <= (9 * 60 + 30)
+        post_market = (16 * 60 + 15) <= total_min <= (23 * 60)
         return pre_market or post_market
     except Exception:
         return True  # fail-open: always fetch if timezone unavailable
 
 
-def fetch_earnings_transcript(symbol: str, quarters_back: int = 1) -> str:
-    """
-    Fetch the most recent earnings call / 8-K filing text from SEC EDGAR.
-    Only fetches during pre-market (4:00–9:15 AM ET) or post-market (4:15–8:00 PM ET).
-    Caches results for 6 hours. Returns cleaned text or "" on failure.
-    """
-    # Always try cache first regardless of window
-    cached = _load_transcript_cache(symbol)
+def _yfinance_fallback(symbol: str) -> str:
+    """Return yfinance fundamentals as a stub.
 
+    Not cached in the transcript store so EDGAR is retried on the next window cycle.
+    """
+    try:
+        import yfinance as yf  # noqa: PLC0415
+        t    = yf.Ticker(symbol)
+        info = t.info
+        parts = []
+        for key in ("trailingEps", "forwardEps", "revenueGrowth", "earningsGrowth",
+                    "grossMargins", "operatingMargins", "returnOnEquity"):
+            val = info.get(key)
+            if val is not None:
+                parts.append(f"{key}: {val}")
+        if parts:
+            return f"yfinance fundamentals for {symbol}: " + "  |  ".join(parts)
+    except Exception:
+        pass
+    return ""
+
+
+def fetch_earnings_transcript(symbol: str, quarters_back: int = 1) -> str:
+    """Fetch the most recent earnings call / 8-K filing text from SEC EDGAR.
+
+    - Cache-first: returns any fresh (< 24h) non-stub transcript without hitting EDGAR.
+    - Only fetches from EDGAR during pre/post-market windows.
+    - Returns cleaned press release text (typically 5,000–40,000 chars) or "".
+    - On EDGAR failure: returns yfinance fundamentals stub WITHOUT caching it,
+      so EDGAR is retried on the next window cycle.
+    """
+    # Cache-first: use any fresh real transcript without hitting EDGAR
+    cached = _load_transcript_cache(symbol)
+    if cached:
+        return cached
+
+    # No fresh cache — only attempt EDGAR during the fetch window
     if not _in_earnings_fetch_window():
-        if cached:
-            log.debug("[EARNINGS] Outside fetch window — using cache for %s", symbol)
-            return cached
         log.debug("[EARNINGS] Outside fetch window and no cache — skipping %s", symbol)
         return ""
 
     log.info("[EARNINGS] Fetching transcript for %s", symbol)
+
     hits = _search_8k_filings(symbol, days_back=120)
     if not hits:
         log.debug("[EARNINGS] No 8-K hits for %s", symbol)
-        return ""
+        return _yfinance_fallback(symbol)
 
     for hit in hits[:3]:
         try:
-            src = hit.get("_source", {})
-            acc = src.get("accession_no", "")
-            cik = src.get("entity_id", "") or src.get("file_num", "")
-
-            # Try to extract CIK from the entity URL or accession number
-            if not cik:
-                src.get("file_date", "")
-                # Try inline id
-                entity_id = str(src.get("id", ""))
-                if "/" in entity_id:
-                    cik = entity_id.split("/")[0].lstrip("0")
-
-            if not acc:
+            acc = hit.get("accession_no", "")
+            cik = hit.get("cik", "")
+            if not acc or not cik:
                 continue
-
-            raw = _fetch_filing_text(acc, cik or "0")
+            _time.sleep(_RATE_LIMIT_DELAY)
+            raw = _fetch_filing_text(acc, cik)
             if raw and len(raw) > 500:
                 cleaned = _clean_transcript(raw)
-                if cleaned:
-                    log.info("[EARNINGS] Transcript fetched for %s: %d chars", symbol, len(cleaned))
+                if cleaned and len(cleaned) > 500:
+                    log.info(
+                        "[EARNINGS] Transcript fetched for %s: %d chars", symbol, len(cleaned)
+                    )
                     _save_transcript_cache(symbol, cleaned)
                     return cleaned
         except Exception as exc:
             log.debug("[EARNINGS] Filing fetch failed %s: %s", symbol, exc)
 
-    # Fallback: yfinance earnings summary
-    try:
-        import yfinance as yf
-        t = yf.Ticker(symbol)
-        info = t.info
-        summary_parts = []
-        for key in ("trailingEps", "forwardEps", "revenueGrowth", "earningsGrowth",
-                    "grossMargins", "operatingMargins", "returnOnEquity"):
-            val = info.get(key)
-            if val is not None:
-                summary_parts.append(f"{key}: {val}")
-        if summary_parts:
-            summary = f"yfinance fundamentals for {symbol}: " + "  |  ".join(summary_parts)
-            _save_transcript_cache(symbol, summary)
-            return summary
-    except Exception:
-        pass
+    log.debug("[EARNINGS] EDGAR yielded no content for %s — using yfinance fallback", symbol)
+    return _yfinance_fallback(symbol)
 
-    return ""
+
+# Alias used by test suite and callers that import the shorter name
+get_earnings_transcript = fetch_earnings_transcript
 
 
 def analyze_earnings_transcript(symbol: str, transcript: str) -> dict:
@@ -437,6 +567,14 @@ def get_earnings_intel_section(symbol: str, days_to_earnings: int) -> str:
         transcript = fetch_earnings_transcript(symbol)
         if not transcript:
             return f"  {symbol}: No earnings transcript available — monitor for guidance."
+
+        if transcript.startswith("yfinance fundamentals for"):
+            # Real transcript unavailable; surface fundamentals so Sonnet has some context
+            data_part = transcript[len(f"yfinance fundamentals for {symbol}: "):]
+            return (
+                f"  {symbol}: [EDGAR transcript unavailable — fundamentals only]\n"
+                f"  {data_part[:300]}"
+            )
 
         if len(transcript) < 5000:
             log.debug("[EARNINGS] %s: short filing (%d chars) — skipping Claude analysis", symbol, len(transcript))

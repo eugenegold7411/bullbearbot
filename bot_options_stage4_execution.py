@@ -179,6 +179,12 @@ def submit_selected_candidate(
         _conf     = float(debate_result.get("confidence", 0.0))
         _size_mod = float(debate_result.get("recommended_size_modifier", 1.0))
 
+        # Hard rule: high-conviction trades get 1.5x sizing regardless of Claude's modifier.
+        # Confidence ≥ 0.85 is the threshold where edge is considered well-established.
+        if _conf >= 0.85 and _size_mod < 1.5:
+            log.info("[OPTS] High-conviction override: conf=%.2f → size_mod 1.0→1.5", _conf)
+            _size_mod = 1.5
+
         if _reject or not _sel_id:
             log.info("[OPTS] Bounded debate: reject — %s",
                      debate_result.get("reasons", "")[:100])

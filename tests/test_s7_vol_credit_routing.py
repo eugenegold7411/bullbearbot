@@ -179,15 +179,15 @@ class TestStrategyConfigS7Vol(unittest.TestCase):
         return json.loads(cfg_path.read_text())
 
     def test_debate_confidence_floor_lowered(self):
-        """paper_confidence_floor=0.75 replaces old dead key debate_confidence_floor."""
+        """paper_confidence_floor=0.70 replaces old dead key debate_confidence_floor."""
         cfg = self._load_config()
         a2 = cfg.get("account2", {})
         pcf = a2.get("paper_confidence_floor")
         lcf = a2.get("live_confidence_floor")
         self.assertIsNotNone(pcf, "account2.paper_confidence_floor missing")
         self.assertIsNotNone(lcf, "account2.live_confidence_floor missing")
-        self.assertAlmostEqual(float(pcf), 0.75, places=3,
-                               msg="paper_confidence_floor should be 0.75")
+        self.assertAlmostEqual(float(pcf), 0.70, places=3,
+                               msg="paper_confidence_floor should be 0.70")
         self.assertAlmostEqual(float(lcf), 0.85, places=3,
                                msg="live_confidence_floor should be 0.85")
         self.assertNotIn("debate_confidence_floor", a2,

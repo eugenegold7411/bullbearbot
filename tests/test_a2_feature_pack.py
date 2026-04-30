@@ -549,7 +549,8 @@ class TestApplyVetoRules(unittest.TestCase):
 
     def test_v2_low_open_interest(self):
         from bot_options import _apply_veto_rules
-        result = _apply_veto_rules(self._base(open_interest=50), self._make_pack(), 100_000.0)
+        # OI threshold lowered to 50 (P1). Use OI=49 to verify veto still fires below floor.
+        result = _apply_veto_rules(self._base(open_interest=49), self._make_pack(), 100_000.0)
         self.assertIsNotNone(result)
         self.assertIn("open_interest", result)
 

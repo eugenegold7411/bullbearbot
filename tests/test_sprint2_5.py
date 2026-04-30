@@ -211,9 +211,10 @@ class TestOIGateAndCVNA:
     def _cfg(self):
         return json.loads(Path("strategy_config.json").read_text())
 
-    def test_oi_gate_lowered_to_100(self):
+    def test_oi_gate_lowered_to_50(self):
+        # OI floor lowered from 100 to 50 in Sprint 10 Phase 6.
         gates = self._cfg()["account2"]["liquidity_gates"]
-        assert gates["min_open_interest"] == 100
+        assert gates["min_open_interest"] == 50
 
     def test_cvna_in_admissible_universe(self):
         from earnings_rotation import _admissible_universe

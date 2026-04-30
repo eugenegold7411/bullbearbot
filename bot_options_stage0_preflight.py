@@ -263,6 +263,7 @@ class A2PreflightResult:
     halt_reason: str = ""
     equity: float = 0.0
     cash: float = 0.0
+    buying_power: float = 0.0
     pf_allow_live_orders: bool = True
     pf_allow_new_entries: bool = True
     a2_mode: Any = None
@@ -341,10 +342,12 @@ def run_a2_preflight(
     # Account equity check
     try:
         account = alpaca_client.get_account()
-        result.equity = float(account.equity)
-        result.cash   = float(account.cash)
-        log.info("[OPTS] Account 2: equity=$%s  cash=$%s",
-                 f"{result.equity:,.0f}", f"{result.cash:,.0f}")
+        result.equity        = float(account.equity)
+        result.cash          = float(account.cash)
+        result.buying_power  = float(account.buying_power)
+        log.info("[OPTS] Account 2: equity=$%s  cash=$%s  buying_power=$%s",
+                 f"{result.equity:,.0f}", f"{result.cash:,.0f}",
+                 f"{result.buying_power:,.0f}")
     except Exception as exc:
         log.error("[OPTS] Cannot fetch Account 2 status: %s — skipping cycle", exc)
         return A2PreflightResult(halt=True, halt_reason="account_fetch_failed")
@@ -474,5 +477,23 @@ def run_a2_preflight(
 
     except Exception as _recon_err:
         log.warning("[OPTS_RECON] Failed (non-fatal): %s", _recon_err)
+
+    # Structure count gate — runs after reconciliation so expired/closed structures
+    # are already removed from the open-structures list before counting.
+    # Suppresses new entries (not the full cycle) so close-check loop still runs.
+    try:
+        import options_state as _oss_gate  # noqa: PLC0415
+        _cfg_path_gate = Path(__file__).parent / "strategy_config.json"
+        _cfg_gate = json.loads(_cfg_path_gate.read_text()) if _cfg_path_gate.exists() else {}
+        _max_pos = int(_cfg_gate.get("account2", {}).get("max_open_positions", 8))
+        _open_count = len(_oss_gate.get_open_structures())
+        if _open_count >= _max_pos:
+            log.info(
+                "[PREFLIGHT] max_open_positions reached (%d/%d) — new entries suppressed",
+                _open_count, _max_pos,
+            )
+            result.pf_allow_new_entries = False
+    except Exception as _cnt_err:
+        log.debug("[PREFLIGHT] structure count gate failed (non-fatal): %s", _cnt_err)
 
     return result

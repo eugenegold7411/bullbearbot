@@ -291,6 +291,22 @@ if cfg:
     else:
         check(FAIL, f"strategy_config.json: account2.live_confidence_floor={lcf} out of range (0.0–1.0)")
 
+    mop = a2.get("max_open_positions")
+    if mop is None:
+        check(FAIL, "strategy_config.json: account2.max_open_positions missing")
+    elif 5 <= int(mop) <= 100:
+        check(PASS, f"strategy_config.json: account2.max_open_positions={mop} (valid 5–100)")
+    else:
+        check(FAIL, f"strategy_config.json: account2.max_open_positions={mop} out of range (5–100)")
+
+    cut = a2.get("capital_utilization_target")
+    if cut is None:
+        check(WARN, "strategy_config.json: account2.capital_utilization_target missing (will default to 0.80)")
+    elif 0.50 <= float(cut) <= 0.99:
+        check(PASS, f"strategy_config.json: account2.capital_utilization_target={cut} (valid 0.50–0.99)")
+    else:
+        check(FAIL, f"strategy_config.json: account2.capital_utilization_target={cut} out of range (0.50–0.99)")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cross-file: prompts/system_v1.txt

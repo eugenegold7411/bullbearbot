@@ -151,15 +151,16 @@
       "high_max": 40,
       "crisis_halt": 40
     },
-    "paper_confidence_floor": 0.75,
+    "paper_confidence_floor": 0.70,
     "live_confidence_floor": 0.85,
-    "max_open_positions": 8,
+    "max_open_positions": 20,
+    "capital_utilization_target": 0.80,
     "liquidity_gates": {
-      "min_open_interest": 100,
+      "min_open_interest": 50,
       "min_volume": 20,
       "max_spread_pct": 0.1,
       "min_mid_price": 0.05,
-      "pre_debate_oi_floor": 75,
+      "pre_debate_oi_floor": 40,
       "pre_debate_volume_floor": 10
     },
     "cycle_offset_note": "Account 2 runs 90s after Account 1 each market cycle to consume fresh signal scores",

@@ -18,6 +18,15 @@ DEFAULT POSTURE
 - Prefer smaller valid defined-risk trades over waiting endlessly for perfect certainty.
 - Growth comes from repeated disciplined expression of edge, not from rejecting almost everything.
 
+SIZING MODIFIER GUIDANCE
+When your confidence score is ≥ 0.85, the system automatically applies a 1.5x position size
+multiplier regardless of the recommended_size_modifier you output. This is a hard rule, not
+a suggestion — it reflects that high-conviction trades should deploy meaningfully more capital.
+You may still output recommended_size_modifier in your response for audit purposes, but the
+system will override it to 1.5 when confidence ≥ 0.85. Do not artificially inflate confidence
+to trigger this rule; use it only when the thesis, structure, and IV regime are all genuinely
+strong-conviction cases.
+
 DECISION PRIORITY STACK
 1. Hard risk / regime constraints
 2. IV regime fit and structure quality

@@ -364,6 +364,7 @@ def build_candidate_set(
     chain: dict,
     allowed_structures: list[str],
     config: dict | None = None,
+    buying_power: float = 0.0,
 ) -> object:
     """
     Build an A2CandidateSet for a single symbol using Stage 2 routing and veto.
@@ -385,6 +386,7 @@ def build_candidate_set(
             chain=chain,
             allowed_structures=allowed_structures,
             config=config,
+            buying_power=buying_power,
         )
     except Exception as exc:
         generation_errors.append(str(exc))
@@ -414,6 +416,7 @@ def run_candidate_stage(
     vix: float,
     equity_symbols: list[str],
     config: dict | None = None,
+    buying_power: float = 0.0,
 ) -> tuple[list, list, dict, list[dict]]:
     """
     Build A2CandidateSets and StructureProposals for all qualified symbols.
@@ -510,13 +513,15 @@ def run_candidate_stage(
             if not allowed:
                 log.debug("[OPTS] %s: routing gate blocked — no allowed structures", sym)
                 # Build candidate set (with empty surviving) to track the routing decision
-                cset = build_candidate_set(sym, pack, equity, chain, allowed, config=config)
+                cset = build_candidate_set(sym, pack, equity, chain, allowed,
+                                           config=config, buying_power=buying_power)
                 candidate_sets.append(cset)
                 continue
             allowed_by_sym[sym] = allowed
 
             # Build A2CandidateSet (includes routing + veto results via Stage 2)
-            cset = build_candidate_set(sym, pack, equity, chain, allowed, config=config)
+            cset = build_candidate_set(sym, pack, equity, chain, allowed,
+                                       config=config, buying_power=buying_power)
             candidate_sets.append(cset)
 
             if not cset.surviving_candidates:
@@ -543,6 +548,7 @@ def run_candidate_stage(
             current_price=current_price,
             equity=equity,
             options_regime=options_regime,
+            buying_power=buying_power,
         )
         if proposal is None:
             continue

@@ -132,13 +132,15 @@ class TestVetoRulesConfigDriven(unittest.TestCase):
 
     # ── V2: open_interest ─────────────────────────────────────────────────────
 
-    def test_v2_default_blocks_below_100(self):
-        result = _veto({"open_interest": 50})
+    def test_v2_default_blocks_below_50(self):
+        # Default OI floor lowered from 100 to 50 (Sprint 10 Phase 6).
+        result = _veto({"open_interest": 49})
         self.assertIsNotNone(result)
         self.assertIn("open_interest", result)
 
-    def test_v2_default_passes_at_100(self):
-        result = _veto({"open_interest": 100})
+    def test_v2_default_passes_at_50(self):
+        # OI exactly at the new default floor passes (< not <=).
+        result = _veto({"open_interest": 50})
         self.assertIsNone(result)
 
     def test_v2_config_raises_floor(self):
@@ -357,7 +359,7 @@ class TestGetVetoConfig(unittest.TestCase):
         config = {"a2_veto_thresholds": {"max_bid_ask_spread_pct": 0.20}}
         result = self._get(config)
         self.assertAlmostEqual(result["max_bid_ask_spread_pct"], 0.20)
-        self.assertEqual(result["min_open_interest"], 100)  # default preserved
+        self.assertEqual(result["min_open_interest"], 50)   # new default (P6)
 
     def test_full_config_overrides_all_defaults(self):
         config = {"a2_veto_thresholds": {

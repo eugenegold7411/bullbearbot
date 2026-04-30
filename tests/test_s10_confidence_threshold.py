@@ -243,7 +243,7 @@ class TestStrategyConfigSchema(unittest.TestCase):
                       "account2.paper_confidence_floor missing from strategy_config.json")
         self.assertIn("live_confidence_floor", a2,
                       "account2.live_confidence_floor missing from strategy_config.json")
-        self.assertAlmostEqual(float(a2["paper_confidence_floor"]), 0.75, places=3)
+        self.assertAlmostEqual(float(a2["paper_confidence_floor"]), 0.70, places=3)
         self.assertAlmostEqual(float(a2["live_confidence_floor"]), 0.85, places=3)
         self.assertNotIn("debate_confidence_floor", a2,
                          "Dead key debate_confidence_floor should not be in strategy_config.json")

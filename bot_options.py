@@ -95,10 +95,11 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
     if pf.halt:
         _persist_early_exit(session_tier, t_start, "preflight_halt")
         return
-    equity = pf.equity
+    equity               = pf.equity
+    buying_power         = pf.buying_power
     pf_allow_live_orders = pf.pf_allow_live_orders
     pf_allow_new_entries = pf.pf_allow_new_entries
-    a2_mode = pf.a2_mode
+    a2_mode              = pf.a2_mode
 
     obs_state = _get_obs_mode_state()
     obs_mode  = _update_obs_mode_state(obs_state)
@@ -148,9 +149,29 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
     config = _load_strategy_config()
     if pf.pending_underlyings:
         config["_pending_underlyings"] = pf.pending_underlyings
+
+    # Capital utilization gate — suppress new entries when deployed capital ≥ target.
+    # Runs after config load (needs target value) and after preflight (reconciliation
+    # has already removed expired/closed structures). Non-fatal.
+    try:
+        import options_state as _oss_util  # noqa: PLC0415
+        from options_state import compute_capital_utilization  # noqa: PLC0415
+        _open_util = _oss_util.get_open_structures()
+        _util_pct, _ = compute_capital_utilization(_open_util, equity)
+        _util_target = float(config.get("account2", {}).get("capital_utilization_target", 0.80))
+        if _util_pct >= _util_target:
+            log.info(
+                "[OPTS] Capital utilization %.1f%% >= target %.0f%% — new entries suppressed",
+                _util_pct * 100, _util_target * 100,
+            )
+            pf_allow_new_entries = False
+    except Exception as _util_err:
+        log.debug("[OPTS] Capital utilization check failed (non-fatal): %s", _util_err)
+
     candidate_sets, candidates, allowed_by_sym, candidate_structures = run_candidate_stage(
         signal_scores=signal_scores, iv_summaries=iv_summaries,
-        equity=equity, vix=vix, equity_symbols=_get_core_equity_symbols(), config=config,
+        equity=equity, vix=vix, equity_symbols=_get_core_equity_symbols(),
+        config=config, buying_power=buying_power,
     )
     log.info("[OPTS] Candidates: %d  candidate_structures: %d  VIX=%.1f  regime=%s",
              len(candidates), len(candidate_structures), vix, regime)

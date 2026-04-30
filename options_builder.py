@@ -61,8 +61,8 @@ _PHASE1_STRATEGIES: frozenset[OptionStrategy] = frozenset({
     OptionStrategy.IRON_BUTTERFLY,
 })
 
-# Default liquidity requirements (tightened; overridden by config liquidity_gates)
-_DEFAULT_MIN_OPEN_INTEREST = 200
+# Default liquidity requirements (overridden by config liquidity_gates)
+_DEFAULT_MIN_OPEN_INTEREST = 50
 _DEFAULT_MIN_VOLUME        = 20
 _DEFAULT_MAX_BID_ASK_PCT   = 0.08   # max (ask-bid)/mid as fraction
 _DEFAULT_MIN_MID_PRICE     = 0.05   # avoid sub-nickel legs

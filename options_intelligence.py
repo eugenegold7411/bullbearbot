@@ -44,6 +44,7 @@ def select_options_strategy(
     current_price: float,
     equity: float,
     options_regime: dict,
+    buying_power: float = 0.0,
 ) -> Optional[StructureProposal]:
     """
     Core strategy selector. Returns a StructureProposal or None (hold/skip).
@@ -91,10 +92,13 @@ def select_options_strategy(
         )
         return None
 
+    # Use buying_power for sizing; fall back to equity when buying_power not available
+    _bp = buying_power if buying_power > 0 else equity
+
     # Dynamic tier — single leg only, same-week expiry
     if tier == "dynamic":
         return _dynamic_single_leg(
-            symbol, iv_summary, signal_data, equity, catalyst, int(score)
+            symbol, iv_summary, signal_data, _bp, catalyst, int(score)
         )
 
     # Core tier — full strategy selection
@@ -105,12 +109,12 @@ def select_options_strategy(
         # Buy premium
         if "debit_spread" in allowed:
             return _buy_premium_strategy(
-                symbol, iv_summary, signal_data, equity, catalyst,
+                symbol, iv_summary, signal_data, _bp, catalyst,
                 size_mult, int(score), prefer_spread=True
             )
         elif "single_leg" in allowed:
             return _buy_premium_strategy(
-                symbol, iv_summary, signal_data, equity, catalyst,
+                symbol, iv_summary, signal_data, _bp, catalyst,
                 size_mult, int(score), prefer_spread=False
             )
 
@@ -118,7 +122,7 @@ def select_options_strategy(
         # Prefer spreads — debit or credit based on signal direction
         if "debit_spread" in allowed:
             return _spread_strategy(
-                symbol, iv_summary, signal_data, equity, catalyst,
+                symbol, iv_summary, signal_data, _bp, catalyst,
                 size_mult, int(score)
             )
 
@@ -126,7 +130,7 @@ def select_options_strategy(
         # Sell premium
         if "credit_spread" in allowed:
             return _sell_premium_strategy(
-                symbol, iv_summary, signal_data, equity, catalyst,
+                symbol, iv_summary, signal_data, _bp, catalyst,
                 size_mult, int(score)
             )
 
@@ -336,7 +340,7 @@ def _float_or_none(v) -> Optional[float]:
 def _build_short_put(
     pack,
     chain: dict,
-    equity: float,
+    buying_power: float,
     config: dict | None = None,
 ) -> Optional[dict]:
     """
@@ -421,7 +425,7 @@ def _build_short_put(
 
     # Sizing: budget / (stop_multiple * mid * 100) contracts, capped at 10
     _max_spread_pct = float((config or {}).get("account2", {}).get("max_spread_cost_pct", 0.05))
-    budget          = min(pack.premium_budget_usd, equity * _max_spread_pct)
+    budget          = min(pack.premium_budget_usd, buying_power * _max_spread_pct)
     max_loss_per    = stop_multiple * mid * 100   # stop-loss bounded cost per contract
     contracts       = max(1, min(10, int(budget / max_loss_per))) if max_loss_per > 0 else 1
 
@@ -474,7 +478,7 @@ def _build_short_put(
 def _build_iron_condor(
     pack,
     chain: dict,
-    equity: float,
+    buying_power: float,
     config: dict | None = None,
 ) -> Optional[dict]:
     """
@@ -518,7 +522,7 @@ def _build_iron_condor(
     net_credit = abs(net_debit)
 
     _max_spread_pct = float((config or {}).get("account2", {}).get("max_spread_cost_pct", 0.05))
-    budget      = min(pack.premium_budget_usd, equity * _max_spread_pct)
+    budget      = min(pack.premium_budget_usd, buying_power * _max_spread_pct)
     cost_per    = max_loss * 100
     contracts   = max(1, min(10, int(budget / cost_per))) if cost_per > 0 else 1
 
@@ -573,7 +577,7 @@ def _build_iron_condor(
 def _build_iron_butterfly(
     pack,
     chain: dict,
-    equity: float,
+    buying_power: float,
     config: dict | None = None,
 ) -> Optional[dict]:
     """
@@ -617,7 +621,7 @@ def _build_iron_butterfly(
     net_credit = abs(net_debit)
 
     _max_spread_pct = float((config or {}).get("account2", {}).get("max_spread_cost_pct", 0.05))
-    budget      = min(pack.premium_budget_usd, equity * _max_spread_pct)
+    budget      = min(pack.premium_budget_usd, buying_power * _max_spread_pct)
     cost_per    = max_loss * 100
     contracts   = max(1, min(10, int(budget / cost_per))) if cost_per > 0 else 1
 
@@ -673,6 +677,7 @@ def generate_candidate_structures(
     equity: float,
     chain: dict,
     config: dict | None = None,
+    buying_power: float = 0.0,
 ) -> list[dict]:
     """
     Generate fully-specified candidate structures from live chain data.
@@ -689,6 +694,9 @@ def generate_candidate_structures(
     """
     import options_builder as _ob  # noqa: PLC0415
 
+    # Use buying_power for sizing; fall back to equity when not available
+    _bp = buying_power if buying_power > 0 else equity
+
     candidates: list[dict] = []
     spot = chain.get("current_price")
     if not spot or float(spot) <= 0:
@@ -702,7 +710,7 @@ def generate_candidate_structures(
         # Dedicated sell-side builders for short_put, iron_condor, iron_butterfly
         if struct_name == "short_put":
             try:
-                cand = _build_short_put(pack, chain, equity, config)
+                cand = _build_short_put(pack, chain, _bp, config)
                 if cand is not None:
                     candidates.append(cand)
                 else:
@@ -714,7 +722,7 @@ def generate_candidate_structures(
 
         if struct_name == "iron_condor":
             try:
-                cand = _build_iron_condor(pack, chain, equity, config)
+                cand = _build_iron_condor(pack, chain, _bp, config)
                 if cand is not None:
                     candidates.append(cand)
                 else:
@@ -726,7 +734,7 @@ def generate_candidate_structures(
 
         if struct_name == "iron_butterfly":
             try:
-                cand = _build_iron_butterfly(pack, chain, equity, config)
+                cand = _build_iron_butterfly(pack, chain, _bp, config)
                 if cand is not None:
                     candidates.append(cand)
                 else:
@@ -774,7 +782,7 @@ def generate_candidate_structures(
             _max_spread_pct = float(
                 (config or {}).get("account2", {}).get("max_spread_cost_pct", 0.05)
             )
-            budget = min(pack.premium_budget_usd, equity * _max_spread_pct)
+            budget = min(pack.premium_budget_usd, _bp * _max_spread_pct)
             cost_per = (abs(net_debit) if net_debit > 0 else max_loss_per) * 100
             contracts = max(1, min(10, int(budget / cost_per))) if cost_per > 0 else 1
 

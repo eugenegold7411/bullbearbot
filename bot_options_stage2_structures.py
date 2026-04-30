@@ -448,7 +448,7 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
 
 _A2_VETO_DEFAULTS: dict = {
     "max_bid_ask_spread_pct": 0.05,
-    "min_open_interest":      100,
+    "min_open_interest":      50,
     "max_theta_decay_pct":    0.05,
     "max_loss_pct":           0.03,
     "min_dte":                5,
@@ -646,6 +646,7 @@ def build_candidate_structures(
     chain: dict,
     allowed_structures: list[str],
     config: dict | None = None,
+    buying_power: float = 0.0,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """
     Generate fully-specified candidate structures from an A2FeaturePack and
@@ -673,6 +674,7 @@ def build_candidate_structures(
             equity=equity,
             chain=chain,
             config=config,
+            buying_power=buying_power,
         )
         if _cand_structs is not None:
             generated = list(_cand_structs)

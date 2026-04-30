@@ -101,6 +101,27 @@ def get_open_structures() -> list[OptionsStructure]:
     ]
 
 
+def compute_capital_utilization(
+    structures: list[OptionsStructure],
+    equity: float,
+) -> tuple[float, float]:
+    """
+    Compute how much of equity is deployed in open structures.
+
+    Deployed capital = sum of |net_debit| × contracts × 100 across all structures.
+    Structures with net_debit=None are treated as 0 (conservative — undercounts
+    utilization, so the gate never fires incorrectly on missing data).
+
+    Returns (utilization_pct, deployed_usd) where utilization_pct is 0.0–1.0+.
+    """
+    deployed_usd = sum(
+        abs(s.net_debit or 0.0) * (s.contracts or 0) * 100
+        for s in structures
+    )
+    utilization_pct = deployed_usd / equity if equity > 0 else 0.0
+    return utilization_pct, deployed_usd
+
+
 def get_structures_by_symbol(symbol: str) -> list[OptionsStructure]:
     """
     Return all structures for a given underlying symbol (any lifecycle state).

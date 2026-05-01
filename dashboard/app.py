@@ -1211,9 +1211,9 @@ def _build_warnings(status: dict) -> list:
     for p in status["positions"]:
         ov = p.get("oversize", False)
         if ov == "critical":
-            warnings.append(("critical", f"&#x26A1; {p['symbol']}: OVERSIZE CRITICAL ({_fp(p['pct_of_bp'])} of BP)"))
+            warnings.append(("critical", f"&#x26A1; {p['symbol']}: OVERSIZE CRITICAL ({_fp(p['pct_capacity'])} of cap)"))
         elif ov in ("core", "dynamic"):
-            warnings.append(("orange", f"&#x26A1; {p['symbol']}: OVERSIZE {ov.upper()} ({_fp(p['pct_of_bp'])} of BP)"))
+            warnings.append(("orange", f"&#x26A1; {p['symbol']}: OVERSIZE {ov.upper()} ({_fp(p['pct_capacity'])} of cap)"))
         if p.get("gap_to_stop") is not None and p["gap_to_stop"] < 2.0:
             warnings.append(("orange", f"&#x1F534; {p['symbol']}: near stop &mdash; gap {p['gap_to_stop']:.1f}%"))
         if p.get("earnings"):
@@ -1544,11 +1544,11 @@ def _page_overview(status: dict, now_et: str) -> str:
             flags_list.append(f'<div class="alert alert-orange">&#x1F4C5; {p["symbol"]}: {p["earnings"]}</div>')
         ov = p.get("oversize", False)
         if ov == "critical":
-            flags_list.append(f'<div class="alert alert-red">&#x26A1; {p["symbol"]}: OVERSIZE CRITICAL ({_fp(p["pct_of_bp"])} of BP)</div>')
+            flags_list.append(f'<div class="alert alert-red">&#x26A1; {p["symbol"]}: OVERSIZE CRITICAL ({_fp(p["pct_capacity"])} of cap)</div>')
         elif ov == "core":
-            flags_list.append(f'<div class="alert alert-orange">&#x26A1; {p["symbol"]}: OVERSIZE ({_fp(p["pct_of_bp"])} &gt; 20%)</div>')
+            flags_list.append(f'<div class="alert alert-orange">&#x26A1; {p["symbol"]}: OVERSIZE ({_fp(p["pct_capacity"])} of cap &gt; 20%)</div>')
         elif ov == "dynamic":
-            flags_list.append(f'<div class="alert alert-orange">&#x26A1; {p["symbol"]}: OVER DYN TIER ({_fp(p["pct_of_bp"])} &gt; 15%)</div>')
+            flags_list.append(f'<div class="alert alert-orange">&#x26A1; {p["symbol"]}: OVER DYN TIER ({_fp(p["pct_capacity"])} of cap &gt; 15%)</div>')
         if p.get("gap_to_stop") is not None and p["gap_to_stop"] < 2.0:
             flags_list.append(f'<div class="alert alert-orange">&#x1F534; {p["symbol"]}: stop gap {p["gap_to_stop"]:.1f}%</div>')
     if not flags_list:
@@ -1968,7 +1968,7 @@ def _page_a1(status: dict, now_et: str) -> str:
         plpc = p.get("unreal_plpc", 0)
         stop = p.get("stop")
         gap = p.get("gap_to_stop")
-        pct_bp = p.get("pct_of_bp", 0)
+        pct_bp = p.get("pct_capacity", 0)
         entry = p.get("entry", 0.0)
         oversize = p.get("oversize", False)
         earnings_flag = p.get("earnings", "")
@@ -2704,9 +2704,11 @@ def _build_status() -> dict:
     if a1_acc:
         equity = float(a1_acc.equity or 0)
         buying_power = float(a1_acc.buying_power or 0)
-        denom = buying_power if buying_power else equity
+        _raw_positions = a1d.get("positions", [])
+        exposure_dollars = sum(float(p.market_value or 0) for p in _raw_positions)
+        total_capacity = (exposure_dollars + buying_power) or equity
         stops = _stop_map(a1d.get("orders", []))
-        for p in a1d.get("positions", []):
+        for p in _raw_positions:
             sym = p.symbol
             qty = float(p.qty or 0)
             entry = float(p.avg_entry_price or 0)
@@ -2714,21 +2716,21 @@ def _build_status() -> dict:
             market_val = float(p.market_value or 0)
             unreal_pl = float(p.unrealized_pl or 0)
             unreal_plpc = float(p.unrealized_plpc or 0) * 100
-            pct_bp = (market_val / denom * 100) if denom else 0
+            pct_capacity = (market_val / total_capacity * 100) if total_capacity else 0
             stop = stops.get(sym)
             gap = ((current - stop) / current * 100) if stop and current else None
-            if pct_bp > 25:
+            if pct_capacity > 25:
                 oversize = "critical"
-            elif pct_bp > 20:
+            elif pct_capacity > 20:
                 oversize = "core"
-            elif pct_bp > 15:
+            elif pct_capacity > 15:
                 oversize = "dynamic"
             else:
                 oversize = False
             positions.append({
                 "symbol": sym, "qty": qty, "entry": entry, "current": current,
                 "market_val": market_val, "unreal_pl": unreal_pl,
-                "unreal_plpc": unreal_plpc, "pct_of_bp": pct_bp,
+                "unreal_plpc": unreal_plpc, "pct_capacity": pct_capacity,
                 "stop": stop, "gap_to_stop": gap,
                 "earnings": earnings.get(sym, ""),
                 "oversize": oversize,

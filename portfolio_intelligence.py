@@ -343,8 +343,8 @@ def format_positions_with_health(
     Format === OPEN POSITIONS === section with per-position health data.
     Replaces the plain positions_table in build_user_prompt().
 
-    Oversize bands use buying_power as denominator (aligns with risk kernel).
-    Falls back to equity if buying_power is 0.
+    Oversize flag uses total_capacity (exposure+cash) as denominator, matching risk_kernel.
+    Threshold: >15% of total_capacity triggers OVERSIZE, aligned with max_position_pct_capacity.
 
     Authority: PRESENTATION — formats analytics as prompt text only.
       No enforcement authority.
@@ -352,7 +352,6 @@ def format_positions_with_health(
     if not positions:
         return "  (none)"
 
-    bp = buying_power if buying_power > 0 else equity
     _total_cap = (
         sum(float(p.market_value) for p in positions if float(p.qty) > 0)
         + (buying_power if buying_power > 0 else 0.0)
@@ -371,21 +370,11 @@ def format_positions_with_health(
         elif health["health"] == "WARNING":
             flag = "  !! WARNING: drawdown approaching stop threshold"
 
-        bp_pct = float(p.market_value) / bp * 100 if bp > 0 else 0.0
-        if bp_pct > 25.0:
+        cap_pct = float(p.market_value) / _total_cap * 100 if _total_cap > 0 else 0.0
+        if cap_pct > 15.0:
             oversize_flag = (
-                f"\n             !! OVERSIZE — {bp_pct:.1f}% of BP exceeds HIGH conviction core ceiling 25%"
-                f" — TRIM or close regardless of tier"
-            )
-        elif bp_pct > 20.0:
-            oversize_flag = (
-                f"\n             !! OVERSIZE — {bp_pct:.1f}% of BP exceeds standard core max 20%"
-                f" — confirm HIGH conviction core or TRIM"
-            )
-        elif bp_pct > 15.0:
-            oversize_flag = (
-                f"\n             !! OVERSIZE for dynamic/intraday tier — {bp_pct:.1f}% of BP exceeds 15%"
-                f" — TRIM or confirm core tier intended"
+                f"\n             !! OVERSIZE — {cap_pct:.1f}% of total capacity"
+                f" (exposure+cash) exceeds 15% kernel limit — TRIM"
             )
         else:
             oversize_flag = ""

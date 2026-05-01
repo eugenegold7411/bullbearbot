@@ -1,7 +1,7 @@
 """
 tests/test_s8_phase_a.py — Sprint 8 Phase A + S8 Items 1/2/3 verification.
 
-Item 1 (S8): format_positions_with_health() oversize bands use buying_power denominator.
+Item 1 (S8): format_positions_with_health() oversize flag uses total_capacity denominator aligned with risk_kernel.
 Item 2 (S8): trim_severity score_max=5 (Option C — was 6).
 Item 3 (S8): size-based TRIM gate in _decide_actions fires for score≥6 + oversized positions.
 Prior items (Sprint prev): system_v1.txt earnings rule + earnings flag in thesis section.
@@ -132,7 +132,7 @@ class TestEarningsFlagInThesisSection(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Item 1 (S8) — format_positions_with_health() uses buying_power denominator
+# Item 1 (S8) — format_positions_with_health() uses total_capacity denominator
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_pos_mv(mv: float, symbol: str = "STNG") -> MagicMock:
@@ -149,77 +149,73 @@ def _make_pos_mv(mv: float, symbol: str = "STNG") -> MagicMock:
 
 
 class TestOversizeFlagInPositionsHealth(unittest.TestCase):
-    """Item 1 (S8): oversize bands use buying_power as denominator."""
+    """Item 1 (S8): oversize flag uses total_capacity (exposure+buying_power) as denominator.
+
+    total_capacity is stable: as positions are added, exposure rises and buying_power
+    falls equally, keeping the denominator constant. This prevents the churn loop where
+    valid positions appear oversize as BP shrinks after new buys.
+    """
 
     @classmethod
     def setUpClass(cls):
         import portfolio_intelligence as pi
         cls._fmt = staticmethod(pi.format_positions_with_health)
 
-    def _render(self, bp_pct: float, equity: float = 100_000.0, buying_power: float = 120_000.0) -> str:
-        """bp_pct is position market_value as % of buying_power."""
-        mv  = (bp_pct / 100.0) * buying_power
+    def _render(self, cap_pct: float, buying_power: float = 250_000.0, equity: float = 100_000.0) -> str:
+        """cap_pct is desired position_mv / total_capacity * 100 (single-position case).
+
+        Solves mv = cap_pct * buying_power / (100 - cap_pct) so that
+        _total_cap = mv + buying_power yields exactly the requested cap_pct.
+        """
+        mv = (cap_pct * buying_power) / (100.0 - cap_pct) if cap_pct < 100 else buying_power
         pos = _make_pos_mv(mv)
         return self._fmt([pos], equity, buying_power=buying_power)
 
-    def test_above_25_fires_top_band(self):
-        """26% of BP → top band: 'exceeds HIGH conviction core ceiling 25%'."""
-        out = self._render(26.0)
+    def test_above_15_fires_oversize(self):
+        """16% of total capacity → oversize flag fires."""
+        out = self._render(16.0)
         self.assertIn("OVERSIZE", out)
-        self.assertIn("exceeds HIGH conviction core ceiling 25%", out)
-        self.assertIn("of BP", out)
-        self.assertIn("TRIM or close regardless of tier", out)
-
-    def test_above_20_below_25_fires_core_band(self):
-        """22% of BP → core band (>20%, ≤25%): 'exceeds standard core max 20%'."""
-        out = self._render(22.0)
-        self.assertIn("OVERSIZE", out)
-        self.assertIn("exceeds standard core max 20%", out)
-        self.assertIn("of BP", out)
-        self.assertIn("confirm HIGH conviction core or TRIM", out)
-
-    def test_above_15_below_20_fires_dynamic_band(self):
-        """17% of BP → dynamic band (>15%, ≤20%): 'exceeds 15%'."""
-        out = self._render(17.0)
-        self.assertIn("OVERSIZE for dynamic/intraday tier", out)
-        self.assertIn("exceeds 15%", out)
-        self.assertIn("of BP", out)
-        self.assertIn("TRIM or confirm core tier intended", out)
+        self.assertIn("total capacity", out)
+        self.assertIn("exceeds 15% kernel limit", out)
+        self.assertIn("TRIM", out)
 
     def test_exactly_15_no_flag(self):
-        """15.0% of BP → at dynamic tier max boundary, no flag fires."""
+        """15.0% of total capacity → at boundary, flag must NOT fire (strictly >)."""
         out = self._render(15.0)
         self.assertNotIn("OVERSIZE", out)
 
     def test_below_15_no_flag(self):
-        """5.0% of BP → well within any tier max, no flag."""
-        out = self._render(5.0)
+        """10% of total capacity → well within limit, no flag."""
+        out = self._render(10.0)
         self.assertNotIn("OVERSIZE", out)
 
-    def test_exactly_25_fires_core_band_not_top(self):
-        """25.0% of BP → core band (>20%, not strictly >25%)."""
-        out = self._render(25.0)
-        self.assertIn("exceeds standard core max 20%", out)
-        self.assertNotIn("exceeds HIGH conviction core ceiling 25%", out)
+    def test_oversize_label_says_total_capacity_not_bp(self):
+        """OVERSIZE flag text must say 'total capacity', never 'of BP'."""
+        out = self._render(20.0)
+        self.assertIn("OVERSIZE", out)
+        self.assertIn("total capacity", out)
+        self.assertNotIn("of BP", out)
 
-    def test_16_pct_of_bp_fires_dynamic_band(self):
-        """16% of BP → dynamic band (>15%, <20%)."""
+    def test_oversize_label_says_kernel_limit(self):
+        """OVERSIZE flag text references the 15% kernel limit threshold."""
         out = self._render(16.0)
-        self.assertIn("OVERSIZE for dynamic/intraday tier", out)
+        self.assertIn("15% kernel limit", out)
 
-    def test_buying_power_zero_falls_back_to_equity(self):
-        """buying_power=0 → equity is denominator, no crash, flag still fires at 26%."""
+    def test_buying_power_zero_uses_exposure_as_denominator(self):
+        """buying_power=0 → total_capacity = sum(market_values); no crash; OVERSIZE fires when warranted."""
         equity = 100_000.0
-        mv     = 26_000.0   # 26% of equity → top band
+        mv     = 26_000.0
         pos    = _make_pos_mv(mv)
         import portfolio_intelligence as pi
+        # _total_cap = 26_000 + 0 = 26_000; cap_pct = 100% → OVERSIZE fires
         out    = pi.format_positions_with_health([pos], equity, buying_power=0.0)
         self.assertIn("OVERSIZE", out)
-        self.assertIn("exceeds HIGH conviction core ceiling 25%", out)
+        self.assertIn("total capacity", out)
+        self.assertNotIn("of BP", out)
 
     def test_existing_health_fields_still_present(self):
         """Adding oversize flag does not remove existing health output."""
-        out = self._render(26.0)
+        out = self._render(20.0)
         self.assertIn("account_pct=", out)
         self.assertIn("drawdown=", out)
         self.assertIn("health=", out)
@@ -237,6 +233,22 @@ class TestOversizeFlagInPositionsHealth(unittest.TestCase):
             out = pi.format_positions_with_health([pos], 100_000.0, buying_power=100_000.0)
         self.assertIn("CRITICAL DRAWDOWN", out)
         self.assertIn("OVERSIZE", out)
+
+    def test_no_churn_scenario(self):
+        """Anti-churn: $50K position in $350K total capacity → 14.3% → no OVERSIZE.
+
+        With old BP denominator: $50K / $250K BP = 20% → false OVERSIZE → churn loop.
+        With total_capacity: $50K / ($100K exposure + $250K BP) = 14.3% → no flag.
+        """
+        import portfolio_intelligence as pi
+        pos1 = _make_pos_mv(50_000.0)
+        pos1.symbol = "AAPL"
+        pos2 = _make_pos_mv(50_000.0)
+        pos2.symbol = "MSFT"
+        # Two positions: $100K total exposure + $250K BP = $350K total_capacity
+        out = pi.format_positions_with_health([pos1, pos2], equity=100_000.0, buying_power=250_000.0)
+        # Each position: $50K / $350K = 14.28% < 15% → no flag
+        self.assertNotIn("OVERSIZE", out)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

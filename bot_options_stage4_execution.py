@@ -516,6 +516,61 @@ def _sync_submitted_lifecycles(structures: list, trading_client) -> None:
 
 # ── Close-check loop ──────────────────────────────────────────────────────────
 
+def _fetch_close_check_prices(open_structs: list) -> dict:
+    """
+    Build {occ_symbol: mid_price} for all legs across open structures.
+
+    Fetches once per unique underlying using fetch_options_chain().
+    Only active during market hours (9:30 AM – 4:00 PM ET, Mon–Fri).
+    Returns {} outside market hours — options chains are unavailable then.
+    Non-fatal per underlying: if fetch fails, that symbol contributes no prices
+    (existing DTE and time-stop rules in should_close_structure still fire).
+    """
+    now_et = datetime.now(ET)
+    if now_et.weekday() >= 5:
+        return {}
+    market_open  = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
+    market_close = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
+    if not (market_open <= now_et < market_close):
+        return {}
+
+    import options_data  # noqa: PLC0415
+
+    prices: dict[str, float] = {}
+    fetched: set[str] = set()
+
+    # Group by underlying so each chain is fetched at most once.
+    by_underlying: dict[str, list] = {}
+    for struct in open_structs:
+        by_underlying.setdefault(struct.underlying, []).append(struct)
+
+    for underlying, structs in by_underlying.items():
+        try:
+            chain = options_data.fetch_options_chain(underlying)
+            expirations = chain.get("expirations", {})
+            for struct in structs:
+                for leg in struct.legs:
+                    if leg.occ_symbol in prices:
+                        continue
+                    option_key = "calls" if leg.option_type == "call" else "puts"
+                    contracts = expirations.get(leg.expiration, {}).get(option_key, [])
+                    for contract in contracts:
+                        if abs(float(contract.get("strike", 0)) - leg.strike) < 0.01:
+                            bid = float(contract.get("bid") or 0)
+                            ask = float(contract.get("ask") or 0)
+                            if bid > 0 and ask > 0:
+                                prices[leg.occ_symbol] = round((bid + ask) / 2, 4)
+                            break
+            fetched.add(underlying)
+        except Exception as exc:
+            log.debug("[CLOSE_CHECK] price fetch for %s failed (non-fatal): %s",
+                      underlying, exc)
+
+    log.info("[CLOSE_CHECK] fetched %d option prices for %d underlyings",
+             len(prices), len(fetched))
+    return prices
+
+
 def close_check_loop(alpaca_client) -> None:
     """
     Check all open structures for close or roll conditions.
@@ -532,9 +587,10 @@ def close_check_loop(alpaca_client) -> None:
         _sync_submitted_lifecycles(_all_structs, alpaca_client)
         _update_fill_prices(_all_structs, alpaca_client)
         if open_structs:
+            _current_prices = _fetch_close_check_prices(open_structs)
             for struct in open_structs:
                 should_close, close_reason = options_executor.should_close_structure(
-                    struct, current_prices={}, config=_strategy_cfg,
+                    struct, current_prices=_current_prices, config=_strategy_cfg,
                     current_time=None,
                 )
                 if should_close:

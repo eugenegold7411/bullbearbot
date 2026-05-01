@@ -703,6 +703,7 @@ class OptionsStructure:
     roll_reason_detail:      Optional[str]  = None   # free-text roll detail
     rolled_to_structure_id:  Optional[str]  = None   # set when new structure is linked
     initiated_by:            Optional[str]  = None   # "auto_rule" | method name
+    last_cancelled_at:       Optional[str]  = None   # ISO-8601 UTC; set by auto-cancel
 
     @property
     def symbol(self) -> str:
@@ -843,6 +844,7 @@ class OptionsStructure:
             roll_reason_detail=d.get("roll_reason_detail"),
             rolled_to_structure_id=d.get("rolled_to_structure_id"),
             initiated_by=d.get("initiated_by"),
+            last_cancelled_at=d.get("last_cancelled_at"),
         )
 
 

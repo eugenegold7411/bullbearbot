@@ -233,6 +233,7 @@ def _cancel_and_clear_unfilled_orders(
                         order_id[:8], _ce,
                     )
 
+            s.last_cancelled_at = datetime.now(timezone.utc).isoformat()
             s.lifecycle = StructureLifecycle.CANCELLED
             s.add_audit(
                 "auto-cancelled: unfilled order — resubmitting with fresh pricing next cycle"
@@ -250,20 +251,44 @@ def _cancel_and_clear_unfilled_orders(
     return cancelled
 
 
-def _is_duplicate_submission(symbol: str, structures: list) -> bool:
+def _is_duplicate_submission(
+    symbol: str,
+    structures: list,
+    config: dict | None = None,
+) -> bool:
     """
     Return True if a new structure for this symbol should be blocked.
 
-    Blocks only when a SUBMITTED structure exists (in-flight, not yet cancelled).
-    CANCELLED and FULLY_FILLED structures never block re-entry.
+    Blocks when:
+    - A SUBMITTED structure exists (in-flight, not yet cancelled), OR
+    - A CANCELLED structure has last_cancelled_at within cancel_cooldown_hours.
+      Cooldown only applies when last_cancelled_at is set (old structures without
+      the field are not blocked).
+
     After _cancel_and_clear_unfilled_orders() runs, any remaining SUBMITTED
     structure has at least a partial fill — blocking is correct.
     """
     from schemas import StructureLifecycle  # noqa: PLC0415
-    return any(
-        s.underlying == symbol and s.lifecycle == StructureLifecycle.SUBMITTED
-        for s in structures
-    )
+
+    _cfg = config or {}
+    cooldown_hours = float(_cfg.get("account2", {}).get("cancel_cooldown_hours", 1.0))
+    now = datetime.now(timezone.utc)
+
+    for s in structures:
+        if s.underlying != symbol:
+            continue
+        if s.lifecycle == StructureLifecycle.SUBMITTED:
+            return True
+        if s.lifecycle == StructureLifecycle.CANCELLED:
+            cancelled_at = getattr(s, "last_cancelled_at", None)
+            if cancelled_at is not None:
+                try:
+                    elapsed = (now - datetime.fromisoformat(cancelled_at)).total_seconds()
+                    if elapsed < cooldown_hours * 3600:
+                        return True
+                except (ValueError, TypeError):
+                    pass
+    return False
 
 
 def _cleanup_stale_proposed_structures(
@@ -548,7 +573,7 @@ def run_a2_preflight(
                 structures=_open_structs,
                 snapshot=_recon_snapshot,
                 current_time=datetime.now(timezone.utc).isoformat(),
-                config={},
+                config=_s_cfg,
             )
             if any([
                 _struct_diff.broken,
@@ -560,7 +585,7 @@ def run_a2_preflight(
                     diff=_struct_diff,
                     structures=_open_structs,
                     snapshot=_recon_snapshot,
-                    config={},
+                    config=_s_cfg,
                 )
                 log.info(
                     "[OPTS_RECON] %d broken, %d expiring, "
@@ -590,15 +615,26 @@ def run_a2_preflight(
         try:
             from schemas import StructureLifecycle  # noqa: PLC0415
             _all_for_guard = options_state.load_structures()
-            _submitted = [
-                s for s in _all_for_guard
-                if s.lifecycle == StructureLifecycle.SUBMITTED
-            ]
-            if _submitted:
-                result.pending_underlyings = frozenset(
-                    s.underlying for s in _submitted
-                )
-                log.info("[OPTS] Pending in-flight orders — skip new candidates for: %s",
+            _cooldown_hours = float(
+                _s_cfg.get("account2", {}).get("cancel_cooldown_hours", 1.0)
+            )
+            _now = datetime.now(timezone.utc)
+            _blocked: list[str] = []
+            for _gs in _all_for_guard:
+                if _gs.lifecycle == StructureLifecycle.SUBMITTED:
+                    _blocked.append(_gs.underlying)
+                elif _gs.lifecycle == StructureLifecycle.CANCELLED:
+                    _ts = getattr(_gs, "last_cancelled_at", None)
+                    if _ts is not None:
+                        try:
+                            _elapsed = (_now - datetime.fromisoformat(_ts)).total_seconds()
+                            if _elapsed < _cooldown_hours * 3600:
+                                _blocked.append(_gs.underlying)
+                        except (ValueError, TypeError):
+                            pass
+            if _blocked:
+                result.pending_underlyings = frozenset(_blocked)
+                log.info("[OPTS] Pending/cooling — skip new candidates for: %s",
                          ", ".join(sorted(result.pending_underlyings)))
         except Exception as _pe:
             log.debug("[OPTS] pending_underlyings check failed (non-fatal): %s", _pe)

@@ -25,6 +25,16 @@ _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 ET = ZoneInfo("America/New_York")
 
 
+def _load_strategy_config() -> dict:
+    """Load strategy_config.json. Returns {} on failure."""
+    try:
+        path = Path(__file__).parent / "strategy_config.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as _exc:
+        log.debug("[OPTS_EXEC] _load_strategy_config failed (non-fatal): %s", _exc)
+        return {}
+
+
 @dataclass
 class OptionsExecutionResult:
     symbol: str
@@ -130,7 +140,7 @@ def submit_options_order(
         except Exception as _dtbp_exc:
             log.debug("[EXECUTOR] DTBP pre-check failed (non-fatal): %s", _dtbp_exc)
 
-        filled = options_executor.submit_structure(structure, client, config={})
+        filled = options_executor.submit_structure(structure, client, config=_load_strategy_config())
 
         # Persist the updated structure (lifecycle, order_ids, leg.order_id).
         # submit_structure() does not save — we must do it here.

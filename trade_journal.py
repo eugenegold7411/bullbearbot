@@ -118,6 +118,173 @@ KNOWN_BUG_PERIODS: list[dict] = [
             "submits MarketOrderRequest (DAY for equity, GTC for crypto)."
         ),
     },
+    {
+        "id": "BUG-009",
+        "title": "Bracket stop/TP child legs silently voided by Alpaca paper trading",
+        "description": (
+            "Alpaca paper trading silently voids bracket order child legs (stop-loss "
+            "and take-profit) after the parent fills. Positions entered with bracket "
+            "orders had no active stop protection. Fallback logic now places a standalone "
+            "GTC stop after a confirmed fill."
+        ),
+        "severity": "HIGH",
+        "start": "2026-04-13",
+        "end": "2026-05-01",
+        "trading_impact": True,
+        "affects_symbols": [],
+        "resolution": (
+            "Fallback places standalone GTC stop after confirmed fill_price is not None. "
+            "Bracket child-leg voiding is a known Alpaca paper-trading limitation."
+        ),
+    },
+    {
+        "id": "BUG-016",
+        "title": "Orphaned stops placed when bracket BUY was cancelled",
+        "description": (
+            "When a bracket BUY order was cancelled (e.g. due to insufficient buying "
+            "power or a duplicate-block), the fallback stop-placement logic still ran "
+            "and submitted a GTC stop sell even though no position was ever opened. "
+            "This left orphaned stop orders in the account."
+        ),
+        "severity": "MEDIUM",
+        "start": "2026-04-15",
+        "end": "2026-05-01",
+        "trading_impact": True,
+        "affects_symbols": [],
+        "resolution": (
+            "Fallback stop placement gated on confirmed fill_price is not None. "
+            "Cancelled orders with no fill_price are now ignored."
+        ),
+    },
+    {
+        "id": "BUG-PENDING-REPLACE",
+        "title": "Trail stop advances used replace_order causing PENDING_REPLACE state",
+        "description": (
+            "When the trail-stop advance logic tried to move a stop higher, it used "
+            "replace_order() on the existing stop. Alpaca paper trading enters a "
+            "PENDING_REPLACE state that can persist indefinitely, blocking further "
+            "modifications and leaving the stop at the old price."
+        ),
+        "severity": "MEDIUM",
+        "start": "2026-04-13",
+        "end": "2026-05-01",
+        "trading_impact": True,
+        "affects_symbols": [],
+        "resolution": (
+            "Switched to cancel + resubmit pattern for trail-stop advances. "
+            "The old stop is cancelled first, then a new GTC stop is placed at the "
+            "updated price."
+        ),
+    },
+    {
+        "id": "BUG-CONCURRENT-SELL",
+        "title": "Bracket BUYs submitted while concurrent market sell pending",
+        "description": (
+            "The execution loop could submit a bracket BUY for a symbol while a "
+            "market SELL for the same symbol was still pending fill. This created "
+            "conflicting orders and could result in duplicate positions."
+        ),
+        "severity": "MEDIUM",
+        "start": "2026-04-13",
+        "end": "2026-05-01",
+        "trading_impact": True,
+        "affects_symbols": [],
+        "resolution": (
+            "Serialized execution: sells are submitted and waited for fill "
+            "confirmation before buys are submitted for the same symbol."
+        ),
+    },
+    {
+        "id": "BUG-MAX-TOKENS",
+        "title": "max_tokens=2048 caused Sonnet JSON truncation",
+        "description": (
+            "The main Sonnet decision call had max_tokens=2048 which was insufficient "
+            "for full JSON responses when the watchlist or position list was long. "
+            "Truncated JSON caused parse failures, fell through to repair fallback, "
+            "and occasionally resulted in no-trade cycles where trades were warranted."
+        ),
+        "severity": "MEDIUM",
+        "start": "2026-04-13",
+        "end": "2026-05-01",
+        "trading_impact": True,
+        "affects_symbols": [],
+        "resolution": "Raised max_tokens to 4096 and added JSON repair fallback.",
+    },
+    {
+        "id": "BUG-A2-CONFIG",
+        "title": "config={} passed to A2 build_structure()",
+        "description": (
+            "The A2 structure builder was called with an empty config dict "
+            "(config={}) at three call sites, stripping all A2 strategy parameters "
+            "including max_cost_usd limits, allowed strategies, and position-sizing "
+            "constraints. Structures may have been built without proper guardrails."
+        ),
+        "severity": "MEDIUM",
+        "start": "2026-04-13",
+        "end": "2026-05-01",
+        "trading_impact": True,
+        "affects_symbols": [],
+        "resolution": (
+            "Fixed all three call sites to pass the full _a2_cfg config object."
+        ),
+    },
+    {
+        "id": "BUG-A2-CURRENT-PRICES",
+        "title": "current_prices={} passed to A2 close_check_loop — P&L exits blind",
+        "description": (
+            "The A2 close_check_loop() was called with current_prices={} (empty dict) "
+            "instead of live option prices. All P&L-based exit checks (80% max-gain "
+            "and 50% max-loss auto-close thresholds) evaluated against zero prices, "
+            "making them effectively blind. Positions that should have closed did not."
+        ),
+        "severity": "HIGH",
+        "start": "2026-04-13",
+        "end": "2026-05-01",
+        "trading_impact": True,
+        "affects_symbols": [],
+        "resolution": (
+            "Injected live option prices into close_check_loop() from the preflight "
+            "data fetch."
+        ),
+    },
+    {
+        "id": "BUG-A2-CANCEL-COOLDOWN",
+        "title": "Cancelled A2 spreads resubmit every cycle indefinitely",
+        "description": (
+            "When an A2 spread order was cancelled (e.g. unfillable price), the "
+            "structure stayed in submitted state and the debate/build cycle would "
+            "select and resubmit the same structure on the next cycle. This could "
+            "flood the account with repeated cancelled orders for the same spread."
+        ),
+        "severity": "MEDIUM",
+        "start": "2026-04-13",
+        "end": "2026-05-01",
+        "trading_impact": True,
+        "affects_symbols": [],
+        "resolution": (
+            "Added per-structure cancel cooldown. Cancelled structures are marked "
+            "with a cooldown timestamp and blocked from resubmission for 30 minutes."
+        ),
+    },
+    {
+        "id": "BUG-OVERSIZE-DENOMINATOR",
+        "title": "Sonnet used buying_power as oversize denominator causing churn",
+        "description": (
+            "The position health check passed to Sonnet used buying_power as the "
+            "denominator for percent-of-account calculations. When buying_power was "
+            "low (many positions open), all positions appeared oversize and Sonnet "
+            "generated TRIM signals every cycle, creating a churn loop."
+        ),
+        "severity": "MEDIUM",
+        "start": "2026-04-13",
+        "end": "2026-05-01",
+        "trading_impact": True,
+        "affects_symbols": [],
+        "resolution": (
+            "Fixed denominator to total_capacity (deployed + buying_power) in "
+            "format_positions_with_health(). Added 15% threshold for oversize flag."
+        ),
+    },
 ]
 
 

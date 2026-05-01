@@ -62,18 +62,19 @@ a:hover { text-decoration: underline; }
 details > summary { cursor: pointer; }
 details > summary::-webkit-details-marker { display: none; }
 
-.container { max-width: 1100px; margin: 0 auto; padding: 12px 16px 72px; }
+.container { padding: 12px 24px 72px; }
 
 /* Nav */
-.nav { background: var(--bg-card); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 0; position: sticky; top: 0; z-index: 100; height: 44px; }
-.nav-brand { font-size: 14px; color: var(--text-primary); margin-right: 16px; white-space: nowrap; flex-shrink: 0; }
+.nav { background: var(--bg-card); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 0; position: sticky; top: 0; z-index: 100; min-height: 52px; }
+.nav-brand { font-size: 14px; color: var(--text-primary); margin-right: 16px; white-space: nowrap; flex-shrink: 0; display: flex; flex-direction: column; gap: 1px; }
 .nav-brand .bear { color: var(--accent-blue); }
+.nav-subtitle { font-size: 9px; color: var(--text-ghost); letter-spacing: 0.3px; white-space: nowrap; font-weight: 400; }
 .nav-tabs { display: flex; align-items: stretch; height: 44px; gap: 0; }
 .nav-tab { display: flex; align-items: center; padding: 0 13px; font-size: 11px; color: var(--text-muted); border-bottom: 2px solid transparent; white-space: nowrap; text-decoration: none; transition: color 0.12s, border-color 0.12s; }
 .nav-tab:hover { color: var(--text-secondary); text-decoration: none; }
 .nav-tab.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); }
-.nav-pills { display: flex; align-items: center; gap: 5px; margin-left: 10px; }
-.npill { font-size: 10px; padding: 2px 7px; border-radius: 3px; border: 1px solid; letter-spacing: 0.4px; }
+.nav-pills { display: flex; align-items: center; gap: 8px; margin-left: 10px; }
+.npill { font-size: 12px; padding: 5px 14px; border-radius: 4px; border: 2px solid; letter-spacing: 0.4px; font-weight: 700; }
 .npill-g { background: rgba(0,230,118,.1); border-color: rgba(0,230,118,.3); color: var(--accent-green); }
 .npill-a { background: rgba(255,170,32,.1); border-color: rgba(255,170,32,.3); color: var(--accent-amber); }
 .npill-r { background: rgba(255,80,80,.1); border-color: rgba(255,80,80,.3); color: var(--accent-red); }
@@ -402,7 +403,7 @@ def _last_decision():
         return {}
 
 
-def _last_n_a1_decisions(n: int = 5) -> list:
+def _last_n_a1_decisions(n: int = 10) -> list:
     try:
         decisions = json.loads((BOT_DIR / "memory/decisions.json").read_text())
         valids = [d for d in decisions
@@ -412,7 +413,7 @@ def _last_n_a1_decisions(n: int = 5) -> list:
         return []
 
 
-def _last_n_a2_decisions(n: int = 5) -> list:
+def _last_n_a2_decisions(n: int = 10) -> list:
     try:
         dec_dir = BOT_DIR / "data/account2/decisions"
         files = sorted(dec_dir.glob("a2_dec_*.json"))[-n:]
@@ -1042,11 +1043,28 @@ def _a2_pipeline_today() -> dict:
     return out
 
 
-def _a1_decisions_compact_html(decisions: list) -> str:
+def _detect_churn(decisions: list, n_cycles: int = 3) -> set:
+    """Return symbols that appear in both a buy and a sell within the last n_cycles decisions."""
+    buys: set = set()
+    sells: set = set()
+    for d in decisions[:n_cycles]:
+        for a in d.get("actions", d.get("ideas", [])):
+            sym = a.get("symbol", "")
+            intent = (a.get("action") or a.get("intent") or "").upper()
+            if sym and intent in ("BUY", "ADD"):
+                buys.add(sym)
+            elif sym and intent in ("SELL", "EXIT", "TRIM"):
+                sells.add(sym)
+    return buys & sells
+
+
+def _a1_decisions_compact_html(decisions: list, churn_syms: set | None = None) -> str:
     if not decisions:
         return '<div style="color:#8b949e;font-size:12px">No decisions yet.</div>'
+    if churn_syms is None:
+        churn_syms = _detect_churn(decisions)
     rows = ""
-    for d in decisions[:5]:
+    for d in decisions[:10]:
         ts = _to_et(d.get("ts", ""))
         regime = d.get("regime", d.get("regime_view", "?"))
         score = d.get("regime_score", "")
@@ -1057,7 +1075,9 @@ def _a1_decisions_compact_html(decisions: list) -> str:
             intent = (a.get("action") or a.get("intent") or "").upper()
             if sym and intent:
                 c = "#3fb950" if intent in ("BUY", "ADD") else ("#f85149" if intent in ("SELL", "EXIT", "TRIM") else "#8b949e")
-                act_parts.append(f'<span style="color:{c}">{intent} {sym}</span>')
+                churn_tag = (' <span style="color:#ffaa20;font-size:9px">&#x21BA; churn</span>'
+                             if sym in churn_syms else "")
+                act_parts.append(f'<span style="color:{c}">{intent} {sym}{churn_tag}</span>')
         acts_line = " &middot; ".join(act_parts) if act_parts else '<span style="color:#8b949e">HOLD</span>'
         score_str = f"({score})" if score != "" else ""
         rc = "#3fb950" if "risk_on" in str(regime) or "bullish" in str(regime) else (
@@ -1076,7 +1096,7 @@ def _a2_decisions_compact_html(decs: list) -> str:
     if not decs:
         return '<div style="color:#8b949e;font-size:12px">No A2 decisions yet.</div>'
     rows = ""
-    for d in decs[:5]:
+    for d in decs[:10]:
         ts = _to_et(d.get("built_at", ""))
         result = d.get("execution_result", "?")
         cand = d.get("selected_candidate") or {}
@@ -1285,6 +1305,7 @@ def _nav_html(active_page: str, now_et: str, a1_mode: str = "NORMAL", a2_mode: s
         ("trades", "/trades", "Trades"),
         ("transparency", "/transparency", "Transparency"),
         ("theater", "/theater", "Decision Theater"),
+        ("social", "/social", "Social"),
     ]
     tabs = ""
     for pid, href, label in pages:
@@ -1298,7 +1319,10 @@ def _nav_html(active_page: str, now_et: str, a1_mode: str = "NORMAL", a2_mode: s
 
     return (
         f'<div class="nav">'
-        f'<span class="nav-brand">Bull<span class="bear">Bear</span>Bot</span>'
+        f'<div class="nav-brand">'
+        f'<div>Bull<span class="bear">Bear</span>Bot</div>'
+        f'<div class="nav-subtitle">Autonomous AI trading system &middot; paper trading since April&nbsp;13,&nbsp;2026</div>'
+        f'</div>'
         f'<div class="nav-tabs">{tabs}</div>'
         f'<div class="nav-pills">'
         f'<span class="npill {a1_pill_cls}">A1 {a1_mode}</span>'
@@ -1598,15 +1622,6 @@ def _page_overview(status: dict, now_et: str) -> str:
     combined_color = "#3fb950" if combined_pnl >= 0 else "#f85149"
     combined_sign = "+" if combined_pnl >= 0 else ""
 
-    # Watch Now
-    watch_bullets = _watch_now_bullets(status)
-    if watch_bullets:
-        items = ""
-        for sev, text in watch_bullets:
-            icon = "&#x1F534;" if sev == "critical" else "&#x26A0;&#xFE0F;"
-            color = "#f85149" if sev == "critical" else "#d29922"
-            items += f'<div class="watch-bullet"><span style="color:{color}">{icon}</span> {text}</div>'
-
     # Trail table
     trail_tiers = status.get("trail_tiers", [])
     trail_html = _trail_table_html(status["positions"], trail_tiers)
@@ -1614,8 +1629,7 @@ def _page_overview(status: dict, now_et: str) -> str:
     # Allocator compact line
     allocator_line = status.get("allocator_line", "") or ""
 
-    # Compact decisions (two-column grid)
-    a1_comp = _a1_decisions_compact_html(status.get("a1_decisions", []))
+    # a1_comp computed later after churn detection; a2_comp here
     a2_comp = _a2_decisions_compact_html(status.get("a2_decisions", []))
 
     # A2 pipeline today
@@ -1723,6 +1737,41 @@ def _page_overview(status: dict, now_et: str) -> str:
         _regime_score = 50.0
     _regime_view = _decision.get("regime_view", _decision.get("regime", "—"))
 
+    # Days running since launch
+    _launch_date = date(2026, 4, 13)
+    _days_running = (date.today() - _launch_date).days
+
+    # Combined equity
+    _combined_equity = a1_equity + a2_equity
+
+    # Claude cost extended data for widget
+    all_time_cost = float(costs.get("all_time_cost", 0) or 0)
+    total_api_calls = int(costs.get("daily_calls", 0) or 0)
+    _sonnet_calls_int = gate.get("total_calls_today", 0)
+    try:
+        _sonnet_calls_int = int(_sonnet_calls_int)
+    except (TypeError, ValueError):
+        _sonnet_calls_int = 0
+    haiku_calls = max(0, total_api_calls - _sonnet_calls_int)
+
+    # Pluralization helpers
+    _a1_pos_str = f"{a1_pos_count} position{'s' if a1_pos_count != 1 else ''}"
+    _a2_pos_str = f"{a2_pos_count} structure{'s' if a2_pos_count != 1 else ''}"
+
+    # Churn detection for decisions panel
+    _churn_syms = _detect_churn(status.get("a1_decisions", []))
+    a1_comp = _a1_decisions_compact_html(status.get("a1_decisions", []), churn_syms=_churn_syms)
+
+    # Top callers for cost widget
+    top_callers_widget = ""
+    for caller, cdata in sorted(by_caller.items(), key=lambda x: -float(x[1].get("cost", 0) if isinstance(x[1], dict) else 0))[:4]:
+        c_cost = float(cdata.get("cost", 0) if isinstance(cdata, dict) else 0)
+        c_calls = cdata.get("calls", 0) if isinstance(cdata, dict) else 0
+        top_callers_widget += (
+            f'<div class="kv"><span class="kv-label" style="font-size:10px">{caller}</span>'
+            f'<span class="kv-val" style="font-size:10px">{_fm(c_cost)} &middot; {c_calls} calls</span></div>'
+        )
+
     body = f"""
 <div class="container">
 
@@ -1735,13 +1784,13 @@ def _page_overview(status: dict, now_et: str) -> str:
       <div>
         <div class="hero-lbl">A1 Equity &middot; Today</div>
         <div class="hero-num" style="color:{a1_pnl_color}">{a1_pnl_sign}{_fm(a1_pnl)}</div>
-        <div class="hero-sub">{_fm(a1_equity)} &middot; {a1_pos_count} positions</div>
+        <div class="hero-sub">{_fm(a1_equity)} &middot; {_a1_pos_str}</div>
         <span class="hero-badge {'hero-badge-g' if a1_pnl >= 0 else 'hero-badge-r'}">{a1_pnl_sign}{a1_pnl_pct:.2f}%</span>
       </div>
       {_ring_svg(a1_util, "#4facfe")}
     </div>
     <div class="hero-mini-stats" style="margin-top:10px">
-      <div class="hero-mini-row"><span class="hero-mini-lbl">Utilization</span><span style="color:var(--accent-blue)">{a1_util:.0f}%</span></div>
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Capital deployed</span><span style="color:var(--accent-blue)">{a1_util:.0f}% ({_fm(a1_invested)})</span></div>
       <div class="hero-mini-row"><span class="hero-mini-lbl">Unrealized P&amp;L</span><span style="color:{a1_unreal_c}">{a1_unreal_s}{_fm(a1_unreal)}</span></div>
       <div class="hero-mini-row"><span class="hero-mini-lbl">Mode</span><span style="color:{a1_color}">{a1_mode}</span></div>
     </div>
@@ -1752,7 +1801,7 @@ def _page_overview(status: dict, now_et: str) -> str:
       <div>
         <div class="hero-lbl">A2 Options &middot; Today</div>
         <div class="hero-num" style="color:{a2_pnl_color}">{a2_pnl_sign}{_fm(a2_pnl)}</div>
-        <div class="hero-sub">{_fm(a2_equity)} &middot; {a2_pos_count} structures</div>
+        <div class="hero-sub">{_fm(a2_equity)} &middot; {_a2_pos_str}</div>
         <span class="hero-badge {'hero-badge-g' if a2_pnl >= 0 else 'hero-badge-r'}">{a2_pnl_sign}{a2_pnl_pct:.2f}%</span>
       </div>
       {_ring_svg(min(100, a2_pos_count * 10), "#a855f7")}
@@ -1769,14 +1818,14 @@ def _page_overview(status: dict, now_et: str) -> str:
       <div>
         <div class="hero-lbl">Combined &middot; Portfolio</div>
         <div class="hero-num" style="color:{combined_color}">{combined_sign}{_fm(combined_pnl)}</div>
-        <div class="hero-sub">Paper trading</div>
+        <div class="hero-sub">Day {_days_running} of paper trading &middot; $200K starting capital</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:3px">{_fm(_combined_equity)} combined equity</div>
       </div>
       {_ring_svg(_regime_score, "#ffaa20")}
     </div>
     <div class="hero-mini-stats" style="margin-top:10px">
       <div class="hero-mini-row"><span class="hero-mini-lbl">Regime score</span><span style="color:var(--accent-amber)">{_regime_score:.0f}/100</span></div>
-      <div class="hero-mini-row"><span class="hero-mini-lbl">Claude cost today</span><span style="color:{proj_color}">{_fm(daily_cost)}</span></div>
-      <div class="hero-mini-row"><span class="hero-mini-lbl">Sonnet calls</span><span class="hero-mini-val">{sonnet_calls}</span></div>
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Buys / Sells today</span><span class="hero-mini-val">{buys} / {sells}</span></div>
     </div>
   </div>
 </div>
@@ -1789,9 +1838,16 @@ def _page_overview(status: dict, now_et: str) -> str:
     <div class="card" style="padding:0 0 4px">{trail_html}</div>
   </div>
   <div>
-    <div class="section-label">Watch Now</div>
-    <div class="card" style="padding:10px 14px">
-      {''.join(f'<div class="watch-bullet"><span style="color:{"var(--accent-red)" if s=="critical" else "var(--accent-amber)"}">{("&#x25CF;" if s=="critical" else "&#x25B2;")}</span> {t}</div>' for s,t in (watch_bullets or [("ok", "&#x2713; Nothing urgent.")]))}
+    <div class="section-label">Claude Cost</div>
+    <div class="card">
+      <div class="stat-grid" style="margin-bottom:10px">
+        <div class="stat-box"><div class="stat-label">Today</div><div class="stat-val" style="font-size:18px;color:{proj_color}">{_fm(daily_cost)}</div></div>
+        <div class="stat-box"><div class="stat-label">All-time</div><div class="stat-val" style="font-size:16px;color:var(--text-secondary)">{_fm(all_time_cost)}</div></div>
+        <div class="stat-box"><div class="stat-label">Sonnet calls</div><div class="stat-val" style="font-size:18px">{sonnet_calls}</div></div>
+        <div class="stat-box"><div class="stat-label">Haiku calls</div><div class="stat-val" style="font-size:18px">{haiku_calls}</div></div>
+      </div>
+      <div class="kv"><span class="kv-label">Projected/month (22d)</span><span class="kv-val" style="color:{proj_color}">{proj_icon}{_fm(proj_monthly)}</span></div>
+      {top_callers_widget}
     </div>
     {f'<div class="section-label">Allocator</div><div class="card" style="font-size:10px;color:var(--text-muted)">{allocator_line}</div>' if allocator_line else ''}
   </div>
@@ -1817,8 +1873,6 @@ def _page_overview(status: dict, now_et: str) -> str:
       <div class="card-row"><span class="card-label">Git HEAD</span><span class="card-val" style="font-family:monospace;font-size:10px">{git_hash}</span></div>
       <div class="card-row"><span class="card-label">Service up since</span><span class="card-val muted" style="font-size:10px">{svc_uptime[:30] if svc_uptime != "unknown" else "unknown"}</span></div>
       {earnings_cal_html}
-      <div class="card-row"><span class="card-label">Buys / Sells today</span><span class="card-val">{buys} / {sells}</span></div>
-      <div class="card-row"><span class="card-label">Proj/month (22d)</span><span class="card-val" style="color:{proj_color}">{proj_icon}{_fm(proj_monthly)}</span></div>
     </div>
     <div class="section-label">Active Flags</div>
     {flags_html}
@@ -2103,7 +2157,7 @@ def _page_a1(status: dict, now_et: str) -> str:
   <div>{a1_comp}</div>
 </div>
 
-<div class="section-label">Positions ({a1_pos_count} open)</div>
+<div class="section-label">{a1_pos_count} open position{'s' if a1_pos_count != 1 else ''}</div>
 <div class="card" style="padding:0 0 4px">
   <div class="table-wrap">
     <table class="data-table">
@@ -2308,6 +2362,11 @@ def _page_a2(status: dict, now_et: str) -> str:
     body = f"""
 <div class="container">
 {warn_html}
+<div style="background:rgba(79,172,254,.07);border:1px solid rgba(79,172,254,.2);border-radius:8px;padding:12px 16px;margin-bottom:14px;font-size:13px;color:var(--text-secondary);line-height:1.6">
+  A2 trades options spreads &mdash; defined-risk bets where the maximum possible loss is fixed upfront.
+  Each structure shows its max gain, max loss, and current P&amp;L.
+  A2 runs independently of A1 and never risks more than the premium paid.
+</div>
 <div class="section-label">A2 Account Summary</div>
 <div class="acct-bar">
   <div class="acct-bar-item"><div class="acct-bar-lbl">Equity</div><div class="acct-bar-val">{_fm(a2_equity)}</div></div>
@@ -2739,8 +2798,8 @@ def _build_status() -> dict:
     a2_dec = _a2_last_cycle()
     a2_structs = _a2_structures()
     a2_live_pos = a2d.get("positions", [])
-    a1_decs = _last_n_a1_decisions(5)
-    a2_decs = _last_n_a2_decisions(5)
+    a1_decs = _last_n_a1_decisions(10)
+    a2_decs = _last_n_a2_decisions(10)
     qctx = _qualitative_context()
     today_pnl_a1 = _today_pnl_a1()
     today_pnl_a2 = _today_pnl_a2()
@@ -3124,13 +3183,13 @@ def _page_transparency(now_et: str) -> str:
 
     # ── strategy config ────────────────────────────────────────────────────────
     try:
-        import json as _json
-        _cfg = _json.loads(Path("strategy_config.json").read_text())
+        _cfg = json.loads((BOT_DIR / "strategy_config.json").read_text())
     except Exception:
         _cfg = {}
 
     params = _cfg.get("parameters", {})
-    director_notes = _cfg.get("director_notes", "No director notes available.")
+    _director_notes_raw = _cfg.get("director_notes", "")
+    director_notes = (_director_notes_raw.strip() if isinstance(_director_notes_raw, str) else "")
     active_strategy = _cfg.get("active_strategy", "hybrid")
     ff = _cfg.get("feature_flags", {})
     shadow_flags = _cfg.get("shadow_flags", {})
@@ -3144,24 +3203,56 @@ def _page_transparency(now_et: str) -> str:
         '<tr><td colspan="2" class="muted">No flags configured.</td></tr>'
     )
 
-    def _param_row(k: str, v: object) -> str:
+    # ── risk parameters (wired to specific strategy_config.json fields) ────────
+    def _risk_row(label: str, val: str) -> str:
         return (
-            f'<tr><td style="font-family:monospace;font-size:11px;color:var(--text-secondary)">{k}</td>'
-            f'<td style="text-align:right;font-family:monospace;font-size:11px">{v}</td></tr>'
+            f'<tr><td style="font-family:monospace;font-size:11px;color:var(--text-secondary)">{label}</td>'
+            f'<td style="text-align:right;font-family:monospace;font-size:11px">{val}</td></tr>'
         )
 
-    params_html = "".join(_param_row(k, v) for k, v in params.items()) or (
-        '<tr><td colspan="2" class="muted">No parameters.</td></tr>'
+    _ps = _cfg.get("position_sizing", {})
+    _sg = _cfg.get("sonnet_gate", {})
+    _near_close_windows = _sg.get("scheduled_windows", [])
+    _near_close_str = "—"
+    if len(_near_close_windows) >= 2:
+        w = _near_close_windows[-1]
+        _near_close_str = f"{w.get('hour', '?')}:{w.get('minute', '00'):02d} ET"
+    elif _near_close_windows:
+        w = _near_close_windows[0]
+        _near_close_str = f"{w.get('hour', '?')}:{w.get('minute', '00'):02d} ET"
+
+    _max_pos_pct = params.get("max_position_pct_capacity")
+    _max_pos_str = f"{float(_max_pos_pct) * 100:.0f}%" if _max_pos_pct is not None else "—"
+
+    _vix_calm = params.get("vix_calm_threshold", "—")
+    _vix_elev = params.get("vix_elevated_threshold", "—")
+    _vix_caut = params.get("vix_cautious_threshold", "—")
+    _vix_stress = params.get("vix_stressed_threshold", "—")
+
+    params_rows = (
+        _risk_row("max_position_pct_capacity", _max_pos_str)
+        + _risk_row("VIX calm (tier 1)", f"< {_vix_calm}")
+        + _risk_row("VIX elevated (tier 2)", f"< {_vix_elev}")
+        + _risk_row("VIX cautious (tier 3)", f"< {_vix_caut}")
+        + _risk_row("VIX stressed (tier 4)", f"&ge; {_vix_stress}")
+        + _risk_row("stop_loss_pct (core)", f"{float(params.get('stop_loss_pct_core', 0))*100:.1f}%" if params.get('stop_loss_pct_core') else "—")
+        + _risk_row("take_profit_multiple", str(params.get("take_profit_multiple", "—")))
+        + _risk_row("max_positions", str(params.get("max_positions", "—")))
+        + _risk_row("cash_reserve_pct", f"{float(_ps.get('cash_reserve_pct', 0))*100:.0f}%" if _ps.get('cash_reserve_pct') is not None else "—")
+        + _risk_row("near_close_gate", _near_close_str)
     )
+    params_html = params_rows or '<tr><td colspan="2" class="muted">No parameters.</td></tr>'
 
     # ── cost data ──────────────────────────────────────────────────────────────
     try:
-        costs = _json.loads(Path("data/costs/daily_costs.json").read_text())
-        daily_cost = costs.get("daily_cost", 0.0)
-        daily_calls = costs.get("daily_calls", 0)
-        by_caller = costs.get("by_caller", {})
+        _cost_data = json.loads((BOT_DIR / "data/costs/daily_costs.json").read_text())
+        daily_cost = _cost_data.get("daily_cost", 0.0)
+        all_time_cost_tr = _cost_data.get("all_time_cost", 0.0)
+        daily_calls = _cost_data.get("daily_calls", 0)
+        by_caller = _cost_data.get("by_caller", {})
     except Exception:
         daily_cost = 0.0
+        all_time_cost_tr = 0.0
         daily_calls = 0
         by_caller = {}
 
@@ -3245,10 +3336,13 @@ def _page_transparency(now_et: str) -> str:
         bug_left_html = '<div style="color:var(--text-muted);font-size:12px">No bugs logged.</div>'
 
     # Director notes (learning journal)
-    director_html = (
-        f'<p style="font-size:12px;color:var(--text-secondary);line-height:1.7;margin:0">'
-        f'{director_notes}</p>'
-    )
+    if director_notes:
+        director_html = (
+            f'<p style="font-size:12px;color:var(--text-secondary);line-height:1.7;margin:0">'
+            f'{director_notes}</p>'
+        )
+    else:
+        director_html = '<p style="font-size:12px;color:var(--text-muted);margin:0">No director notes recorded yet.</p>'
 
     left_col = (
         '<div class="section-label">Architecture</div>'
@@ -3277,7 +3371,9 @@ def _page_transparency(now_et: str) -> str:
         f'<div class="stat-grid" style="margin-bottom:12px">'
         f'<div class="stat-box"><div class="stat-label">Daily Spend</div>'
         f'<div class="stat-val" style="color:var(--accent-amber)">${daily_cost:.2f}</div></div>'
-        f'<div class="stat-box"><div class="stat-label">API Calls</div>'
+        f'<div class="stat-box"><div class="stat-label">All-time Spend</div>'
+        f'<div class="stat-val" style="font-size:15px;color:var(--text-secondary)">${all_time_cost_tr:.2f}</div></div>'
+        f'<div class="stat-box"><div class="stat-label">API Calls Today</div>'
         f'<div class="stat-val">{daily_calls}</div></div>'
         f'<div class="stat-box"><div class="stat-label">Monthly Est.</div>'
         f'<div class="stat-val" style="color:var(--text-secondary)">${daily_cost*30:.0f}</div></div>'
@@ -3384,13 +3480,13 @@ def _page_theater(now_et: str) -> str:
 
   <!-- Mode toggle -->
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-    <button class="mode-btn active" id="btn-cycle" onclick="setMode('cycle')">Cycle View</button>
-    <button class="mode-btn" id="btn-trade" onclick="setMode('trade')">Trade Lifecycle</button>
+    <button class="mode-btn" id="btn-cycle" onclick="setMode('cycle')">Cycle View</button>
+    <button class="mode-btn active" id="btn-trade" onclick="setMode('trade')">Trade Lifecycle</button>
     <div style="margin-left:auto;font-size:10px;color:var(--text-muted)">{cycle_ts} · {session} · cycle {cycle_num+1}/{total}</div>
   </div>
 
   <!-- ── CYCLE VIEW ── -->
-  <div id="panel-cycle">
+  <div id="panel-cycle" style="display:none">
 
     <!-- Pipeline flow -->
     <div class="section-label">Pipeline — Cycle #{cycle_num+1}</div>
@@ -3435,7 +3531,7 @@ def _page_theater(now_et: str) -> str:
   </div>
 
   <!-- ── TRADE LIFECYCLE VIEW ── -->
-  <div id="panel-trade" style="display:none">
+  <div id="panel-trade">
 
     <!-- Trade pills -->
     <div class="section-label">Select a Trade</div>
@@ -3762,9 +3858,13 @@ function renderTimeline(events) {{
   events.forEach(function(ev) {{
     var dc = dotColors[ev.event_type] || 'var(--text-muted)';
     var ts = (ev.timestamp||'').substring(0,16).replace('T',' ');
+    var label = ev.label;
+    if (label === 'No stop configured') {{
+      label = 'Stop placement pending (paper trading)';
+    }}
     html += '<div class="tl-event">';
     html += '<span class="tl-dot" style="background:' + dc + '"></span>';
-    html += '<span style="font-weight:600;color:var(--text-primary)">' + ev.label + '</span>';
+    html += '<span style="font-weight:600;color:var(--text-primary)">' + label + '</span>';
     if (ts) html += ' <span style="color:var(--text-muted);font-size:10px">' + ts + '</span>';
     if (ev.detail) html += '<div style="color:var(--text-secondary);font-size:10px;margin-top:2px;padding-left:15px">' + ev.detail.substring(0,100) + '</div>';
     html += '</div>';
@@ -3800,6 +3900,16 @@ function renderThesis(data) {{
 document.getElementById('ideas-panel').innerHTML = renderIdeas(
   (_cycleData.stages && _cycleData.stages.sonnet && _cycleData.stages.sonnet.ideas) || []
 );
+
+// Auto-select most recent open trade on page load
+(function() {{
+  var trades = (_tradesData && _tradesData.trades) || [];
+  var t = trades.find(function(t) {{ return t.status === 'open'; }});
+  if (!t && trades.length) t = trades[0];
+  if (t) {{
+    loadTrade(t.symbol, t.entry_date || '');
+  }}
+}})();
 </script>
 """
     return _page_shell("Decision Theater", nav, body)
@@ -3890,6 +4000,139 @@ def api_theater_trades():
         return jsonify(get_all_trades_summary())
     except Exception as _exc:
         return jsonify({"error": str(_exc)}), 500
+
+
+# ── Social page ───────────────────────────────────────────────────────────────
+_SOCIAL_DATA_FILE = BOT_DIR / "data/social/post_ideas.json"
+
+_TYPE_LABELS = {
+    "trade_commentary": "Trade Commentary",
+    "market_observation": "Market Observation",
+    "system_update": "System Update",
+    "performance": "Performance",
+}
+
+_TYPE_BADGE_CLS = {
+    "trade_commentary": "badge-g",
+    "market_observation": "badge-b",
+    "system_update": "badge-p",
+    "performance": "badge-a",
+}
+
+_STATUS_BADGE_CLS = {
+    "draft": "badge-x",
+    "approved": "badge-a",
+    "posted": "badge-g",
+    "dismissed": "badge-r",
+}
+
+
+def _page_social(now_et: str) -> str:
+    nav = _nav_html("social", now_et)
+
+    try:
+        _social = json.loads(_SOCIAL_DATA_FILE.read_text())
+        posts = _social.get("posts", [])
+    except Exception:
+        posts = []
+
+    # Sort newest first
+    posts_sorted = sorted(posts, key=lambda p: p.get("generated_at", ""), reverse=True)
+
+    # Build filter tabs counts
+    _all = len(posts_sorted)
+    _drafts = sum(1 for p in posts_sorted if p.get("status") == "draft")
+    _approved = sum(1 for p in posts_sorted if p.get("status") == "approved")
+    _posted = sum(1 for p in posts_sorted if p.get("status") == "posted")
+
+    if not posts:
+        feed_html = (
+            '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:14px">'
+            'No post ideas yet. Generation is handled externally and stored in '
+            '<code style="font-size:12px;color:var(--text-secondary)">data/social/post_ideas.json</code>.'
+            '</div>'
+        )
+    else:
+        feed_html = ""
+        for post in posts_sorted:
+            ptype = post.get("type", "")
+            draft = post.get("draft", "")
+            status = post.get("status", "draft")
+            gen_ts = post.get("generated_at", "")
+            gen_display = gen_ts[:16].replace("T", " ") if gen_ts else "—"
+            ctx = post.get("context", {}) if isinstance(post.get("context"), dict) else {}
+            based_on = ctx.get("based_on", "")
+            a1_action = ctx.get("a1_action", "")
+            pnl_today = ctx.get("pnl_today", "")
+            symbols = ctx.get("symbols", [])
+            sym_str = ", ".join(symbols[:4]) if symbols else ""
+
+            type_label = _TYPE_LABELS.get(ptype, ptype.replace("_", " ").title() if ptype else "Post")
+            type_cls = _TYPE_BADGE_CLS.get(ptype, "badge-x")
+            status_cls = _STATUS_BADGE_CLS.get(status, "badge-x")
+
+            context_parts = []
+            if based_on:
+                context_parts.append(f'<span style="color:var(--text-muted);font-size:11px">Based on: {based_on[:80]}</span>')
+            if a1_action and a1_action != "null":
+                context_parts.append(f'<span style="color:var(--text-muted);font-size:11px">A1: {a1_action}</span>')
+            if sym_str:
+                context_parts.append(f'<span style="color:var(--accent-blue);font-size:11px">{sym_str}</span>')
+            if pnl_today:
+                context_parts.append(f'<span style="color:var(--text-muted);font-size:11px">P&amp;L: {pnl_today}</span>')
+            context_html = (" &middot; ".join(context_parts)) if context_parts else ""
+
+            _ctx_div = (
+                f'<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:8px">{context_html}</div>'
+                if context_html else ""
+            )
+            feed_html += (
+                f'<div class="card" style="margin-bottom:10px" data-status="{status}">'
+                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+                f'<span class="badge {type_cls}">{type_label}</span>'
+                f'<span class="badge {status_cls}">{status.upper()}</span>'
+                f'<span style="margin-left:auto;font-size:10px;color:var(--text-muted)">{gen_display}</span>'
+                f'</div>'
+                f'<div style="font-size:14px;color:var(--text-primary);line-height:1.6;margin-bottom:8px">{draft}</div>'
+                f'{_ctx_div}'
+                f'</div>'
+            )
+
+    body = (
+        f'<div class="container">'
+        f'<div style="margin-bottom:14px">'
+        f'<div style="font-size:20px;font-weight:700;color:var(--text-primary);margin-bottom:6px">Social Feed</div>'
+        f'<div style="font-size:12px;color:var(--text-muted);line-height:1.6">'
+        f'Posts are written in BullBearBot\'s voice: dry wit, data-first, no hype. '
+        f'Inspired by Kurt Vonnegut. No em-dashes.'
+        f'</div>'
+        f'</div>'
+        f'<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">'
+        f'<button onclick="filterPosts(\'all\')" id="filter-all" class="mode-btn active">All ({_all})</button>'
+        f'<button onclick="filterPosts(\'draft\')" id="filter-draft" class="mode-btn">Draft ({_drafts})</button>'
+        f'<button onclick="filterPosts(\'approved\')" id="filter-approved" class="mode-btn">Approved ({_approved})</button>'
+        f'<button onclick="filterPosts(\'posted\')" id="filter-posted" class="mode-btn">Posted ({_posted})</button>'
+        f'</div>'
+        f'<div id="social-feed">{feed_html}</div>'
+        f'<script>'
+        f'function filterPosts(status) {{'
+        f'  document.querySelectorAll("#social-feed .card").forEach(function(el) {{'
+        f'    el.style.display = (status === "all" || el.dataset.status === status) ? "" : "none";'
+        f'  }});'
+        f'  ["all","draft","approved","posted"].forEach(function(s) {{'
+        f'    var btn = document.getElementById("filter-" + s);'
+        f'    if (btn) btn.classList.toggle("active", s === status);'
+        f'  }});'
+        f'}}'
+        f'</script>'
+        f'</div>'
+    )
+    return _page_shell("Social", nav, body)
+
+
+@app.route("/social")
+def page_social():
+    return _page_social(_now_et())
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

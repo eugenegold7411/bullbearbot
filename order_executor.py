@@ -569,6 +569,76 @@ def _submit_buy(action: dict) -> tuple:
                     symbol, qty, stop_loss, _last_exc,
                 )
 
+        # BUG-009b: verify the TP leg is also live — Alpaca voids it on the
+        # same OCA collision that voids the stop.  _open_orders is a pre-fallback
+        # snapshot; if no limit sell was present then, none exists now.
+        if fp and fq and int(float(fq)) > 0:
+            _tp_active = any(
+                o.side == OrderSide.SELL
+                and str(getattr(o, "order_type", "")).lower().split(".")[-1] == "limit"
+                for o in _open_orders
+            )
+            if not _tp_active:
+                log.warning(
+                    "[EXECUTOR] %s: bracket TP leg missing after fill — attempting standalone TP"
+                    " qty=%d target=$%.2f",
+                    symbol, qty, take_profit,
+                )
+                _tp_placed = False
+                _last_tp_exc = None
+                for _attempt in range(1, 4):
+                    try:
+                        _tp_req = LimitOrderRequest(
+                            symbol=symbol, qty=qty, side=OrderSide.SELL,
+                            time_in_force=TimeInForce.GTC, limit_price=round(take_profit, 2),
+                        )
+                        _tp_ord = _get_alpaca().submit_order(_tp_req)
+                        log.info(
+                            "[EXECUTOR] %s: standalone TP placed attempt %d/3"
+                            " qty=%d target=$%.2f  order_id=%s",
+                            symbol, _attempt, qty, take_profit, _tp_ord.id,
+                        )
+                        log_trade({
+                            "event":        "exit_tp_fallback",
+                            "symbol":       symbol,
+                            "target_price": round(take_profit, 2),
+                            "order_id":     str(_tp_ord.id),
+                        })
+                        _tp_placed = True
+                        break
+                    except Exception as _exc:
+                        _last_tp_exc = _exc
+                        if "40310000" in str(_exc):
+                            # Alpaca constraint: standalone stop holds all shares,
+                            # blocking a second sell order.  Only bracket OCA groups
+                            # can hold stop + TP simultaneously.  Do not retry.
+                            log.warning(
+                                "[EXECUTOR] %s: standalone TP blocked by stop order"
+                                " (Alpaca 40310000 — stop holds shares, TP unplaceable"
+                                " as standalone). Stop is live; trail stop manages upside exit.",
+                                symbol,
+                            )
+                        elif _attempt < 3:
+                            log.warning(
+                                "[EXECUTOR] %s: standalone TP attempt %d/3 failed — retrying: %s",
+                                symbol, _attempt, _exc,
+                            )
+                            time.sleep(3)
+                            continue
+                        else:
+                            log.error(
+                                "[EXECUTOR] %s: standalone TP failed after 3 retries"
+                                " qty=%d target=$%.2f err=%s",
+                                symbol, qty, take_profit, _exc,
+                            )
+                        break
+                if not _tp_placed and _last_tp_exc and "40310000" not in str(_last_tp_exc):
+                    log.error(
+                        "[EXECUTOR] %s: standalone TP placement failed"
+                        " qty=%d target=$%.2f err=%s",
+                        symbol, qty, take_profit, _last_tp_exc,
+                    )
+
     return str(order.id), fp, fq, ft
 
 

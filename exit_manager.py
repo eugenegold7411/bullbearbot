@@ -430,6 +430,7 @@ def _refresh_exits_locked(
     ei_status      = ei.get("status", "unknown")
     is_tp_only     = ei_status == "tp_only"
     is_unprotected = ei_status in ("unprotected", "unknown") or is_tp_only
+    is_tp_missing  = ei_status == "partial"   # stop live, TP voided (BUG-009b)
     stale_threshold = em_cfg["refresh_if_stop_stale_pct"]
     is_stale = (
         stop_price is not None
@@ -437,8 +438,53 @@ def _refresh_exits_locked(
         and (price - stop_price) / price > stale_threshold
     )
 
-    if not (is_unprotected or is_stale):
+    if not (is_unprotected or is_stale or is_tp_missing):
         return False
+
+    # Fast path for BUG-009b: stop is healthy, only the TP is missing.
+    # Place a standalone GTC limit sell without touching the existing stop.
+    if is_tp_missing and not is_unprotected and not is_stale:
+        plan = generate_exit_plan(position, price, strategy_config, conviction)
+        log.info(
+            "[EXIT_MGR] %s: partial protection (BUG-009b) — stop live, TP missing."
+            " Placing standalone TP @ $%.2f",
+            sym, plan["take_profit"],
+        )
+        try:
+            tp_req = LimitOrderRequest(
+                symbol=sym, qty=qty, side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC, limit_price=plan["take_profit"],
+            )
+            tp_ord = alpaca_client.submit_order(tp_req)
+            log.info(
+                "[EXIT_MGR] %s: TP repair order placed — target=$%.2f  order_id=%s",
+                sym, plan["take_profit"], tp_ord.id,
+            )
+            log_trade({
+                "event":    "exit_tp_repair",
+                "symbol":   sym,
+                "reason":   "BUG-009b: partial protection — stop live, TP voided",
+                "target":   plan["take_profit"],
+                "order_id": str(tp_ord.id),
+            })
+            return True
+        except Exception as exc:
+            if "40310000" in str(exc):
+                # Alpaca constraint: the existing standalone stop holds all shares,
+                # blocking a second sell order.  Bracket OCA groups allow stop+TP
+                # to share the same qty; standalone orders cannot.  Position is
+                # protected by the stop; trail stop manages the upside exit.
+                log.warning(
+                    "[EXIT_MGR] %s: standalone TP blocked by existing stop (Alpaca 40310000"
+                    " — stop holds shares). Stop is live; partial protection accepted.",
+                    sym,
+                )
+            else:
+                log.error(
+                    "[EXIT_MGR] %s: TP repair failed: %s",
+                    sym, exc,
+                )
+            return False
 
     reason = (
         "TP_ONLY (take-profit visible, stop missing — BUG-009)" if is_tp_only

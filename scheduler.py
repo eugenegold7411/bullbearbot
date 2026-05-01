@@ -875,7 +875,6 @@ def _maybe_run_intelligence_brief(dry_run: bool = False) -> None:
     """
     global _intelligence_brief_slots_ran
     now_et  = datetime.now(ET)
-    today   = _today()
     now_min = now_et.hour * 60 + now_et.minute
     weekday = now_et.weekday()
 

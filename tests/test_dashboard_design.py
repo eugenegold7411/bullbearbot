@@ -8,9 +8,9 @@ Tests are split into two categories:
     Skipped if Flask is not installed.
 """
 
+import importlib
 import os
 import sys
-import importlib
 import unittest
 
 # ---------------------------------------------------------------------------

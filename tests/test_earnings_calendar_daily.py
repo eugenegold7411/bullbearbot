@@ -8,13 +8,10 @@ and eda runtime computation.
 from __future__ import annotations
 
 import json
-import types
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -152,8 +149,9 @@ class TestDailyRefreshSchedule:
 
     def test_ec01_fires_monday_4am(self):
         """EC-01: daily refresh fires on a Monday at 4:10 AM ET."""
-        import scheduler
         import zoneinfo
+
+        import scheduler
         ET = zoneinfo.ZoneInfo("America/New_York")
 
         # 2026-05-04 is a Monday
@@ -171,8 +169,9 @@ class TestDailyRefreshSchedule:
 
     def test_ec01_skips_sunday(self):
         """EC-01: daily refresh does NOT fire on Sunday (handled by weekly)."""
-        import scheduler
         import zoneinfo
+
+        import scheduler
         ET = zoneinfo.ZoneInfo("America/New_York")
 
         # 2026-05-03 is a Sunday
@@ -190,8 +189,9 @@ class TestDailyRefreshSchedule:
 
     def test_ec01_skips_wrong_hour(self):
         """EC-01: daily refresh does not fire outside 4:05–4:20 AM window."""
-        import scheduler
         import zoneinfo
+
+        import scheduler
         ET = zoneinfo.ZoneInfo("America/New_York")
 
         monday_9am_et = datetime(2026, 5, 4, 9, 0, 0, tzinfo=ET)
@@ -208,8 +208,9 @@ class TestDailyRefreshSchedule:
 
     def test_ec01_does_not_fire_twice_same_day(self):
         """EC-01: second call same day is a no-op."""
-        import scheduler
         import zoneinfo
+
+        import scheduler
         ET = zoneinfo.ZoneInfo("America/New_York")
 
         monday_4am_et = datetime(2026, 5, 4, 4, 10, 0, tzinfo=ET)

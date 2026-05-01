@@ -9,10 +9,10 @@ trades.jsonl, and memory files on the server; on local machines without
 those files the relevant tests gracefully skip or use fallback data.
 """
 
+import base64
+import json
 import os
 import sys
-import json
-import base64
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -293,7 +293,7 @@ class TestDT08LifecycleEvents(unittest.TestCase):
     @patch("decision_theater._load_alpaca_positions", return_value=[])
     @patch("decision_theater._load_alpaca_orders", return_value=[])
     def test_events_have_required_keys(self, *_):
-        from decision_theater import _decisions_for_symbol, _build_lifecycle_events
+        from decision_theater import _build_lifecycle_events, _decisions_for_symbol
         decisions = _load_decisions_raw()
         sym_decs = _decisions_for_symbol(decisions, "GOOGL")
         events = _build_lifecycle_events(sym_decs, "GOOGL", "open", 390.0)
@@ -341,6 +341,7 @@ class TestDT09PriceJourney(unittest.TestCase):
 # ── DT-10 to DT-15: Route tests (require Flask) ──────────────────────────────
 
 import importlib
+
 _FLASK_AVAILABLE = importlib.util.find_spec("flask") is not None
 _STUB_MODULES = {
     "alpaca": MagicMock(), "alpaca.trading": MagicMock(),

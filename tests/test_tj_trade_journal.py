@@ -27,6 +27,7 @@ if str(_BOT_DIR) not in sys.path:
 
 # Stub third-party imports so trade_journal imports cleanly in CI
 import unittest
+
 for _mod in ["dotenv", "alpaca", "alpaca.trading", "alpaca.trading.client",
              "alpaca.trading.requests", "alpaca.trading.enums"]:
     if _mod not in sys.modules:
@@ -34,13 +35,10 @@ for _mod in ["dotenv", "alpaca", "alpaca.trading", "alpaca.trading.client",
 
 from trade_journal import (
     KNOWN_BUG_PERIODS,
+    _apply_bug_flags,
     build_bug_fix_log,
     build_closed_trades,
-    _apply_bug_flags,
-    _find_entry_decision,
-    _parse_orders,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

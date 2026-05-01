@@ -12,10 +12,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import types
 import unittest
-from unittest.mock import MagicMock, call, patch
-
+from unittest.mock import MagicMock, patch
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -106,7 +104,6 @@ class TestOcaCancelStopPath(unittest.TestCase):
         sell_side_effect=None,
         sell_return=None,
     ):
-        from alpaca.trading.enums import OrderSide, QueryOrderStatus
 
         def fake_get_orders(req):
             return stop_orders
@@ -120,7 +117,6 @@ class TestOcaCancelStopPath(unittest.TestCase):
         if sell_return:
             alpaca.submit_order.return_value = MagicMock(id="sell-id", filled_avg_price=None, filled_qty=None)
 
-        cancelled = []
 
         with patch.object(self._oe, "_get_alpaca", return_value=alpaca):
             if sell_side_effect:

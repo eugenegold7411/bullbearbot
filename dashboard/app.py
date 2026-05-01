@@ -1284,6 +1284,7 @@ def _nav_html(active_page: str, now_et: str, a1_mode: str = "NORMAL", a2_mode: s
         ("brief", "/brief", "Intelligence"),
         ("trades", "/trades", "Trades"),
         ("transparency", "/transparency", "Transparency"),
+        ("theater", "/theater", "Decision Theater"),
     ]
     tabs = ""
     for pid, href, label in pages:
@@ -3125,6 +3126,593 @@ def _page_transparency(now_et: str) -> str:
 @requires_auth
 def page_transparency():
     return _page_transparency(_now_et())
+
+
+def _page_theater(now_et: str) -> str:
+    nav = _nav_html("theater", now_et)
+    # Initial data loaded server-side; JS fetches updates
+    try:
+        from decision_theater import get_all_trades_summary, get_cycle_view  # noqa: I001
+        cycle = get_cycle_view(-1)
+        trades_sum = get_all_trades_summary()
+    except Exception:
+        cycle = {"cycle_number": 0, "total_cycles": 0, "timestamp": "", "session": "unknown",
+                 "decision_id": "", "stages": {}}
+        trades_sum = {"trades": [], "open_count": 0, "closed_count": 0, "total": 0}
+
+    # ── Trade pills ────────────────────────────────────────────────────────────
+    pills_html = ""
+    for t in trades_sum["trades"][:20]:
+        sym = t["symbol"]
+        status = t["status"]
+        pnl_pct = t["pnl_pct"]
+        sign = "+" if pnl_pct >= 0 else ""
+        entry_date = t.get("entry_date", "")
+        pc = t.get("pill_class", "tp-flat")
+        label = f"{sym} · {status} · {sign}{pnl_pct:.1f}%"
+        pills_html += (
+            f'<button class="trade-pill {pc}" '
+            f'onclick="loadTrade(\'{sym}\',\'{entry_date}\')">{label}</button>\n'
+        )
+    if not pills_html:
+        pills_html = '<span class="muted" style="font-size:11px">No trades yet.</span>'
+
+    # ── Cycle stage grid ───────────────────────────────────────────────────────
+    stage_defs = [
+        ("regime",    "🌡",  "Regime",     "#1e3a5a"),
+        ("signals",   "📡",  "Signals",    "#3a1e5a"),
+        ("scratchpad","📋",  "Scratchpad", "#5a3a1e"),
+        ("gate",      "🚦",  "Gate",       "#4a4a1e"),
+        ("sonnet",    "🧠",  "Sonnet",     "#1e3a5a"),
+        ("kernel",    "⚙",  "Kernel",     "#5a1e1e"),
+        ("execution", "⚡",  "Execution",  "#1a4020"),
+        ("a2",        "📊",  "A2 Opts",   "#3a1e5a"),
+    ]
+    stages = cycle.get("stages", {})
+    nodes_html = ""
+    for stage_id, icon, name, bg in stage_defs:
+        st = stages.get(stage_id, {})
+        status = st.get("status", "warn")
+        dot_c = "var(--accent-green)" if status == "ok" else (
+            "var(--text-muted)" if status in ("skip", "skipped") else
+            "var(--accent-amber)" if status == "warn" else "var(--accent-red)"
+        )
+        metric = _theater_stage_metric(stage_id, st)
+        nodes_html += (
+            f'<div class="stage-node" id="stage-{stage_id}" '
+            f'onclick="selectStage(\'{stage_id}\')" '
+            f'style="background:{bg};border-color:{dot_c};">'
+            f'<span style="font-size:16px">{icon}</span>'
+            f'<div style="font-size:8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px;margin-top:2px">{name}</div>'
+            f'<div style="font-size:10px;color:var(--text-secondary);margin-top:1px">{metric}</div>'
+            f'<div class="stage-dot" style="background:{dot_c}"></div>'
+            f'</div>'
+        )
+
+    # ── Initial detail panel from most recent cycle ───────────────────────────
+    cycle_ts = cycle.get("timestamp", "")[:19].replace("T", " ")
+    cycle_num = cycle.get("cycle_number", 0)
+    total = cycle.get("total_cycles", 0)
+    session = cycle.get("session", "")
+
+    # Serialize cycle data for JS
+    cycle_json = json.dumps(cycle, default=str)
+    trades_json = json.dumps(trades_sum, default=str)
+
+    body = f"""
+<div class="container" style="padding-bottom:60px">
+
+  <!-- Mode toggle -->
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+    <button class="mode-btn active" id="btn-cycle" onclick="setMode('cycle')">Cycle View</button>
+    <button class="mode-btn" id="btn-trade" onclick="setMode('trade')">Trade Lifecycle</button>
+    <div style="margin-left:auto;font-size:10px;color:var(--text-muted)">{cycle_ts} · {session} · cycle {cycle_num+1}/{total}</div>
+  </div>
+
+  <!-- ── CYCLE VIEW ── -->
+  <div id="panel-cycle">
+
+    <!-- Pipeline flow -->
+    <div class="section-label">Pipeline — Cycle #{cycle_num+1}</div>
+    <div class="card" style="padding:12px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        {nodes_html}
+      </div>
+      <!-- scrubber -->
+      <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
+        <span style="font-size:10px;color:var(--text-muted)">← Cycle</span>
+        <input type="range" id="cycle-scrubber" min="0" max="{total-1}"
+               value="{cycle_num}" style="flex:1;accent-color:var(--accent-blue)">
+        <span style="font-size:10px;color:var(--text-muted)">→</span>
+        <span style="font-size:10px;color:var(--text-secondary)" id="scrubber-label">#{cycle_num+1}</span>
+      </div>
+    </div>
+
+    <!-- Detail panels: stage detail left, context right -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+      <div>
+        <div class="section-label">Stage Detail</div>
+        <div class="card" id="stage-detail-panel" style="min-height:200px">
+          <p style="font-size:11px;color:var(--text-muted)">Click a pipeline stage above to see details.</p>
+        </div>
+      </div>
+      <div>
+        <div class="section-label">Sonnet Reasoning</div>
+        <div class="card" id="sonnet-reasoning-panel" style="min-height:200px">
+          <p style="font-size:11px;color:var(--text-secondary);line-height:1.6" id="reasoning-text">
+            {(stages.get("sonnet", {}).get("reasoning_excerpt") or "Loading…")[:400]}
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ideas from this cycle -->
+    <div class="section-label">Ideas Generated</div>
+    <div class="card" style="padding:0" id="ideas-panel">
+      {_theater_ideas_html(stages.get("sonnet", {}).get("ideas", []))}
+    </div>
+
+  </div>
+
+  <!-- ── TRADE LIFECYCLE VIEW ── -->
+  <div id="panel-trade" style="display:none">
+
+    <!-- Trade pills -->
+    <div class="section-label">Select a Trade</div>
+    <div class="card" style="padding:10px 14px">
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        {pills_html}
+      </div>
+    </div>
+
+    <!-- Trade hero card -->
+    <div id="trade-hero" style="margin-top:10px">
+      <div class="card" style="color:var(--text-muted);font-size:12px;text-align:center;padding:24px">
+        Select a trade above to view its lifecycle.
+      </div>
+    </div>
+
+    <!-- Price journey bar -->
+    <div id="price-journey-wrap" style="display:none;margin-top:10px">
+      <div class="section-label">Price Journey</div>
+      <div class="card" style="padding:16px">
+        <div id="price-journey-bar" style="position:relative;height:60px;background:var(--bg-card-2);border-radius:6px">
+        </div>
+        <div id="price-journey-labels" style="display:flex;justify-content:space-between;margin-top:6px;font-size:9px;color:var(--text-muted)">
+        </div>
+      </div>
+    </div>
+
+    <!-- Timeline + thesis side by side -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+      <div>
+        <div class="section-label">Lifecycle Timeline</div>
+        <div class="card" id="lifecycle-timeline" style="min-height:160px">
+          <p style="font-size:11px;color:var(--text-muted)">No trade selected.</p>
+        </div>
+      </div>
+      <div>
+        <div class="section-label">Entry Thesis &amp; Exit Scenarios</div>
+        <div class="card" id="trade-thesis" style="min-height:160px">
+          <p style="font-size:11px;color:var(--text-muted)">No trade selected.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<style>
+.stage-node {{
+  width: 80px; min-height: 56px; border-radius: 8px; border: 1px solid;
+  padding: 7px 6px 6px; cursor: pointer; position: relative;
+  text-align: center; transition: box-shadow 0.12s, border-color 0.15s;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}}
+.stage-node:hover {{ box-shadow: 0 0 0 2px var(--accent-blue); }}
+.stage-node.active {{ box-shadow: 0 0 0 2px var(--accent-blue); border-color: var(--accent-blue); }}
+.stage-dot {{
+  position: absolute; top: 5px; right: 5px;
+  width: 7px; height: 7px; border-radius: 50%;
+}}
+.mode-btn {{
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-muted); font-size: 11px; padding: 5px 14px;
+  border-radius: 6px; cursor: pointer;
+}}
+.mode-btn.active {{
+  background: rgba(79,172,254,.1); border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}}
+.trade-pill {{
+  background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text-secondary); font-size: 10px; padding: 4px 10px;
+  border-radius: 12px; cursor: pointer; white-space: nowrap;
+}}
+.tp-open  {{ border-color: rgba(0,230,118,.4); color: var(--accent-green); }}
+.tp-win   {{ border-color: rgba(79,172,254,.4); color: var(--accent-blue); }}
+.tp-bug   {{ border-color: rgba(255,170,32,.4); color: var(--accent-amber); }}
+.tp-loss  {{ border-color: rgba(255,80,80,.4); color: var(--accent-red); }}
+.tp-flat  {{ border-color: var(--border); color: var(--text-muted); }}
+.trade-pill:hover, .trade-pill.selected {{ box-shadow: 0 0 0 2px var(--accent-blue); }}
+.tl-event {{ padding: 8px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11px; }}
+.tl-event:last-child {{ border-bottom: none; }}
+.tl-dot {{
+  display: inline-block; width: 9px; height: 9px;
+  border-radius: 50%; margin-right: 6px; vertical-align: middle;
+}}
+#loading-indicator {{
+  display: none; font-size: 10px; color: var(--text-muted);
+  padding: 4px 8px; background: var(--bg-input); border-radius: 4px;
+}}
+</style>
+
+<script>
+var _cycleData = {cycle_json};
+var _tradesData = {trades_json};
+var _currentCycle = _cycleData;
+var _selectedStage = null;
+
+function setMode(mode) {{
+  document.getElementById('panel-cycle').style.display = mode==='cycle' ? '' : 'none';
+  document.getElementById('panel-trade').style.display  = mode==='trade' ? '' : 'none';
+  document.getElementById('btn-cycle').classList.toggle('active', mode==='cycle');
+  document.getElementById('btn-trade').classList.toggle('active', mode==='trade');
+}}
+
+function selectStage(name) {{
+  document.querySelectorAll('.stage-node').forEach(n => n.classList.remove('active'));
+  var el = document.getElementById('stage-' + name);
+  if (el) el.classList.add('active');
+  _selectedStage = name;
+  renderStageDetail(_currentCycle.stages[name] || {{}}, name);
+}}
+
+function renderStageDetail(st, name) {{
+  var html = '<div style="font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:8px">' + name + '</div>';
+  html += '<div style="font-size:11px;color:var(--text-secondary)">';
+  for (var k in st) {{
+    if (k === 'ideas' || k === 'conviction_ranking' || k === 'submitted' || k === 'rejections') continue;
+    var v = st[k];
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'object') v = JSON.stringify(v).substring(0,80);
+    html += '<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--border-subtle)">';
+    html += '<span style="color:var(--text-muted)">' + k + '</span>';
+    html += '<span>' + v + '</span></div>';
+  }}
+  html += '</div>';
+  // Rejections
+  if (st.rejections && st.rejections.length) {{
+    html += '<div style="margin-top:8px;font-size:10px;color:var(--accent-amber)">Rejections:</div>';
+    st.rejections.forEach(function(r) {{
+      html += '<div style="font-size:10px;padding:2px 0;color:var(--text-muted)">' + r.symbol + ': ' + r.reason + '</div>';
+    }});
+  }}
+  document.getElementById('stage-detail-panel').innerHTML = html;
+  // Also update reasoning panel if sonnet stage
+  if (name === 'sonnet' && st.reasoning_excerpt) {{
+    document.getElementById('reasoning-text').textContent = st.reasoning_excerpt;
+  }}
+}}
+
+function loadCycle(index) {{
+  var li = document.getElementById('loading-indicator');
+  if (li) li.style.display = 'inline-block';
+  fetch('/api/theater/cycle/' + index, {{headers: {{'Authorization': _authHeader()}}}})
+    .then(r => r.json())
+    .then(function(data) {{
+      _currentCycle = data;
+      renderCycle(data);
+      if (li) li.style.display = 'none';
+    }})
+    .catch(function() {{ if (li) li.style.display = 'none'; }});
+}}
+
+function renderCycle(data) {{
+  var stages = data.stages || {{}};
+  var stageIds = ['regime','signals','scratchpad','gate','sonnet','kernel','execution','a2'];
+  stageIds.forEach(function(id) {{
+    var el = document.getElementById('stage-' + id);
+    if (!el) return;
+    var st = stages[id] || {{}};
+    var status = st.status || 'warn';
+    var dotEl = el.querySelector('.stage-dot');
+    var c = status==='ok' ? 'var(--accent-green)' : (
+            status==='skip' ? 'var(--text-muted)' : (
+            status==='warn' ? 'var(--accent-amber)' : 'var(--accent-red)'));
+    if (dotEl) dotEl.style.background = c;
+    el.style.borderColor = c;
+  }});
+  // Update ideas panel
+  var ideas = (stages.sonnet || {{}}).ideas || [];
+  document.getElementById('ideas-panel').innerHTML = renderIdeas(ideas);
+  // Update reasoning
+  var rex = (stages.sonnet || {{}}).reasoning_excerpt || '';
+  document.getElementById('reasoning-text').textContent = rex;
+  // Update cycle label
+  var ts = (data.timestamp || '').substring(0,16).replace('T',' ');
+  var num = (data.cycle_number || 0) + 1;
+  var total = data.total_cycles || 0;
+  // Re-render detail if stage was selected
+  if (_selectedStage && stages[_selectedStage]) {{
+    renderStageDetail(stages[_selectedStage], _selectedStage);
+  }}
+  document.getElementById('scrubber-label').textContent = '#' + num;
+}}
+
+function renderIdeas(ideas) {{
+  if (!ideas || !ideas.length) {{
+    return '<p style="padding:12px;font-size:11px;color:var(--text-muted)">No ideas this cycle.</p>';
+  }}
+  var html = '<table class="data-table"><thead><tr><th>Symbol</th><th>Intent</th><th>Tier</th><th>Catalyst</th></tr></thead><tbody>';
+  ideas.forEach(function(idea) {{
+    var ic = idea.intent === 'buy' || idea.intent === 'add' ? 'var(--accent-green)' :
+             idea.intent === 'sell' || idea.intent === 'exit' ? 'var(--accent-red)' : 'var(--text-muted)';
+    html += '<tr><td style="font-weight:600">' + (idea.symbol||'') + '</td>';
+    html += '<td><span style="color:' + ic + ';font-size:10px;font-weight:700">' + (idea.intent||'—').toUpperCase() + '</span></td>';
+    html += '<td>' + (idea.tier||'') + '</td>';
+    html += '<td style="color:var(--text-secondary)">' + (idea.catalyst||'').substring(0,60) + '</td></tr>';
+  }});
+  html += '</tbody></table>';
+  return html;
+}}
+
+// Scrubber
+document.getElementById('cycle-scrubber').addEventListener('input', function() {{
+  loadCycle(parseInt(this.value));
+}});
+
+function loadTrade(symbol, entryDate) {{
+  document.querySelectorAll('.trade-pill').forEach(p => p.classList.remove('selected'));
+  var li = document.getElementById('loading-indicator');
+  if (li) li.style.display = 'inline-block';
+  fetch('/api/theater/trade/' + symbol + '?entry_date=' + entryDate,
+        {{headers: {{'Authorization': _authHeader()}}}})
+    .then(r => r.json())
+    .then(function(data) {{
+      renderTradeLifecycle(data);
+      if (li) li.style.display = 'none';
+    }})
+    .catch(function() {{ if (li) li.style.display = 'none'; }});
+}}
+
+function renderTradeLifecycle(data) {{
+  if (!data || data.status === 'not_found') {{
+    document.getElementById('trade-hero').innerHTML = '<div class="card" style="color:var(--text-muted);font-size:12px;padding:16px">Trade not found.</div>';
+    return;
+  }}
+  var pnl = data.pnl_usd || 0;
+  var pnlPct = data.pnl_pct || 0;
+  var pnlSign = pnl >= 0 ? '+' : '';
+  var pnlColor = pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+  var statusBadge = data.status === 'open' ?
+    '<span class="badge-g">OPEN</span>' :
+    (pnl >= 0 ? '<span class="badge-b">WIN</span>' : '<span class="badge-r">LOSS</span>');
+
+  var hero = '<div class="hero-card" style="background:var(--grad-a1)">';
+  hero += '<div style="display:flex;align-items:flex-start;justify-content:space-between">';
+  hero += '<div><div style="font-size:22px;font-weight:700;color:var(--text-primary)">' + data.symbol + '</div>';
+  hero += '<div style="margin-top:4px">' + statusBadge + '</div></div>';
+  hero += '<div style="text-align:right"><div style="font-size:26px;font-weight:600;color:' + pnlColor + '">' + pnlSign + '$' + Math.abs(pnl).toFixed(2) + '</div>';
+  hero += '<div style="font-size:12px;color:' + pnlColor + '">' + pnlSign + pnlPct.toFixed(2) + '% · ' + (data.pnl_status||'') + '</div></div></div>';
+  hero += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px">';
+  var metas = [
+    ['Entry', data.entry_price ? '$'+data.entry_price.toFixed(2) : '—'],
+    ['Current', data.current_price ? '$'+data.current_price.toFixed(2) : '—'],
+    ['Stop', data.stop_price ? '$'+data.stop_price.toFixed(2) : '—'],
+    ['Exit', data.exit_price ? '$'+data.exit_price.toFixed(2) : (data.status==='open' ? 'Open' : '—')],
+  ];
+  metas.forEach(function(m) {{
+    hero += '<div><div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">' + m[0] + '</div>';
+    hero += '<div style="font-size:13px;color:var(--text-primary)">' + m[1] + '</div></div>';
+  }});
+  hero += '</div>';
+  if (data.catalyst_at_entry) {{
+    hero += '<div style="margin-top:10px;font-size:11px;color:var(--text-secondary);line-height:1.5">' + data.catalyst_at_entry + '</div>';
+  }}
+  hero += '</div>';
+  document.getElementById('trade-hero').innerHTML = hero;
+
+  // Price journey
+  renderPriceJourney(data.price_journey);
+
+  // Timeline
+  renderTimeline(data.lifecycle_events || []);
+
+  // Thesis
+  renderThesis(data);
+}}
+
+function renderPriceJourney(pj) {{
+  var wrap = document.getElementById('price-journey-wrap');
+  if (!pj || !pj.entry) {{ wrap.style.display = 'none'; return; }}
+  wrap.style.display = '';
+  var bar = document.getElementById('price-journey-bar');
+  var labels = document.getElementById('price-journey-labels');
+
+  var html = '';
+  // Red zone: stop→entry
+  if (pj.stop_pct !== null && pj.entry_pct !== null) {{
+    var w = Math.max(0, pj.entry_pct - pj.stop_pct);
+    html += '<div style="position:absolute;left:' + pj.stop_pct + '%;width:' + w + '%;height:100%;background:rgba(255,80,80,.12);border-radius:4px 0 0 4px"></div>';
+  }}
+  // Green zone: entry→current/target
+  if (pj.entry_pct !== null && pj.current_pct !== null) {{
+    var lo2 = Math.min(pj.entry_pct, pj.current_pct);
+    var w2 = Math.abs(pj.current_pct - pj.entry_pct);
+    var gc = pj.current_pct >= pj.entry_pct ? 'rgba(0,230,118,.2)' : 'rgba(255,80,80,.2)';
+    html += '<div style="position:absolute;left:' + lo2 + '%;width:' + w2 + '%;height:100%;background:' + gc + '"></div>';
+  }}
+  // Vertical lines
+  function vline(pct, color, label2) {{
+    if (pct === null) return;
+    html += '<div style="position:absolute;left:' + pct + '%;top:0;bottom:0;width:2px;background:' + color + ';border-radius:1px"></div>';
+  }}
+  vline(pj.stop_pct, '#ff5050', 'Stop');
+  vline(pj.entry_pct, '#4facfe', 'Entry');
+  vline(pj.current_pct, '#00e676', pj.target ? 'Now' : 'Exit');
+  if (pj.target_pct !== null) vline(pj.target_pct, '#a855f7', 'Target');
+  bar.innerHTML = html;
+
+  var labHtml = '';
+  var pts = [
+    [pj.stop, 'Stop', pj.stop_pct],
+    [pj.entry, 'Entry', pj.entry_pct],
+    [pj.current, pj.target ? 'Now' : 'Exit', pj.current_pct],
+    [pj.target, 'Target', pj.target_pct],
+  ];
+  pts.forEach(function(p) {{
+    if (!p[0]) return;
+    labHtml += '<span>' + p[1] + ' $' + p[0].toFixed(2) + '</span>';
+  }});
+  labels.innerHTML = labHtml;
+}}
+
+function renderTimeline(events) {{
+  var el = document.getElementById('lifecycle-timeline');
+  if (!events.length) {{ el.innerHTML = '<p style="font-size:11px;color:var(--text-muted)">No events.</p>'; return; }}
+  var dotColors = {{entry:'var(--accent-blue)',exit:'var(--accent-red)',hold:'var(--accent-green)',open:'var(--accent-green)',trail_advance:'var(--accent-amber)'}};
+  var html = '';
+  events.forEach(function(ev) {{
+    var dc = dotColors[ev.event_type] || 'var(--text-muted)';
+    var ts = (ev.timestamp||'').substring(0,16).replace('T',' ');
+    html += '<div class="tl-event">';
+    html += '<span class="tl-dot" style="background:' + dc + '"></span>';
+    html += '<span style="font-weight:600;color:var(--text-primary)">' + ev.label + '</span>';
+    if (ts) html += ' <span style="color:var(--text-muted);font-size:10px">' + ts + '</span>';
+    if (ev.detail) html += '<div style="color:var(--text-secondary);font-size:10px;margin-top:2px;padding-left:15px">' + ev.detail.substring(0,100) + '</div>';
+    html += '</div>';
+  }});
+  el.innerHTML = html;
+}}
+
+function renderThesis(data) {{
+  var el = document.getElementById('trade-thesis');
+  var html = '';
+  if (data.entry_reasoning) {{
+    html += '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:4px">Entry Reasoning</div>';
+    html += '<p style="font-size:11px;color:var(--text-secondary);line-height:1.6;margin-bottom:10px">' + data.entry_reasoning.substring(0,400) + '</p>';
+  }}
+  if (data.exit_scenarios) {{
+    html += '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:4px">Exit Scenarios</div>';
+    for (var k in data.exit_scenarios) {{
+      var c = k==='beat' ? 'var(--accent-green)' : (k.includes('miss') || k==='stop_hit' ? 'var(--accent-red)' : 'var(--text-muted)');
+      html += '<div style="font-size:10px;padding:3px 0;color:' + c + '">' + data.exit_scenarios[k] + '</div>';
+    }}
+  }}
+  if (data.exit_reason) {{
+    html += '<div style="margin-top:8px;font-size:10px;color:var(--text-muted)">Exit reason: <span style="color:var(--accent-amber)">' + data.exit_reason + '</span></div>';
+  }}
+  if (data.bug_flag) {{
+    html += '<div style="margin-top:8px;padding:6px 8px;background:rgba(255,170,32,.08);border:1px solid rgba(255,170,32,.3);border-radius:6px;font-size:10px;color:var(--accent-amber)">⚠ Bug period: ' + (data.bug_flag.title||data.bug_flag.id||'') + '</div>';
+  }}
+  if (!html) html = '<p style="font-size:11px;color:var(--text-muted)">No thesis data.</p>';
+  el.innerHTML = html;
+}}
+
+function _authHeader() {{
+  return 'Basic ' + btoa(document.cookie.match(/du=([^;]+)/)?.[1] || 'admin:bullbearbot');
+}}
+
+// Pre-render ideas on load
+document.getElementById('ideas-panel').innerHTML = renderIdeas(
+  (_cycleData.stages && _cycleData.stages.sonnet && _cycleData.stages.sonnet.ideas) || []
+);
+</script>
+"""
+    return _page_shell("Decision Theater", nav, body)
+
+
+def _theater_stage_metric(stage_id: str, st: dict) -> str:
+    """One-line metric for a stage node."""
+    if stage_id == "regime":
+        r = st.get("regime", "")
+        s = st.get("score")
+        return f"{r} {s}" if s else (r or "—")
+    if stage_id == "signals":
+        n = st.get("symbols_scored", 0)
+        return f"{n} scored" if n else "—"
+    if stage_id == "scratchpad":
+        w = len(st.get("watching", []))
+        return f"{w} watching" if w else "—"
+    if stage_id == "gate":
+        return "SKIP" if st.get("mode") == "SKIP" else (st.get("mode") or "—")
+    if stage_id == "sonnet":
+        n = st.get("ideas_generated", 0)
+        c = st.get("cost_usd")
+        if c:
+            return f"{n} ideas ${c:.3f}"
+        return f"{n} ideas" if n else "—"
+    if stage_id == "kernel":
+        a = st.get("approved", 0)
+        r = st.get("rejected", 0)
+        return f"{a}✓ {r}✗" if (a or r) else "—"
+    if stage_id == "execution":
+        n = st.get("orders_submitted", 0)
+        return f"{n} orders" if n else "—"
+    if stage_id == "a2":
+        return st.get("regime", st.get("reason", "—"))[:12]
+    return "—"
+
+
+def _theater_ideas_html(ideas: list) -> str:
+    if not ideas:
+        return '<p style="padding:12px;font-size:11px;color:var(--text-muted)">No ideas this cycle.</p>'
+    rows = ""
+    for idea in ideas:
+        intent = (idea.get("intent") or "hold").lower()
+        ic = ("var(--accent-green)" if intent in ("buy", "add") else
+              "var(--accent-red)" if intent in ("sell", "exit") else
+              "var(--text-muted)")
+        rows += (
+            f'<tr><td style="font-weight:600">{idea.get("symbol","")}</td>'
+            f'<td><span style="color:{ic};font-size:10px;font-weight:700">{intent.upper()}</span></td>'
+            f'<td>{idea.get("tier","")}</td>'
+            f'<td style="color:var(--text-secondary)">{(idea.get("catalyst","") or "")[:60]}</td></tr>'
+        )
+    return (
+        '<table class="data-table"><thead><tr>'
+        '<th>Symbol</th><th>Intent</th><th>Tier</th><th>Catalyst</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table>'
+    )
+
+
+@app.route("/theater")
+@requires_auth
+def page_theater():
+    return _page_theater(_now_et())
+
+
+@app.route("/api/theater/cycle/<cycle_index>")
+@requires_auth
+def api_theater_cycle(cycle_index: str):
+    try:
+        from decision_theater import get_cycle_view
+        return jsonify(get_cycle_view(int(cycle_index)))
+    except Exception as _exc:
+        return jsonify({"error": str(_exc)}), 500
+
+
+@app.route("/api/theater/trade/<symbol>")
+@requires_auth
+def api_theater_trade(symbol: str):
+    try:
+        from decision_theater import get_trade_lifecycle
+        entry_date = request.args.get("entry_date")
+        return jsonify(get_trade_lifecycle(symbol, entry_date))
+    except Exception as _exc:
+        return jsonify({"error": str(_exc)}), 500
+
+
+@app.route("/api/theater/trades")
+@requires_auth
+def api_theater_trades():
+    try:
+        from decision_theater import get_all_trades_summary
+        return jsonify(get_all_trades_summary())
+    except Exception as _exc:
+        return jsonify({"error": str(_exc)}), 500
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

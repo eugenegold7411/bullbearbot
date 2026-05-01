@@ -87,20 +87,23 @@ def _is_tp_sell(req) -> bool:
     """
     Identify a standalone GTC limit sell — the expected TP fallback shape.
 
-    Conftest stubs all request classes as _KwargsRequest, so class-name checks
-    are unreliable.  Distinguish by the combination of attributes that uniquely
-    identify a standalone TP order vs. a bracket entry or a stop order:
-      - limit_price present (not a stop)
-      - side == SELL        (protective, not an entry)
-      - time_in_force == GTC (standalone; brackets use DAY)
-      - no order_class      (brackets carry BRACKET)
+    Distinguish by the combination of attributes that uniquely identify a
+    standalone TP order vs. a bracket entry or a stop order:
+      - limit_price present and not None  (not a stop)
+      - side == SELL                      (protective, not an entry)
+      - time_in_force == GTC              (standalone; brackets use DAY)
+      - order_class is None               (brackets carry BRACKET)
+
+    Use getattr(...) is None rather than not hasattr() because the real
+    alpaca-py Pydantic model sets order_class=None as a default attribute,
+    so hasattr() returns True even for standalone orders.
     """
     from alpaca.trading.enums import OrderSide, TimeInForce
     return (
-        hasattr(req, "limit_price")
+        getattr(req, "limit_price", None) is not None
         and getattr(req, "side", None) == OrderSide.SELL
         and getattr(req, "time_in_force", None) == TimeInForce.GTC
-        and not hasattr(req, "order_class")
+        and getattr(req, "order_class", None) is None
     )
 
 

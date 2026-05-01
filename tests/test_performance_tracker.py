@@ -21,7 +21,7 @@ import pytest
 def perf_tmp(tmp_path, monkeypatch):
     """Redirect all _*_PATH constants in performance_tracker to tmp_path."""
     import performance_tracker as pt
-    monkeypatch.setattr(pt, "_SONNET_IDEAS_PATH",   tmp_path / "sonnet_ideas.jsonl")
+    monkeypatch.setattr(pt, "_TRADE_IDEAS_PATH",    tmp_path / "trade_ideas.jsonl")
     monkeypatch.setattr(pt, "_ALLOCATOR_RECS_PATH", tmp_path / "allocator_recs.jsonl")
     monkeypatch.setattr(pt, "_A2_OUTCOMES_PATH",    tmp_path / "a2_outcomes.jsonl")
     monkeypatch.setattr(pt, "_SUMMARY_PATH",        tmp_path / "performance_summary.json")
@@ -98,10 +98,10 @@ def _make_structure(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PT-01: log_sonnet_ideas filters to actionable intents only
+# PT-01: log_trade_ideas filters to actionable intents only
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_pt01_log_sonnet_ideas_filters_intents(perf_tmp):
+def test_pt01_log_trade_ideas_filters_intents(perf_tmp):
     import performance_tracker as pt
 
     ideas = [
@@ -112,7 +112,7 @@ def test_pt01_log_sonnet_ideas_filters_intents(perf_tmp):
         _make_idea(intent="reduce",      symbol="MSFT"),
         _make_idea(intent="close",       symbol="AMZN"),
     ]
-    pt.log_sonnet_ideas(
+    pt.log_trade_ideas(
         ideas=ideas,
         approved_symbols={"AAPL", "MSFT"},
         executed_symbols={"AAPL"},
@@ -124,7 +124,7 @@ def test_pt01_log_sonnet_ideas_filters_intents(perf_tmp):
         broker_actions_map={},
     )
 
-    records = pt._load_jsonl(pt._SONNET_IDEAS_PATH)
+    records = pt._load_jsonl(pt._TRADE_IDEAS_PATH)
     assert len(records) == 4, f"Expected 4, got {len(records)}"
     symbols = {r["symbol"] for r in records}
     assert "NVDA" not in symbols
@@ -134,17 +134,17 @@ def test_pt01_log_sonnet_ideas_filters_intents(perf_tmp):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PT-02: log_sonnet_ideas sets kernel_result + executed correctly
+# PT-02: log_trade_ideas sets kernel_result + executed correctly
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_pt02_log_sonnet_ideas_kernel_and_executed(perf_tmp):
+def test_pt02_log_trade_ideas_kernel_and_executed(perf_tmp):
     import performance_tracker as pt
 
     ideas = [
         _make_idea(intent="enter_long", symbol="AAPL"),
         _make_idea(intent="enter_long", symbol="MSFT"),
     ]
-    pt.log_sonnet_ideas(
+    pt.log_trade_ideas(
         ideas=ideas,
         approved_symbols={"AAPL"},
         executed_symbols={"AAPL"},
@@ -156,7 +156,7 @@ def test_pt02_log_sonnet_ideas_kernel_and_executed(perf_tmp):
         broker_actions_map={},
     )
 
-    records = {r["symbol"]: r for r in pt._load_jsonl(pt._SONNET_IDEAS_PATH)}
+    records = {r["symbol"]: r for r in pt._load_jsonl(pt._TRADE_IDEAS_PATH)}
     assert records["AAPL"]["kernel_result"] == "approved"
     assert records["AAPL"]["executed"] is True
     assert records["MSFT"]["kernel_result"] == "rejected"
@@ -165,7 +165,7 @@ def test_pt02_log_sonnet_ideas_kernel_and_executed(perf_tmp):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PT-03: log_sonnet_ideas bearish intent sign flip
+# PT-03: log_trade_ideas bearish intent sign flip
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_pt03_bearish_intent_sign_flip(perf_tmp):
@@ -373,7 +373,7 @@ def test_pt10_compute_overnight_outcomes_fills_1d(perf_tmp):
         "outcome_closed": None,
         "outcome_filled_at": None,
     }
-    pt._append_jsonl(pt._SONNET_IDEAS_PATH, [rec])
+    pt._append_jsonl(pt._TRADE_IDEAS_PATH, [rec])
 
     # Fake price fetcher: AAPL closed 1% higher next day
     close_prices = {"AAPL": {next_date: 171.7, old_date: 170.0}}
@@ -387,7 +387,7 @@ def test_pt10_compute_overnight_outcomes_fills_1d(perf_tmp):
 
     pt.compute_overnight_outcomes(price_fetcher=fake_fetcher)
 
-    updated = pt._load_jsonl(pt._SONNET_IDEAS_PATH)
+    updated = pt._load_jsonl(pt._TRADE_IDEAS_PATH)
     assert len(updated) == 1
     r = updated[0]
     assert r["outcome_1d"] is not None, "outcome_1d should be filled"
@@ -427,7 +427,7 @@ def test_pt11_bearish_sign_flip_in_nightly(perf_tmp):
         "outcome_closed": None,
         "outcome_filled_at": None,
     }
-    pt._append_jsonl(pt._SONNET_IDEAS_PATH, [rec])
+    pt._append_jsonl(pt._TRADE_IDEAS_PATH, [rec])
 
     close_prices = {"SPY": {next_date: 495.0}}  # price fell → correct short → positive
     for i in range(2, 6):
@@ -439,7 +439,7 @@ def test_pt11_bearish_sign_flip_in_nightly(perf_tmp):
 
     pt.compute_overnight_outcomes(price_fetcher=fake_fetcher)
 
-    updated = pt._load_jsonl(pt._SONNET_IDEAS_PATH)
+    updated = pt._load_jsonl(pt._TRADE_IDEAS_PATH)
     r = updated[0]
     assert r["outcome_1d"] is not None
     assert r["outcome_1d"] > 0, f"enter_short with price falling should be positive, got {r['outcome_1d']}"
@@ -480,7 +480,7 @@ def test_pt12_followed_by_bot_true(perf_tmp):
         "outcome_closed": None,
         "outcome_filled_at": None,
     }
-    pt._append_jsonl(pt._SONNET_IDEAS_PATH, [idea])
+    pt._append_jsonl(pt._TRADE_IDEAS_PATH, [idea])
 
     # Write an ADD recommendation at base_ts for same symbol
     rec = {
@@ -542,11 +542,11 @@ def test_pt13_performance_summary_data_days(perf_tmp):
             "outcome_closed": None,
             "outcome_filled_at": None,
         }
-        pt._append_jsonl(pt._SONNET_IDEAS_PATH, [rec])
+        pt._append_jsonl(pt._TRADE_IDEAS_PATH, [rec])
 
     summary = pt._compute_performance_summary(days_back=7)
     assert summary["data_days"] == 3
-    assert summary["sonnet_ideas"]["total_ideas_7d"] == 3
+    assert summary["trade_ideas"]["total_ideas_7d"] == 3
 
 
 # ─────────────────────────────────────────────────────────────────────────────

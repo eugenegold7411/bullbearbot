@@ -1377,14 +1377,14 @@ def _perf_overview_html(ps: dict) -> str:
     days = ps.get("data_days", 0)
     if days < 3:
         return _insuf_data_card(days)
-    si = ps.get("sonnet_ideas", {})
+    si = ps.get("trade_ideas", {})
     al = ps.get("allocator", {})
     a2 = ps.get("a2_structures", {})
     parts = []
     apr_1d = si.get("approved_profitable_1d_pct")
     if apr_1d is not None:
         clr = _pct_clr(apr_1d)
-        parts.append(f'Sonnet approved 1d: <span style="color:{clr};font-weight:600">{apr_1d:.0f}%</span>')
+        parts.append(f'Ideas approved 1d: <span style="color:{clr};font-weight:600">{apr_1d:.0f}%</span>')
     follow_pct = al.get("follow_rate_pct")
     if follow_pct is not None:
         parts.append(f'Alloc follow: <span style="color:#c9d1d9">{follow_pct:.0f}%</span>')
@@ -1406,7 +1406,7 @@ def _perf_a1_decisions_html(ps: dict) -> str:
     days = ps.get("data_days", 0)
     if days < 3:
         return _insuf_data_card(days)
-    si = ps.get("sonnet_ideas", {})
+    si = ps.get("trade_ideas", {})
     al = ps.get("allocator", {})
     lines = []
 

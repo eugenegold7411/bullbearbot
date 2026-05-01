@@ -1,11 +1,11 @@
 """
 performance_tracker.py — Shadow performance measurement system.
 
-Measures whether Sonnet conviction, portfolio allocator recommendations,
+Measures whether decision-cycle conviction, portfolio allocator recommendations,
 and A2 routing rules are actually producing alpha.
 
 Data streams (written by call sites in respective modules):
-  data/analytics/sonnet_ideas.jsonl              — Sonnet trade ideas
+  data/analytics/trade_ideas.jsonl               — decision-cycle trade ideas
   data/analytics/allocator_recommendations.jsonl — ADD/TRIM/REPLACE recs
   data/analytics/a2_structure_outcomes.jsonl     — closed/cancelled A2 structures
 
@@ -31,7 +31,7 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 _ROOT                = Path(__file__).parent
-_SONNET_IDEAS_PATH   = _ROOT / "data" / "analytics" / "sonnet_ideas.jsonl"
+_TRADE_IDEAS_PATH    = _ROOT / "data" / "analytics" / "trade_ideas.jsonl"
 _ALLOCATOR_RECS_PATH = _ROOT / "data" / "analytics" / "allocator_recommendations.jsonl"
 _A2_OUTCOMES_PATH    = _ROOT / "data" / "analytics" / "a2_structure_outcomes.jsonl"
 _SUMMARY_PATH        = _ROOT / "data" / "analytics" / "performance_summary.json"
@@ -132,7 +132,7 @@ def _trading_days_elapsed(ts_str: str) -> int:
 # Logging entry points (called by respective modules)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def log_sonnet_ideas(
+def log_trade_ideas(
     ideas,
     approved_symbols: set,
     executed_symbols: set,
@@ -143,7 +143,7 @@ def log_sonnet_ideas(
     decision_id: str,
     broker_actions_map: dict,
 ) -> None:
-    """Append actionable Sonnet ideas (enter/reduce/close) to sonnet_ideas.jsonl. Non-fatal."""
+    """Append actionable trade ideas (enter/reduce/close) to trade_ideas.jsonl. Non-fatal."""
     try:
         now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         scored = (signal_scores_obj or {}).get("scored_symbols", {})
@@ -217,10 +217,10 @@ def log_sonnet_ideas(
             })
 
         if records:
-            _append_jsonl(_SONNET_IDEAS_PATH, records)
-            log.debug("[PERF] logged %d sonnet ideas  decision=%s", len(records), decision_id)
+            _append_jsonl(_TRADE_IDEAS_PATH, records)
+            log.debug("[PERF] logged %d trade ideas  decision=%s", len(records), decision_id)
     except Exception as exc:
-        log.debug("[PERF] log_sonnet_ideas failed (non-fatal): %s", exc)
+        log.debug("[PERF] log_trade_ideas failed (non-fatal): %s", exc)
 
 
 def log_allocator_recommendations(
@@ -468,9 +468,9 @@ def _compute_pct_return(price_at: float, price_after: float, intent: str) -> flo
 # Nightly outcome computation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _compute_sonnet_idea_outcomes(price_fetcher=None) -> int:
-    """Fill in outcome_1d/3d/5d for mature sonnet_ideas records. Returns count updated."""
-    records = _load_jsonl(_SONNET_IDEAS_PATH)
+def _compute_trade_idea_outcomes(price_fetcher=None) -> int:
+    """Fill in outcome_1d/3d/5d for mature trade_ideas records. Returns count updated."""
+    records = _load_jsonl(_TRADE_IDEAS_PATH)
     if not records:
         return 0
 
@@ -519,8 +519,8 @@ def _compute_sonnet_idea_outcomes(price_fetcher=None) -> int:
             updated += 1
 
     if updated > 0:
-        _rewrite_jsonl(_SONNET_IDEAS_PATH, records)
-        log.info("[PERF] Updated %d sonnet_ideas outcome records", updated)
+        _rewrite_jsonl(_TRADE_IDEAS_PATH, records)
+        log.info("[PERF] Updated %d trade_ideas outcome records", updated)
     return updated
 
 
@@ -535,8 +535,8 @@ def _compute_allocator_outcomes(price_fetcher=None) -> int:
                     and (r.get("outcome_1d") is None or r.get("outcome_5d") is None)})
     close_prices = (price_fetcher or _fetch_close_prices)(symbols) if symbols else {}
 
-    # Load sonnet_ideas for followed_by_bot check
-    ideas = _load_jsonl(_SONNET_IDEAS_PATH)
+    # Load trade_ideas for followed_by_bot check
+    ideas = _load_jsonl(_TRADE_IDEAS_PATH)
     ideas_by_sym: dict = {}
     for idea in ideas:
         s = idea.get("symbol", "")
@@ -620,10 +620,10 @@ def compute_overnight_outcomes(price_fetcher=None) -> None:
     """
     log.info("[PERF] Starting overnight outcome computation")
     try:
-        n1 = _compute_sonnet_idea_outcomes(price_fetcher)
-        log.info("[PERF] Sonnet ideas: %d records updated", n1)
+        n1 = _compute_trade_idea_outcomes(price_fetcher)
+        log.info("[PERF] Trade ideas: %d records updated", n1)
     except Exception as exc:
-        log.warning("[PERF] Sonnet idea outcomes failed (non-fatal): %s", exc)
+        log.warning("[PERF] Trade idea outcomes failed (non-fatal): %s", exc)
     try:
         n2 = _compute_allocator_outcomes(price_fetcher)
         log.info("[PERF] Allocator recs: %d records updated", n2)
@@ -632,7 +632,7 @@ def compute_overnight_outcomes(price_fetcher=None) -> None:
     try:
         summary = _compute_performance_summary()
         _save_summary(summary)
-        si = summary.get("sonnet_ideas", {})
+        si = summary.get("trade_ideas", {})
         al = summary.get("allocator", {})
         a2 = summary.get("a2_structures", {})
         log.info("[PERF] performance_summary.json updated  ideas_7d=%d alloc_7d=%d a2_7d=%d",
@@ -677,7 +677,7 @@ def _compute_performance_summary(days_back: int = 7) -> dict:
     """Compute stats from last N days of all three JSONL streams."""
     now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    ideas_all = _load_jsonl(_SONNET_IDEAS_PATH)
+    ideas_all = _load_jsonl(_TRADE_IDEAS_PATH)
     ideas_7d  = _records_last_n_days(ideas_all, days_back)
     approved  = [r for r in ideas_7d if r.get("kernel_result") == "approved"]
     rejected  = [r for r in ideas_7d if r.get("kernel_result") == "rejected"]
@@ -728,7 +728,7 @@ def _compute_performance_summary(days_back: int = 7) -> dict:
         "computed_at": now_ts,
         "days_back":   days_back,
         "data_days":   _estimate_data_days(ideas_all),
-        "sonnet_ideas": {
+        "trade_ideas": {
             "total_ideas_7d":                          len(ideas_7d),
             "approved_pct":                            _pct(len(approved), len(ideas_7d)),
             "approved_profitable_1d_pct":              _pct(sum(1 for r in apr_1d if (r.get("outcome_1d") or 0) > 0), len(apr_1d)),
@@ -821,7 +821,7 @@ def generate_weekly_performance_report() -> None:
 
         week_str  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         data_days = summary.get("data_days", 0)
-        si = summary.get("sonnet_ideas", {})
+        si = summary.get("trade_ideas", {})
         al = summary.get("allocator", {})
         a2 = summary.get("a2_structures", {})
         cc = (si.get("conviction_calibration") or {})
@@ -833,7 +833,7 @@ def generate_weekly_performance_report() -> None:
         prompt = (
             f"Write a 400-500 word weekly performance report for an autonomous paper trading bot.\n"
             f"Week of {week_str}. Data available: {data_days} trading day(s).\n\n"
-            f"SONNET CONVICTION DATA ({si.get('total_ideas_7d', 0)} ideas, "
+            f"TRADE IDEA CONVICTION DATA ({si.get('total_ideas_7d', 0)} ideas, "
             f"{_fmt(si.get('approved_pct'))}% approved):\n"
             f"- Approved profitable 1d: {_fmt(si.get('approved_profitable_1d_pct'))}%\n"
             f"- Approved profitable 5d: {_fmt(si.get('approved_profitable_5d_pct'))}%\n"

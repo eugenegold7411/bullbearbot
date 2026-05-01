@@ -665,7 +665,7 @@ class TestArtifactStructure:
              patch.object(pa, "_ARTIFACT_PATH", artifact_file), \
              patch.object(pa, "_REGISTRY_JSON_PATH", tmp_path / "shadow_status.json"), \
              patch.object(pa, "_symbol_sector", return_value=""), \
-             patch("cost_attribution._rotate_jsonl", side_effect=mock_rotate):
+             patch.object(pa, "_rotate_artifact_jsonl", side_effect=mock_rotate):
             pa.run_allocator_shadow(
                 _make_pi_data(positions, 100_000.0), positions,
                 _base_cfg(), "market", 100_000.0

@@ -38,6 +38,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from cost_attribution import _rotate_jsonl as _rotate_artifact_jsonl
+
 log = logging.getLogger(__name__)
 
 _ROOT                = Path(__file__).parent
@@ -832,16 +834,13 @@ def _write_artifact(artifact: dict) -> None:
     """Append artifact to JSONL file and rotate. Non-fatal."""
     try:
         _ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        line   = json.dumps(artifact, default=str)
-        # Atomic append: write to tmp then rename is not practical for append-only
-        # JSONL. Use standard append and rotate after.
+        line = json.dumps(artifact, default=str)
         with _ARTIFACT_PATH.open("a") as fh:
             fh.write(line + "\n")
-        # Import _rotate_jsonl from cost_attribution (same pattern as S5-3)
-        from cost_attribution import _rotate_jsonl  # noqa: PLC0415
-        _rotate_jsonl(_ARTIFACT_PATH, max_lines=10_000)
+        _rotate_artifact_jsonl(_ARTIFACT_PATH, max_lines=10_000)
+        log.debug("[ALLOC] shadow artifact written: %s", _ARTIFACT_PATH.name)
     except Exception as exc:
-        log.warning("[ALLOC] artifact write failed (non-fatal): %s", exc)
+        log.warning("[ALLOC] artifact write failed — %s: %s", type(exc).__name__, exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

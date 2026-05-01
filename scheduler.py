@@ -2347,7 +2347,7 @@ def _maybe_backfill_decision_outcomes(dry_run: bool = False) -> None:
 def _maybe_compute_overnight_outcomes(dry_run: bool = False) -> None:
     """Compute overnight performance outcomes at 4:30–4:45 AM ET weekdays.
 
-    Fills outcome_1d/3d/5d for sonnet_ideas and allocator_recommendations using
+    Fills outcome_1d/3d/5d for trade_ideas and allocator_recommendations using
     yfinance daily close prices. Runs once per trading day. Non-fatal.
     """
     global _perf_tracker_date

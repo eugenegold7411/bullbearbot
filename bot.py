@@ -1017,6 +1017,44 @@ def run_cycle(
         except Exception as _tba_exc:
             log.warning("Backstop seeding failed: %s", _tba_exc)
 
+        # Entry conviction — write on confirmed buy fill, clean up on sell/close
+        try:
+            _conv_path = Path(__file__).parent / "data" / "runtime" / "entry_convictions.json"
+            _conv_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                _convictions: dict = json.loads(_conv_path.read_text())
+            except Exception:
+                _convictions = {}
+            _conv_changed = False
+            for _cr in results:
+                if _cr.status != "submitted":
+                    continue
+                if _cr.action == "buy" and _cr.fill_price is not None:
+                    _ci = next(
+                        (i for i in (claude_decision.ideas or [])
+                         if getattr(i, "symbol", None) == _cr.symbol), None,
+                    ) if claude_decision else None
+                    _ci_action = next(
+                        (a for a in actions if a.get("symbol") == _cr.symbol), {}
+                    )
+                    _convictions[_cr.symbol] = {
+                        "conviction":   round(float(getattr(_ci, "conviction", 0) or 0), 4),
+                        "entry_price":  round(float(_cr.fill_price), 4),
+                        "fill_time":    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "tier":         (_ci_action.get("tier") or ""),
+                    }
+                    _conv_changed = True
+                    log.debug("[CONVICTION] wrote entry conviction %s conv=%.2f price=%.4f",
+                              _cr.symbol, _convictions[_cr.symbol]["conviction"], _cr.fill_price)
+                elif _cr.action in ("sell", "close") and _cr.symbol in _convictions:
+                    del _convictions[_cr.symbol]
+                    _conv_changed = True
+                    log.debug("[CONVICTION] removed entry conviction for %s (position closed)", _cr.symbol)
+            if _conv_changed:
+                _conv_path.write_text(json.dumps(_convictions, indent=2))
+        except Exception as _conv_exc:
+            log.warning("[CONVICTION] entry conviction write failed (non-fatal): %s", _conv_exc)
+
     else:
         if actions and not state.allow_live_orders and regime != "halt":
             log.warning("[PREFLIGHT] shadow_only — %d action(s) blocked; logging blocked_by_mode",
@@ -1050,11 +1088,11 @@ def run_cycle(
         else:
             log.info("Execute  no actions this cycle")
 
-    # Shadow performance tracker — log Sonnet ideas with kernel+execution outcomes
+    # Shadow performance tracker — log trade ideas with kernel+execution outcomes
     if _cap_raw is not None and claude_decision and claude_decision.ideas:
         try:
             from performance_tracker import (
-                log_sonnet_ideas as _log_ideas,  # noqa: PLC0415
+                log_trade_ideas as _log_ideas,  # noqa: PLC0415
             )
             _executed_syms = (
                 {r.symbol for r in results if getattr(r, "status", "") == "submitted"}
@@ -1073,7 +1111,7 @@ def run_cycle(
                 broker_actions_map={ba.symbol: ba for ba in broker_actions},
             )
         except Exception as _pt_exc:
-            log.debug("log_sonnet_ideas failed (non-fatal): %s", _pt_exc)
+            log.debug("log_trade_ideas failed (non-fatal): %s", _pt_exc)
 
     elapsed = time.monotonic() - t_start
     log.info("── Cycle done in %.1fs ─────────────────────────────────", elapsed)

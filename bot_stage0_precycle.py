@@ -323,8 +323,41 @@ def run_precycle(
     try:
         cfg_path = Path(__file__).parent / "strategy_config.json"
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+
+        # Derive open_decisions and position_entry_dates from decisions.json.
+        # Alpaca's Position object has no opened_at field, so we use the
+        # timestamp of the most recent "buy" decision for each held symbol.
+        _held_syms = {p.symbol for p in positions if float(getattr(p, "qty", 0)) > 0}
+        _open_decisions: dict = {}
+        _position_entry_dates: dict = {}
+        try:
+            _dec_file = Path(__file__).parent / "memory" / "decisions.json"
+            if _dec_file.exists() and _held_syms:
+                _all_decisions = json.loads(_dec_file.read_text())
+                # Walk newest-first; stop once all held symbols have a match.
+                for _drec in reversed(_all_decisions):
+                    if not _held_syms:
+                        break
+                    _ts_str = _drec.get("ts", "")
+                    for _act in (_drec.get("actions") or []):
+                        _sym = (_act.get("symbol") or "").upper()
+                        if _sym in _held_syms and _act.get("action") == "buy":
+                            _open_decisions[_sym] = _act
+                            try:
+                                _position_entry_dates[_sym] = datetime.fromisoformat(
+                                    _ts_str.replace("Z", "+00:00")
+                                )
+                            except Exception:
+                                pass
+                            _held_syms.discard(_sym)
+        except Exception as _dec_exc:
+            log.debug("[PRECYCLE] decisions.json lookup failed (non-fatal): %s", _dec_exc)
+
         pi_data = pi.build_portfolio_intelligence(
-            equity, positions, cfg, buying_power=buying_power_float
+            equity, positions, cfg,
+            open_decisions=_open_decisions,
+            position_entry_dates=_position_entry_dates,
+            buying_power=buying_power_float,
         )
 
         _norm_positions = []

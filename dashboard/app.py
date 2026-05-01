@@ -34,92 +34,212 @@ if DASHBOARD_USER == "admin" and DASHBOARD_PASSWORD == "bullbearbot":
 
 # ── Shared CSS (plain string — NOT an f-string — so {} are real CSS braces) ──
 SHARED_CSS = """
+:root {
+  --bg-base: #0d0e1f;
+  --bg-card: #10112a;
+  --bg-card-2: #0d0e1f;
+  --bg-input: #1a1b35;
+  --border: #1e2040;
+  --border-subtle: #1a1b35;
+  --text-primary: #e8ecff;
+  --text-secondary: #c8d0e8;
+  --text-muted: #4a5080;
+  --text-dim: #3a4070;
+  --text-ghost: #2a3060;
+  --accent-blue: #4facfe;
+  --accent-green: #00e676;
+  --accent-red: #ff5050;
+  --accent-amber: #ffaa20;
+  --accent-purple: #a855f7;
+  --grad-a1: linear-gradient(135deg, #1a2a4a 0%, #0d1a35 100%);
+  --grad-a2: linear-gradient(135deg, #1a3a2a 0%, #0d2a1a 100%);
+  --grad-combo: linear-gradient(135deg, #2a1a4a 0%, #1a0d35 100%);
+}
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 15px; line-height: 1.5; }
-a { color: #58a6ff; text-decoration: none; }
+body { background: var(--bg-base); color: var(--text-secondary); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 12px; line-height: 1.5; }
+a { color: var(--accent-blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
-.container { max-width: 960px; margin: 0 auto; padding: 12px; }
+details > summary { cursor: pointer; }
+details > summary::-webkit-details-marker { display: none; }
 
-.nav { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.nav-brand { font-size: 17px; font-weight: 700; color: #58a6ff; margin-right: 4px; white-space: nowrap; }
-.nav-link { padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; color: #8b949e; border: 1px solid transparent; white-space: nowrap; }
-.nav-link:hover { color: #e6edf3; text-decoration: none; }
-.nav-link.active { color: #0d1117; border-color: transparent; }
-.nav-right { margin-left: auto; font-size: 12px; color: #8b949e; white-space: nowrap; }
+.container { max-width: 1100px; margin: 0 auto; padding: 12px 16px 72px; }
 
-.warn-critical { background: #2d0f0f; border: 1px solid #5c1a1a; color: #f85149; border-radius: 6px; padding: 10px 14px; margin-bottom: 8px; font-size: 14px; }
-.warn-orange { background: #2d2208; border: 1px solid #4a3808; color: #d29922; border-radius: 6px; padding: 10px 14px; margin-bottom: 8px; font-size: 14px; }
+/* Nav */
+.nav { background: var(--bg-card); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 0; position: sticky; top: 0; z-index: 100; height: 44px; }
+.nav-brand { font-size: 14px; color: var(--text-primary); margin-right: 16px; white-space: nowrap; flex-shrink: 0; }
+.nav-brand .bear { color: var(--accent-blue); }
+.nav-tabs { display: flex; align-items: stretch; height: 44px; gap: 0; }
+.nav-tab { display: flex; align-items: center; padding: 0 13px; font-size: 11px; color: var(--text-muted); border-bottom: 2px solid transparent; white-space: nowrap; text-decoration: none; transition: color 0.12s, border-color 0.12s; }
+.nav-tab:hover { color: var(--text-secondary); text-decoration: none; }
+.nav-tab.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); }
+.nav-pills { display: flex; align-items: center; gap: 5px; margin-left: 10px; }
+.npill { font-size: 9px; padding: 2px 7px; border-radius: 3px; border: 1px solid; letter-spacing: 0.4px; }
+.npill-g { background: rgba(0,230,118,.1); border-color: rgba(0,230,118,.3); color: var(--accent-green); }
+.npill-a { background: rgba(255,170,32,.1); border-color: rgba(255,170,32,.3); color: var(--accent-amber); }
+.npill-r { background: rgba(255,80,80,.1); border-color: rgba(255,80,80,.3); color: var(--accent-red); }
+.nav-right { margin-left: auto; font-size: 10px; color: var(--text-ghost); white-space: nowrap; flex-shrink: 0; }
 
-.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; }
-.section-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #8b949e; margin: 16px 0 8px; }
+/* Ticker */
+.ticker { background: var(--bg-card); border-top: 1px solid var(--border); padding: 6px 16px; font-size: 9px; color: var(--text-muted); display: flex; align-items: center; gap: 10px; position: fixed; bottom: 0; left: 0; right: 0; z-index: 100; overflow: hidden; white-space: nowrap; }
+.tk-sep { color: var(--text-dim); user-select: none; }
+.tk-sym { color: var(--text-muted); letter-spacing: 0.3px; }
+.tk-val { color: var(--text-secondary); }
+.tk-g { color: var(--accent-green); }
+.tk-r { color: var(--accent-red); }
+.tk-dim { color: var(--text-dim); }
 
-.accounts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-@media (max-width: 520px) { .accounts { grid-template-columns: 1fr; } }
-.acct-title { font-size: 13px; font-weight: 700; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
-.acct-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 14px; }
-.acct-row:last-child { border-bottom: none; }
-.acct-label { color: #8b949e; }
-.acct-val { font-weight: 600; }
+/* Section titles */
+.section-label { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); margin: 18px 0 8px; }
 
-.progress-wrap { background: #21262d; border-radius: 4px; height: 6px; margin: 4px 0 2px; overflow: hidden; }
-.progress-fill { height: 6px; border-radius: 4px; }
+/* Cards */
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 10px; }
+.card-2 { background: var(--bg-card-2); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 8px; }
+.card-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--border-subtle); }
+.card-row:last-child { border-bottom: none; }
+.card-label { font-size: 10px; color: var(--text-muted); }
+.card-val { font-size: 11px; color: var(--text-secondary); }
 
-.green { color: #3fb950; } .red { color: #f85149; } .orange { color: #d29922; } .muted { color: #8b949e; } .blue { color: #58a6ff; }
+/* Hero gradient cards */
+.hero-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+@media (max-width: 760px) { .hero-grid { grid-template-columns: 1fr; } }
+.hero-card { border-radius: 12px; border: 1px solid var(--border); padding: 16px; }
+.hero-card-a1 { background: var(--grad-a1); }
+.hero-card-a2 { background: var(--grad-a2); }
+.hero-card-combo { background: var(--grad-combo); }
+.hero-inner { display: flex; justify-content: space-between; align-items: flex-start; }
+.hero-lbl { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
+.hero-num { font-size: 26px; font-weight: 600; letter-spacing: -1px; line-height: 1; }
+.hero-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
+.hero-badge { display: inline-block; font-size: 9px; padding: 2px 8px; border-radius: 3px; border: 1px solid; margin-top: 8px; }
+.hero-badge-g { background: rgba(0,230,118,.12); border-color: rgba(0,230,118,.3); color: var(--accent-green); }
+.hero-badge-r { background: rgba(255,80,80,.12); border-color: rgba(255,80,80,.3); color: var(--accent-red); }
+.hero-mini-stats { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+.hero-mini-row { display: flex; justify-content: space-between; font-size: 10px; }
+.hero-mini-lbl { color: var(--text-muted); }
+.hero-mini-val { color: var(--text-secondary); }
 
-.qs-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.qs-table th { background: #21262d; color: #8b949e; font-size: 12px; padding: 8px 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; }
-.qs-table td { padding: 8px 12px; border-bottom: 1px solid #21262d; }
+/* Range bars */
+.range-track { height: 5px; background: var(--bg-input); border-radius: 3px; position: relative; margin: 4px 0; overflow: visible; }
+.range-fill { position: absolute; top: 0; height: 100%; border-radius: 3px; }
+
+/* Tables */
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table.data-table { width: 100%; border-collapse: collapse; font-size: 11px; white-space: nowrap; }
+table.data-table th { background: var(--bg-card-2); color: var(--text-muted); font-size: 9px; font-weight: 500; text-align: right; padding: 8px 10px; text-transform: uppercase; letter-spacing: 0.8px; border-bottom: 1px solid var(--border); }
+table.data-table th:first-child { text-align: left; }
+table.data-table td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); }
+table.data-table td:first-child { text-align: left; color: var(--text-primary); }
+table.data-table tr:last-child td { border-bottom: none; }
+table.data-table tr:hover td { background: rgba(79,172,254,.03); }
+
+/* qs-table kept for kv widgets */
+.qs-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.qs-table th { background: var(--bg-card-2); color: var(--text-muted); font-size: 9px; padding: 7px 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.8px; text-align: left; border-bottom: 1px solid var(--border); }
+.qs-table td { padding: 7px 10px; border-bottom: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-secondary); }
 .qs-table tr:last-child td { border-bottom: none; }
-.qs-table td:first-child { color: #8b949e; }
-.qs-table td:not(:first-child) { font-weight: 600; text-align: right; }
+.qs-table td:first-child { color: var(--text-muted); }
+.qs-table td:not(:first-child) { text-align: right; }
 .qs-table th:not(:first-child) { text-align: right; }
 
-.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-table.pos-table { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }
-table.pos-table th { background: #21262d; color: #8b949e; font-weight: 600; text-align: right; padding: 8px 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+/* pos-table alias for backward compat */
+table.pos-table { width: 100%; border-collapse: collapse; font-size: 11px; white-space: nowrap; }
+table.pos-table th { background: var(--bg-card-2); color: var(--text-muted); font-weight: 500; text-align: right; padding: 8px 10px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; border-bottom: 1px solid var(--border); }
 table.pos-table th:first-child { text-align: left; }
-table.pos-table td { padding: 9px 10px; text-align: right; border-bottom: 1px solid #21262d; }
-table.pos-table td:first-child { text-align: left; }
+table.pos-table td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); }
+table.pos-table td:first-child { text-align: left; color: var(--text-primary); }
 table.pos-table tr:last-child td { border-bottom: none; }
-table.pos-table tr:hover td { background: #1c2128; }
+table.pos-table tr:hover td { background: rgba(79,172,254,.03); }
 
-.flag { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; margin-left: 4px; vertical-align: middle; }
-.flag-earn { background: #4a2e00; color: #d29922; }
-.flag-over { background: #3d1a1a; color: #f85149; }
-.flag-warn { background: #2d2208; color: #d29922; }
-.flag-trail { background: #0d2018; color: #3fb950; }
-.flag-be { background: #0d1f38; color: #58a6ff; }
+/* Badges */
+.badge { display: inline-block; font-size: 9px; padding: 2px 8px; border-radius: 3px; border: 1px solid; letter-spacing: 0.3px; vertical-align: middle; }
+.badge-g { background: rgba(0,230,118,.1); border-color: rgba(0,230,118,.3); color: var(--accent-green); }
+.badge-r { background: rgba(255,80,80,.1); border-color: rgba(255,80,80,.3); color: var(--accent-red); }
+.badge-a { background: rgba(255,170,32,.1); border-color: rgba(255,170,32,.3); color: var(--accent-amber); }
+.badge-b { background: rgba(79,172,254,.1); border-color: rgba(79,172,254,.3); color: var(--accent-blue); }
+.badge-p { background: rgba(168,85,247,.1); border-color: rgba(168,85,247,.3); color: var(--accent-purple); }
+.badge-x { background: rgba(74,80,128,.1); border-color: rgba(74,80,128,.3); color: var(--text-muted); }
 
-.alert { padding: 9px 12px; border-radius: 6px; margin-bottom: 6px; font-size: 14px; }
-.alert-green { background: #0d2018; border: 1px solid #1a4028; color: #3fb950; }
-.alert-orange { background: #2d2208; border: 1px solid #4a3808; color: #d29922; }
-.alert-red { background: #2d0f0f; border: 1px solid #5c1a1a; color: #f85149; }
+/* Flag badges (legacy compat) */
+.flag { display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 3px; margin-left: 4px; vertical-align: middle; }
+.flag-earn { background: rgba(255,170,32,.15); color: var(--accent-amber); }
+.flag-over { background: rgba(255,80,80,.15); color: var(--accent-red); }
+.flag-warn { background: rgba(255,170,32,.12); color: var(--accent-amber); }
+.flag-trail { background: rgba(0,230,118,.12); color: var(--accent-green); }
+.flag-be { background: rgba(79,172,254,.12); color: var(--accent-blue); }
 
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
-.stat-box { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px; }
-.stat-label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
-.stat-val { font-size: 18px; font-weight: 700; margin-top: 2px; }
+/* Alert/warning */
+.warn-critical { background: rgba(255,80,80,.08); border: 1px solid rgba(255,80,80,.25); color: var(--accent-red); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; font-size: 11px; }
+.warn-orange { background: rgba(255,170,32,.08); border: 1px solid rgba(255,170,32,.25); color: var(--accent-amber); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; font-size: 11px; }
+.alert { padding: 9px 12px; border-radius: 8px; margin-bottom: 6px; font-size: 11px; }
+.alert-green { background: rgba(0,230,118,.07); border: 1px solid rgba(0,230,118,.2); color: var(--accent-green); }
+.alert-orange { background: rgba(255,170,32,.07); border: 1px solid rgba(255,170,32,.2); color: var(--accent-amber); }
+.alert-red { background: rgba(255,80,80,.07); border: 1px solid rgba(255,80,80,.2); color: var(--accent-red); }
 
-.reasoning { background: #0d1117; border-left: 3px solid #58a6ff; padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 14px; color: #c9d1d9; font-style: italic; margin: 10px 0; }
-.log-line { font-family: "SF Mono", "Fira Code", monospace; font-size: 11px; padding: 3px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kv { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #21262d; font-size: 14px; }
+/* Stat boxes */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.stat-box { background: var(--bg-card-2); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 12px; }
+.stat-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; }
+.stat-val { font-size: 18px; font-weight: 600; margin-top: 3px; color: var(--text-primary); letter-spacing: -0.5px; }
+
+/* kv rows */
+.kv { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
 .kv:last-child { border-bottom: none; }
-.kv-label { color: #8b949e; }
-.kv-val { font-weight: 600; text-align: right; }
-.dec-panel { max-height: 340px; overflow-y: auto; }
-.thesis-card { border-left: 3px solid #58a6ff; background: #0d1117; padding: 10px 14px; border-radius: 0 6px 6px 0; margin-bottom: 8px; }
+.kv-label { color: var(--text-muted); font-size: 10px; }
+.kv-val { color: var(--text-secondary); text-align: right; }
+
+/* Reasoning */
+.reasoning { background: var(--bg-card-2); border-left: 2px solid var(--accent-blue); padding: 10px 14px; border-radius: 0 8px 8px 0; font-size: 11px; color: var(--text-secondary); font-style: italic; margin: 8px 0; }
+.log-line { font-family: "SF Mono", "Fira Code", monospace; font-size: 10px; padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+
+/* Thesis cards */
+.thesis-card { border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
 .thesis-card:last-child { margin-bottom: 0; }
-.hero-pnl { text-align: center; padding: 20px 16px; }
-.hero-number { font-size: 44px; font-weight: 800; line-height: 1.1; }
-.hero-sub { font-size: 14px; margin-top: 2px; }
-.watch-bullet { padding: 5px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+
+/* Watch bullets */
+.watch-bullet { padding: 5px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
 .watch-bullet:last-child { border-bottom: none; }
+
+/* Compact grids */
 .compact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.trail-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.trail-table th { background: #21262d; color: #8b949e; font-weight: 600; padding: 6px 10px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-.trail-table td { padding: 6px 10px; border-bottom: 1px solid #21262d; }
+@media (max-width: 600px) { .compact-grid { grid-template-columns: 1fr; } }
+.tri-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+@media (max-width: 760px) { .tri-grid { grid-template-columns: 1fr; } }
+
+/* Trail table */
+.trail-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.trail-table th { background: var(--bg-card-2); color: var(--text-muted); font-weight: 500; padding: 6px 10px; text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; border-bottom: 1px solid var(--border); }
+.trail-table td { padding: 6px 10px; border-bottom: 1px solid var(--border-subtle); }
 .trail-table tr:last-child td { border-bottom: none; }
-@media (max-width: 520px) { .compact-grid { grid-template-columns: 1fr; } }
+
+/* Progress bar */
+.progress-wrap { background: var(--bg-input); border-radius: 3px; height: 5px; margin: 4px 0 2px; overflow: hidden; }
+.progress-fill { height: 5px; border-radius: 3px; }
+
+/* Dec panel */
+.dec-panel { max-height: 340px; overflow-y: auto; }
+
+/* Acct summary bar (horizontal) */
+.acct-bar { display: flex; gap: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 10px; }
+.acct-bar-item { padding: 12px 16px; flex: 1; border-right: 1px solid var(--border-subtle); }
+.acct-bar-item:last-child { border-right: none; }
+.acct-bar-lbl { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px; }
+.acct-bar-val { font-size: 13px; color: var(--text-primary); }
+
+/* Legacy acct rows */
+.acct-title { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 10px; }
+.acct-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
+.acct-row:last-child { border-bottom: none; }
+.acct-label { color: var(--text-muted); font-size: 10px; }
+.acct-val { color: var(--text-secondary); }
+
+/* Color utilities */
+.green { color: var(--accent-green); }
+.red { color: var(--accent-red); }
+.orange { color: var(--accent-amber); }
+.blue { color: var(--accent-blue); }
+.purple { color: var(--accent-purple); }
+.muted { color: var(--text-muted); }
+.primary { color: var(--text-primary); }
 """
 
 # Plain string — no escaping needed when injected via {_COUNTDOWN_JS} in f-strings
@@ -1111,25 +1231,85 @@ def _warnings_html(warnings: list) -> str:
     return "\n".join(parts)
 
 
-# ── Navigation ────────────────────────────────────────────────────────────────
-def _nav_html(active_page: str, now_et: str, a1_color: str, a2_color: str) -> str:
-    pages = [("overview", "/", "Overview"), ("a1", "/a1", "A1 Equities"), ("a2", "/a2", "A2 Options"), ("brief", "/brief", "Intelligence Brief"), ("trades", "/trades", "Trades")]
-    links = ""
-    for pid, href, label in pages:
-        if pid == active_page:
-            bg = a1_color if pid == "a1" else (a2_color if pid == "a2" else "#58a6ff")
-            links += f'<a href="{href}" class="nav-link active" style="background:{bg}">{label}</a>'
-        else:
-            links += f'<a href="{href}" class="nav-link">{label}</a>'
+# ── Ring SVG helper ───────────────────────────────────────────────────────────
+def _ring_svg(pct: float, color: str = "#4facfe") -> str:
+    circ = 138
+    fill = min(circ, max(0, pct / 100 * circ))
+    gap = circ - fill
+    label = f"{int(round(pct))}%"
     return (
-        f'<div class="nav"><span class="nav-brand">&#x1F402;&#x1F43B; BullBearBot</span>'
-        f'{links}'
-        f'<div class="nav-right">Updated {now_et}&nbsp;&nbsp;Refresh in <span id="cd">60</span>s</div>'
+        f'<svg width="56" height="56" viewBox="0 0 56 56">'
+        f'<circle cx="28" cy="28" r="22" fill="none" stroke="#1e2040" stroke-width="5"/>'
+        f'<circle cx="28" cy="28" r="22" fill="none" stroke="{color}" stroke-width="5"'
+        f' stroke-dasharray="{fill:.1f} {gap:.1f}" stroke-dashoffset="34" stroke-linecap="round"/>'
+        f'<text x="28" y="32" text-anchor="middle" font-size="10" fill="{color}">{label}</text>'
+        f'</svg>'
+    )
+
+
+# ── Ticker builder ────────────────────────────────────────────────────────────
+def _build_ticker_html(positions: list, vix_str: str = "—") -> str:
+    items = []
+    for p in positions[:8]:
+        sym = p.get("symbol", "")
+        cur = p.get("current", 0)
+        pct = p.get("unreal_plpc", 0)
+        sign = "+" if pct >= 0 else ""
+        cls = "tk-g" if pct >= 0 else "tk-r"
+        items.append(
+            f'<span class="tk-sym">{sym}</span>'
+            f' <span class="tk-val">${cur:,.2f}</span>'
+            f' <span class="{cls}">{sign}{pct:.1f}%</span>'
+        )
+    parts = ['<span class="tk-sep"> | </span>'.join(
+        f'<span class="ticker-item">{i}</span>' for i in items
+    )]
+    parts.append('<span class="tk-sep"> | </span>')
+    parts.append(f'<span class="tk-sym">VIX</span> <span class="tk-val">{vix_str}</span>')
+    return (
+        '<div class="ticker">'
+        + '<span class="tk-dim" style="margin-right:6px;letter-spacing:1px;font-size:8px">LIVE</span>'
+        + "".join(parts)
+        + '</div>'
+    )
+
+
+# ── Navigation ────────────────────────────────────────────────────────────────
+def _nav_html(active_page: str, now_et: str, a1_mode: str = "NORMAL", a2_mode: str = "NORMAL",
+              session_label: str = "") -> str:
+    pages = [
+        ("overview", "/", "Overview"),
+        ("a1", "/a1", "A1 Equity"),
+        ("a2", "/a2", "A2 Options"),
+        ("brief", "/brief", "Intelligence"),
+        ("trades", "/trades", "Trades"),
+        ("transparency", "/transparency", "Transparency"),
+    ]
+    tabs = ""
+    for pid, href, label in pages:
+        cls = "nav-tab active" if pid == active_page else "nav-tab"
+        tabs += f'<a href="{href}" class="{cls}">{label}</a>'
+
+    a1_pill_cls = "npill-g" if a1_mode == "NORMAL" else ("npill-r" if "HALT" in a1_mode else "npill-a")
+    a2_pill_cls = "npill-g" if a2_mode == "NORMAL" else ("npill-r" if "HALT" in a2_mode else "npill-a")
+    sess_cls = "npill-a" if session_label and session_label != "MARKET" else "npill-g"
+    sess_pill = f' <span class="npill {sess_cls}">{session_label}</span>' if session_label else ""
+
+    return (
+        f'<div class="nav">'
+        f'<span class="nav-brand">Bull<span class="bear">Bear</span>Bot</span>'
+        f'<div class="nav-tabs">{tabs}</div>'
+        f'<div class="nav-pills">'
+        f'<span class="npill {a1_pill_cls}">A1 {a1_mode}</span>'
+        f'<span class="npill {a2_pill_cls}">A2 {a2_mode}</span>'
+        f'{sess_pill}'
+        f'</div>'
+        f'<div class="nav-right">{now_et}&nbsp;&nbsp;&#x21BB;&nbsp;<span id="cd">60</span>s</div>'
         f'</div>'
     )
 
 
-def _page_shell(title: str, nav: str, body: str) -> str:
+def _page_shell(title: str, nav: str, body: str, ticker: str = "") -> str:
     return (
         '<!DOCTYPE html><html lang="en"><head>'
         '<meta charset="utf-8">'
@@ -1138,7 +1318,7 @@ def _page_shell(title: str, nav: str, body: str) -> str:
         f'<title>{title} — BullBearBot</title>'
         '<style>' + SHARED_CSS + '</style>'
         '</head><body>'
-        + nav + body + _COUNTDOWN_JS +
+        + nav + body + ticker + _COUNTDOWN_JS +
         '</body></html>'
     )
 
@@ -1295,7 +1475,7 @@ def _page_overview(status: dict, now_et: str) -> str:
     a2_mode = status["a2_mode"].get("mode", "unknown").upper()
     a1_color = _mode_color(a1_mode)
     a2_color = _mode_color(a2_mode)
-    nav = _nav_html("overview", now_et, a1_color, a2_color)
+    nav = _nav_html("overview", now_et, a1_mode, a2_mode)
     warn_html = _warnings_html(status.get("warnings", []))
 
     a1_pnl, a1_pnl_pct = status.get("today_pnl_a1", (0.0, 0.0))
@@ -1307,32 +1487,27 @@ def _page_overview(status: dict, now_et: str) -> str:
 
     if a1_acc:
         a1_equity = float(a1_acc.equity or 0)
-        a1_bp = float(a1_acc.buying_power or 0)
         a1_pos_count = len(status["positions"])
         a1_unreal = sum(p["unreal_pl"] for p in status["positions"])
         a1_unreal_c = "#3fb950" if a1_unreal >= 0 else "#f85149"
         a1_unreal_s = "+" if a1_unreal >= 0 else ""
         a1_invested = sum(p["market_val"] for p in status["positions"])
         a1_util = min(100.0, a1_invested / a1_equity * 100) if a1_equity else 0.0
-        a1_util_c = "#f85149" if a1_util > 80 else ("#d29922" if a1_util > 60 else "#3fb950")
     else:
-        a1_equity = a1_bp = a1_invested = a1_util = 0.0
+        a1_equity = a1_invested = a1_util = 0.0
         a1_pos_count = 0
         a1_unreal = 0.0; a1_unreal_c = "#8b949e"; a1_unreal_s = ""
-        a1_util_c = "#8b949e"
 
     if a2_acc:
         a2_equity = float(a2_acc.equity or 0)
-        a2_bp = float(a2_acc.buying_power or 0)
         a2_pos_count = len(a2d.get("positions", []))
     else:
-        a2_equity = a2_bp = 0.0
+        a2_equity = 0.0
         a2_pos_count = 0
 
     costs = status["costs"]
     gate = status["gate"]
     daily_cost = float(costs.get("daily_cost", 0) or 0)
-    daily_calls = costs.get("daily_calls", 0)
     proj_monthly = daily_cost * 22
     if proj_monthly > 400:
         proj_color = "#f85149"
@@ -1421,14 +1596,12 @@ def _page_overview(status: dict, now_et: str) -> str:
 
     # Watch Now
     watch_bullets = _watch_now_bullets(status)
-    watch_html = ""
     if watch_bullets:
         items = ""
         for sev, text in watch_bullets:
             icon = "&#x1F534;" if sev == "critical" else "&#x26A0;&#xFE0F;"
             color = "#f85149" if sev == "critical" else "#d29922"
             items += f'<div class="watch-bullet"><span style="color:{color}">{icon}</span> {text}</div>'
-        watch_html = f'<div class="card" style="padding:10px 14px">{items}</div>'
 
     # Trail table
     trail_tiers = status.get("trail_tiers", [])
@@ -1452,112 +1625,207 @@ def _page_overview(status: dict, now_et: str) -> str:
         f'{a2_pipe.get("proposed",0)} proposed'
     ) if a2_pipe_total else "No A2 structures today."
 
+    # VIX for ticker
+    _vix_for_ticker = "—"
+    try:
+        pf_entries_t = _jsonl_last(BOT_DIR / "data/status/preflight_log.jsonl", n=1)
+        if pf_entries_t:
+            for chk in pf_entries_t[0].get("checks", []):
+                if chk.get("name") == "vix_gate" and "VIX=" in chk.get("message", ""):
+                    _vix_for_ticker = chk["message"].split("VIX=")[1].split()[0]
+    except Exception:
+        pass
+    ticker = _build_ticker_html(status["positions"], _vix_for_ticker)
+
+    # Build positions compact HTML for overview
+    _pos_rows = ""
+    for p in status["positions"][:8]:
+        _sym = p["symbol"]
+        _pl = p.get("unreal_pl", 0)
+        _plpc = p.get("unreal_plpc", 0)
+        _entry = p.get("entry", 0)
+        _cur = p.get("current", 0)
+        _stop = p.get("stop")
+        _plc = "var(--accent-green)" if _pl >= 0 else "var(--accent-red)"
+        _pls = "+" if _pl >= 0 else ""
+        _earn = p.get("earnings", "")
+        _earn_dot = ' <span style="color:var(--accent-amber);font-size:9px">&#9679;</span>' if _earn else ""
+        _stop_str = f'<span style="color:var(--text-muted);font-size:9px">stop {_fm(_stop)}</span>' if _stop else ""
+        # range bar: stop→entry→current
+        _bar = ""
+        if _entry and _stop and _cur and _entry > _stop:
+            _span = max(_cur * 1.15 - _stop, _cur - _stop + 1)
+            _ep = min(99, (_entry - _stop) / _span * 100)
+            _cp = min(99, (_cur - _stop) / _span * 100)
+            _fill_l = min(_ep, _cp)
+            _fill_w = abs(_cp - _ep)
+            _fill_c = "var(--accent-green)" if _cur >= _entry else "var(--accent-red)"
+            _bar = (
+                f'<div class="range-track" style="margin:3px 0 5px">'
+                f'<div class="range-fill" style="left:{_fill_l:.0f}%;width:{_fill_w:.0f}%;'
+                f'background:{_fill_c};opacity:0.6"></div>'
+                f'<div style="position:absolute;left:{_ep:.0f}%;top:-1px;width:2px;height:7px;'
+                f'background:var(--text-muted);border-radius:1px"></div>'
+                f'<div style="position:absolute;left:{_cp:.0f}%;top:-1px;width:2px;height:7px;'
+                f'background:{_fill_c}"></div>'
+                f'</div>'
+            )
+        _pos_rows += (
+            f'<div style="padding:6px 0;border-bottom:1px solid var(--border-subtle)">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<span style="color:var(--accent-blue);font-size:12px">{_sym}</span>{_earn_dot}'
+            f'<span style="color:{_plc};font-size:11px">{_pls}{_fm(_pl)} ({_pls}{_plpc:.1f}%)</span>'
+            f'</div>'
+            f'{_bar}'
+            f'<div style="display:flex;justify-content:space-between">'
+            f'<span style="color:var(--text-muted);font-size:9px">{int(p.get("qty",0))} sh · entry {_fm(_entry)}</span>'
+            f'{_stop_str}'
+            f'</div>'
+            f'</div>'
+        )
+    if not _pos_rows:
+        _pos_rows = '<div style="color:var(--text-muted);font-size:11px">No open positions.</div>'
+
+    # conviction picks from morning brief
+    _brief = status.get("morning_brief", {})
+    _picks = _brief.get("conviction_picks", [])
+    _conv_rows = ""
+    for _pk in _picks[:6]:
+        _psym = _pk.get("symbol", "")
+        _pdir = _pk.get("direction", "long")
+        _pconv = _pk.get("conviction", "medium")
+        _pcat = _pk.get("catalyst", {})
+        _ptxt = (_pcat.get("short_text", "") if isinstance(_pcat, dict) else str(_pcat or ""))[:55]
+        _tcls = "var(--accent-green)" if _pconv == "high" else ("var(--accent-amber)" if _pconv == "medium" else "var(--text-muted)")
+        _dicon = "&#x2191;" if _pdir == "long" else "&#x2193;"
+        _dirc = "var(--accent-green)" if _pdir == "long" else "var(--accent-red)"
+        _conv_rows += (
+            f'<div style="display:flex;align-items:baseline;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle)">'
+            f'<span style="color:{_tcls};font-size:9px;min-width:28px">{_pconv.upper()[:3]}</span>'
+            f'<span style="color:{_dirc};font-size:9px">{_dicon}</span>'
+            f'<span style="color:var(--accent-blue);font-size:11px;min-width:38px">{_psym}</span>'
+            f'<span style="color:var(--text-muted);font-size:10px">{_ptxt}</span>'
+            f'</div>'
+        )
+    if not _conv_rows:
+        _conv_rows = '<div style="color:var(--text-muted);font-size:10px">Brief not yet generated.</div>'
+
+    # regime score for combo card
+    _decision = status.get("decision", {})
+    _regime_score = _decision.get("regime_score") or 50
+    try:
+        _regime_score = float(_regime_score)
+    except Exception:
+        _regime_score = 50.0
+    _regime_view = _decision.get("regime_view", _decision.get("regime", "—"))
+
     body = f"""
 <div class="container">
 
-<div class="section-label">Today&apos;s P&amp;L</div>
-<div class="card hero-pnl">
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
-    <div>
-      <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">A1 Equities</div>
-      <div class="hero-number" style="color:{a1_pnl_color}">{a1_pnl_sign}{_fm(a1_pnl)}</div>
-      <div class="hero-sub" style="color:{a1_pnl_color}">{a1_pnl_sign}{a1_pnl_pct:.2f}%</div>
-    </div>
-    <div>
-      <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">A2 Options</div>
-      <div class="hero-number" style="color:{a2_pnl_color}">{a2_pnl_sign}{_fm(a2_pnl)}</div>
-      <div class="hero-sub" style="color:{a2_pnl_color}">{a2_pnl_sign}{a2_pnl_pct:.2f}%</div>
-    </div>
-  </div>
-  <div style="border-top:1px solid #30363d;padding-top:12px">
-    <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Combined</div>
-    <div style="font-size:28px;font-weight:700;color:{combined_color}">{combined_sign}{_fm(combined_pnl)}</div>
-  </div>
-</div>
-
-<div class="section-label">Watch Now</div>
-{watch_html if watch_html else '<div class="card"><div style="color:#3fb950;font-size:13px">&#x2713; Nothing urgent to watch.</div></div>'}
-
 {warn_html}
 
-<div class="section-label">Accounts</div>
-<div class="accounts">
-  <div class="card">
-    <div class="acct-title">A1 &mdash; Equities &nbsp;<span style="font-size:11px;background:{a1_color};color:#0d1117;padding:2px 7px;border-radius:10px;font-weight:700">{a1_mode}</span></div>
-    <div class="acct-row"><span class="acct-label">Equity</span><span class="acct-val">{_fm(a1_equity)}</span></div>
-    <div class="acct-row"><span class="acct-label">Buying Power</span><span class="acct-val">{_fm(a1_bp)}</span></div>
-    <div class="acct-row"><span class="acct-label">Positions</span><span class="acct-val">{a1_pos_count}</span></div>
-    <div class="acct-row"><span class="acct-label">Unrealized P&amp;L</span><span class="acct-val" style="color:{a1_unreal_c}">{a1_unreal_s}{_fm(a1_unreal)}</span></div>
-    <div style="margin-top:8px">
-      <div style="font-size:11px;color:#8b949e;margin-bottom:3px">Capital utilization {a1_util:.0f}%</div>
-      <div class="progress-wrap"><div class="progress-fill" style="width:{a1_util:.0f}%;background:{a1_util_c}"></div></div>
+<div class="section-label">Today&apos;s P&amp;L</div>
+<div class="hero-grid">
+  <div class="hero-card hero-card-a1">
+    <div class="hero-inner">
+      <div>
+        <div class="hero-lbl">A1 Equity &middot; Today</div>
+        <div class="hero-num" style="color:{a1_pnl_color}">{a1_pnl_sign}{_fm(a1_pnl)}</div>
+        <div class="hero-sub">{_fm(a1_equity)} &middot; {a1_pos_count} positions</div>
+        <span class="hero-badge {'hero-badge-g' if a1_pnl >= 0 else 'hero-badge-r'}">{a1_pnl_sign}{a1_pnl_pct:.2f}%</span>
+      </div>
+      {_ring_svg(a1_util, "#4facfe")}
     </div>
-    <div style="margin-top:10px;font-size:12px;text-align:right"><a href="/a1">Full detail &rarr;</a></div>
+    <div class="hero-mini-stats" style="margin-top:10px">
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Utilization</span><span style="color:var(--accent-blue)">{a1_util:.0f}%</span></div>
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Unrealized P&amp;L</span><span style="color:{a1_unreal_c}">{a1_unreal_s}{_fm(a1_unreal)}</span></div>
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Mode</span><span style="color:{a1_color}">{a1_mode}</span></div>
+    </div>
+    <div style="text-align:right;margin-top:8px"><a href="/a1" style="font-size:10px;color:var(--text-muted)">Detail &rarr;</a></div>
   </div>
-  <div class="card">
-    <div class="acct-title">A2 &mdash; Options &nbsp;<span style="font-size:11px;background:{a2_color};color:#0d1117;padding:2px 7px;border-radius:10px;font-weight:700">{a2_mode}</span></div>
-    <div class="acct-row"><span class="acct-label">Equity</span><span class="acct-val">{_fm(a2_equity)}</span></div>
-    <div class="acct-row"><span class="acct-label">Buying Power</span><span class="acct-val">{_fm(a2_bp)}</span></div>
-    <div class="acct-row"><span class="acct-label">Positions</span><span class="acct-val">{a2_pos_count}</span></div>
-    <div class="acct-row"><span class="acct-label">Last cycle</span><span class="acct-val muted">{a2_ts}</span></div>
-    <div style="margin-top:10px;font-size:12px;text-align:right"><a href="/a2">Full detail &rarr;</a></div>
+  <div class="hero-card hero-card-a2">
+    <div class="hero-inner">
+      <div>
+        <div class="hero-lbl">A2 Options &middot; Today</div>
+        <div class="hero-num" style="color:{a2_pnl_color}">{a2_pnl_sign}{_fm(a2_pnl)}</div>
+        <div class="hero-sub">{_fm(a2_equity)} &middot; {a2_pos_count} structures</div>
+        <span class="hero-badge {'hero-badge-g' if a2_pnl >= 0 else 'hero-badge-r'}">{a2_pnl_sign}{a2_pnl_pct:.2f}%</span>
+      </div>
+      {_ring_svg(min(100, a2_pos_count * 10), "#a855f7")}
+    </div>
+    <div class="hero-mini-stats" style="margin-top:10px">
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Last cycle</span><span class="hero-mini-val">{a2_ts}</span></div>
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Pipeline today</span><span class="hero-mini-val">{a2_pipe_str[:40]}</span></div>
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Mode</span><span style="color:{a2_color}">{a2_mode}</span></div>
+    </div>
+    <div style="text-align:right;margin-top:8px"><a href="/a2" style="font-size:10px;color:var(--text-muted)">Detail &rarr;</a></div>
+  </div>
+  <div class="hero-card hero-card-combo">
+    <div class="hero-inner">
+      <div>
+        <div class="hero-lbl">Combined &middot; Portfolio</div>
+        <div class="hero-num" style="color:{combined_color}">{combined_sign}{_fm(combined_pnl)}</div>
+        <div class="hero-sub">Paper trading</div>
+      </div>
+      {_ring_svg(_regime_score, "#ffaa20")}
+    </div>
+    <div class="hero-mini-stats" style="margin-top:10px">
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Regime score</span><span style="color:var(--accent-amber)">{_regime_score:.0f}/100</span></div>
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Claude cost today</span><span style="color:{proj_color}">{_fm(daily_cost)}</span></div>
+      <div class="hero-mini-row"><span class="hero-mini-lbl">Sonnet calls</span><span class="hero-mini-val">{sonnet_calls}</span></div>
+    </div>
   </div>
 </div>
 
-<div class="section-label">Trail Status</div>
-<div class="card" style="padding:0 0 4px">{trail_html}</div>
+<div class="tri-grid">
+  <div>
+    <div class="section-label">Open Positions</div>
+    <div class="card" style="padding:10px 14px">{_pos_rows}</div>
+    <div class="section-label">Trail Status</div>
+    <div class="card" style="padding:0 0 4px">{trail_html}</div>
+  </div>
+  <div>
+    <div class="section-label">Watch Now</div>
+    <div class="card" style="padding:10px 14px">
+      {''.join(f'<div class="watch-bullet"><span style="color:{"var(--accent-red)" if s=="critical" else "var(--accent-amber)"}">{("&#x25CF;" if s=="critical" else "&#x25B2;")}</span> {t}</div>' for s,t in (watch_bullets or [("ok", "&#x2713; Nothing urgent.")]))}
+    </div>
+    {f'<div class="section-label">Allocator</div><div class="card" style="font-size:10px;color:var(--text-muted)">{allocator_line}</div>' if allocator_line else ''}
+  </div>
+  <div>
+    <div class="section-label">Conviction</div>
+    <div class="card" style="padding:10px 14px">{_conv_rows}</div>
+  </div>
+</div>
 
-{f'<div class="section-label">Allocator</div><div class="card">{allocator_line}</div>' if allocator_line else ''}
-
-<div class="section-label">Recent Decisions</div>
 <div class="compact-grid">
-  <div class="card" style="padding:10px 12px">
-    <div style="font-size:11px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">A1</div>
-    {a1_comp}
+  <div>
+    <div class="section-label">Recent Decisions</div>
+    <div class="card" style="padding:10px 12px">
+      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px">A1</div>
+      {a1_comp}
+      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px;margin:8px 0 6px">A2</div>
+      {a2_comp}
+    </div>
   </div>
-  <div class="card" style="padding:10px 12px">
-    <div style="font-size:11px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">A2</div>
-    {a2_comp}
+  <div>
+    <div class="section-label">System &amp; Performance</div>
+    <div class="card">
+      <div class="card-row"><span class="card-label">Git HEAD</span><span class="card-val" style="font-family:monospace;font-size:10px">{git_hash}</span></div>
+      <div class="card-row"><span class="card-label">Service up since</span><span class="card-val muted" style="font-size:10px">{svc_uptime[:30] if svc_uptime != "unknown" else "unknown"}</span></div>
+      {earnings_cal_html}
+      <div class="card-row"><span class="card-label">Buys / Sells today</span><span class="card-val">{buys} / {sells}</span></div>
+      <div class="card-row"><span class="card-label">Proj/month (22d)</span><span class="card-val" style="color:{proj_color}">{proj_icon}{_fm(proj_monthly)}</span></div>
+    </div>
+    <div class="section-label">Active Flags</div>
+    {flags_html}
   </div>
 </div>
-
-<div class="section-label">Quick Stats</div>
-<div class="card" style="padding:0">
-  <table class="qs-table">
-    <thead><tr><th></th><th>A1 Equities</th><th>A2 Options</th></tr></thead>
-    <tbody>
-      <tr><td>Today P&amp;L</td><td style="color:{a1_pnl_color}">{a1_pnl_sign}{_fm(a1_pnl)}</td><td style="color:{a2_pnl_color}">{a2_pnl_sign}{_fm(a2_pnl)}</td></tr>
-      <tr><td>Open Positions</td><td>{a1_pos_count}</td><td>{a2_pos_count}</td></tr>
-      <tr><td>Mode</td><td style="color:{a1_color}">{a1_mode}</td><td style="color:{a2_color}">{a2_mode}</td></tr>
-      <tr><td>Sonnet Calls Today</td><td>{sonnet_calls}</td><td>—</td></tr>
-      <tr><td>Buys / Sells</td><td>{buys} / {sells}</td><td>—</td></tr>
-      <tr><td>Claude Cost Today</td><td style="color:{proj_color}">{_fm(daily_cost)} ({daily_calls:,} calls)</td><td>—</td></tr>
-      <tr><td>Proj/Month (22d)</td><td style="color:{proj_color}">{proj_icon}{_fm(proj_monthly)}</td><td>—</td></tr>
-    </tbody>
-  </table>
-  {f'<div style="padding:8px 12px;border-top:1px solid #21262d"><div style="font-size:11px;color:#8b949e;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">Top callers</div>{callers_html}</div>' if callers_html else ''}
-</div>
-
-<div class="section-label">A2 Pipeline Today</div>
-<div class="card">
-  <div style="font-size:13px;color:#c9d1d9;font-family:monospace">{a2_pipe_str}</div>
-</div>
-
-<div class="section-label">Active Flags</div>
-<div>{flags_html}</div>
 
 <div class="section-label">Performance (7d)</div>
 {perf_7d_html}
 
-<div class="section-label">System</div>
-<div class="card">
-  <div class="kv"><span class="kv-label">Git HEAD</span><span class="kv-val" style="font-family:monospace">{git_hash}</span></div>
-  <div class="kv"><span class="kv-label">Service up since</span><span class="kv-val muted">{svc_uptime}</span></div>
-  {earnings_cal_html}
-</div>
-<div style="height:24px"></div>
 </div>"""
-    return _page_shell("Overview", nav, body)
+    return _page_shell("Overview", nav, body, ticker)
 
 
 # ── A1 detail page ────────────────────────────────────────────────────────────
@@ -1566,13 +1834,12 @@ def _page_a1(status: dict, now_et: str) -> str:
     a1_acc = a1d.get("account")
     a1_mode = status["a1_mode"].get("mode", "unknown").upper()
     a2_mode = status["a2_mode"].get("mode", "unknown").upper()
-    a1_color = _mode_color(a1_mode)
-    a2_color = _mode_color(a2_mode)
-    nav = _nav_html("a1", now_et, a1_color, a2_color)
+    nav = _nav_html("a1", now_et, a1_mode, a2_mode)
     warn_html = _warnings_html(status.get("warnings", []))
+    ticker = _build_ticker_html(status["positions"])
 
     a1_pnl, a1_pnl_pct = status.get("today_pnl_a1", (0.0, 0.0))
-    a1_pnl_color = "#3fb950" if a1_pnl >= 0 else "#f85149"
+    a1_pnl_color = "var(--accent-green)" if a1_pnl >= 0 else "var(--accent-red)"
     a1_pnl_sign = "+" if a1_pnl >= 0 else ""
 
     if a1_acc:
@@ -1654,6 +1921,9 @@ def _page_a1(status: dict, now_et: str) -> str:
             )
     else:
         theses_html = '<div style="color:#8b949e;font-size:13px">No thesis data yet.</div>'
+
+    # Compact decisions summary
+    a1_comp = _a1_decisions_compact_html(status.get("a1_decisions", []))
 
     # Last 5 A1 decisions
     a1_decs = status.get("a1_decisions", [])
@@ -1789,45 +2059,49 @@ def _page_a1(status: dict, now_et: str) -> str:
 
     a1_orders_html = _fmt_orders_html(a1d.get("recent_orders", []), is_options=False, limit=6)
 
+    errors_html = errors_html or '<div class="log-line" style="color:var(--accent-green)">No recent warnings or errors</div>'
+
     body = f"""
 <div class="container">
 {warn_html}
 <div class="section-label">A1 Account Summary</div>
-<div class="card">
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
-    <div>
-      <div class="acct-row"><span class="acct-label">Equity</span><span class="acct-val">{_fm(a1_equity)}</span></div>
-      <div class="acct-row"><span class="acct-label">Cash</span><span class="acct-val">{_fm(a1_cash)}</span></div>
-      <div class="acct-row"><span class="acct-label">Buying Power</span><span class="acct-val">{_fm(a1_bp)}</span></div>
-    </div>
-    <div style="padding-left:16px;border-left:1px solid #21262d">
-      <div class="acct-row"><span class="acct-label">Positions</span><span class="acct-val">{a1_pos_count}</span></div>
-      <div class="acct-row"><span class="acct-label">Today P&amp;L</span><span class="acct-val" style="color:{a1_pnl_color}">{a1_pnl_sign}{_fm(a1_pnl)} ({a1_pnl_sign}{a1_pnl_pct:.2f}%)</span></div>
-      <div class="acct-row"><span class="acct-label">Unrealized P&amp;L</span><span class="acct-val" style="color:{a1_unreal_c}">{a1_unreal_s}{_fm(a1_unreal)}</span></div>
-    </div>
+<div class="acct-bar">
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Equity</div><div class="acct-bar-val">{_fm(a1_equity)}</div></div>
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Cash</div><div class="acct-bar-val">{_fm(a1_cash)}</div></div>
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Buying Power</div><div class="acct-bar-val">{_fm(a1_bp)}</div></div>
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Positions</div><div class="acct-bar-val">{a1_pos_count}</div></div>
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Today P&amp;L</div><div class="acct-bar-val" style="color:{a1_pnl_color}">{a1_pnl_sign}{_fm(a1_pnl)} ({a1_pnl_sign}{a1_pnl_pct:.2f}%)</div></div>
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Unrealized P&amp;L</div><div class="acct-bar-val" style="color:{a1_unreal_c}">{a1_unreal_s}{_fm(a1_unreal)}</div></div>
+</div>
+<div style="margin-bottom:10px">
+  <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-bottom:3px">
+    <span>Capital utilization</span><span style="color:{a1_util_c}">{a1_util:.0f}% of ${a1_invested:,.0f} deployed</span>
   </div>
-  <div style="margin-top:10px">
-    <div style="font-size:11px;color:#8b949e;margin-bottom:3px">Capital utilization {a1_util:.0f}% (${a1_invested:,.0f} deployed)</div>
-    <div class="progress-wrap"><div class="progress-fill" style="width:{a1_util:.0f}%;background:{a1_util_c}"></div></div>
-  </div>
+  <div class="progress-wrap"><div class="progress-fill" style="width:{a1_util:.0f}%;background:{a1_util_c}"></div></div>
 </div>
 
 <div class="section-label">Morning Brief</div>
 <div class="card">{brief_html}</div>
 
-<div class="section-label">Top 5 Active Theses</div>
+<div class="section-label">Active Theses</div>
 <div class="card">{theses_html}</div>
 
-<div class="section-label">Last 5 Decisions &mdash; A1</div>
-<div class="card"><div class="dec-panel">{a1_decs_html}</div></div>
+<div class="section-label">Last 5 Decisions</div>
+<div class="card" style="padding:10px 14px">
+  <details>
+    <summary style="font-size:10px;color:var(--text-muted);cursor:pointer;margin-bottom:6px">Expand full reasoning &#x25BE;</summary>
+    <div class="dec-panel" style="margin-top:8px">{a1_decs_html}</div>
+  </details>
+  <div>{a1_comp}</div>
+</div>
 
-<div class="section-label">Positions &mdash; A1 ({a1_pos_count} open)</div>
+<div class="section-label">Positions ({a1_pos_count} open)</div>
 <div class="card" style="padding:0 0 4px">
   <div class="table-wrap">
-    <table class="pos-table">
+    <table class="data-table">
       <thead><tr>
         <th>Symbol</th><th>Qty</th><th>Entry</th><th>Current</th>
-        <th>P&amp;L $</th><th>P&amp;L %</th><th>Stop</th><th>Gap</th><th>% BP</th>
+        <th>P&amp;L $</th><th>P&amp;L %</th><th>Stop</th><th>Gap%</th><th>%BP</th>
       </tr></thead>
       <tbody>{positions_html}</tbody>
     </table>
@@ -1835,7 +2109,7 @@ def _page_a1(status: dict, now_et: str) -> str:
   {pos_extra_note}
 </div>
 
-<div class="section-label">Recent Orders &mdash; A1 (last 6)</div>
+<div class="section-label">Recent Orders (last 6)</div>
 <div class="card">{a1_orders_html}</div>
 
 <div class="section-label">Today&apos;s Activity</div>
@@ -1847,8 +2121,8 @@ def _page_a1(status: dict, now_et: str) -> str:
     <div class="stat-box"><div class="stat-label">Sells</div><div class="stat-val red">{sells_today}</div></div>
     <div class="stat-box"><div class="stat-label">Rejected</div><div class="stat-val orange">{len(rejected)}</div></div>
     <div class="stat-box"><div class="stat-label">Stop Trails</div><div class="stat-val">{len(trail_stops)}</div></div>
-    <div class="stat-box"><div class="stat-label">Cost Today</div><div class="stat-val" style="font-size:14px;color:{proj_color}">{_fm(daily_cost)}</div></div>
-    <div class="stat-box"><div class="stat-label">Proj/Month (22d)</div><div class="stat-val" style="font-size:14px;color:{proj_color}">{_fm(proj_monthly_a1)}</div></div>
+    <div class="stat-box"><div class="stat-label">Cost Today</div><div class="stat-val" style="font-size:15px;color:{proj_color}">{_fm(daily_cost)}</div></div>
+    <div class="stat-box"><div class="stat-label">Proj/Month</div><div class="stat-val" style="font-size:15px;color:{proj_color}">{_fm(proj_monthly_a1)}</div></div>
   </div>
   <div class="kv"><span class="kv-label">Last Sonnet</span><span class="kv-val">{last_sonnet_ts}</span></div>
   <div class="kv"><span class="kv-label">Regime</span><span class="kv-val">{last_regime} (score {regime_score}) &middot; {dec_session}</span></div>
@@ -1857,21 +2131,24 @@ def _page_a1(status: dict, now_et: str) -> str:
   {f'<div class="reasoning">{reasoning_2s}</div>' if reasoning_2s else ''}
 </div>
 
-<div class="section-label">Allocator Shadow</div>
-<div class="card">
-  <div class="kv"><span class="kv-label">Status</span><span class="kv-val">{alloc_st}</span></div>
-  <div class="kv"><span class="kv-label">Last Run</span><span class="kv-val muted">{alloc_last}</span></div>
+<div class="compact-grid">
+  <div>
+    <div class="section-label">Decision Quality (7d)</div>
+    {dec_quality_html}
+  </div>
+  <div>
+    <div class="section-label">Allocator Shadow</div>
+    <div class="card">
+      <div class="kv"><span class="kv-label">Status</span><span class="kv-val">{alloc_st}</span></div>
+      <div class="kv"><span class="kv-label">Last Run</span><span class="kv-val muted">{alloc_last}</span></div>
+    </div>
+    <div class="section-label">Recent Log Events</div>
+    <div class="card">{errors_html}</div>
+  </div>
 </div>
-
-<div class="section-label">Decision Quality (7d)</div>
-{dec_quality_html}
-
-<div class="section-label">Recent Log Events</div>
-<div class="card">{errors_html}</div>
-
 <div style="height:24px"></div>
 </div>"""
-    return _page_shell("A1 Equities", nav, body)
+    return _page_shell("A1 Equities", nav, body, ticker)
 
 
 # ── A2 detail page ────────────────────────────────────────────────────────────
@@ -1880,13 +2157,13 @@ def _page_a2(status: dict, now_et: str) -> str:
     a2_acc = a2d.get("account")
     a1_mode = status["a1_mode"].get("mode", "unknown").upper()
     a2_mode = status["a2_mode"].get("mode", "unknown").upper()
-    a1_color = _mode_color(a1_mode)
     a2_color = _mode_color(a2_mode)
-    nav = _nav_html("a2", now_et, a1_color, a2_color)
+    nav = _nav_html("a2", now_et, a1_mode, a2_mode)
     warn_html = _warnings_html(status.get("warnings", []))
+    ticker = _build_ticker_html(status["positions"])
 
     a2_pnl, a2_pnl_pct = status.get("today_pnl_a2", (0.0, 0.0))
-    a2_pnl_color = "#3fb950" if a2_pnl >= 0 else "#f85149"
+    a2_pnl_color = "var(--accent-green)" if a2_pnl >= 0 else "var(--accent-red)"
     a2_pnl_sign = "+" if a2_pnl >= 0 else ""
 
     if a2_acc:
@@ -2025,65 +2302,63 @@ def _page_a2(status: dict, now_et: str) -> str:
 <div class="container">
 {warn_html}
 <div class="section-label">A2 Account Summary</div>
-<div class="card">
+<div class="acct-bar">
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Equity</div><div class="acct-bar-val">{_fm(a2_equity)}</div></div>
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Cash</div><div class="acct-bar-val">{_fm(a2_cash)}</div></div>
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Buying Power</div><div class="acct-bar-val">{_fm(a2_bp)}</div></div>
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Structures</div><div class="acct-bar-val">{a2_pos_count}</div></div>
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Today P&amp;L</div><div class="acct-bar-val" style="color:{a2_pnl_color}">{a2_pnl_sign}{_fm(a2_pnl)} ({a2_pnl_sign}{a2_pnl_pct:.2f}%)</div></div>
+  <div class="acct-bar-item"><div class="acct-bar-lbl">Mode</div><div class="acct-bar-val" style="color:{a2_color}">{a2_mode}</div></div>
+</div>
+<div class="card" style="display:none">
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
     <div>
-      <div class="acct-row"><span class="acct-label">Equity</span><span class="acct-val">{_fm(a2_equity)}</span></div>
-      <div class="acct-row"><span class="acct-label">Cash</span><span class="acct-val">{_fm(a2_cash)}</span></div>
-      <div class="acct-row"><span class="acct-label">Buying Power</span><span class="acct-val">{_fm(a2_bp)}</span></div>
-    </div>
-    <div style="padding-left:16px;border-left:1px solid #21262d">
-      <div class="acct-row"><span class="acct-label">Positions</span><span class="acct-val">{a2_pos_count}</span></div>
-      <div class="acct-row"><span class="acct-label">Today P&amp;L</span><span class="acct-val" style="color:{a2_pnl_color}">{a2_pnl_sign}{_fm(a2_pnl)} ({a2_pnl_sign}{a2_pnl_pct:.2f}%)</span></div>
-      <div class="acct-row"><span class="acct-label">Mode</span><span class="acct-val" style="color:{a2_color}">{a2_mode}</span></div>
-    </div>
-  </div>
 </div>
 
-<div class="section-label">Top 5 A2 Theses</div>
+<div class="section-label">Top A2 Theses</div>
 <div class="card">{a2_theses_html}</div>
 
-<div class="section-label">Positions &mdash; A2 Options ({a2_pos_count} open)</div>
+<div class="section-label">Open Structures ({a2_pos_count})</div>
 <div class="card">{a2_cards_html}</div>
 
-<div class="section-label">Last 5 Decisions &mdash; A2</div>
-<div class="card"><div class="dec-panel">{a2_decs_html}</div></div>
-
-<div class="section-label">Recent Orders &mdash; A2 (last 6)</div>
-<div class="card">{a2_orders_html}</div>
-
-<div class="section-label">Strategy Pipeline &mdash; Last Cycle</div>
-<div class="card">
-  <div class="kv"><span class="kv-label">Last Cycle</span><span class="kv-val muted">{a2_ts}</span></div>
-  <div class="kv"><span class="kv-label">Outcome</span><span class="kv-val">{a2_action_str}</span></div>
-  <div class="kv"><span class="kv-label">Debate Direction</span><span class="kv-val">{debate_dir}</span></div>
-  <div class="kv"><span class="kv-label">Debate Synthesis</span><span class="kv-val">{debate_synth}</span></div>
-  <div class="kv"><span class="kv-label">Confidence</span><span class="kv-val">{debate_conf}</span></div>
-  {pipeline_html}
+<div class="compact-grid">
+  <div>
+    <div class="section-label">Last 5 Decisions</div>
+    <div class="card"><div class="dec-panel">{a2_decs_html}</div></div>
+    <div class="section-label">Recent Orders (last 6)</div>
+    <div class="card">{a2_orders_html}</div>
+  </div>
+  <div>
+    <div class="section-label">Strategy Pipeline &mdash; Last Cycle</div>
+    <div class="card">
+      <div class="kv"><span class="kv-label">Last Cycle</span><span class="kv-val muted">{a2_ts}</span></div>
+      <div class="kv"><span class="kv-label">Outcome</span><span class="kv-val">{a2_action_str}</span></div>
+      <div class="kv"><span class="kv-label">Debate Direction</span><span class="kv-val">{debate_dir}</span></div>
+      <div class="kv"><span class="kv-label">Debate Synthesis</span><span class="kv-val">{debate_synth}</span></div>
+      <div class="kv"><span class="kv-label">Confidence</span><span class="kv-val">{debate_conf}</span></div>
+      {pipeline_html}
+    </div>
+    <div class="section-label">Strategy Performance (7d)</div>
+    {a2_perf_html}
+    <div class="section-label">IV Environment</div>
+    <div class="card">{iv_summary_html}</div>
+  </div>
 </div>
-
-<div class="section-label">Strategy Performance (7d)</div>
-{a2_perf_html}
-
-<div class="section-label">IV Environment &mdash; Open Structures</div>
-<div class="card">{iv_summary_html}</div>
-
 <div style="height:24px"></div>
 </div>"""
-    return _page_shell("A2 Options", nav, body)
+    return _page_shell("A2 Options", nav, body, ticker)
 
 
 def _page_brief(status: dict, now_et: str) -> str:
     a1_mode = status["a1_mode"].get("mode", "unknown").upper()
     a2_mode = status["a2_mode"].get("mode", "unknown").upper()
-    a1_color = _mode_color(a1_mode)
-    a2_color = _mode_color(a2_mode)
-    nav = _nav_html("brief", now_et, a1_color, a2_color)
+    nav = _nav_html("brief", now_et, a1_mode, a2_mode)
+    ticker = _build_ticker_html(status["positions"])
 
     brief = status.get("intelligence_brief", {})
     if not brief:
-        body = '<div style="padding:40px;color:#8b949e;text-align:center;font-size:16px">Intelligence brief not yet generated.<br>Runs at 4:00 AM ET (premarket) and 9:25 AM ET (market open).</div>'
-        return _page_shell("Intelligence Brief", nav, body)
+        body = '<div style="padding:40px;color:var(--text-muted);text-align:center;font-size:14px">Intelligence brief not yet generated.<br>Runs at 4:00 AM ET (premarket) and 9:25 AM ET (market open).</div>'
+        return _page_shell("Intelligence Brief", nav, body, ticker)
 
     gen_at = brief.get("generated_at", "")
     brief_type = brief.get("brief_type", "?")
@@ -2359,14 +2634,14 @@ def _page_brief(status: dict, now_et: str) -> str:
     </div>''' if watch else ""
 
     body = (
-        '<div style="max-width:1200px;margin:0 auto;padding:0 8px">'
+        '<div class="container">'
         + header_html + stale_html + updates_html
-        + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:0">'
+        + '<div class="compact-grid" style="gap:12px">'
         + '<div>' + regime_html + sectors_html + earnings_html + insider_html + macro_html + '</div>'
         + '<div>' + longs_html + bears_html + watch_html + avoid_html + '</div>'
         + '</div></div>'
     )
-    return _page_shell("Intelligence Brief", nav, body)
+    return _page_shell("Intelligence Brief", nav, body, ticker)
 
 
 # ── Build status dict ─────────────────────────────────────────────────────────
@@ -2543,10 +2818,13 @@ def _closed_trades() -> list[dict]:
 
 def _page_trades(now_et: str) -> str:
     a1 = _alpaca_a1()
-    a1_color = "#3fb950" if a1.get("ok") else "#f85149"
-    a2 = _alpaca_a2()
-    a2_color = "#3fb950" if a2.get("ok") else "#f85149"
-    nav = _nav_html("trades", now_et, a1_color, a2_color)
+    _a1_positions = [
+        {"symbol": getattr(p, "symbol", ""), "current": float(getattr(p, "current_price", 0) or 0),
+         "unreal_plpc": float(getattr(p, "unrealized_plpc", 0) or 0) * 100}
+        for p in a1.get("positions", [])
+    ]
+    nav = _nav_html("trades", now_et)
+    ticker = _build_ticker_html(_a1_positions)
 
     result = _closed_trades()
     trades, bug_log = result if isinstance(result, tuple) else (result, [])
@@ -2680,7 +2958,7 @@ def _page_trades(now_et: str) -> str:
         + (bugs_html or '<div class="card"><p class="muted" style="font-size:13px">No logged bugs.</p></div>')
         + '</div>'
     )
-    return _page_shell("Trade Journal", nav, body)
+    return _page_shell("Trade Journal", nav, body, ticker)
 
 
 @app.route("/trades")
@@ -2708,6 +2986,145 @@ def api_trades():
         },
         "bug_log": bug_log,
     })
+
+
+def _page_transparency(now_et: str) -> str:
+    a1 = _alpaca_a1()
+    _a1_positions = [
+        {"symbol": getattr(p, "symbol", ""), "current": float(getattr(p, "current_price", 0) or 0),
+         "unreal_plpc": float(getattr(p, "unrealized_plpc", 0) or 0) * 100}
+        for p in a1.get("positions", [])
+    ]
+    nav = _nav_html("transparency", now_et)
+    ticker = _build_ticker_html(_a1_positions)
+
+    # ── strategy config ────────────────────────────────────────────────────────
+    try:
+        import json as _json
+        _cfg = _json.loads(Path("strategy_config.json").read_text())
+    except Exception:
+        _cfg = {}
+
+    params = _cfg.get("parameters", {})
+    director_notes = _cfg.get("director_notes", "No director notes available.")
+    active_strategy = _cfg.get("active_strategy", "hybrid")
+    ff = _cfg.get("feature_flags", {})
+    shadow_flags = _cfg.get("shadow_flags", {})
+
+    def _flag_row(name: str, val: object) -> str:
+        enabled = bool(val)
+        badge = '<span class="badge-g">ON</span>' if enabled else '<span class="badge-r">OFF</span>'
+        return f'<tr><td style="font-family:monospace;font-size:11px">{name}</td><td>{badge}</td></tr>'
+
+    flags_html = "".join(_flag_row(k, v) for k, v in {**ff, **shadow_flags}.items()) or (
+        '<tr><td colspan="2" class="muted">No flags configured.</td></tr>'
+    )
+
+    def _param_row(k: str, v: object) -> str:
+        return (
+            f'<tr><td style="font-family:monospace;font-size:11px;color:var(--text-secondary)">{k}</td>'
+            f'<td style="text-align:right;font-family:monospace;font-size:11px">{v}</td></tr>'
+        )
+
+    params_html = "".join(_param_row(k, v) for k, v in params.items()) or (
+        '<tr><td colspan="2" class="muted">No parameters.</td></tr>'
+    )
+
+    # ── cost data ──────────────────────────────────────────────────────────────
+    try:
+        costs = _json.loads(Path("data/costs/daily_costs.json").read_text())
+        daily_cost = costs.get("daily_cost", 0.0)
+        daily_calls = costs.get("daily_calls", 0)
+        by_caller = costs.get("by_caller", {})
+    except Exception:
+        daily_cost = 0.0
+        daily_calls = 0
+        by_caller = {}
+
+    caller_rows = ""
+    for caller, info in sorted(by_caller.items(), key=lambda x: -x[1].get("cost", 0)):
+        c = info.get("cost", 0.0)
+        n = info.get("calls", 0)
+        pct = (c / daily_cost * 100) if daily_cost else 0
+        bar_w = f"{pct:.0f}%"
+        caller_rows += (
+            f'<tr><td style="font-size:11px;font-family:monospace">{caller}</td>'
+            f'<td style="text-align:right;font-size:11px">{n}</td>'
+            f'<td style="text-align:right;font-size:11px">${c:.3f}</td>'
+            f'<td style="width:80px"><div class="range-track" style="margin-top:3px">'
+            f'<div style="height:5px;width:{bar_w};background:var(--accent-blue);border-radius:3px"></div>'
+            f'</div></td></tr>'
+        )
+    if not caller_rows:
+        caller_rows = '<tr><td colspan="4" class="muted">No cost data.</td></tr>'
+
+    # ── time-bound actions ─────────────────────────────────────────────────────
+    tba = _cfg.get("time_bound_actions", [])
+    if tba:
+        tba_rows = ""
+        for action in tba:
+            sym = action.get("symbol", "")
+            deadline = action.get("deadline", "")
+            reason = action.get("reason", "")
+            tba_rows += (
+                f'<tr><td style="font-family:monospace;font-size:11px">{sym}</td>'
+                f'<td style="font-size:11px">{deadline}</td>'
+                f'<td style="font-size:11px;color:var(--text-secondary)">{reason}</td></tr>'
+            )
+        tba_html = (
+            '<div class="section-label">Time-Bound Actions</div>'
+            '<div class="card" style="padding:0"><table class="data-table"><thead><tr>'
+            '<th>Symbol</th><th>Deadline</th><th>Reason</th>'
+            f'</tr></thead><tbody>{tba_rows}</tbody></table></div>'
+        )
+    else:
+        tba_html = ""
+
+    body = (
+        '<div class="container">'
+        # ── strategy overview ──────────────────────────────────────────────────
+        '<div class="section-label">Strategy</div>'
+        f'<div class="card">'
+        f'<div class="kv"><span class="kv-k">Active Strategy</span>'
+        f'<span class="kv-v" style="text-transform:uppercase;letter-spacing:.05em">{active_strategy}</span></div>'
+        f'<div class="section-label" style="margin-top:12px">Director Notes</div>'
+        f'<p style="font-size:12px;color:var(--text-secondary);line-height:1.6;margin:0">{director_notes}</p>'
+        f'</div>'
+        # ── risk parameters ────────────────────────────────────────────────────
+        '<div class="section-label">Risk Parameters</div>'
+        '<div class="card" style="padding:0">'
+        '<table class="data-table"><thead><tr><th>Parameter</th><th style="text-align:right">Value</th></tr></thead>'
+        f'<tbody>{params_html}</tbody></table></div>'
+        + tba_html
+        # ── feature flags ──────────────────────────────────────────────────────
+        + '<div class="section-label">Feature Flags</div>'
+        '<div class="card" style="padding:0">'
+        '<table class="data-table"><thead><tr><th>Flag</th><th>State</th></tr></thead>'
+        f'<tbody>{flags_html}</tbody></table></div>'
+        # ── claude cost breakdown ──────────────────────────────────────────────
+        + '<div class="section-label">Claude Cost — Today</div>'
+        f'<div class="card">'
+        f'<div class="stat-grid" style="margin-bottom:12px">'
+        f'<div class="stat-box"><div class="stat-label">Daily Spend</div>'
+        f'<div class="stat-val" style="color:var(--accent-amber)">${daily_cost:.2f}</div></div>'
+        f'<div class="stat-box"><div class="stat-label">API Calls</div>'
+        f'<div class="stat-val">{daily_calls}</div></div>'
+        f'<div class="stat-box"><div class="stat-label">Monthly Est.</div>'
+        f'<div class="stat-val" style="color:var(--text-secondary)">${daily_cost*30:.0f}</div></div>'
+        f'</div>'
+        '<table class="data-table" style="margin-top:8px"><thead><tr>'
+        '<th>Caller</th><th style="text-align:right">Calls</th><th style="text-align:right">Cost</th><th>Share</th>'
+        f'</tr></thead><tbody>{caller_rows}</tbody></table>'
+        f'</div>'
+        + '</div>'
+    )
+    return _page_shell("Transparency", nav, body, ticker)
+
+
+@app.route("/transparency")
+@requires_auth
+def page_transparency():
+    return _page_transparency(_now_et())
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

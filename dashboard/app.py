@@ -2754,30 +2754,35 @@ def _load_perf_summary() -> dict:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.route("/")
+@requires_auth
 def index():
     status = _build_status()
     return _page_overview(status, _now_et())
 
 
 @app.route("/a1")
+@requires_auth
 def page_a1():
     status = _build_status()
     return _page_a1(status, _now_et())
 
 
 @app.route("/a2")
+@requires_auth
 def page_a2():
     status = _build_status()
     return _page_a2(status, _now_et())
 
 
 @app.route("/brief")
+@requires_auth
 def page_brief():
     status = _build_status()
     return _page_brief(status, _now_et())
 
 
 @app.route("/api/status")
+@requires_auth
 def api_status():
     status = _build_status()
     return jsonify({
@@ -3024,11 +3029,13 @@ def _page_trades(now_et: str) -> str:
 
 
 @app.route("/trades")
+@requires_auth
 def page_trades():
     return _page_trades(_now_et())
 
 
 @app.route("/api/trades")
+@requires_auth
 def api_trades():
     result = _closed_trades()
     trades, bug_log = result if isinstance(result, tuple) else (result, [])
@@ -3236,6 +3243,7 @@ def _page_transparency(now_et: str) -> str:
 
 
 @app.route("/transparency")
+@requires_auth
 def page_transparency():
     return _page_transparency(_now_et())
 
@@ -3311,7 +3319,11 @@ def _page_theater(now_et: str) -> str:
     cycle_json = json.dumps(cycle, default=str)
     trades_json = json.dumps(trades_sum, default=str)
 
+    import base64 as _b64
+    _auth_b64 = _b64.b64encode(f"{DASHBOARD_USER}:{DASHBOARD_PASSWORD}".encode()).decode()
+
     body = f"""
+<div id="auth-b64" data-val="{_auth_b64}" style="display:none"></div>
 <div class="container" style="padding-bottom:60px">
 
   <!-- Mode toggle -->
@@ -3466,6 +3478,11 @@ var _tradesData = {trades_json};
 var _currentCycle = _cycleData;
 var _selectedStage = null;
 
+function _authHeader() {{
+  var el = document.getElementById('auth-b64');
+  return 'Basic ' + (el ? el.getAttribute('data-val') : btoa('admin:bullbearbot'));
+}}
+
 function setMode(mode) {{
   document.getElementById('panel-cycle').style.display = mode==='cycle' ? '' : 'none';
   document.getElementById('panel-trade').style.display  = mode==='trade' ? '' : 'none';
@@ -3511,7 +3528,7 @@ function renderStageDetail(st, name) {{
 function loadCycle(index) {{
   var li = document.getElementById('loading-indicator');
   if (li) li.style.display = 'inline-block';
-  fetch('/api/theater/cycle/' + index)
+  fetch('/api/theater/cycle/' + index, {{credentials: 'include', headers: {{'Authorization': _authHeader()}}}})
     .then(r => r.json())
     .then(function(data) {{
       _currentCycle = data;
@@ -3579,7 +3596,8 @@ function loadTrade(symbol, entryDate) {{
   document.querySelectorAll('.trade-pill').forEach(p => p.classList.remove('selected'));
   var li = document.getElementById('loading-indicator');
   if (li) li.style.display = 'inline-block';
-  fetch('/api/theater/trade/' + symbol + '?entry_date=' + entryDate)
+  fetch('/api/theater/trade/' + symbol + '?entry_date=' + entryDate,
+        {{credentials: 'include', headers: {{'Authorization': _authHeader()}}}})
     .then(r => r.json())
     .then(function(data) {{
       renderTradeLifecycle(data);
@@ -3786,11 +3804,13 @@ def _theater_ideas_html(ideas: list) -> str:
 
 
 @app.route("/theater")
+@requires_auth
 def page_theater():
     return _page_theater(_now_et())
 
 
 @app.route("/api/theater/cycle/<cycle_index>")
+@requires_auth
 def api_theater_cycle(cycle_index: str):
     try:
         from decision_theater import get_cycle_view
@@ -3800,6 +3820,7 @@ def api_theater_cycle(cycle_index: str):
 
 
 @app.route("/api/theater/trade/<symbol>")
+@requires_auth
 def api_theater_trade(symbol: str):
     try:
         from decision_theater import get_trade_lifecycle
@@ -3810,6 +3831,7 @@ def api_theater_trade(symbol: str):
 
 
 @app.route("/api/theater/trades")
+@requires_auth
 def api_theater_trades():
     try:
         from decision_theater import get_all_trades_summary
@@ -3820,4 +3842,4 @@ def api_theater_trades():
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=DASHBOARD_PORT, debug=False)
+    app.run(host="127.0.0.1", port=DASHBOARD_PORT, debug=False)

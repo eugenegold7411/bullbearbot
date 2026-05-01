@@ -30,5 +30,12 @@ jobs:
         run: make import-check
 
       - name: Test
-        run: make test-ci
+        run: make test-ci 2>&1 | tee /tmp/test-output.txt; exit ${PIPESTATUS[0]}
+
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: /tmp/test-output.txt
 

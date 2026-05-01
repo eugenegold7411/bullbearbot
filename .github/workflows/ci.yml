@@ -30,7 +30,17 @@ jobs:
         run: make import-check
 
       - name: Test
-        run: make test-ci 2>&1 | tee /tmp/test-output.txt; exit ${PIPESTATUS[0]}
+        run: |
+          make test-ci 2>&1 | tee /tmp/test-output.txt
+          EXIT=${PIPESTATUS[0]}
+          if [ $EXIT -ne 0 ]; then
+            echo "## Test Failures" >> $GITHUB_STEP_SUMMARY
+            grep -E "^FAILED|^ERROR|short test summary|= FAILED|= ERROR" /tmp/test-output.txt >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -A 20 "short test summary" /tmp/test-output.txt >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          exit $EXIT
 
       - name: Upload test output on failure
         if: failure()

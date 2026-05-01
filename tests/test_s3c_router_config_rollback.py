@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 _BOT_DIR = Path(__file__).resolve().parent.parent
 if str(_BOT_DIR) not in sys.path:
     sys.path.insert(0, str(_BOT_DIR))
@@ -390,8 +392,12 @@ class TestRollbackFlagStage3(unittest.TestCase):
         record = self._run_debate(config)
         self.assertEqual(record.no_trade_reason, "rollback_active")
 
+    @pytest.mark.requires_prompts
     def test_all_false_does_not_skip_debate(self):
         # All flags false → debate proceeds (mock Claude so it doesn't actually call)
+        p = Path(__file__).parent.parent / "prompts" / "system_options_v1.txt"
+        if not p.exists():
+            pytest.skip("prompts/system_options_v1.txt not in repo")
         config = {"a2_rollback": {"force_no_trade": False, "disable_bounded_debate": False,
                                   "disable_candidate_generation": False}}
         import bot_options_stage3_debate as s3

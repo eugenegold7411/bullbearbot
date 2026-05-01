@@ -22,6 +22,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
@@ -135,8 +137,12 @@ class TestStage3ConfidenceGate(unittest.TestCase):
 class TestStage3PromptCalibration(unittest.TestCase):
     """TC5: conf_floor parameter appears in the debate prompt text."""
 
+    @pytest.mark.requires_prompts
     def test_tc5_conf_floor_in_bounded_prompt(self):
         """TC5: run_options_debate with conf_floor=0.75 includes '0.75' in prompt."""
+        p = Path(__file__).parent.parent / "prompts" / "system_options_v1.txt"
+        if not p.exists():
+            pytest.skip("prompts/system_options_v1.txt not in repo")
         from bot_options_stage3_debate import run_options_debate
 
         captured_prompt = {}

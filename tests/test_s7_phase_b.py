@@ -7,7 +7,10 @@ S7-E: Allocator output wired into Stage 3
 S7-F: Trim score threshold reads from config instead of hardcoded
 """
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 # ─────────────────────────────────────────────────────────────────────────────
 # S7-P — Position Cap Headroom Fix
@@ -363,8 +366,12 @@ class TestAllocatorSectionWiring(unittest.TestCase):
         "minutes_since_open": 30,
     }
 
+    @pytest.mark.requires_prompts
     def test_build_user_prompt_receives_allocator_section(self):
         """build_user_prompt() accepts allocator_section and injects it into FULL prompt."""
+        p = Path(__file__).parent.parent / "prompts" / "system_v1.txt"
+        if not p.exists():
+            pytest.skip("prompts/system_v1.txt not in repo")
         from bot_stage3_decision import build_user_prompt
 
         acct = MagicMock()
@@ -386,8 +393,12 @@ class TestAllocatorSectionWiring(unittest.TestCase):
         self.assertIn("PORTFOLIO ALLOCATOR", prompt)
         self.assertIn("TRIM XBI", prompt)
 
+    @pytest.mark.requires_prompts
     def test_build_user_prompt_no_allocator_uses_fallback_header(self):
         """When allocator_section is the fallback string, it still appears in FULL prompt."""
+        p = Path(__file__).parent.parent / "prompts" / "system_v1.txt"
+        if not p.exists():
+            pytest.skip("prompts/system_v1.txt not in repo")
         from bot_stage3_decision import build_user_prompt
         from portfolio_allocator import format_allocator_section
 

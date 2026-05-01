@@ -203,11 +203,18 @@ def _load_earnings_days_away(symbol: str) -> Optional[int]:
         if ovr_path.exists():
             try:
                 ovrs = json.loads(ovr_path.read_text())
-                if isinstance(ovrs, list) and ovrs:
-                    ovr_syms = {(o.get("symbol") or "").upper() for o in ovrs}
+                if isinstance(ovrs, dict) and ovrs:
+                    ovr_syms = {k.upper() for k in ovrs}
                     entries = [e for e in cal.get("calendar", [])
                                if (e.get("symbol") or "").upper() not in ovr_syms]
-                    entries.extend(ovrs)
+                    for raw_sym, ovr_data in ovrs.items():
+                        entries.append({
+                            "symbol": raw_sym.upper(),
+                            "earnings_date": ovr_data.get("earnings_date", ""),
+                            "timing": ovr_data.get("timing", "unknown"),
+                            "eps_estimate": None,
+                            "source": ovr_data.get("source", "manual"),
+                        })
                     cal = dict(cal)
                     cal["calendar"] = entries
             except Exception:

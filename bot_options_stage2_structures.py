@@ -272,11 +272,18 @@ def _route_strategy(
                 if ovr_path.exists():
                     try:
                         ovrs = _json.loads(ovr_path.read_text())
-                        if isinstance(ovrs, list) and ovrs:
-                            ovr_syms = {(o.get("symbol") or "").upper() for o in ovrs}
+                        if isinstance(ovrs, dict) and ovrs:
+                            ovr_syms = {k.upper() for k in ovrs}
                             merged = [e for e in cal.get("calendar", [])
                                       if (e.get("symbol") or "").upper() not in ovr_syms]
-                            merged.extend(ovrs)
+                            for raw_sym, ovr_data in ovrs.items():
+                                merged.append({
+                                    "symbol": raw_sym.upper(),
+                                    "earnings_date": ovr_data.get("earnings_date", ""),
+                                    "timing": ovr_data.get("timing", "unknown"),
+                                    "eps_estimate": None,
+                                    "source": ovr_data.get("source", "manual"),
+                                })
                             cal = dict(cal)
                             cal["calendar"] = merged
                     except Exception:
@@ -444,11 +451,18 @@ def _route_strategy(
                 if ovr_path.exists():
                     try:
                         ovrs = _json.loads(ovr_path.read_text())
-                        if isinstance(ovrs, list) and ovrs:
-                            ovr_syms = {(o.get("symbol") or "").upper() for o in ovrs}
+                        if isinstance(ovrs, dict) and ovrs:
+                            ovr_syms = {k.upper() for k in ovrs}
                             merged = [e for e in cal.get("calendar", [])
                                       if (e.get("symbol") or "").upper() not in ovr_syms]
-                            merged.extend(ovrs)
+                            for raw_sym, ovr_data in ovrs.items():
+                                merged.append({
+                                    "symbol": raw_sym.upper(),
+                                    "earnings_date": ovr_data.get("earnings_date", ""),
+                                    "timing": ovr_data.get("timing", "unknown"),
+                                    "eps_estimate": None,
+                                    "source": ovr_data.get("source", "manual"),
+                                })
                             cal = dict(cal)
                             cal["calendar"] = merged
                     except Exception:

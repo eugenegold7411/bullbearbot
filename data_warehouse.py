@@ -924,26 +924,24 @@ def load_earnings_calendar() -> dict:
     if overrides_path.exists():
         try:
             overrides = json.loads(overrides_path.read_text())
-            if isinstance(overrides, list) and overrides:
+            if isinstance(overrides, dict) and overrides:
                 cal = result.get("calendar", []) if isinstance(result, dict) else []
-                override_syms = {(o.get("symbol") or "").upper() for o in overrides}
+                override_syms = {k.upper() for k in overrides}
                 merged = [e for e in cal
                           if (e.get("symbol") or "").upper() not in override_syms]
-                for o in overrides:
-                    sym = (o.get("symbol") or "").upper()
-                    if not sym:
-                        continue
+                for raw_sym, ovr_data in overrides.items():
+                    sym = raw_sym.upper()
                     merged.append({
                         "symbol":        sym,
-                        "earnings_date": o.get("earnings_date", ""),
-                        "timing":        o.get("timing", "unknown"),
+                        "earnings_date": ovr_data.get("earnings_date", ""),
+                        "timing":        ovr_data.get("timing", "unknown"),
                         "eps_estimate":  None,
-                        "source":        o.get("source", "manual"),
+                        "source":        ovr_data.get("source", "manual"),
                     })
                 result = dict(result)
                 result["calendar"] = merged
                 log.debug("[EARNINGS] merged %d override(s): %s",
-                          len(overrides), [o.get("symbol") for o in overrides])
+                          len(overrides), list(overrides.keys()))
         except Exception as exc:
             log.debug("[EARNINGS] overrides merge failed (non-fatal): %s", exc)
 

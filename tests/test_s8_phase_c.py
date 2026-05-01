@@ -72,7 +72,7 @@ class TestLoadEarningsCalendarOverrides(unittest.TestCase):
         cal_path.write_text(json.dumps({"source": "alphavantage", "calendar": entries}))
         return cal_path
 
-    def _write_overrides(self, tmp_dir: Path, overrides: list) -> Path:
+    def _write_overrides(self, tmp_dir: Path, overrides: dict) -> Path:
         ov_path = tmp_dir / "earnings_overrides.json"
         ov_path.write_text(json.dumps(overrides))
         return ov_path
@@ -99,10 +99,9 @@ class TestLoadEarningsCalendarOverrides(unittest.TestCase):
                 {"symbol": "SBUX", "earnings_date": "2099-01-01", "timing": "unknown"},
                 {"symbol": "AAPL", "earnings_date": "2026-05-01"},
             ])
-            self._write_overrides(tmp, [
-                {"symbol": "SBUX", "earnings_date": "2026-04-29",
-                 "timing": "after-hours", "source": "manual"},
-            ])
+            self._write_overrides(tmp, {
+                "SBUX": {"earnings_date": "2026-04-29", "timing": "after-hours", "source": "manual"},
+            })
             with patch.object(dw, "MARKET_DIR", tmp):
                 result = dw.load_earnings_calendar()
             cal = result.get("calendar", [])
@@ -121,9 +120,9 @@ class TestLoadEarningsCalendarOverrides(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             self._write_cal(tmp, [{"symbol": "AAPL", "earnings_date": "2026-05-01"}])
-            self._write_overrides(tmp, [
-                {"symbol": "SBUX", "earnings_date": "2026-04-29", "source": "manual"},
-            ])
+            self._write_overrides(tmp, {
+                "SBUX": {"earnings_date": "2026-04-29", "source": "manual"},
+            })
             with patch.object(dw, "MARKET_DIR", tmp):
                 result = dw.load_earnings_calendar()
             syms = {e["symbol"] for e in result.get("calendar", [])}
@@ -144,14 +143,14 @@ class TestLoadEarningsCalendarOverrides(unittest.TestCase):
             syms = {e["symbol"] for e in result.get("calendar", [])}
             self.assertIn("AAPL", syms)
 
-    def test_empty_overrides_list_is_no_op(self):
+    def test_empty_overrides_dict_is_no_op(self):
         import tempfile
 
         import data_warehouse as dw
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             self._write_cal(tmp, [{"symbol": "AAPL", "earnings_date": "2026-05-01"}])
-            self._write_overrides(tmp, [])
+            self._write_overrides(tmp, {})
             with patch.object(dw, "MARKET_DIR", tmp):
                 result = dw.load_earnings_calendar()
             syms = {e["symbol"] for e in result.get("calendar", [])}
@@ -164,9 +163,9 @@ class TestLoadEarningsCalendarOverrides(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             # No earnings_calendar.json
-            self._write_overrides(tmp, [
-                {"symbol": "SBUX", "earnings_date": "2026-04-29", "source": "manual"},
-            ])
+            self._write_overrides(tmp, {
+                "SBUX": {"earnings_date": "2026-04-29", "source": "manual"},
+            })
             with patch.object(dw, "MARKET_DIR", tmp):
                 result = dw.load_earnings_calendar()
             syms = {e["symbol"] for e in result.get("calendar", [])}

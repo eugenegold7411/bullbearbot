@@ -64,7 +64,7 @@ current_positions: {"a1_equity": [{"symbol": str, "shares": int, "entry": float,
 
 watch_list: [{"symbol": str, "score": int, "direction": str, "entry_trigger": "max 50 chars"}] — up to 8 items
 
-earnings_pipeline: [{"symbol": str, "timing": "today_postmarket|tomorrow_premarket|tomorrow_postmarket|this_week", "iv_rank": float or null, "beat_history": "max 30 chars", "held_by_a1": bool, "a1_notes": "max 40 chars", "a2_rule": "max 20 chars", "a2_notes": "max 40 chars"}] — up to 6 items
+earnings_pipeline: [{"symbol": str, "timing": "today_premarket|today_postmarket|tomorrow_premarket|tomorrow_postmarket|this_week", "iv_rank": float or null, "beat_history": "max 30 chars", "held_by_a1": bool, "a1_notes": "max 40 chars", "a2_rule": "max 20 chars", "a2_notes": "max 40 chars"}] — up to 6 items
 
 insider_activity: {"high_conviction": ["max 60 chars each, max 3 items"], "congressional": ["max 60 chars each, max 3 items"], "form4_purchases": ["max 60 chars each, max 3 items"]}
 
@@ -1282,38 +1282,33 @@ def _build_conviction_state(full_brief: dict) -> str:
     # Build lines
     lines = [f"CONVICTION STATE [updated {now_str}]"]
 
-    if longs:
-        # Wrap at ~80 chars per line
-        entries = [fmt_entry(s) for s in longs]
-        prefix_long = "HIGH LONG:    "
-        prefix_cont = "              "
-        current_line = prefix_long
-        first_line = True
-        for i, entry in enumerate(entries):
-            if len(current_line) + len(entry) + 2 > 90 and not first_line:
-                lines.append(current_line.rstrip())
-                current_line = prefix_cont + entry + "  "
+    def _wrap_group(group: list, prefix: str) -> None:
+        if not group:
+            return
+        cont = " " * len(prefix)
+        cur = prefix
+        first = True
+        for entry in [fmt_entry(s) for s in group]:
+            if len(cur) + len(entry) + 2 > 90 and not first:
+                lines.append(cur.rstrip())
+                cur = cont + entry + "  "
             else:
-                current_line += entry + "  "
-                first_line = False
-        if current_line.strip():
-            lines.append(current_line.rstrip())
+                cur += entry + "  "
+                first = False
+        if cur.strip():
+            lines.append(cur.rstrip())
 
-    if bears:
-        entries = [fmt_entry(s) for s in bears]
-        prefix_bear = "HIGH BEARISH: "
-        prefix_cont = "              "
-        current_line = prefix_bear
-        first_line = True
-        for entry in entries:
-            if len(current_line) + len(entry) + 2 > 90 and not first_line:
-                lines.append(current_line.rstrip())
-                current_line = prefix_cont + entry + "  "
-            else:
-                current_line += entry + "  "
-                first_line = False
-        if current_line.strip():
-            lines.append(current_line.rstrip())
+    high_longs = [s for s in longs if (s.get("conviction") or "").upper() == "HIGH"]
+    med_longs  = [s for s in longs if (s.get("conviction") or "").upper() != "HIGH"]
+    _wrap_group(high_longs, "HIGH LONG:    ")
+    _wrap_group(med_longs,  "MED LONG:     ")
+
+    high_bears = [s for s in bears if (s.get("conviction") or "").upper() == "HIGH"]
+    med_bears  = [s for s in bears if (s.get("conviction") or "").upper() == "MEDIUM"]
+    low_bears  = [s for s in bears if (s.get("conviction") or "").upper() not in ("HIGH", "MEDIUM")]
+    _wrap_group(high_bears, "HIGH BEARISH: ")
+    _wrap_group(med_bears,  "MED BEARISH:  ")
+    _wrap_group(low_bears,  "LOW BEARISH:  ")
 
     result = "\n".join(lines)
 
@@ -1497,6 +1492,170 @@ def load_sonnet_brief() -> dict:
         return json.loads(_SONNET_BRIEF_FILE.read_text())
     except Exception:
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Brief post-processing (data quality fixes IQ-01 … IQ-11)
+# ---------------------------------------------------------------------------
+
+_STRATEGY_CONFIG_PATH = _BASE_DIR / "strategy_config.json"
+
+
+def _load_brief_bearish_max_score() -> int:
+    """Load brief.bearish_max_score from strategy_config.json; default 40."""
+    try:
+        cfg = json.loads(_STRATEGY_CONFIG_PATH.read_text())
+        return int(cfg.get("brief", {}).get("bearish_max_score", 40))
+    except Exception:
+        return 40
+
+
+def _filter_reported_earnings(full_brief: dict) -> dict:
+    """
+    Move today_premarket entries to reported_today once market is open (≥09:30 ET).
+    Pre-market reports are already public by market open; keeping them in the active
+    pipeline misleads A2 into treating them as pending binary events.
+    """
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    now_et = datetime.now(et)
+    market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+
+    pipeline = full_brief.get("earnings_pipeline", [])
+    if not pipeline or now_et < market_open:
+        return full_brief
+
+    remaining: list = []
+    reported: list = list(full_brief.get("reported_today", []))
+    for entry in pipeline:
+        if entry.get("timing") == "today_premarket":
+            reported.append(entry)
+            log.debug("[BRIEF] %s moved to reported_today (pre-market report already out)",
+                      entry.get("symbol"))
+        else:
+            remaining.append(entry)
+
+    full_brief["earnings_pipeline"] = remaining
+    full_brief["reported_today"] = reported
+    return full_brief
+
+
+def _filter_brief_bearish(full_brief: dict) -> dict:
+    """Remove high_conviction_bearish picks whose score exceeds brief.bearish_max_score."""
+    threshold = _load_brief_bearish_max_score()
+    filtered: list = []
+    for item in full_brief.get("high_conviction_bearish", []):
+        score = item.get("score", 0)
+        if score > threshold:
+            log.warning("[BRIEF] removed %s from bearish (score=%s > %s threshold)",
+                        item.get("symbol"), score, threshold)
+        else:
+            filtered.append(item)
+    full_brief["high_conviction_bearish"] = filtered
+    return full_brief
+
+
+def _sync_bearish_to_avoid(full_brief: dict) -> dict:
+    """Union HIGH+MEDIUM conviction bearish picks into avoid_list — no duplicates."""
+    bearish = full_brief.get("high_conviction_bearish", [])
+    avoid = list(full_brief.get("avoid_list", []))
+    avoid_syms = {
+        (a.get("symbol") if isinstance(a, dict) else a)
+        for a in avoid
+    }
+    for pick in bearish:
+        sym = pick.get("symbol") if isinstance(pick, dict) else pick
+        conv = (pick.get("conviction", "LOW") if isinstance(pick, dict) else "LOW").upper()
+        if conv in ("HIGH", "MEDIUM") and sym and sym not in avoid_syms:
+            avoid.append({
+                "symbol": sym,
+                "reason": f"bearish {conv.lower()} conviction score {pick.get('score', '?')}"[:50],
+            })
+            avoid_syms.add(sym)
+    full_brief["avoid_list"] = avoid
+    return full_brief
+
+
+def _load_prev_daily_brief() -> dict | None:
+    """Load the most recent prior update from today's daily brief file. None if no prior."""
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    date_str = datetime.now(et).strftime("%Y%m%d")
+    daily_file = _BRIEFS_DIR / f"morning_brief_{date_str}.json"
+    if not daily_file.exists():
+        return None
+    try:
+        daily = json.loads(daily_file.read_text())
+        updates = daily.get("updates", [])
+        if updates:
+            return updates[-1]
+    except Exception:
+        pass
+    return None
+
+
+def _compute_brief_diff(new_brief: dict, prev_brief: dict, brief_type: str) -> list:
+    """
+    Compute deterministic latest_updates from prev→new brief comparison.
+    Direction words (up/down) come from actual score arithmetic, not Claude inference.
+    Only populated for intraday_update brief_type; returns [] otherwise.
+    """
+    if brief_type != "intraday_update":
+        return []
+
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    now_str = datetime.now(et).strftime("%Y-%m-%dT%H:%M:%S")
+
+    prev_longs = {p["symbol"]: p for p in prev_brief.get("high_conviction_longs", []) if p.get("symbol")}
+    prev_bears = {p["symbol"]: p for p in prev_brief.get("high_conviction_bearish", []) if p.get("symbol")}
+    curr_longs = {p["symbol"]: p for p in new_brief.get("high_conviction_longs", []) if p.get("symbol")}
+    curr_bears = {p["symbol"]: p for p in new_brief.get("high_conviction_bearish", []) if p.get("symbol")}
+
+    def _entry(category: str, symbol: str, summary: str) -> dict:
+        return {"timestamp": now_str, "category": category,
+                "symbol": symbol, "summary": str(summary)[:60]}
+
+    updates: list[dict] = []
+
+    for sym, curr in curr_longs.items():
+        curr_score = curr.get("score", 0)
+        if sym in prev_bears:
+            updates.append(_entry("thesis_change", sym,
+                f"Flipped bearish to bullish; score {curr_score}"))
+        elif sym in prev_longs:
+            prev_score = prev_longs[sym].get("score", 0)
+            if curr_score != prev_score:
+                direction = "up" if curr_score > prev_score else "down"
+                conv = curr.get("conviction", "")
+                updates.append(_entry("thesis_change", sym,
+                    f"Score {direction} to {curr_score} from {prev_score}; {conv} long"[:60]))
+        else:
+            catalyst = str(curr.get("catalyst", ""))[:35]
+            summary = f"Score {curr_score}; {catalyst}" if catalyst else f"Score {curr_score}; new long"
+            updates.append(_entry("new_catalyst", sym, summary))
+
+    for sym, curr in curr_bears.items():
+        curr_score = curr.get("score", 0)
+        if sym in prev_longs:
+            updates.append(_entry("thesis_change", sym,
+                f"Flipped bullish to bearish; score {curr_score}"))
+        elif sym not in prev_bears:
+            updates.append(_entry("thesis_change", sym,
+                f"Score {curr_score}; new bearish signal"))
+
+    pos_updates: list[dict] = []
+    for pos in new_brief.get("current_positions", {}).get("a1_equity", [])[:3]:
+        sym = pos.get("symbol", "")
+        price = pos.get("current", 0)
+        pct = pos.get("unrealized_pct", 0)
+        if sym and price:
+            sign = "+" if pct >= 0 else ""
+            pos_updates.append(_entry("position_update", sym,
+                f"Current ${price:.2f}; unrealized {sign}{pct:.1f}%"))
+
+    priority = [u for u in updates if u["category"] in ("new_catalyst", "thesis_change")]
+    return (priority[:5] + pos_updates[:1])[:6]
 
 
 # ---------------------------------------------------------------------------
@@ -1828,6 +1987,21 @@ def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
 
     full_brief["brief_type"] = brief_type
     full_brief["next_update_at"] = next_update_iso
+
+    # --- Post-processing (data quality fixes) ---
+    # Load previous brief BEFORE _save appends the current one to the daily file.
+    prev_brief = _load_prev_daily_brief() if brief_type == "intraday_update" else None
+
+    _filter_reported_earnings(full_brief)   # FIX 1: today_premarket → reported_today
+    _filter_brief_bearish(full_brief)       # FIX 4: drop score > bearish_max_score
+    _sync_bearish_to_avoid(full_brief)      # FIX 5: HIGH/MEDIUM bearish → avoid_list
+
+    # FIX 2: replace Claude-hallucinated latest_updates with code-computed diff
+    if brief_type == "intraday_update":
+        full_brief["latest_updates"] = (
+            _compute_brief_diff(full_brief, prev_brief, brief_type)
+            if prev_brief else []
+        )
 
     _save_intelligence_briefs(full_brief)
 

@@ -255,11 +255,17 @@ def run_cycle(
 
         # Write signal scores to disk for Account 2 handoff (BUG-004)
         try:
+            from zoneinfo import ZoneInfo as _ZI  # noqa: PLC0415
+            _now_et = datetime.now(_ZI("America/New_York"))
+            _ss_with_ts = dict(signal_scores_obj)
+            _ss_with_ts["timestamp"] = datetime.now(timezone.utc).isoformat()
+            _ss_with_ts["scored_at_et"] = _now_et.strftime("%Y-%m-%d %H:%M ET")
             _ss_path = Path(__file__).parent / "data" / "market" / "signal_scores.json"
             _ss_path.parent.mkdir(parents=True, exist_ok=True)
-            _ss_path.write_text(json.dumps(signal_scores_obj))
+            _ss_path.write_text(json.dumps(_ss_with_ts))
+            signal_scores_obj = _ss_with_ts  # keep in-memory copy consistent
             log.debug("[SIGNALS] wrote %d scores to signal_scores.json",
-                      len(signal_scores_obj))
+                      len(signal_scores_obj.get("scored_symbols", {})))
         except Exception as _ss_exc:
             log.warning("[SIGNALS] could not write signal_scores.json (non-fatal): %s", _ss_exc)
 

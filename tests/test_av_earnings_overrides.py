@@ -156,9 +156,7 @@ class TestAV02TsmViaOverride(unittest.TestCase):
         """With override entry TSM 2026-07-16, eda must be positive."""
         tmpdir, _, _ = _make_tmp_tree(
             cal_entries=[],
-            ovr_entries=[
-                {"symbol": "TSM", "earnings_date": "2026-07-16", "timing": "unknown", "source": "yfinance"},
-            ],
+            ovr_entries={"TSM": {"earnings_date": "2026-07-16", "timing": "unknown", "source": "yfinance"}},
         )
         m = _import_candidates()
         with mock.patch("bot_options_stage1_candidates.date") as mock_date:
@@ -172,9 +170,7 @@ class TestAV02TsmViaOverride(unittest.TestCase):
         """TSM override 2026-07-16, today 2026-04-30 → eda = 77."""
         tmpdir, _, _ = _make_tmp_tree(
             cal_entries=[],
-            ovr_entries=[
-                {"symbol": "TSM", "earnings_date": "2026-07-16", "timing": "unknown"},
-            ],
+            ovr_entries={"TSM": {"earnings_date": "2026-07-16", "timing": "unknown"}},
         )
         m = _import_candidates()
         with mock.patch("bot_options_stage1_candidates.date") as mock_date:
@@ -213,9 +209,7 @@ class TestAV03PltrEda(unittest.TestCase):
             cal_entries=[
                 {"symbol": "PLTR", "earnings_date": "2026-05-04", "timing": "post-market"},
             ],
-            ovr_entries=[
-                {"symbol": "TSM", "earnings_date": "2026-07-16", "timing": "unknown"},
-            ],
+            ovr_entries={"TSM": {"earnings_date": "2026-07-16", "timing": "unknown"}},
         )
         m = _import_candidates()
         with mock.patch("bot_options_stage1_candidates.date") as mock_date:
@@ -239,13 +233,13 @@ class TestAV04TsmEdaViaOverride(unittest.TestCase):
                 {"symbol": "PLTR", "earnings_date": "2026-05-04", "timing": "post-market"},
                 {"symbol": "NVDA", "earnings_date": "2026-05-20", "timing": "post-market"},
             ],
-            ovr_entries=[
-                {"symbol": "TSM",   "earnings_date": "2026-07-16", "timing": "unknown"},
-                {"symbol": "ASML",  "earnings_date": "2026-07-15", "timing": "unknown"},
-                {"symbol": "GOOGL", "earnings_date": "2026-07-23", "timing": "unknown"},
-                {"symbol": "AMZN",  "earnings_date": "2026-07-30", "timing": "unknown"},
-                {"symbol": "META",  "earnings_date": "2026-07-29", "timing": "unknown"},
-            ],
+            ovr_entries={
+                "TSM":   {"earnings_date": "2026-07-16", "timing": "unknown"},
+                "ASML":  {"earnings_date": "2026-07-15", "timing": "unknown"},
+                "GOOGL": {"earnings_date": "2026-07-23", "timing": "unknown"},
+                "AMZN":  {"earnings_date": "2026-07-30", "timing": "unknown"},
+                "META":  {"earnings_date": "2026-07-29", "timing": "unknown"},
+            },
         )
         m = _import_candidates()
         today = date(2026, 4, 30)
@@ -278,9 +272,7 @@ class TestAV05OverrideWins(unittest.TestCase):
             cal_entries=[
                 {"symbol": "PLTR", "earnings_date": "2026-05-01", "timing": "post-market"},
             ],
-            ovr_entries=[
-                {"symbol": "PLTR", "earnings_date": "2026-05-04", "timing": "post-market"},
-            ],
+            ovr_entries={"PLTR": {"earnings_date": "2026-05-04", "timing": "post-market"}},
         )
         m = _import_candidates()
         with mock.patch("bot_options_stage1_candidates.date") as mock_date:
@@ -351,9 +343,9 @@ class TestAV07Stage2Rule1Override(unittest.TestCase):
         market_dir = Path(tmpdir) / "data" / "market"
         market_dir.mkdir(parents=True)
         (market_dir / "earnings_calendar.json").write_text(json.dumps({"calendar": []}))
-        (market_dir / "earnings_overrides.json").write_text(json.dumps([
-            {"symbol": "TSM", "earnings_date": "2026-07-16", "timing": "post-market"},
-        ]))
+        (market_dir / "earnings_overrides.json").write_text(json.dumps(
+            {"TSM": {"earnings_date": "2026-07-16", "timing": "post-market"}}
+        ))
 
         # Simulate the lazy-load block in _route_strategy by calling it via
         # _get_upcoming_earnings_timing with data the lazy-load would produce.
@@ -370,11 +362,18 @@ class TestAV07Stage2Rule1Override(unittest.TestCase):
             cal = _json.loads(cal_path.read_text()) if cal_path.exists() else {}
             if ovr_path.exists():
                 ovrs = _json.loads(ovr_path.read_text())
-                if isinstance(ovrs, list) and ovrs:
-                    ovr_syms = {(o.get("symbol") or "").upper() for o in ovrs}
+                if isinstance(ovrs, dict) and ovrs:
+                    ovr_syms = {k.upper() for k in ovrs}
                     merged = [e for e in cal.get("calendar", [])
                               if (e.get("symbol") or "").upper() not in ovr_syms]
-                    merged.extend(ovrs)
+                    for raw_sym, ovr_data in ovrs.items():
+                        merged.append({
+                            "symbol": raw_sym.upper(),
+                            "earnings_date": ovr_data.get("earnings_date", ""),
+                            "timing": ovr_data.get("timing", "unknown"),
+                            "eps_estimate": None,
+                            "source": ovr_data.get("source", "manual"),
+                        })
                     cal = dict(cal)
                     cal["calendar"] = merged
             cal_data = cal
@@ -398,9 +397,9 @@ class TestAV08Stage2PostEarningsOverride(unittest.TestCase):
         market_dir = Path(tmpdir) / "data" / "market"
         market_dir.mkdir(parents=True)
         (market_dir / "earnings_calendar.json").write_text(json.dumps({"calendar": []}))
-        (market_dir / "earnings_overrides.json").write_text(json.dumps([
-            {"symbol": "TSM", "earnings_date": "2026-04-17", "timing": "post-market"},
-        ]))
+        (market_dir / "earnings_overrides.json").write_text(json.dumps(
+            {"TSM": {"earnings_date": "2026-04-17", "timing": "post-market"}}
+        ))
 
         fake_file = str(Path(tmpdir) / "bot_options_stage2_structures.py")
         import json as _json
@@ -410,11 +409,18 @@ class TestAV08Stage2PostEarningsOverride(unittest.TestCase):
         cal = _json.loads(cal_path.read_text()) if cal_path.exists() else {}
         if ovr_path.exists():
             ovrs = _json.loads(ovr_path.read_text())
-            if isinstance(ovrs, list) and ovrs:
-                ovr_syms = {(o.get("symbol") or "").upper() for o in ovrs}
+            if isinstance(ovrs, dict) and ovrs:
+                ovr_syms = {k.upper() for k in ovrs}
                 merged = [e for e in cal.get("calendar", [])
                           if (e.get("symbol") or "").upper() not in ovr_syms]
-                merged.extend(ovrs)
+                for raw_sym, ovr_data in ovrs.items():
+                    merged.append({
+                        "symbol": raw_sym.upper(),
+                        "earnings_date": ovr_data.get("earnings_date", ""),
+                        "timing": ovr_data.get("timing", "unknown"),
+                        "eps_estimate": None,
+                        "source": ovr_data.get("source", "manual"),
+                    })
                 cal = dict(cal)
                 cal["calendar"] = merged
 

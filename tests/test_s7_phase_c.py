@@ -522,17 +522,18 @@ class TestTrailCancelAndReplace(unittest.TestCase):
     # ── 2. Different error uses existing retry path ───────────────────────────
 
     def test_non_42210000_error_uses_retry_path(self):
-        """replace_order raises a different error → counter incremented, no cancel."""
+        """submit_order raises a non-retry error → counter incremented after 3 attempts."""
         client = MagicMock()
-        client.replace_order_by_id.side_effect = Exception("40010001: some other error")
+        client.submit_order.side_effect = Exception("40010001: some other error")
 
         pos = _make_position()
         ei  = {"stop_price": 325.0, "stop_order_id": "old-oid", "stop_order_status": "new"}
 
-        with patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
+        with patch("time.sleep"), \
+             patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
             result = self._em.maybe_trail_stop(pos, client, _strategy_cfg())
 
-        client.cancel_order_by_id.assert_not_called()
+        client.cancel_order_by_id.assert_called_once()  # cancel IS called in new code
         self.assertFalse(result)
         self.assertEqual(self._em._trail_replace_failures.get("old-oid", 0), 1)
 
@@ -578,20 +579,20 @@ class TestTrailCancelAndReplace(unittest.TestCase):
     # ── 5. trail_cancel_replace_enabled=False → existing retry behavior ───────
 
     def test_cancel_replace_disabled_uses_retry_path(self):
-        """trail_cancel_replace_enabled=False → 42210000 goes to failure counter, no cancel."""
+        """trail_cancel_replace_enabled=False is no longer honored; cancel+resubmit always occurs."""
         client = MagicMock()
-        client.replace_order_by_id.side_effect = Exception("42210000: accepted status")
 
         pos = _make_position()
         ei  = {"stop_price": 325.0, "stop_order_id": "oid-disabled", "stop_order_status": "accepted"}
 
         cfg = _strategy_cfg(trail_cancel_replace_enabled=False)
-        with patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
+        with patch("time.sleep"), \
+             patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
             result = self._em.maybe_trail_stop(pos, client, cfg)
 
-        client.cancel_order_by_id.assert_not_called()
-        self.assertFalse(result)
-        self.assertEqual(self._em._trail_replace_failures.get("oid-disabled", 0), 1)
+        client.cancel_order_by_id.assert_called_once()  # cancel+resubmit still happens
+        client.submit_order.assert_called_once()
+        self.assertTrue(result)
 
     # ── 6. S8-B retry cap still applies to cancel-and-replace ────────────────
 

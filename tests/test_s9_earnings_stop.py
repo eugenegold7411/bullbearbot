@@ -84,7 +84,7 @@ class TestEarningsAwareStopFloor(unittest.TestCase):
     def _run(self, pos, exit_info, cfg, eda_return, iv_return):
         """
         Run maybe_trail_stop() with _get_eda and _get_latest_iv patched.
-        Returns the stop_price passed to replace_order_by_id (or None if not called).
+        Returns the stop_price passed to submit_order (or None if not called).
         """
 
         from exit_manager import maybe_trail_stop
@@ -92,14 +92,13 @@ class TestEarningsAwareStopFloor(unittest.TestCase):
         alpaca = MagicMock()
 
         with patch("exit_manager._get_eda", return_value=eda_return), \
-             patch("exit_manager._get_latest_iv", return_value=iv_return):
+             patch("exit_manager._get_latest_iv", return_value=iv_return), \
+             patch("time.sleep"):
             maybe_trail_stop(pos, alpaca, cfg, exit_info=exit_info)
 
-        if alpaca.replace_order_by_id.called:
-            _, kwargs_or_args = alpaca.replace_order_by_id.call_args
-            # positional: (order_id, ReplaceOrderRequest(...))
-            args = alpaca.replace_order_by_id.call_args[0]
-            req = args[1]
+        if alpaca.submit_order.called:
+            args = alpaca.submit_order.call_args[0]
+            req = args[0]
             return req.stop_price
         return None
 

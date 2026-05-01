@@ -25,6 +25,7 @@ log = get_logger(__name__)
 _BASE_DIR   = Path(__file__).parent
 _DATA_DIR   = _BASE_DIR / "data" / "market"
 _ARCHIVE    = _BASE_DIR / "data" / "archive"
+_BRIEFS_DIR        = _DATA_DIR / "briefs"
 _BRIEF_FILE        = _DATA_DIR / "morning_brief.json"
 _FULL_BRIEF_FILE   = _DATA_DIR / "morning_brief_full.json"
 _SONNET_BRIEF_FILE = _DATA_DIR / "morning_brief_sonnet.json"
@@ -1432,6 +1433,51 @@ def _save_intelligence_briefs(full_brief: dict) -> None:
     archive_dir.mkdir(parents=True, exist_ok=True)
     (archive_dir / "morning_brief_full.json").write_text(json.dumps(full_brief, indent=2))
 
+    # Append to daily brief file
+    _append_to_daily_brief(full_brief)
+
+
+def _append_to_daily_brief(brief_data: dict) -> None:
+    """Append brief snapshot to data/market/briefs/morning_brief_YYYYMMDD.json.
+
+    Each daily file has structure: {"date": "YYYY-MM-DD", "updates": [...]}
+    Prunes daily files older than 14 days.
+    """
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    et = ZoneInfo("America/New_York")
+    now_et = datetime.now(et)
+    date_str = now_et.strftime("%Y%m%d")
+    display_date = now_et.strftime("%Y-%m-%d")
+
+    _BRIEFS_DIR.mkdir(parents=True, exist_ok=True)
+    daily_file = _BRIEFS_DIR / f"morning_brief_{date_str}.json"
+
+    if daily_file.exists():
+        try:
+            daily = json.loads(daily_file.read_text())
+        except Exception:
+            daily = {"date": display_date, "updates": []}
+    else:
+        daily = {"date": display_date, "updates": []}
+
+    daily["updates"].append(brief_data)
+    daily_file.write_text(json.dumps(daily, indent=2))
+
+    # Prune files older than 14 days
+    cutoff = now_et.date() - timedelta(days=14)
+    for f in _BRIEFS_DIR.glob("morning_brief_????????.json"):
+        try:
+            file_date_str = f.stem.split("_")[-1]
+            from datetime import date as _date
+            file_date = _date(int(file_date_str[:4]), int(file_date_str[4:6]), int(file_date_str[6:8]))
+            if file_date < cutoff:
+                f.unlink()
+                log.debug("[BRIEF] Pruned old daily brief: %s", f.name)
+        except Exception:
+            pass
+
 
 def load_intelligence_brief() -> dict:
     """Load the full intelligence brief. Returns {} if not yet generated."""
@@ -1786,8 +1832,13 @@ def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
     _save_intelligence_briefs(full_brief)
 
     picks_count = len(full_brief.get("high_conviction_longs", []))
-    log.info("[INTELLIGENCE] Brief complete — type=%s regime=%s longs=%d",
-             brief_type, full_brief.get("market_regime", {}).get("regime", "?"), picks_count)
+    regime = full_brief.get("market_regime", {}).get("regime", "?")
+    regime_score = full_brief.get("market_regime", {}).get("score", "?")
+    top_syms = [p.get("symbol", "?") for p in full_brief.get("high_conviction_longs", [])[:3]]
+    log.info(
+        "[BRIEF] type=%s regime=%s(%s) longs=%d top=%s",
+        brief_type, regime, regime_score, picks_count, ",".join(top_syms) if top_syms else "none",
+    )
     return full_brief
 
 

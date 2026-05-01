@@ -312,22 +312,24 @@ class TestExitManagerTrailStop(unittest.TestCase):
         )
 
     def test_trail_trigger_fires_at_1r(self):
-        """profit_r=2.28 ≥ 1.0 → trail fires, new_stop = entry*1.005 = 435.67."""
+        """profit_r=2.28 ≥ 1.0 → trail fires via cancel+resubmit, new_stop = entry*1.005 = 435.67."""
         # entry=433.50, stop=429.11, current=443.52
         # stop_dist=4.39, profit=10.02, profit_r=2.28
+        from unittest.mock import patch as _patch
         pos      = self._position(433.50, 443.52, unrealized_pl=340.68)
         ei       = {"stop_price": 429.11, "stop_order_id": "fake-oid", "status": "protected"}
         mock_cli = mock.MagicMock()
 
-        result = self.maybe_trail_stop(pos, mock_cli, self._STRATEGY, exit_info=ei)
+        with _patch("time.sleep"):
+            result = self.maybe_trail_stop(pos, mock_cli, self._STRATEGY, exit_info=ei)
 
         self.assertTrue(result, "Trail should fire when profit_r ≥ 1.0")
-        mock_cli.replace_order_by_id.assert_called_once()
-        # Inspect new stop_price passed to replace_order_by_id
-        call_args    = mock_cli.replace_order_by_id.call_args[0]
-        replace_req  = call_args[1]
+        mock_cli.cancel_order_by_id.assert_called_once()
+        mock_cli.submit_order.assert_called_once()
+        # Inspect new stop_price passed to submit_order
+        submit_req   = mock_cli.submit_order.call_args[0][0]
         expected_new = round(433.50 * 1.005, 2)  # 435.67
-        self.assertAlmostEqual(float(replace_req.stop_price), expected_new, places=1)
+        self.assertAlmostEqual(float(submit_req.stop_price), expected_new, places=1)
 
     def test_trail_does_not_fire_below_1r(self):
         """profit_r=0.57 < 1.0 → trail must NOT fire."""

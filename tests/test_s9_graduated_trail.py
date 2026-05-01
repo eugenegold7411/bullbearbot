@@ -21,7 +21,7 @@ tests/test_s9_graduated_trail.py — Sprint 9 graduated trail-stop tests.
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 _BOT_DIR = Path(__file__).resolve().parent.parent
 if str(_BOT_DIR) not in sys.path:
@@ -293,11 +293,11 @@ class TestTC12EmptyTiersLegacyPath:
         cfg = _legacy_cfg(trigger_r=1.0, plus_pct=0.005)  # no trail_tiers key
 
         alpaca_mock = MagicMock()
-        alpaca_mock.replace_order_by_id.return_value = MagicMock()
 
-        result = maybe_trail_stop(pos, alpaca_mock, cfg, exit_info=ei)
+        with patch("time.sleep"):
+            result = maybe_trail_stop(pos, alpaca_mock, cfg, exit_info=ei)
         assert result is True, "Expected legacy trail to fire when trail_tiers absent"
-        req = alpaca_mock.replace_order_by_id.call_args[0][1]
+        req = alpaca_mock.submit_order.call_args[0][0]
         assert abs(req.stop_price - 100.50) < 0.01, (
             f"Expected legacy stop $100.50, got {req.stop_price}"
         )

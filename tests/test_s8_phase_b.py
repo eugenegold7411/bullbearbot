@@ -279,20 +279,22 @@ class TestMaybeTrailStopPendingReplace(unittest.TestCase):
         client.replace_order_by_id.assert_not_called()
 
     def test_normal_status_attempts_replace(self):
-        """stop_order_status=accepted → replace is attempted."""
+        """stop_order_status=accepted → cancel+resubmit is attempted."""
         import exit_manager
         client = MagicMock()
         ei = self._make_ei(stop_status="accepted")
-        exit_manager.maybe_trail_stop(
-            self._make_position(), client, self._cfg(), exit_info=ei
-        )
-        client.replace_order_by_id.assert_called_once()
+        with patch("time.sleep"):
+            exit_manager.maybe_trail_stop(
+                self._make_position(), client, self._cfg(), exit_info=ei
+            )
+        client.cancel_order_by_id.assert_called_once()
+        client.submit_order.assert_called_once()
 
     def test_failure_cap_stops_after_n(self):
-        """After max_failures consecutive failures, replace is not attempted."""
+        """After max_failures consecutive cancel failures, trail is not attempted."""
         import exit_manager
         client = MagicMock()
-        client.replace_order_by_id.side_effect = RuntimeError("API error")
+        client.cancel_order_by_id.side_effect = RuntimeError("API error")
         ei = self._make_ei(stop_status="accepted", stop_oid="ord456")
 
         # Exhaust the cap
@@ -302,18 +304,18 @@ class TestMaybeTrailStopPendingReplace(unittest.TestCase):
             )
         self.assertEqual(exit_manager._trail_replace_failures.get("ord456"), 3)
 
-        # Next call should not attempt replace
-        client.replace_order_by_id.reset_mock()
+        # Next call should not attempt cancel
+        client.cancel_order_by_id.reset_mock()
         result = exit_manager.maybe_trail_stop(
             self._make_position(), client, self._cfg(max_failures=3), exit_info=ei
         )
         self.assertFalse(result)
-        client.replace_order_by_id.assert_not_called()
+        client.cancel_order_by_id.assert_not_called()
 
     def test_failure_counter_increments_on_each_failure(self):
         import exit_manager
         client = MagicMock()
-        client.replace_order_by_id.side_effect = RuntimeError("nope")
+        client.cancel_order_by_id.side_effect = RuntimeError("nope")
         ei = self._make_ei(stop_status="accepted", stop_oid="ord789")
 
         exit_manager.maybe_trail_stop(
@@ -327,7 +329,7 @@ class TestMaybeTrailStopPendingReplace(unittest.TestCase):
         self.assertEqual(exit_manager._trail_replace_failures.get("ord789"), 2)
 
     def test_success_clears_failure_counter(self):
-        """Successful replace clears the failure counter for that order."""
+        """Successful cancel+resubmit clears the failure counter for that order."""
         import exit_manager
         client = MagicMock()
         ei = self._make_ei(stop_status="accepted", stop_oid="ord111")
@@ -335,9 +337,10 @@ class TestMaybeTrailStopPendingReplace(unittest.TestCase):
         # Seed a partial failure count
         exit_manager._trail_replace_failures["ord111"] = 2
 
-        result = exit_manager.maybe_trail_stop(
-            self._make_position(), client, self._cfg(), exit_info=ei
-        )
+        with patch("time.sleep"):
+            result = exit_manager.maybe_trail_stop(
+                self._make_position(), client, self._cfg(), exit_info=ei
+            )
         self.assertTrue(result)
         self.assertNotIn("ord111", exit_manager._trail_replace_failures)
 
@@ -345,7 +348,7 @@ class TestMaybeTrailStopPendingReplace(unittest.TestCase):
         """Different order IDs have independent failure counters."""
         import exit_manager
         client = MagicMock()
-        client.replace_order_by_id.side_effect = RuntimeError("fail")
+        client.cancel_order_by_id.side_effect = RuntimeError("fail")
 
         ei1 = self._make_ei(stop_status="accepted", stop_oid="ordA")
         ei2 = self._make_ei(stop_status="accepted", stop_oid="ordB")

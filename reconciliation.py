@@ -59,6 +59,9 @@ log = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).parent / "strategy_config.json"
 
+# Tracks consecutive cycles where a symbol has a PENDING_REPLACE stop
+_pending_replace_counts: dict[str, int] = {}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Data types
 # ─────────────────────────────────────────────────────────────────────────────
@@ -339,7 +342,28 @@ def diff_state(
 
     # ── NORMAL: orphaned duplicate orders ────────────────────────────────────
     for sym, orders in orders_by_sym.items():
-        stop_orders = [o for o in orders if o.order_type in ("stop", "stop_limit")]
+        all_stops = [o for o in orders if o.order_type in ("stop", "stop_limit")]
+        # PENDING_REPLACE: Alpaca creates a replacement stop alongside the
+        # original, causing a spurious "2 stops" detection. Filter it out so
+        # we don't try to cancel an order that cannot be cancelled.
+        pr_stops = [
+            o for o in all_stops
+            if str(getattr(o, "status", "")).lower().split(".")[-1] == "pending_replace"
+        ]
+        stop_orders = [o for o in all_stops if o not in pr_stops]
+
+        if pr_stops:
+            count = _pending_replace_counts.get(sym, 0) + 1
+            _pending_replace_counts[sym] = count
+            if count == 1:
+                log.debug("[RECON] %s: stop in PENDING_REPLACE state (cycle %d)", sym, count)
+            elif count >= 10:
+                log.error("[RECON] %s: stop stuck in PENDING_REPLACE for %d cycles", sym, count)
+            elif count >= 3:
+                log.warning("[RECON] %s: stop in PENDING_REPLACE for %d cycles", sym, count)
+        else:
+            _pending_replace_counts.pop(sym, None)
+
         if len(stop_orders) > 1:
             actions.append(ReconciliationAction(
                 priority=PRIORITY_NORMAL,
@@ -711,7 +735,11 @@ def _cancel_duplicate_stops(
     """Cancel all but the most-recent stop order for `symbol`."""
     orders = alpaca_client.get_orders(GetOrdersRequest(status="open", symbols=[symbol]))
     stop_orders = sorted(
-        [o for o in orders if str(o.type).lower().split(".")[-1] in ("stop", "stop_limit")],
+        [
+            o for o in orders
+            if str(o.type).lower().split(".")[-1] in ("stop", "stop_limit")
+            and str(getattr(o, "status", "")).lower().split(".")[-1] != "pending_replace"
+        ],
         key=lambda o: o.created_at,
         reverse=True,
     )

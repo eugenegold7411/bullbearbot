@@ -833,40 +833,82 @@ def maybe_trail_stop(
             )
             return False
 
+        import time as _time  # noqa: PLC0415
+
+        from alpaca.trading.enums import OrderSide, TimeInForce  # noqa: PLC0415
+        from alpaca.trading.requests import (  # noqa: PLC0415
+            LimitOrderRequest,
+            StopOrderRequest,
+        )
+
+        # Step 1: cancel the existing stop
         try:
-            from alpaca.trading.requests import ReplaceOrderRequest  # noqa: PLC0415
-            alpaca_client.replace_order_by_id(
-                stop_oid, ReplaceOrderRequest(stop_price=new_stop)
+            alpaca_client.cancel_order_by_id(stop_oid)
+            log.info(
+                "[TRAIL_STOP] %s: cancelled stop %s for trail advance $%.2f → $%.2f",
+                sym, stop_oid, stop_price, new_stop,
             )
-            log.info("[TRAIL_STOP] %s: stop updated $%.2f → $%.2f  order_id=%s",
-                     sym, stop_price, new_stop, stop_oid)
-            _trail_replace_failures.pop(stop_oid, None)   # success — clear failure count
-            log_trade({
-                "event":    "trail_stop",
-                "symbol":   sym,
-                "old_stop": stop_price,
-                "new_stop": new_stop,
-                "gain_r":   _gain_r,
-                "order_id": stop_oid,
-            })
-            return True
         except Exception as exc:
-            if "42210000" in str(exc) and em_cfg.get("trail_cancel_replace_enabled", True):
-                if _trail_cancel_and_replace(
-                    alpaca_client, position, stop_oid, new_stop, sym, em_cfg
-                ):
-                    return True
-            else:
-                failures = _trail_replace_failures.get(stop_oid, 0) + 1
-                _trail_replace_failures[stop_oid] = failures
-                log.warning("[TRAIL_STOP] %s: replace_order failed (attempt %d/%d): %s",
-                            sym, failures, max_failures, exc)
-                if failures >= max_failures:
-                    log.warning(
-                        "[TRAIL_STOP] %s: trail stop replace abandoned after %d consecutive "
-                        "failures (order_id=%s) — manual review needed",
-                        sym, max_failures, stop_oid,
+            failures = _trail_replace_failures.get(stop_oid, 0) + 1
+            _trail_replace_failures[stop_oid] = failures
+            log.warning(
+                "[TRAIL_STOP] %s: trail cancel failed (attempt %d/%d): %s",
+                sym, failures, max_failures, exc,
+            )
+            return False
+
+        _time.sleep(1.5)
+
+        # Step 2: submit fresh GTC stop with 3-attempt retry
+        _last_exc = None
+        for _attempt in range(1, 4):
+            try:
+                if _is_crypto(sym):
+                    _stop_req = LimitOrderRequest(
+                        symbol=sym,
+                        qty=_position_qty(position),
+                        side=OrderSide.SELL,
+                        time_in_force=TimeInForce.GTC,
+                        limit_price=new_stop,
                     )
+                else:
+                    _stop_req = StopOrderRequest(
+                        symbol=sym,
+                        qty=_position_qty(position),
+                        side=OrderSide.SELL,
+                        time_in_force=TimeInForce.GTC,
+                        stop_price=new_stop,
+                    )
+                new_order = alpaca_client.submit_order(_stop_req)
+                _trail_replace_failures.pop(stop_oid, None)
+                log.info(
+                    "[TRAIL_STOP] %s: stop advanced $%.2f → $%.2f  new_order_id=%s",
+                    sym, stop_price, new_stop, new_order.id,
+                )
+                log_trade({
+                    "event":    "trail_stop",
+                    "symbol":   sym,
+                    "old_stop": stop_price,
+                    "new_stop": new_stop,
+                    "gain_r":   _gain_r,
+                    "order_id": str(new_order.id),
+                })
+                _last_exc = None
+                break
+            except Exception as exc:
+                _last_exc = exc
+                if _attempt < 3:
+                    _time.sleep(2)
+
+        if _last_exc is not None:
+            failures = _trail_replace_failures.get(stop_oid, 0) + 1
+            _trail_replace_failures[stop_oid] = failures
+            log.error(
+                "[TRAIL_STOP] %s: trail stop resubmit failed after 3 attempts: %s",
+                sym, _last_exc,
+            )
+            return False
+        return True
     return False
 
 

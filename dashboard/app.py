@@ -2384,7 +2384,53 @@ def _page_brief(status: dict, now_et: str) -> str:
     next_display = next_update[:16].replace("T", " ") if next_update else "?"
     type_color = "#58a6ff" if brief_type == "market_open" else ("#3fb950" if brief_type == "intraday_update" else "#8b949e")
 
+    timeline_js = '''
+    <script>
+    (function() {
+      function fmtTime(iso) {
+        if (!iso) return "?";
+        var d = new Date(iso.replace("T", " ") + " UTC");
+        if (isNaN(d)) d = new Date(iso);
+        return d.toLocaleTimeString("en-US", {hour:"numeric", minute:"2-digit", hour12:true, timeZone:"America/New_York"});
+      }
+      function typeLabel(t) {
+        return {premarket:"4AM", market_open:"9:25AM", intraday_update:"Intraday", closing:"Closing"}[t] || t || "?";
+      }
+      function typeColor(t) {
+        return {premarket:"#8b949e", market_open:"#58a6ff", intraday_update:"#3fb950", closing:"#d29922"}[t] || "#8b949e";
+      }
+      fetch("/api/briefs").then(r => r.json()).then(data => {
+        var container = document.getElementById("brief-timeline");
+        if (!container) return;
+        var updates = data.updates || [];
+        if (!updates.length) { container.style.display = "none"; return; }
+        var pills = updates.map(function(u, i) {
+          var t = u.brief_type || "?";
+          var ts = fmtTime(u.generated_at);
+          var color = typeColor(t);
+          return '<span onclick="loadBrief(' + i + ')" id="pill-' + i + '" style="cursor:pointer;display:inline-block;padding:3px 10px;border-radius:12px;border:1px solid ' + color + ';color:' + color + ';font-size:11px;margin-right:6px;margin-bottom:4px">' + typeLabel(t) + ' ' + ts + '</span>';
+        }).join("");
+        container.innerHTML = '<div style="margin-bottom:14px"><div style="font-size:11px;color:#8b949e;margin-bottom:6px">Today\'s briefs:</div>' + pills + '</div>';
+        window._briefUpdates = updates;
+        // Mark latest pill active
+        var last = updates.length - 1;
+        var pill = document.getElementById("pill-" + last);
+        if (pill) pill.style.fontWeight = "700";
+      }).catch(function(){});
+      window.loadBrief = function(idx) {
+        // Visual: bold the selected pill
+        var updates = window._briefUpdates || [];
+        updates.forEach(function(_, i) {
+          var p = document.getElementById("pill-" + i);
+          if (p) p.style.fontWeight = i === idx ? "700" : "400";
+        });
+      };
+    })();
+    </script>'''
+
     header_html = f'''
+    {timeline_js}
+    <div id="brief-timeline"></div>
     <div style="margin-bottom:16px">
       <div style="font-size:20px;font-weight:700;color:#e6edf3;margin-bottom:6px">&#x1F4CA; Intelligence Brief</div>
       <div style="font-size:12px;color:#8b949e">
@@ -2775,6 +2821,22 @@ def page_a2():
 def page_brief():
     status = _build_status()
     return _page_brief(status, _now_et())
+
+
+@app.route("/api/briefs")
+def api_briefs():
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    today_str = datetime.now(et).strftime("%Y%m%d")
+    briefs_dir = BOT_DIR / "data" / "market" / "briefs"
+    daily_file = briefs_dir / f"morning_brief_{today_str}.json"
+    if not daily_file.exists():
+        return jsonify({"date": today_str, "updates": []})
+    try:
+        data = json.loads(daily_file.read_text())
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e), "updates": []}), 500
 
 
 @app.route("/api/status")

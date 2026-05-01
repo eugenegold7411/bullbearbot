@@ -98,5 +98,4 @@ watchlist_rotation.json
 # Keep tracked runtime baselines
 !data/runtime/sev1_clean_days.json
 !data/status/failure_mode_register.json
-!data/status/preflight_log.jsonl
 !data/status/system_status_snapshot.json

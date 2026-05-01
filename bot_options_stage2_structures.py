@@ -65,8 +65,9 @@ _A2_ROUTER_DEFAULTS: dict = {
     "straddle_dte_max":      14,   # maximum DTE window for straddle/strangle entry
     # RULE_SHORT_PUT: sell OTM put in elevated IV + bullish/neutral environments
     "short_put_iv_rank_min": 50,   # minimum IV rank to enter short put
-    # RULE_IRON: iron condor/butterfly when IV is very elevated + neutral outlook
-    "iron_iv_rank_min": 70,        # minimum IV rank for iron structures
+    # RULE_IRON: iron condor/butterfly when IV is elevated + neutral or low-conviction outlook
+    "iron_iv_rank_min": 50,               # minimum IV rank for iron structures (lowered from 70)
+    "iron_low_conviction_threshold": 0.60, # directional signals below this treated as neutral
     # RULE1 smart earnings router (replaces blanket blackout for eda 0-2)
     "earnings_dte_premarket_credit_iv_min": 85,   # IV floor for eda=1 pre-market credit spread
     "earnings_dte_premarket_debit_iv_max":  40,   # IV ceiling for eda=1 pre-market debit spread
@@ -266,7 +267,21 @@ def _route_strategy(
                 import json as _json  # noqa: PLC0415
                 from pathlib import Path as _Path  # noqa: PLC0415
                 cal_path = _Path(__file__).parent / "data" / "market" / "earnings_calendar.json"
-                earnings_calendar_data = _json.loads(cal_path.read_text()) if cal_path.exists() else {}
+                ovr_path = _Path(__file__).parent / "data" / "market" / "earnings_overrides.json"
+                cal = _json.loads(cal_path.read_text()) if cal_path.exists() else {}
+                if ovr_path.exists():
+                    try:
+                        ovrs = _json.loads(ovr_path.read_text())
+                        if isinstance(ovrs, list) and ovrs:
+                            ovr_syms = {(o.get("symbol") or "").upper() for o in ovrs}
+                            merged = [e for e in cal.get("calendar", [])
+                                      if (e.get("symbol") or "").upper() not in ovr_syms]
+                            merged.extend(ovrs)
+                            cal = dict(cal)
+                            cal["calendar"] = merged
+                    except Exception:
+                        pass
+                earnings_calendar_data = cal
             except Exception:
                 earnings_calendar_data = {}
         upcoming_timing = _get_upcoming_earnings_timing(sym, earnings_calendar_data)
@@ -424,7 +439,21 @@ def _route_strategy(
                 import json as _json  # noqa: PLC0415
                 from pathlib import Path as _Path  # noqa: PLC0415
                 cal_path = _Path(__file__).parent / "data" / "market" / "earnings_calendar.json"
-                earnings_calendar_data = _json.loads(cal_path.read_text()) if cal_path.exists() else {}
+                ovr_path = _Path(__file__).parent / "data" / "market" / "earnings_overrides.json"
+                cal = _json.loads(cal_path.read_text()) if cal_path.exists() else {}
+                if ovr_path.exists():
+                    try:
+                        ovrs = _json.loads(ovr_path.read_text())
+                        if isinstance(ovrs, list) and ovrs:
+                            ovr_syms = {(o.get("symbol") or "").upper() for o in ovrs}
+                            merged = [e for e in cal.get("calendar", [])
+                                      if (e.get("symbol") or "").upper() not in ovr_syms]
+                            merged.extend(ovrs)
+                            cal = dict(cal)
+                            cal["calendar"] = merged
+                    except Exception:
+                        pass
+                earnings_calendar_data = cal
             except Exception:
                 earnings_calendar_data = {}
         timing = _get_earnings_timing(sym, earnings_calendar_data)
@@ -494,23 +523,29 @@ def _route_strategy(
                   sym, pack.a1_direction, _vexp)
         return _vexp
 
-    # RULE_IRON: iron condor when IV is very elevated (≥70) and direction is neutral.
-    # iv_rank ≥ 85 with any direction routes to both iron_butterfly and iron_condor
-    # (iron_butterfly pins; iron_condor gives wider profit range).
-    # Fires after RULE2_CREDIT so very_expensive with directional view routes to credit spreads first.
-    _iron_iv_min = float(rcfg.get("iron_iv_rank_min", 70))
-    _iron_earn_ok = (eda is None or eda < 0 or eda > earnings_dte_blackout)
+    # RULE_IRON: iron condor/butterfly when IV is elevated and direction is neutral
+    # or conviction is too low to justify a directional bet.
+    # iv_rank ≥ 85 with any direction routes to both (iron_butterfly pins; iron_condor
+    # gives wider profit range). Fires after RULE2_CREDIT.
+    _iron_iv_min   = float(rcfg.get("iron_iv_rank_min", 50))
+    _iron_low_conv = float(rcfg.get("iron_low_conviction_threshold", 0.60))
+    _iron_earn_ok  = (eda is None or eda < 0 or eda > earnings_dte_blackout)
     if pack.iv_rank >= _iron_iv_min and _iron_earn_ok:
+        _a1_conv = float(getattr(pack, "a1_conviction", None) or 0.0)
+        _is_neutral_or_low_conv = (
+            pack.a1_direction == "neutral"
+            or _a1_conv < _iron_low_conv
+        )
         if pack.iv_rank >= 85:
             _iron = ["iron_butterfly", "iron_condor"]
-        elif pack.a1_direction == "neutral":
+        elif _is_neutral_or_low_conv:
             _iron = ["iron_condor"]
         else:
             _iron = None
         if _iron is not None:
             log.debug(
-                "[OPTS] _route_strategy %s: RULE_IRON iv_rank=%.1f dir=%s -> %s",
-                sym, pack.iv_rank, pack.a1_direction, _iron,
+                "[OPTS] _route_strategy %s: RULE_IRON iv_rank=%.1f dir=%s conv=%.2f -> %s",
+                sym, pack.iv_rank, pack.a1_direction, _a1_conv, _iron,
             )
             return _iron
 
@@ -625,7 +660,7 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
         return "RULE_EARNINGS"
     if pack.iv_environment == "very_expensive":
         return "RULE2_CREDIT"
-    _iron_iv_min_i = float(rcfg.get("iron_iv_rank_min", 70))
+    _iron_iv_min_i = float(rcfg.get("iron_iv_rank_min", 50))
     if ("iron_condor" in allowed or "iron_butterfly" in allowed) and pack.iv_rank >= _iron_iv_min_i:
         return "RULE_IRON"
     if "short_put" in allowed:

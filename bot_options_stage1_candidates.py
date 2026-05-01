@@ -168,10 +168,10 @@ def _summarize_account1_for_prompt(decision: dict) -> str:
 # that is correct and expected. The router's earnings rules safely skip
 # when earnings_days_away is None.
 #
-# ASML and TSM are foreign-listed stocks (AEX / TWSE) also absent from the
-# AV US calendar — their Q1 2026 earnings have passed; Q2 is ~July 2026.
-# They return None via the normal calendar lookup path; documented here as
-# a known AV coverage gap so the router's None-safe guards are relied upon.
+# ASML, TSM, GOOGL, AMZN, META are absent from AV's US earnings calendar (foreign
+# ADRs or symbols AV periodically omits).  They are covered by
+# data/market/earnings_overrides.json, which _load_earnings_days_away() merges
+# at call-time so override entries are indistinguishable from AV entries.
 _EARNINGS_EXEMPT_SYMBOLS: frozenset[str] = frozenset({
     "COPX", "ECH", "EEM", "EWJ", "EWM", "FXI",
     "GLD", "ITA", "IWM", "QQQ", "SLV", "SPY",
@@ -196,9 +196,22 @@ def _load_earnings_days_away(symbol: str) -> Optional[int]:
         return None
     try:
         cal_path = Path(__file__).parent / "data" / "market" / "earnings_calendar.json"
+        ovr_path = Path(__file__).parent / "data" / "market" / "earnings_overrides.json"
         if not cal_path.exists():
             return None
         cal = json.loads(cal_path.read_text())
+        if ovr_path.exists():
+            try:
+                ovrs = json.loads(ovr_path.read_text())
+                if isinstance(ovrs, list) and ovrs:
+                    ovr_syms = {(o.get("symbol") or "").upper() for o in ovrs}
+                    entries = [e for e in cal.get("calendar", [])
+                               if (e.get("symbol") or "").upper() not in ovr_syms]
+                    entries.extend(ovrs)
+                    cal = dict(cal)
+                    cal["calendar"] = entries
+            except Exception:
+                pass
         today = date.today()
         min_future: Optional[int] = None   # smallest non-negative (upcoming)
         max_past:   Optional[int] = None   # largest negative (most recent past, closest to 0)

@@ -2925,6 +2925,22 @@ def health():
     return "ok", 200
 
 
+@app.route("/api/health")
+def api_health():
+    """Return JSON health status for all 7 bot health checks."""
+    try:
+        import sys as _sys
+        _bot_dir = str(BOT_DIR)
+        if _bot_dir not in _sys.path:
+            _sys.path.insert(0, _bot_dir)
+        import health_monitor
+        status = health_monitor.get_health_status()
+        code = 200 if status.get("all_ok") else 503
+        return jsonify(status), code
+    except Exception as exc:
+        return jsonify({"all_ok": False, "error": str(exc), "checks": []}), 500
+
+
 # ── Trade journal (cached 5 min — Alpaca API call) ───────────────────────────
 @_cached("trades", ttl=300)
 def _closed_trades() -> list[dict]:

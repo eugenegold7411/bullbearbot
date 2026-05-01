@@ -339,6 +339,7 @@ _qualitative_sweep_running:    bool = False  # guard against concurrent sweeps
 _qualitative_thread = None                  # threading.Thread for the background sweep
 _momentum_cfg: dict | None = None           # cached momentum_trigger config
 _momentum_last_fired: dict[str, float] = {}  # sym → monotonic ts of last momentum trigger
+_health_check_last_ts: float = 0.0           # monotonic ts of last health check run
 
 
 # ── Event-driven cycle trigger queue ─────────────────────────────────────────
@@ -362,6 +363,34 @@ def trigger_cycle(reason: str) -> None:
 
 def _today() -> str:
     return datetime.now(ET).strftime("%Y-%m-%d")
+
+
+def _maybe_run_health_checks(dry_run: bool = False) -> None:
+    """Run health checks every 5 min during market hours; halt-mode check 24/7."""
+    global _health_check_last_ts
+    import time as _time
+    elapsed = _time.monotonic() - _health_check_last_ts
+    if elapsed < 290:  # 4 min 50 sec minimum between runs
+        return
+    now_et = datetime.now(ET)
+    is_market = (
+        now_et.weekday() < 5
+        and (9, 25) <= (now_et.hour, now_et.minute) <= (16, 5)
+    )
+    try:
+        import health_monitor as _hm  # noqa: PLC0415
+        if is_market:
+            _hm.run_health_checks(dry_run=dry_run)
+        else:
+            # 24/7 halt-mode only
+            state = _hm._load_state()
+            result = _hm._check_modes()
+            if not result.ok:
+                _hm._dispatch_alert(result, state, dry_run=dry_run)
+                _hm._save_state(state)
+        _health_check_last_ts = _time.monotonic()
+    except Exception as exc:
+        log.warning("[HEALTH] health check failed (non-fatal): %s", exc)
 
 
 def _maybe_check_api_costs() -> None:
@@ -1631,6 +1660,12 @@ def run(dry_run: bool = False) -> None:
     open_order_ids: set = set()   # for stop-fill detection
 
     _ensure_account_modes_initialized()
+    try:
+        import health_monitor as _hm  # noqa: PLC0415
+        _hm.run_health_checks(dry_run=dry_run)
+        log.info("[HEALTH] Startup health check complete")
+    except Exception as _hm_exc:
+        log.warning("[HEALTH] Startup health check failed (non-fatal): %s", _hm_exc)
     log.info("Scheduler starting (24/7 mode)  dry_run=%s", dry_run)
     print("[scheduler] 24/7 mode active. Press Ctrl+C to stop.\n")
 
@@ -1758,6 +1793,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_update_engagement()
         _maybe_publish_monthly_milestone()
         _maybe_check_api_costs()
+        _maybe_run_health_checks(dry_run)
 
         # Deadline proximity check — triggers an immediate cycle if needed
         _check_deadline_proximity()

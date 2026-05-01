@@ -22,7 +22,6 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
-
 # ── stubs ─────────────────────────────────────────────────────────────────────
 
 def _ensure_stubs():

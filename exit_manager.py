@@ -174,7 +174,6 @@ _DEFAULT_CFG = {
     "trail_to_breakeven_plus_pct":  0.005,  # trail stop to entry + 0.5%
     "refresh_if_stop_stale_pct":    0.15,   # refresh if stop >15% below current price
     "backstop_days":                7,      # new-entry backstop horizon (calendar days)
-    "trail_cancel_replace_enabled": True,   # S8: cancel-and-replace when 42210000
 }
 
 
@@ -575,97 +574,6 @@ def _refresh_exits_locked(
 
 
 # ── 4. Trail stop ─────────────────────────────────────────────────────────────
-
-def _trail_cancel_and_replace(
-    alpaca_client,
-    position,
-    stop_oid: str,
-    new_stop: float,
-    sym: str,
-    em_cfg: dict,
-) -> bool:
-    """
-    Cancel-and-replace fallback for trail stops stuck in Alpaca 'accepted' status.
-
-    Called when replace_order fails with 42210000 (cannot replace accepted order).
-    Cancels the existing stop, then places a fresh GTC stop at new_stop.
-    Returns True if the new stop was successfully placed.
-
-    Failure count shares _trail_replace_failures[stop_oid] with the in-place path —
-    after trail_replace_max_failures total attempts the trail is abandoned.
-    If cancel succeeds but placement fails, the position is temporarily unprotected;
-    run_exit_manager() will detect this on the next cycle and re-place a backstop.
-    """
-    from alpaca.trading.enums import OrderSide, TimeInForce  # noqa: PLC0415
-    from alpaca.trading.requests import (  # noqa: PLC0415
-        LimitOrderRequest,
-        StopOrderRequest,
-    )
-
-    max_failures    = int(em_cfg.get("trail_replace_max_failures", 3))
-    failures_so_far = _trail_replace_failures.get(stop_oid, 0)
-
-    if failures_so_far >= max_failures:
-        log.warning(
-            "[TRAIL_STOP] %s: cancel-and-replace abandoned after %d failures (order_id=%s)",
-            sym, max_failures, stop_oid,
-        )
-        return False
-
-    qty = _position_qty(position)
-
-    # Step 1: cancel the accepted-status stop to free the order slot.
-    try:
-        alpaca_client.cancel_order_by_id(stop_oid)
-        log.info(
-            "[TRAIL_STOP] %s: cancelled accepted-status stop %s for cancel-and-replace",
-            sym, stop_oid,
-        )
-    except Exception as exc:
-        new_count = failures_so_far + 1
-        _trail_replace_failures[stop_oid] = new_count
-        log.warning(
-            "[TRAIL_STOP] %s: cancel-and-replace cancel step failed (attempt %d/%d): %s",
-            sym, new_count, max_failures, exc,
-        )
-        return False
-
-    # Step 2: place a fresh stop at the trail target price.
-    try:
-        if _is_crypto(sym):
-            stop_req = LimitOrderRequest(
-                symbol=sym, qty=qty, side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC, limit_price=new_stop,
-            )
-        else:
-            stop_req = StopOrderRequest(
-                symbol=sym, qty=qty, side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC, stop_price=new_stop,
-            )
-        new_order = alpaca_client.submit_order(stop_req)
-        _trail_replace_failures.pop(stop_oid, None)   # success — clear counter
-        log.info(
-            "[TRAIL_STOP] %s: cancel-and-replace succeeded — new stop $%.2f  order_id=%s",
-            sym, new_stop, new_order.id,
-        )
-        log_trade({
-            "event":          "trail_stop_cancel_replace",
-            "symbol":         sym,
-            "old_stop_id":    stop_oid,
-            "new_stop_price": new_stop,
-            "order_id":       str(new_order.id),
-        })
-        return True
-    except Exception as exc:
-        new_count = failures_so_far + 1
-        _trail_replace_failures[stop_oid] = new_count
-        log.warning(
-            "[TRAIL_STOP] %s: cancel-and-replace place step failed (attempt %d/%d): %s — "
-            "position temporarily unprotected; exit manager will re-place stop next cycle",
-            sym, new_count, max_failures, exc,
-        )
-        return False
-
 
 def _graduated_trail_stop(
     entry_price: float,

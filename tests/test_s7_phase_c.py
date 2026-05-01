@@ -458,8 +458,6 @@ class TestAddConvictionNote(unittest.TestCase):
 # S8 — _trail_cancel_and_replace: cancel-and-replace fallback for 42210000
 # ─────────────────────────────────────────────────────────────────────────────
 
-import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
@@ -481,7 +479,6 @@ def _em_cfg_base(**overrides):
         "refresh_if_stop_stale_pct":    0.15,
         "backstop_days":                7,
         "trail_replace_max_failures":   3,
-        "trail_cancel_replace_enabled": True,
     }
     cfg.update(overrides)
     return cfg
@@ -493,19 +490,18 @@ def _strategy_cfg(**exit_overrides):
 
 
 class TestTrailCancelAndReplace(unittest.TestCase):
-    """S8: _trail_cancel_and_replace fires on 42210000, leaves other errors to retry path."""
+    """S8: maybe_trail_stop uses cancel+resubmit as primary path — no replace_order calls."""
 
     def setUp(self):
         import exit_manager as em
         em._trail_replace_failures.clear()
         self._em = em
 
-    # ── 1. 42210000 triggers cancel-and-replace ───────────────────────────────
+    # ── 1. Trail advance cancels existing stop then submits fresh stop ────────
 
-    def test_42210000_triggers_cancel_and_replace(self):
-        """replace_order raises 42210000 → cancel called, new stop placed."""
+    def test_trail_advance_cancels_then_resubmits(self):
+        """cancel_order_by_id called first; submit_order places fresh stop (primary path)."""
         client = MagicMock()
-        client.replace_order_by_id.side_effect = Exception("42210000: cannot replace order")
         new_order = MagicMock(); new_order.id = "new-order-id"
         client.submit_order.return_value = new_order
 
@@ -517,12 +513,13 @@ class TestTrailCancelAndReplace(unittest.TestCase):
 
         client.cancel_order_by_id.assert_called_once_with("old-oid")
         client.submit_order.assert_called_once()
+        client.replace_order_by_id.assert_not_called()
         self.assertTrue(result)
 
-    # ── 2. Different error uses existing retry path ───────────────────────────
+    # ── 2. submit_order failure increments counter after 3 attempts ──────────
 
     def test_non_42210000_error_uses_retry_path(self):
-        """submit_order raises a non-retry error → counter incremented after 3 attempts."""
+        """submit_order raises → counter incremented, trail returns False."""
         client = MagicMock()
         client.submit_order.side_effect = Exception("40010001: some other error")
 
@@ -533,7 +530,7 @@ class TestTrailCancelAndReplace(unittest.TestCase):
              patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
             result = self._em.maybe_trail_stop(pos, client, _strategy_cfg())
 
-        client.cancel_order_by_id.assert_called_once()  # cancel IS called in new code
+        client.cancel_order_by_id.assert_called_once()
         self.assertFalse(result)
         self.assertEqual(self._em._trail_replace_failures.get("old-oid", 0), 1)
 
@@ -543,7 +540,6 @@ class TestTrailCancelAndReplace(unittest.TestCase):
         """After cancel, submit_order called with stop_price == new_stop (entry × 1.005)."""
 
         client = MagicMock()
-        client.replace_order_by_id.side_effect = Exception("42210000")
         new_order = MagicMock(); new_order.id = "new-id"
         client.submit_order.return_value = new_order
 
@@ -563,8 +559,7 @@ class TestTrailCancelAndReplace(unittest.TestCase):
     def test_cancel_failure_increments_counter_no_place(self):
         """cancel_order_by_id raises → failure counter incremented, submit_order not called."""
         client = MagicMock()
-        client.replace_order_by_id.side_effect = Exception("42210000")
-        client.cancel_order_by_id.side_effect  = Exception("cancel failed")
+        client.cancel_order_by_id.side_effect = Exception("cancel failed")
 
         pos = _make_position()
         ei  = {"stop_price": 325.0, "stop_order_id": "oid-cancel-fail", "stop_order_status": "accepted"}
@@ -576,30 +571,30 @@ class TestTrailCancelAndReplace(unittest.TestCase):
         client.submit_order.assert_not_called()
         self.assertEqual(self._em._trail_replace_failures.get("oid-cancel-fail", 0), 1)
 
-    # ── 5. trail_cancel_replace_enabled=False → existing retry behavior ───────
+    # ── 5. cancel+resubmit is unconditional — not config-gated ───────────────
 
-    def test_cancel_replace_disabled_uses_retry_path(self):
-        """trail_cancel_replace_enabled=False is no longer honored; cancel+resubmit always occurs."""
+    def test_cancel_resubmit_is_unconditional(self):
+        """cancel_order_by_id is always called first; replace_order_by_id is never called."""
         client = MagicMock()
+        new_order = MagicMock(); new_order.id = "new-id"
+        client.submit_order.return_value = new_order
 
         pos = _make_position()
-        ei  = {"stop_price": 325.0, "stop_order_id": "oid-disabled", "stop_order_status": "accepted"}
+        ei  = {"stop_price": 325.0, "stop_order_id": "oid-unconditional", "stop_order_status": "accepted"}
 
-        cfg = _strategy_cfg(trail_cancel_replace_enabled=False)
         with patch("time.sleep"), \
              patch.object(self._em, "get_active_exits", return_value={"GOOGL": ei}):
-            result = self._em.maybe_trail_stop(pos, client, cfg)
+            result = self._em.maybe_trail_stop(pos, client, _strategy_cfg())
 
-        client.cancel_order_by_id.assert_called_once()  # cancel+resubmit still happens
-        client.submit_order.assert_called_once()
+        client.cancel_order_by_id.assert_called_once()
+        client.replace_order_by_id.assert_not_called()
         self.assertTrue(result)
 
-    # ── 6. S8-B retry cap still applies to cancel-and-replace ────────────────
+    # ── 6. Retry cap prevents indefinite attempts on a stuck order ────────────
 
-    def test_retry_cap_applies_to_cancel_and_replace(self):
-        """After trail_replace_max_failures failures, cancel-and-replace abandoned."""
+    def test_retry_cap_abandons_trail_for_stuck_order(self):
+        """After trail_replace_max_failures failures, trail is abandoned for this order_id."""
         client = MagicMock()
-        client.replace_order_by_id.side_effect = Exception("42210000")
 
         oid = "oid-maxed"
         self._em._trail_replace_failures[oid] = 3   # already at cap
@@ -612,12 +607,3 @@ class TestTrailCancelAndReplace(unittest.TestCase):
 
         client.cancel_order_by_id.assert_not_called()
         self.assertFalse(result)
-
-    # ── 7. strategy_config.json has trail_cancel_replace_enabled ─────────────
-
-    def test_strategy_config_has_trail_cancel_replace_enabled(self):
-        cfg_path = Path(__file__).parent.parent / "strategy_config.json"
-        cfg = json.loads(cfg_path.read_text())
-        em_section = cfg["exit_management"]
-        self.assertIn("trail_cancel_replace_enabled", em_section)
-        self.assertTrue(em_section["trail_cancel_replace_enabled"])

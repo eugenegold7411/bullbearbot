@@ -17,6 +17,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 _BOT_DIR = Path(__file__).resolve().parent.parent
 if str(_BOT_DIR) not in sys.path:
     sys.path.insert(0, str(_BOT_DIR))
@@ -279,6 +281,7 @@ class TestP5HighConvictionModifier(unittest.TestCase):
         self.assertIn("_conf >= 0.85 and _size_mod < 1.5", src)
         self.assertIn("_size_mod = 1.5", src)
 
+    @pytest.mark.requires_prompts
     def test_prompt_documents_modifier_rule(self):
         """System prompt explains the 1.5x rule to Claude."""
         p = _BOT_DIR / "prompts" / "system_options_v1.txt"

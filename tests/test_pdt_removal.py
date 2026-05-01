@@ -29,6 +29,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 _BOT_DIR = Path(__file__).resolve().parent.parent
 if str(_BOT_DIR) not in sys.path:
     sys.path.insert(0, str(_BOT_DIR))
@@ -131,6 +133,7 @@ class TestCompactPromptNoPDTConstraint(unittest.TestCase):
 class TestSystemPromptPDTInstruction(unittest.TestCase):
     """system_v1.txt must state PDT day-trade limit is N/A above $25K equity."""
 
+    @pytest.mark.requires_prompts
     def test_system_prompt_pdt_exempt_language_present(self):
         """System prompt must instruct Claude not to self-impose PDT limits above threshold."""
         p = Path(_BOT_DIR) / "prompts" / "system_v1.txt"
@@ -144,6 +147,7 @@ class TestSystemPromptPDTInstruction(unittest.TestCase):
             "'self-impose PDT' phrasing)",
         )
 
+    @pytest.mark.requires_prompts
     def test_system_prompt_no_never_open_if_pdt_zero(self):
         """System prompt must NOT contain the old 'PDT remaining = 0' blocking rule."""
         p = Path(_BOT_DIR) / "prompts" / "system_v1.txt"
@@ -153,6 +157,7 @@ class TestSystemPromptPDTInstruction(unittest.TestCase):
         self.assertNotIn("if PDT remaining = 0", system_txt,
                          "Old PDT blocking rule must be removed from system prompt")
 
+    @pytest.mark.requires_prompts
     def test_pdt_floor_still_in_system_prompt(self):
         """PDT equity floor ($26K halt) must remain in system prompt."""
         p = Path(_BOT_DIR) / "prompts" / "system_v1.txt"
@@ -170,6 +175,7 @@ class TestSystemPromptPDTInstruction(unittest.TestCase):
 class TestTemplatesPDTDisplay(unittest.TestCase):
     """Templates must not display 'pdt_remaining/3' which implied a hard cap."""
 
+    @pytest.mark.requires_prompts
     def test_user_template_no_pdt_remaining_over_3(self):
         """user_template_v1.txt must not contain 'PDT Remaining' with '/3' cap."""
         p = Path(_BOT_DIR) / "prompts" / "user_template_v1.txt"
@@ -178,6 +184,7 @@ class TestTemplatesPDTDisplay(unittest.TestCase):
         tmpl = p.read_text()
         self.assertNotIn("PDT Remaining   : {pdt_remaining}/3", tmpl)
 
+    @pytest.mark.requires_prompts
     def test_compact_template_no_pdt_remaining_over_3(self):
         """compact_template.txt must not contain 'PDT remaining: {pdt_remaining}/3'."""
         p = Path(_BOT_DIR) / "prompts" / "compact_template.txt"
@@ -186,6 +193,7 @@ class TestTemplatesPDTDisplay(unittest.TestCase):
         tmpl = p.read_text()
         self.assertNotIn("PDT remaining: {pdt_remaining}/3", tmpl)
 
+    @pytest.mark.requires_prompts
     def test_compact_template_still_has_buying_power(self):
         """compact_template.txt must still contain buying power display."""
         p = Path(_BOT_DIR) / "prompts" / "compact_template.txt"

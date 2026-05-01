@@ -24,6 +24,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,6 +168,7 @@ class TestLoadContextIntegration:
 # PD-08 / PD-09 — system_v1.txt prompt checks
 # ─────────────────────────────────────────────────────────────────────────────
 
+@pytest.mark.requires_prompts
 class TestSystemPromptEarnings:
     def _load_system(self) -> str:
         p = Path(__file__).parent.parent / "prompts" / "system_v1.txt"

@@ -13,15 +13,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Item 1 — system_v1.txt prompt structure
 # ─────────────────────────────────────────────────────────────────────────────
 
+@pytest.mark.requires_prompts
 class TestSystemPromptEarningsExposureRule(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
         p = Path(__file__).parent.parent / "prompts" / "system_v1.txt"
+        if not p.exists():
+            raise unittest.SkipTest("prompts/system_v1.txt not in repo")
         cls._txt = p.read_text()
 
     def test_new_section_present(self):

@@ -102,6 +102,7 @@ class TestAggressiveConfig:
             f"validate_config failures found:\n{result.stdout[-2000:]}"
         )
 
+    @pytest.mark.requires_prompts
     def test_system_v1_high_threshold_updated(self):
         p = Path("prompts/system_v1.txt")
         if not p.exists():
@@ -113,6 +114,7 @@ class TestAggressiveConfig:
         )
         assert ">=0.75" not in txt, "Old HIGH threshold 0.75 still present in system_v1.txt"
 
+    @pytest.mark.requires_prompts
     def test_system_v1_multiplier_updated(self):
         p = Path("prompts/system_v1.txt")
         if not p.exists():
@@ -121,6 +123,7 @@ class TestAggressiveConfig:
         assert "equity x 4.0" in txt, "Multiplier not updated to 4.0 in system_v1.txt"
         assert "equity x 3.0" not in txt, "Old multiplier 3.0 still present in system_v1.txt"
 
+    @pytest.mark.requires_prompts
     def test_system_v1_hold_language_softened(self):
         p = Path("prompts/system_v1.txt")
         if not p.exists():
@@ -132,6 +135,7 @@ class TestAggressiveConfig:
             "Paper trading mode instruction not present in system_v1.txt"
         )
 
+    @pytest.mark.requires_prompts
     def test_system_v1_max_positions_updated(self):
         p = Path("prompts/system_v1.txt")
         if not p.exists():

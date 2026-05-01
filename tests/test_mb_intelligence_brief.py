@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -196,8 +198,11 @@ def test_mb04_intraday_latest_updates(tmp_path):
 # MB-05: bot_stage3_decision uses conviction_state not morning_brief_section
 # ---------------------------------------------------------------------------
 
+@pytest.mark.requires_prompts
 def test_mb05_template_has_conviction_state_not_morning_brief():
     template_path = Path(__file__).parent.parent / "prompts" / "user_template_v1.txt"
+    if not template_path.exists():
+        pytest.skip("prompts/user_template_v1.txt not in repo")
     content = template_path.read_text()
     # conviction_table replaced conviction_state (R1/R3/R4 reconciliation)
     assert "{conviction_table}" in content, "user_template_v1.txt missing {conviction_table}"

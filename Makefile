@@ -15,7 +15,7 @@ test:
 	pytest tests/
 
 test-ci:
-	pytest tests/ -q --ignore=tests/test_scratchpad_memory.py -k "not requires_chromadb and not chromadb"
+	pytest tests/ -q --ignore=tests/test_scratchpad_memory.py -k "not requires_chromadb and not chromadb" -m "not requires_prompts"
 
 ci-local:
 	$(PYTHON) -m py_compile $(shell find . -name "*.py" -not -path "./.venv/*" -not -path "./__pycache__/*")

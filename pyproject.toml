@@ -21,6 +21,7 @@ exclude = ["annex", "experiments", "scripts"]
 [tool.pytest.ini_options]
 markers = [
     "requires_chromadb: marks tests that require ChromaDB to be installed (skipped in CI)",
+    "requires_prompts: marks tests that read private prompt files (not in repo, skipped in CI)",
 ]
 
 [tool.ruff.lint]

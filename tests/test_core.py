@@ -28,6 +28,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 # Ensure /home/trading-bot is on the path regardless of where tests/ lives
 _BOT_DIR = Path(__file__).resolve().parent.parent
 if str(_BOT_DIR) not in sys.path:
@@ -5600,6 +5602,7 @@ class TestSuite25MarketDataAndOptionsAudit(unittest.TestCase):
 
     # ── C8 T03: compact template contains no ENRICHMENT section names ─────────
 
+    @pytest.mark.requires_prompts
     def test_market_data_compact_uses_no_enrichment(self):
         """T03: ENRICHMENT section names must not appear in compact_template.txt."""
         template_path = Path(__file__).parent.parent / "prompts" / "compact_template.txt"

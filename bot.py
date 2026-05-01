@@ -400,6 +400,8 @@ def run_cycle(
                     macro_backdrop=macro_backdrop_str,
                     scratchpad_section=_scratchpad.format_scratchpad_section(scratchpad_result),
                     allocator_section=_format_allocator_section(state.allocator_output),
+                    signal_scores_raw=signal_scores_obj,
+                    scratchpad_raw=scratchpad_result,
                 )
             _cap_sys, _ = __import__("bot_stage3_decision")._load_prompts()
             _cap_user    = user_prompt

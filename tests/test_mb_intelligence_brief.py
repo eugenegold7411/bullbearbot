@@ -199,7 +199,9 @@ def test_mb04_intraday_latest_updates(tmp_path):
 def test_mb05_template_has_conviction_state_not_morning_brief():
     template_path = Path(__file__).parent.parent / "prompts" / "user_template_v1.txt"
     content = template_path.read_text()
-    assert "{conviction_state}" in content, "user_template_v1.txt missing {conviction_state}"
+    # conviction_table replaced conviction_state (R1/R3/R4 reconciliation)
+    assert "{conviction_table}" in content, "user_template_v1.txt missing {conviction_table}"
+    assert "{conviction_state}" not in content, "user_template_v1.txt still has retired {conviction_state}"
     assert "{regime_line}" in content, "user_template_v1.txt missing {regime_line}"
     assert "{positions_line}" in content, "user_template_v1.txt missing {positions_line}"
     assert "{avoid_line}" in content, "user_template_v1.txt missing {avoid_line}"

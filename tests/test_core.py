@@ -1232,17 +1232,27 @@ class TestRiskKernelEligibility(unittest.TestCase):
     }
 
     def test_vix_halt_blocks_buy(self):
+        # Stressed band (VIX 30-40) with conviction below floor → blocked
         result = self.eligibility_check(
             self._idea(), self._snapshot(), self._CONFIG,
-            session_tier="market", vix=self.VIX_HALT,
+            session_tier="market", vix=self.VIX_HALT,  # 35 = stressed
         )
         self.assertIsNotNone(result)
-        self.assertIn("halt", result.lower())
+        self.assertIn("VIX", result)
 
     def test_vix_below_halt_allows_buy(self):
+        # VIX just below crisis threshold; high conviction CORE passes stressed band
+        idea = self.TradeIdea(
+            symbol="NVDA",
+            action=self.AccountAction.BUY,
+            direction=self.Direction.BULLISH,
+            conviction=0.80,   # >= stressed_conviction_floor (0.75)
+            tier=self.Tier.CORE,
+            catalyst="breakout news",
+        )
         result = self.eligibility_check(
-            self._idea(), self._snapshot(), self._CONFIG,
-            session_tier="market", vix=self.VIX_HALT - 0.1,
+            idea, self._snapshot(), self._CONFIG,
+            session_tier="market", vix=self.VIX_HALT - 0.1,  # 34.9 = stressed
         )
         self.assertIsNone(result)
 

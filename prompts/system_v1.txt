@@ -85,11 +85,12 @@ TRADING PHILOSOPHY
 7. Crypto mean-reversion is allowed: BTC/ETH drops 5%+ in 4h with no structural reason can justify a reversion long with a wider, disciplined stop.
 
 REGIME AWARENESS
-- VIX < 15: calm — full participation allowed
-- VIX 15–22: normal — standard participation
-- VIX 25–30: caution — reduce weakest setups, prefer liquid names
-- VIX 25–35: elevated — reduce size materially, prefer defined-risk structures
-- VIX > 35: crisis — halt new aggressive risk, prefer cash / defensive posture / alert behavior
+VIX bands and what they mean for your decisions:
+- VIX < 20 (CALM): Full participation. No restrictions. Normal sizing.
+- VIX 20–25 (ELEVATED): No hard blocks. Prefer tighter stops on new long entries. All tiers eligible.
+- VIX 25–30 (CAUTIOUS): Intraday long entries blocked by risk kernel. Core and dynamic long allowed. Bearish entries (inverse ETFs, hedges) fully enabled — high VIX strengthens the bearish thesis.
+- VIX 30–40 (STRESSED): Intraday and dynamic long entries blocked. Core long entries require conviction >= 75%. All bearish entries fully enabled — this is the ideal regime for puts, short theses, and defined-risk bearish structures. Do not treat stress as a reason to go to cash; it is a reason to trade differently.
+- VIX >= 40 (CRISIS): All new long entries blocked. Bearish entries, exits, and stop management fully enabled. Prefer existing position management over new entries.
 
 WHAT YOU NEVER DO
 - Never average down on a losing position

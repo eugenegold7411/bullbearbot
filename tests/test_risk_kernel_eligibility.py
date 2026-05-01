@@ -14,7 +14,7 @@ All tests are offline-safe (no Alpaca / Claude / Twilio / network calls).
 """
 
 
-from risk_kernel import PDT_FLOOR, VIX_HALT, eligibility_check
+from risk_kernel import PDT_FLOOR, eligibility_check, get_vix_context_note
 from schemas import (
     AccountAction,
     BrokerSnapshot,
@@ -88,32 +88,47 @@ class TestPDTFloor:
         assert result is not None
 
 
-# ── VIX halt ──────────────────────────────────────────────────────────────────
+# ── VIX graduated gate ────────────────────────────────────────────────────────
 
-class TestVIXHalt:
-    def test_vix_at_halt_threshold_blocks_buy(self, kernel_config):
-        result = eligibility_check(_idea(), _snapshot(), kernel_config, vix=VIX_HALT)
-        assert result is not None
-        assert "VIX" in result or "halt" in result.lower()
-
-    def test_vix_above_halt_blocks_buy(self, kernel_config):
+class TestVIXGate:
+    def test_vix_crisis_blocks_bullish_core_buy(self, kernel_config):
+        # VIX >= 40 (crisis) blocks all long entries regardless of tier/conviction
         result = eligibility_check(_idea(), _snapshot(), kernel_config, vix=40.0)
         assert result is not None
+        assert "VIX" in result
 
-    def test_vix_just_below_halt_passes(self, kernel_config):
-        result = eligibility_check(_idea(), _snapshot(), kernel_config, vix=VIX_HALT - 0.1)
+    def test_vix_crisis_blocks_all_long_tiers(self, kernel_config):
+        for tier in (Tier.CORE, Tier.DYNAMIC, Tier.INTRADAY):
+            result = eligibility_check(_idea(tier=tier), _snapshot(), kernel_config, vix=45.0)
+            assert result is not None, f"tier={tier.value} should be blocked in crisis"
+
+    def test_vix_stressed_blocks_intraday_long(self, kernel_config):
+        # stressed (30-40) blocks INTRADAY long
+        idea = _idea(tier=Tier.INTRADAY)
+        result = eligibility_check(idea, _snapshot(), kernel_config, vix=35.0)
+        assert result is not None
+        assert "VIX" in result
+
+    def test_vix_stressed_core_high_conviction_passes(self, kernel_config):
+        # stressed + CORE + conviction >= 0.75 → allowed
+        result = eligibility_check(_idea(conviction=0.80), _snapshot(), kernel_config, vix=35.0)
         assert result is None
 
-    def test_vix_halt_does_not_block_close(self, kernel_config):
-        # VIX halt is BUY-only — CLOSE must not be blocked
+    def test_vix_gate_does_not_block_close(self, kernel_config):
+        # VIX gate is BUY-only — CLOSE must not be blocked
         idea = _idea(action=AccountAction.CLOSE, intent="close")
-        result = eligibility_check(idea, _snapshot(), kernel_config, vix=40.0)
+        result = eligibility_check(idea, _snapshot(), kernel_config, vix=45.0)
         assert result is None
 
-    def test_vix_caution_does_not_block_eligibility(self, kernel_config):
-        # VIX 25–34.9 reduces size (in size_position) but does NOT block eligibility
-        result = eligibility_check(_idea(), _snapshot(), kernel_config, vix=30.0)
-        assert result is None
+    def test_vix_context_note_elevated(self, kernel_config):
+        # elevated band returns a non-None note
+        note = get_vix_context_note(22.0, kernel_config)
+        assert note is not None
+        assert "VIX" in note
+
+    def test_vix_context_note_calm_returns_none(self, kernel_config):
+        note = get_vix_context_note(15.0, kernel_config)
+        assert note is None
 
 
 # ── Session gate ──────────────────────────────────────────────────────────────

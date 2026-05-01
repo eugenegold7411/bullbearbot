@@ -1453,6 +1453,252 @@ def load_sonnet_brief() -> dict:
         return {}
 
 
+# ---------------------------------------------------------------------------
+# Conviction reconciliation (R1/R3/R4)
+# ---------------------------------------------------------------------------
+
+_BRIEF_IMPLIED_SCORES: dict[str, int] = {"HIGH": 75, "MEDIUM": 60, "LOW": 40, "AVOID": 15}
+_CONV_ORDER: dict[str, int] = {"AVOID": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3}
+
+
+def _score_to_conv_label(score: float) -> str:
+    if score >= 70:
+        return "HIGH"
+    if score >= 50:
+        return "MEDIUM"
+    if score >= 30:
+        return "LOW"
+    return "AVOID"
+
+
+def _brief_implied_score(item: dict) -> int:
+    raw = item.get("score", 0)
+    if raw:
+        return int(raw)
+    conv = (item.get("conviction") or "").upper()
+    return _BRIEF_IMPLIED_SCORES.get(conv, 50)
+
+
+def _label_diverged(brief_conv: str, sig_conv: str) -> bool:
+    """True when conviction tiers differ by one or more steps."""
+    b = _CONV_ORDER.get(brief_conv.upper(), 1)
+    s = _CONV_ORDER.get(sig_conv.upper(), 1)
+    return abs(b - s) >= 1
+
+
+def build_conviction_reconciliation(
+    sonnet_brief: dict,
+    signal_scores: dict,
+    scratchpad: dict,
+) -> str:
+    """
+    Merge three conviction sources into one authoritative table.
+
+    Priority hierarchy (highest wins):
+    1. Scratchpad BLOCKING list (symbol-specific) → AVOID
+    2. Signal conviction = "avoid" → AVOID
+    3. Signal direction flipped vs brief → USE SIGNAL
+    4. Signal conviction label diverged from brief → USE SIGNAL
+    5. Signal score diverges ≥20 from brief implied score → USE SIGNAL
+    6. Consistent sources → USE BRIEF (with age label)
+    7. Symbol in brief only → STALE
+    8. Symbol in signal scores only → NEW
+
+    Returns rendered text (≤600 tokens / ≈2400 chars) for Sonnet prompt injection.
+    Falls back gracefully when any source is absent.
+    """
+    import zoneinfo as _zi
+    from datetime import datetime as _dt
+
+    ET_ZONE = _zi.ZoneInfo("America/New_York")
+    now_str = _dt.now(ET_ZONE).strftime("%-I:%M %p ET")
+
+    # --- Load full brief for per-symbol structure data (non-fatal) ---
+    full_brief: dict = {}
+    try:
+        full_brief = load_intelligence_brief()
+    except Exception:
+        pass
+
+    brief_longs: dict[str, dict] = {}
+    brief_bears: dict[str, dict] = {}
+    if full_brief:
+        for item in full_brief.get("high_conviction_longs", []):
+            sym = item.get("symbol")
+            if sym:
+                brief_longs[sym] = item
+        for item in full_brief.get("high_conviction_bearish", []):
+            sym = item.get("symbol")
+            if sym:
+                brief_bears[sym] = item
+
+    # Brief avoid list from sonnet_brief (avoid_line field)
+    brief_avoids: set[str] = set()
+    if sonnet_brief:
+        avoid_line = sonnet_brief.get("avoid_line", "")
+        if avoid_line.startswith("AVOID:"):
+            for sym in avoid_line[6:].split():
+                s = sym.strip().strip(",")
+                if s:
+                    brief_avoids.add(s)
+
+    # --- Signal scores ---
+    sig_syms: dict[str, dict] = {}
+    if signal_scores:
+        sig_syms = signal_scores.get("scored_symbols", {}) or {}
+
+    # --- Scratchpad ---
+    sp = scratchpad or {}
+    sp_blocking_raw: list[str] = sp.get("blocking", []) or []
+
+    # Symbols that have a specific scratchpad blocking entry ("SYMBOL: reason" format)
+    sp_blocked_symbols: set[str] = set()
+    for entry in sp_blocking_raw:
+        if ":" in entry:
+            candidate = entry.split(":")[0].strip()
+            # Accept if it looks like a ticker (upper, ≤10 chars, no spaces)
+            if candidate == candidate.upper() and len(candidate) <= 10 and " " not in candidate:
+                sp_blocked_symbols.add(candidate)
+
+    # --- Collect all symbols to show ---
+    candidate_syms: set[str] = set()
+    candidate_syms.update(brief_longs.keys())
+    candidate_syms.update(brief_bears.keys())
+    candidate_syms.update(brief_avoids)
+    for sym, data in sig_syms.items():
+        sc = float(data.get("score", 0)) if isinstance(data, dict) else 0
+        if sc >= 40:
+            candidate_syms.add(sym)
+
+    def _sort_score(sym: str) -> float:
+        if sym in sig_syms and isinstance(sig_syms[sym], dict):
+            return float(sig_syms[sym].get("score", 0))
+        if sym in brief_longs:
+            return float(_brief_implied_score(brief_longs[sym]))
+        if sym in brief_bears:
+            return float(_brief_implied_score(brief_bears[sym]))
+        return 0.0
+
+    def _classify(sym: str) -> tuple[str, str, str]:
+        """Return (status_label, annotation, explanation) for one symbol."""
+        sig = sig_syms.get(sym, {}) if isinstance(sig_syms.get(sym), dict) else {}
+        sig_score   = float(sig.get("score", 0))
+        sig_dir     = (sig.get("direction") or "").lower()
+        sig_conv    = (sig.get("conviction") or "").upper()
+        sig_cat     = (sig.get("primary_catalyst") or "")[:50]
+        if not sig_conv and sig_score:
+            sig_conv = _score_to_conv_label(sig_score)
+
+        brief_item  = brief_longs.get(sym) or brief_bears.get(sym)
+        brief_score = _brief_implied_score(brief_item) if brief_item else 0
+        brief_conv  = (brief_item.get("conviction") or "").upper() if brief_item else ""
+        brief_dir   = "bullish" if sym in brief_longs else ("bearish" if sym in brief_bears else "")
+
+        in_brief  = bool(brief_item)
+        in_signal = bool(sig)
+
+        # Rule 1: scratchpad block
+        if sym in sp_blocked_symbols:
+            was = f"was {brief_conv or 'unranked'} in brief"
+            return "AVOID", "⚠ scratchpad block", was
+
+        # Rule 2: signal avoid
+        if sig_conv == "AVOID" or (sig.get("conviction") or "").lower() == "avoid":
+            return "AVOID", "↓ signal avoid", sig_cat or f"score={sig_score:.0f}"
+
+        # Symbol only in brief
+        if in_brief and not in_signal:
+            return brief_conv or "UNKNOWN", "? stale", "not in today's signal scores"
+
+        # Symbol only in signal
+        if in_signal and not in_brief:
+            lbl = sig_conv or _score_to_conv_label(sig_score)
+            if sig_dir == "bearish":
+                ann = "↓ signal only"
+            elif sig_dir == "bullish":
+                ann = "↑ signal only"
+            else:
+                ann = "→ signal only"
+            return lbl, ann, sig_cat or f"score={sig_score:.0f}"
+
+        # Both sources present — apply divergence rules
+        # Rule 3: direction flip
+        if brief_dir and sig_dir and brief_dir != sig_dir and sig_dir != "neutral":
+            lbl = sig_conv or _score_to_conv_label(sig_score)
+            return lbl, "↕ direction flip", (
+                f"brief={brief_dir[:4]} signal={sig_dir[:4]} score={sig_score:.0f}"
+            )
+
+        # Rule 4: conviction label diverged by ≥1 tier
+        if brief_conv and sig_conv and _label_diverged(brief_conv, sig_conv):
+            lbl = sig_conv
+            if _CONV_ORDER.get(sig_conv, 1) > _CONV_ORDER.get(brief_conv, 1):
+                ann = "↑ signal upgrade"
+            else:
+                ann = "↓ signal downgrade"
+            expl = f"brief={brief_conv} signal={sig_score:.0f}"
+            if sig_cat:
+                expl += f" {sig_cat}"
+            return lbl, ann, expl
+
+        # Rule 5: score diverges ≥20 from brief implied
+        if brief_score and sig_score and abs(sig_score - brief_score) >= 20:
+            lbl = sig_conv or _score_to_conv_label(sig_score)
+            ann = "↑ signal upgrade" if sig_score > brief_score else "↓ signal downgrade"
+            return lbl, ann, f"brief={brief_conv} signal={sig_score:.0f}"
+
+        # Rule 6: consistent — use brief conviction label
+        lbl = brief_conv or sig_conv or _score_to_conv_label(sig_score)
+        return lbl, "= consistent", f"brief={brief_conv} signal={sig_score:.0f}"
+
+    # --- Bucket symbols into avoid / long / bear ---
+    avoid_rows: list[tuple[float, str]] = []
+    long_rows:  list[tuple[float, str]] = []
+    bear_rows:  list[tuple[float, str]] = []
+
+    for sym in candidate_syms:
+        status, ann, expl = _classify(sym)
+        words = expl.split()
+        if len(words) > 10:
+            expl = " ".join(words[:10])
+        row = f"[{status:<6} {ann:<20}] {sym:<8}  {expl}"
+        score = _sort_score(sym)
+
+        if status == "AVOID":
+            avoid_rows.append((score, row))
+        else:
+            sig = sig_syms.get(sym, {}) if isinstance(sig_syms.get(sym), dict) else {}
+            sig_dir = (sig.get("direction") or "").lower()
+            brief_dir = "bullish" if sym in brief_longs else ("bearish" if sym in brief_bears else "")
+            effective_dir = sig_dir or brief_dir
+            if effective_dir == "bearish":
+                bear_rows.append((score, row))
+            else:
+                long_rows.append((score, row))
+
+    avoid_rows.sort(key=lambda x: x[0], reverse=True)
+    long_rows.sort(key=lambda x: x[0], reverse=True)
+    bear_rows.sort(key=lambda x: x[0], reverse=True)
+
+    lines: list[str] = [
+        f"CONVICTION TABLE [reconciled {now_str}]",
+        "━" * 50,
+    ]
+    for _, row in avoid_rows[:5]:
+        lines.append(row)
+    for _, row in long_rows[:20]:
+        lines.append(row)
+    for _, row in bear_rows[:10]:
+        lines.append(row)
+    if len(lines) == 2:
+        lines.append("  (no conviction data available)")
+
+    result = "\n".join(lines)
+    if len(result) > 2400:
+        result = result[:2400].rsplit("\n", 1)[0] + "\n[truncated — token limit]"
+    return result
+
+
 def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
     """
     Generate a comprehensive intelligence brief. Saves morning_brief_full.json,

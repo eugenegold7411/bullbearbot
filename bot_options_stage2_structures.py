@@ -532,6 +532,8 @@ def _route_strategy(
     _iron_earn_ok  = (eda is None or eda < 0 or eda > earnings_dte_blackout)
     if pack.iv_rank >= _iron_iv_min and _iron_earn_ok:
         _a1_conv = float(getattr(pack, "a1_conviction", None) or 0.0)
+        if _a1_conv == 0.0:  # fall back to signal score when dedicated field absent
+            _a1_conv = float(getattr(pack, "a1_signal_score", 0) or 0) / 100.0
         _is_neutral_or_low_conv = (
             pack.a1_direction == "neutral"
             or _a1_conv < _iron_low_conv

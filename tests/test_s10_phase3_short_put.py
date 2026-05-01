@@ -170,11 +170,11 @@ class TestRuleShortPut:
                                "a1_direction": "bullish", "a1_signal_score": 65.0})
         assert result == ["short_put"]
 
-    def test_SP07_fires_neutral_direction(self):
-        """direction=neutral + iv_rank=60 → ['short_put']."""
+    def test_SP07_neutral_direction_routes_to_iron_condor(self):
+        """direction=neutral + iv_rank=60 >= 50 threshold → RULE_IRON fires (iron_condor)."""
         result = self._route({"iv_rank": 60.0, "iv_environment": "neutral",
                                "a1_direction": "neutral", "a1_signal_score": 55.0})
-        assert result == ["short_put"]
+        assert result == ["iron_condor"]
 
     def test_SP08_does_not_fire_iv_rank_too_low(self):
         """iv_rank=30 < 50 → RULE_SHORT_PUT skipped."""

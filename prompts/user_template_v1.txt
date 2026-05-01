@@ -29,8 +29,8 @@ Sector rotation : {sector_table}
 === MARKET REGIME (pre-classified) ===
 {regime_summary}
 
-=== CONVICTION STATE ===
-{conviction_state}
+=== CONVICTION TABLE (reconciled) ===
+{conviction_table}
 Regime: {regime_line}
 Positions: {positions_line}
 Avoid: {avoid_line}

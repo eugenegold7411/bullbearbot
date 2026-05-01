@@ -305,8 +305,8 @@ class TestRuleIron:
         assert result == ["iron_butterfly", "iron_condor"]
 
     def test_IC15_does_not_fire_iv_rank_too_low(self):
-        """iv_rank=65 < 70 floor → RULE_IRON skipped."""
-        result = self._route({"iv_rank": 65.0, "iv_environment": "expensive",
+        """iv_rank=40 < 50 floor → RULE_IRON skipped (new threshold is 50)."""
+        result = self._route({"iv_rank": 40.0, "iv_environment": "expensive",
                                "a1_direction": "neutral"})
         assert "iron_condor" not in result
         assert "iron_butterfly" not in result
@@ -362,7 +362,7 @@ class TestStrategyConfigIron:
     def test_IC20a_a2_router_has_iron_iv_rank_min(self):
         cfg = self._load_config()
         assert "iron_iv_rank_min" in cfg.get("a2_router", {})
-        assert cfg["a2_router"]["iron_iv_rank_min"] == 70
+        assert cfg["a2_router"]["iron_iv_rank_min"] == 50
 
     def test_IC20b_account2_has_iron_condor_short_delta_target(self):
         cfg = self._load_config()

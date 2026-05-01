@@ -21,6 +21,9 @@ Public API:
   process_options_idea(idea, snapshot, signal, config, iv_summary,
                        options_regime, current_price) -> OptionsAction | str
 
+Public API:
+  get_vix_context_note(vix, config) -> str | None
+
 Internal helpers (exported for testing):
   eligibility_check(idea, snapshot, config, session_tier, vix) -> str | None
   size_position(idea, snapshot, config, current_price, vix)
@@ -64,10 +67,22 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 PDT_FLOOR         = 26_000.0   # never trade below this equity
-VIX_HALT          = 35.0       # halt all new positions
-VIX_CAUTION       = 25.0       # cut all sizes 50%
 MIN_RR_RATIO      = 2.0        # minimum reward/risk
 MAX_OPTIONS_USD   = 5_000.0    # max cost per options trade
+
+# VIX band thresholds — overridable via strategy_config.json parameters section.
+# Defaults here match the config values so the kernel is safe with a bare config dict.
+_VIX_BAND_DEFAULTS: dict = {
+    "vix_calm_threshold":            20.0,   # below = calm, no restrictions
+    "vix_elevated_threshold":        25.0,   # 20-25 = elevated, no hard blocks
+    "vix_cautious_threshold":        30.0,   # 25-30 = cautious, intraday long blocked
+    "vix_stressed_threshold":        40.0,   # 30-40 = stressed, intraday+dynamic blocked; 40+ = crisis
+    "vix_stressed_conviction_floor": 0.75,   # minimum conviction for CORE buy in stressed regime
+}
+
+# Backward-compat aliases for tests and callers that imported these constants.
+VIX_HALT   = 35.0   # legacy; actual crisis threshold is vix_stressed_threshold (default 40)
+VIX_CAUTION = 25.0  # legacy; actual size-cut threshold is vix_elevated_threshold (default 25)
 
 # Per-tier max position as fraction of equity (hard ceilings)
 _TIER_MAX_PCT: dict[str, float] = {
@@ -128,6 +143,12 @@ def _sizing(config: dict) -> dict:
 
 def _a2_config(config: dict) -> dict:
     return config.get("account2", {})
+
+
+def _vix_params(config: dict) -> dict:
+    """Read VIX band thresholds from config parameters, falling back to defaults."""
+    p = _params(config)
+    return {k: float(p.get(k, v)) for k, v in _VIX_BAND_DEFAULTS.items()}
 
 
 def _default_stop_pct(config: dict, tier: str, asset_class: str) -> float:
@@ -369,6 +390,45 @@ def _get_et_now():
     return datetime.now(ZoneInfo("America/New_York"))
 
 
+def get_vix_context_note(vix: float, config: dict) -> Optional[str]:
+    """
+    Return a context string describing the current VIX regime for prompt injection.
+    Returns None when VIX is calm (< vix_calm_threshold) — no note needed.
+
+    VIX bands (default thresholds, overridable via strategy_config parameters):
+      calm      (< 20):  None — full participation
+      elevated  (20-25): note only — no hard blocks
+      cautious  (25-30): intraday long blocked
+      stressed  (30-40): intraday+dynamic long blocked; core needs conviction >= floor
+      crisis    (>= 40): all long entries blocked; bearish fully enabled
+    """
+    vp = _vix_params(config)
+    if vix >= vp["vix_stressed_threshold"]:
+        return (
+            f"VIX {vix:.1f} — CRISIS regime (>= {vp['vix_stressed_threshold']:.0f}): "
+            f"all new long entries blocked. Bearish entries and exits fully enabled."
+        )
+    if vix >= vp["vix_cautious_threshold"]:
+        floor = vp["vix_stressed_conviction_floor"]
+        return (
+            f"VIX {vix:.1f} — STRESSED regime "
+            f"({vp['vix_cautious_threshold']:.0f}–{vp['vix_stressed_threshold']:.0f}): "
+            f"intraday and dynamic long entries blocked; "
+            f"core long requires conviction >= {floor:.0%}. "
+            f"Bearish and defined-risk structures preferred."
+        )
+    if vix >= vp["vix_elevated_threshold"]:
+        return (
+            f"VIX {vix:.1f} — CAUTIOUS regime "
+            f"({vp['vix_elevated_threshold']:.0f}–{vp['vix_cautious_threshold']:.0f}): "
+            f"intraday long entries blocked. Core and dynamic long allowed. "
+            f"Bearish entries fully enabled."
+        )
+    if vix >= vp["vix_calm_threshold"]:
+        return f"VIX {vix:.1f} — ELEVATED: consider tighter stops on new long entries."
+    return None  # calm — no note needed
+
+
 def eligibility_check(
     idea: TradeIdea,
     snapshot: BrokerSnapshot,
@@ -404,9 +464,42 @@ def eligibility_check(
     if not _tba_ok:
         return _tba_reason
 
-    # ── 1. VIX halt ───────────────────────────────────────────────────────────
-    if act == AccountAction.BUY and vix >= VIX_HALT:
-        return f"VIX {vix:.1f} >= {VIX_HALT} — halt mode, no new positions"
+    # ── 1. VIX graduated gate ─────────────────────────────────────────────────
+    # Bearish entries (inverse ETFs, hedges) are never VIX-gated: high VIX is
+    # precisely when bearish trades have the most edge. Only long (bullish/neutral)
+    # entries face graduated restrictions.
+    if act == AccountAction.BUY and idea.direction != Direction.BEARISH:
+        vp             = _vix_params(config)
+        _vix_elevated  = vp["vix_elevated_threshold"]   # 25 — start of cautious
+        _vix_cautious  = vp["vix_cautious_threshold"]   # 30 — start of stressed
+        _vix_stressed  = vp["vix_stressed_threshold"]   # 40 — start of crisis
+        _conv_floor    = vp["vix_stressed_conviction_floor"]
+
+        if vix >= _vix_stressed:
+            # crisis (>= 40): block all long entries
+            return (
+                f"VIX {vix:.1f} >= {_vix_stressed:.0f} — crisis regime, "
+                f"no new long entries"
+            )
+        if vix >= _vix_cautious:
+            # stressed (30-40): INTRADAY+DYNAMIC blocked; CORE needs conviction floor
+            if idea.tier in (Tier.INTRADAY, Tier.DYNAMIC):
+                return (
+                    f"VIX {vix:.1f} >= {_vix_cautious:.0f} — stressed regime, "
+                    f"{idea.tier.value} long entries blocked"
+                )
+            if idea.tier == Tier.CORE and idea.conviction < _conv_floor:
+                return (
+                    f"VIX {vix:.1f} stressed regime — CORE entry requires "
+                    f"conviction >= {_conv_floor:.2f} (got {idea.conviction:.2f})"
+                )
+        elif vix >= _vix_elevated:
+            # cautious (25-30): INTRADAY long entries blocked only
+            if idea.tier == Tier.INTRADAY:
+                return (
+                    f"VIX {vix:.1f} >= {_vix_elevated:.0f} — cautious regime, "
+                    f"intraday long entries blocked"
+                )
 
     # ── 2. Equity floor ───────────────────────────────────────────────────────
     if snapshot.equity < PDT_FLOOR:
@@ -523,7 +616,7 @@ def size_position(
         tier_pct = _CORE_HIGH_CONVICTION_PCT  # 25%
 
     # ── VIX scaling ───────────────────────────────────────────────────────────
-    size_mult = 0.5 if vix >= VIX_CAUTION else 1.0
+    size_mult = 0.5 if vix >= _vix_params(config)["vix_elevated_threshold"] else 1.0
 
     # ── Dollar budget ─────────────────────────────────────────────────────────
     max_dollars = sizing_basis * tier_pct * size_mult

@@ -87,18 +87,16 @@ def _call_load_eda(module, symbol, tmpdir):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _import_candidates():
-    saved = sys.modules.pop("bot_options_stage1_candidates", None)
+    # Always evict and re-import so sys.modules["bot_options_stage1_candidates"]
+    # points at the same object mock.patch("bot_options_stage1_candidates.date") will patch.
+    sys.modules.pop("bot_options_stage1_candidates", None)
     import bot_options_stage1_candidates as m
-    if saved is not None:
-        sys.modules["bot_options_stage1_candidates"] = saved
     return m
 
 
 def _import_stage2():
-    saved = sys.modules.pop("bot_options_stage2_structures", None)
+    sys.modules.pop("bot_options_stage2_structures", None)
     import bot_options_stage2_structures as m
-    if saved is not None:
-        sys.modules["bot_options_stage2_structures"] = saved
     return m
 
 

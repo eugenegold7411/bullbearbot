@@ -135,7 +135,7 @@ def submit_structure(
     is_single = strategy in (OptionStrategy.SINGLE_CALL, OptionStrategy.SINGLE_PUT)
 
     if is_single:
-        return _submit_single_leg(structure, trading_client)
+        return _submit_single_leg(structure, trading_client, config)
     else:
         return _submit_spread_mleg(structure, trading_client, config)
 
@@ -143,6 +143,7 @@ def submit_structure(
 def _submit_single_leg(
     structure:      OptionsStructure,
     trading_client,
+    config:         dict | None = None,
 ) -> OptionsStructure:
     """Submit a single-leg option (call or put)."""
     if not structure.legs:
@@ -161,7 +162,12 @@ def _submit_single_leg(
             f"cannot compute mid price for {occ_sym} (bid={leg.bid}, ask={leg.ask})"
         )
 
-    limit_price = round(_round_limit(mid), 2)
+    a2_cfg = (config or {}).get("account2", config or {})
+    aggression = float(a2_cfg.get("debit_fill_aggression", 0.0))
+    if aggression > 0 and leg.ask is not None and leg.side == "buy":
+        limit_price = round(_round_limit(mid + aggression * (float(leg.ask) - mid)), 2)
+    else:
+        limit_price = round(_round_limit(mid), 2)
 
     try:
         from alpaca.trading.enums import OrderSide, TimeInForce
@@ -216,6 +222,22 @@ def _compute_net_mid(structure: OptionsStructure) -> Optional[float]:
             total += mid
         else:
             total -= mid
+    return round(total, 4)
+
+
+def _compute_net_ask(structure: OptionsStructure) -> Optional[float]:
+    """Net ask for a debit spread: pay ask on buy legs, receive bid on sell legs.
+
+    Returns None if any leg is missing bid or ask.
+    """
+    total = 0.0
+    for leg in structure.legs:
+        if leg.bid is None or leg.ask is None:
+            return None
+        if leg.side == "buy":
+            total += float(leg.ask)
+        else:
+            total -= float(leg.bid)
     return round(total, 4)
 
 
@@ -289,7 +311,18 @@ def _submit_spread_mleg(
         # the absolute credit we demand, making our limit more competitive.
         adjusted = net_mid * _CREDIT_FILL_FACTOR
     else:
-        adjusted = net_mid
+        # For debit structures: move limit toward ask to improve fill probability.
+        # debit_fill_aggression=0.0 → mid (unchanged); 1.0 → net_ask (pay ask/receive bid).
+        a2_cfg = (config or {}).get("account2", config or {})
+        aggression = float(a2_cfg.get("debit_fill_aggression", 0.0))
+        if aggression > 0:
+            net_ask = _compute_net_ask(structure)
+            if net_ask is not None and net_ask > net_mid:
+                adjusted = net_mid + aggression * (net_ask - net_mid)
+            else:
+                adjusted = net_mid
+        else:
+            adjusted = net_mid
 
     # Round to $0.05 tick, then enforce 2dp. Preserve debit/credit sign.
     abs_rounded = round(round(abs(adjusted) / 0.05) * 0.05, 2)

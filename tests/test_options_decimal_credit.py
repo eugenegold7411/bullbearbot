@@ -406,13 +406,13 @@ class TestCreditSpreadBehaviour(unittest.TestCase):
             f"limit_price={limit_price!r} is larger than mid credit {abs_mid}"
         )
 
-    def test_cs02_debit_spread_limit_uses_mid_not_factor(self):
-        """CS-02 complement: Debit spread limit is at mid, not adjusted by credit factor."""
+    def test_cs02_debit_spread_limit_moves_to_ask_with_aggression(self):
+        """CS-02 complement: Debit spread limit moves toward net_ask when debit_fill_aggression=1.0."""
         # long buy: mid=5.20 (bid=5.10, ask=5.30)
         # short sell: mid=2.50 (bid=2.40, ask=2.60)
-        # net_mid = 5.20 - 2.50 = 2.70 (debit)
-        # rounded to $0.05: round(2.70/0.05)*0.05 = 54*0.05 = 2.70
-        # No credit factor applied → limit = +2.70
+        # net_mid = 5.20 - 2.50 = 2.70
+        # net_ask = long_ask - short_bid = 5.30 - 2.40 = 2.90
+        # aggression=1.0: adjusted = 2.70 + 1.0*(2.90-2.70) = 2.90 → rounds to 2.90
         struct = _make_structure(
             legs=[
                 _make_leg("buy",  5.10, 5.30, "NVDA260522P00205000"),
@@ -420,11 +420,27 @@ class TestCreditSpreadBehaviour(unittest.TestCase):
             ],
             strategy_value="put_debit_spread",
         )
-        limit_price, _ = _captured_limit_price(struct)
+        config = {"account2": {"debit_fill_aggression": 1.0}}
+        limit_price, _ = _captured_limit_price(struct, config)
         self.assertIsNotNone(limit_price)
         self.assertGreater(limit_price, 0, "Debit spread limit_price must be positive")
-        # Should be ~2.70 (no credit factor reduction)
-        self.assertAlmostEqual(limit_price, 2.70, delta=0.10)
+        self.assertAlmostEqual(limit_price, 2.90, delta=0.05)
+
+    def test_cs02_debit_spread_limit_stays_at_mid_with_zero_aggression(self):
+        """CS-02 backward compat: Debit spread limit is at mid when debit_fill_aggression=0."""
+        # Same legs as above — with aggression=0, limit stays at net_mid=2.70
+        struct = _make_structure(
+            legs=[
+                _make_leg("buy",  5.10, 5.30, "NVDA260522P00205000"),
+                _make_leg("sell", 2.40, 2.60, "NVDA260522P00200000"),
+            ],
+            strategy_value="put_debit_spread",
+        )
+        config = {"account2": {"debit_fill_aggression": 0.0}}
+        limit_price, _ = _captured_limit_price(struct, config)
+        self.assertIsNotNone(limit_price)
+        self.assertGreater(limit_price, 0, "Debit spread limit_price must be positive")
+        self.assertAlmostEqual(limit_price, 2.70, delta=0.05)
 
     def test_cs03_credit_below_min_is_rejected(self):
         """CS-03: Credit spread with net credit < min_credit_usd is not submitted."""

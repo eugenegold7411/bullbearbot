@@ -192,7 +192,8 @@
       "crush_threshold": 0.3,
       "min_pre_event_history_days": 3
     },
-    "min_credit_usd": 0.15
+    "min_credit_usd": 0.15,
+    "debit_fill_aggression": 1.0
   },
   "scratchpad": {
     "enabled": true,

@@ -4,6 +4,7 @@
 import json
 import os
 import subprocess
+import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
@@ -1112,7 +1113,7 @@ def _warnings_html(warnings: list) -> str:
 
 # ── Navigation ────────────────────────────────────────────────────────────────
 def _nav_html(active_page: str, now_et: str, a1_color: str, a2_color: str) -> str:
-    pages = [("overview", "/", "Overview"), ("a1", "/a1", "A1 Equities"), ("a2", "/a2", "A2 Options"), ("brief", "/brief", "Intelligence Brief")]
+    pages = [("overview", "/", "Overview"), ("a1", "/a1", "A1 Equities"), ("a2", "/a2", "A2 Options"), ("brief", "/brief", "Intelligence Brief"), ("trades", "/trades", "Trades")]
     links = ""
     for pid, href, label in pages:
         if pid == active_page:
@@ -1740,7 +1741,6 @@ def _page_a1(status: dict, now_et: str) -> str:
     last_sonnet_ts = _to_et(gate.get("last_sonnet_call_utc", ""))
     last_regime = gate.get("last_regime", "—")
     daily_cost = float(costs.get("daily_cost", 0) or 0)
-    daily_calls = costs.get("daily_calls", 0)
     proj_monthly_a1 = daily_cost * 22
     if proj_monthly_a1 > 400:
         proj_color = "#f85149"
@@ -2527,6 +2527,187 @@ def api_status():
 @app.route("/health")
 def health():
     return "ok", 200
+
+
+# ── Trade journal (cached 5 min — Alpaca API call) ───────────────────────────
+@_cached("trades", ttl=300)
+def _closed_trades() -> list[dict]:
+    try:
+        sys.path.insert(0, str(BOT_DIR))
+        from trade_journal import build_bug_fix_log, build_closed_trades  # noqa: I001
+        return build_closed_trades(), build_bug_fix_log()
+    except Exception as e:
+        app.logger.warning("trade_journal error: %s", e)
+        return [], []
+
+
+def _page_trades(now_et: str) -> str:
+    a1 = _alpaca_a1()
+    a1_color = "#3fb950" if a1.get("ok") else "#f85149"
+    a2 = _alpaca_a2()
+    a2_color = "#3fb950" if a2.get("ok") else "#f85149"
+    nav = _nav_html("trades", now_et, a1_color, a2_color)
+
+    result = _closed_trades()
+    trades, bug_log = result if isinstance(result, tuple) else (result, [])
+
+    # ── summary stats ─────────────────────────────────────────────────────────
+    n = len(trades)
+    wins = sum(1 for t in trades if t.get("outcome") == "win")
+    losses = sum(1 for t in trades if t.get("outcome") == "loss")
+    total_pnl = sum(t.get("pnl", 0.0) or 0.0 for t in trades)
+    win_rate = (wins / n * 100) if n else 0.0
+    pnl_color = "#3fb950" if total_pnl >= 0 else "#f85149"
+    pnl_sign = "+" if total_pnl >= 0 else ""
+    wr_color = "#3fb950" if win_rate >= 55 else ("#d29922" if win_rate >= 45 else "#f85149")
+
+    summary_html = (
+        f'<div class="stat-grid" style="margin-bottom:12px">'
+        f'<div class="stat-box"><div class="stat-label">Closed Trades</div>'
+        f'<div class="stat-val">{n}</div></div>'
+        f'<div class="stat-box"><div class="stat-label">Total P&amp;L</div>'
+        f'<div class="stat-val" style="color:{pnl_color}">{pnl_sign}${total_pnl:,.2f}</div></div>'
+        f'<div class="stat-box"><div class="stat-label">Win Rate</div>'
+        f'<div class="stat-val" style="color:{wr_color}">{win_rate:.0f}%</div></div>'
+        f'<div class="stat-box"><div class="stat-label">W / L</div>'
+        f'<div class="stat-val">{wins} / {losses}</div></div>'
+        f'</div>'
+    )
+
+    # ── trades table ──────────────────────────────────────────────────────────
+    if not trades:
+        trades_html = '<div class="card"><p class="muted" style="font-size:13px">No closed trades yet.</p></div>'
+    else:
+        rows = ""
+        for t in trades:
+            sym = t.get("symbol", "")
+            pnl = t.get("pnl", 0.0) or 0.0
+            pnl_pct = t.get("pnl_pct", 0.0) or 0.0
+            outcome = t.get("outcome", "flat")
+            clr = "#3fb950" if outcome == "win" else ("#f85149" if outcome == "loss" else "#8b949e")
+            sign = "+" if pnl >= 0 else ""
+            entry = t.get("entry_price", 0)
+            exit_ = t.get("exit_price", 0)
+            qty = int(t.get("qty", 0))
+            holding = t.get("holding_days")
+            hold_str = f"{holding}d" if holding is not None else "—"
+            exit_t = t.get("exit_time", "")
+            date_str = exit_t[:10] if exit_t else "—"
+            flags = t.get("bug_flags", [])
+            flag_html = "".join(
+                f'<span class="flag flag-warn" title="Known bug may have affected this trade">{f}</span>'
+                for f in flags
+            )
+            catalyst = t.get("catalyst") or ""
+            cat_short = (catalyst[:60] + "…") if len(catalyst) > 60 else catalyst
+            rows += (
+                f'<tr>'
+                f'<td style="text-align:left;font-weight:700">{sym}{flag_html}</td>'
+                f'<td>{date_str}</td>'
+                f'<td>${entry:,.2f} → ${exit_:,.2f}</td>'
+                f'<td>{qty}</td>'
+                f'<td>{hold_str}</td>'
+                f'<td style="color:{clr};font-weight:700">{sign}${pnl:,.2f} ({sign}{pnl_pct:.1f}%)</td>'
+                f'<td style="color:#8b949e;font-size:12px;white-space:normal;max-width:280px">{cat_short}</td>'
+                f'</tr>'
+            )
+        trades_html = (
+            '<div class="table-wrap">'
+            '<table class="pos-table">'
+            '<thead><tr>'
+            '<th style="text-align:left">Symbol</th>'
+            '<th>Exit Date</th>'
+            '<th>Entry → Exit</th>'
+            '<th>Qty</th>'
+            '<th>Hold</th>'
+            '<th>P&amp;L</th>'
+            '<th style="text-align:left;white-space:normal">Catalyst</th>'
+            '</tr></thead>'
+            f'<tbody>{rows}</tbody>'
+            '</table></div>'
+        )
+
+    # ── trade detail cards (reasoning) ────────────────────────────────────────
+    detail_html = ""
+    for t in trades[:5]:
+        sym = t.get("symbol", "")
+        reasoning = t.get("reasoning") or ""
+        if not reasoning:
+            continue
+        pnl = t.get("pnl", 0.0) or 0.0
+        clr = "#3fb950" if pnl >= 0 else "#f85149"
+        sign = "+" if pnl >= 0 else ""
+        flags = t.get("bug_flags", [])
+        flag_html = " ".join(
+            f'<span class="flag flag-warn">{f}</span>' for f in flags
+        )
+        detail_html += (
+            f'<div class="thesis-card">'
+            f'<div style="font-size:13px;font-weight:700;margin-bottom:4px">'
+            f'{sym} <span style="color:{clr}">{sign}${pnl:,.2f}</span>'
+            f'{(" " + flag_html) if flag_html else ""}'
+            f'</div>'
+            f'<div class="reasoning">{reasoning[:400]}{"…" if len(reasoning) > 400 else ""}</div>'
+            f'</div>'
+        )
+
+    # ── known issues section ──────────────────────────────────────────────────
+    bugs_html = ""
+    for bug in bug_log:
+        sev = bug.get("severity", "LOW")
+        sev_color = "#f85149" if sev == "HIGH" else ("#d29922" if sev == "MEDIUM" else "#8b949e")
+        bugs_html += (
+            f'<div class="card" style="margin-bottom:8px">'
+            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+            f'<span style="font-weight:700;font-size:13px">{bug["id"]}</span>'
+            f'<span style="font-size:11px;font-weight:700;color:{sev_color};text-transform:uppercase">{sev}</span>'
+            f'<span style="font-size:12px;color:#8b949e">{bug["start"]} – {bug["end"]}</span>'
+            f'</div>'
+            f'<div style="font-size:13px;font-weight:600;margin-bottom:4px">{bug["title"]}</div>'
+            f'<div style="font-size:12px;color:#8b949e">{bug["description"][:200]}{"…" if len(bug["description"]) > 200 else ""}</div>'
+            f'</div>'
+        )
+
+    body = (
+        '<div class="container">'
+        + summary_html
+        + '<div class="section-label">Closed Round-Trips</div>'
+        + '<div class="card" style="padding:0"><div style="padding:14px 16px 0">'
+        + trades_html
+        + '</div></div>'
+        + ('<div class="section-label">Recent Reasoning</div>' + detail_html if detail_html else "")
+        + '<div class="section-label">Known Issue Log</div>'
+        + (bugs_html or '<div class="card"><p class="muted" style="font-size:13px">No logged bugs.</p></div>')
+        + '</div>'
+    )
+    return _page_shell("Trade Journal", nav, body)
+
+
+@app.route("/trades")
+@requires_auth
+def page_trades():
+    return _page_trades(_now_et())
+
+
+@app.route("/api/trades")
+@requires_auth
+def api_trades():
+    result = _closed_trades()
+    trades, bug_log = result if isinstance(result, tuple) else (result, [])
+    wins = sum(1 for t in trades if t.get("outcome") == "win")
+    losses = sum(1 for t in trades if t.get("outcome") == "loss")
+    total_pnl = sum(t.get("pnl", 0.0) or 0.0 for t in trades)
+    return jsonify({
+        "trades": trades,
+        "summary": {
+            "total": len(trades),
+            "wins": wins,
+            "losses": losses,
+            "total_pnl": round(total_pnl, 2),
+            "win_rate": round(wins / len(trades) * 100, 1) if trades else 0.0,
+        },
+        "bug_log": bug_log,
+    })
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

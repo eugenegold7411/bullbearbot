@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -458,6 +459,7 @@ def _refresh_exits_locked(
                 sym, ei["target_order_id"],
             )
             _skip_tp_resubmit = True
+            time.sleep(3)  # OCA share-lock release — Alpaca needs ~3s after cancel
         except Exception as exc:
             log.warning(
                 "[EXIT_MGR] %s: cancel tp_only order failed: %s — stop placement may fail",
@@ -475,44 +477,64 @@ def _refresh_exits_locked(
 
     plan = generate_exit_plan(position, price, strategy_config, conviction)
 
-    try:
-        if _is_crypto(sym):
-            # Alpaca does not support StopOrderRequest for crypto — use a limit
-            # sell at the stop price instead (executes if price falls to that level).
-            stop_req = LimitOrderRequest(
-                symbol=sym,
-                qty=qty,
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC,
-                limit_price=plan["stop_loss"],
-            )
-            stop_order = alpaca_client.submit_order(stop_req)
-            log.info(
-                "[EXIT_MGR] %s: crypto limit-stop submitted @ $%.4f  order_id=%s",
-                sym, plan["stop_loss"], stop_order.id,
-            )
-        else:
-            stop_req = StopOrderRequest(
-                symbol=sym,
-                qty=qty,
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC,
-                stop_price=plan["stop_loss"],
-            )
-            stop_order = alpaca_client.submit_order(stop_req)
-            log.info(
-                "[EXIT_MGR] %s: stop order submitted — stop=$%.2f  order_id=%s",
-                sym, plan["stop_loss"], stop_order.id,
-            )
-        log_trade({
-            "event":      "exit_refresh_stop",
-            "symbol":     sym,
-            "reason":     reason,
-            "stop_price": plan["stop_loss"],
-            "order_id":   str(stop_order.id),
-        })
-    except Exception as exc:
-        log.warning("[EXIT_MGR] %s: stop order submission failed: %s", sym, exc)
+    _last_stop_exc = None
+    for _attempt in range(1, 4):
+        log.info("[EXIT_MGR] BUG-009 repair: stop placement attempt %d/3 for %s", _attempt, sym)
+        try:
+            if _is_crypto(sym):
+                # Alpaca does not support StopOrderRequest for crypto — use a limit
+                # sell at the stop price instead (executes if price falls to that level).
+                stop_req = LimitOrderRequest(
+                    symbol=sym,
+                    qty=qty,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    limit_price=plan["stop_loss"],
+                )
+                stop_order = alpaca_client.submit_order(stop_req)
+                log.info(
+                    "[EXIT_MGR] %s: crypto limit-stop submitted @ $%.4f  order_id=%s",
+                    sym, plan["stop_loss"], stop_order.id,
+                )
+            else:
+                stop_req = StopOrderRequest(
+                    symbol=sym,
+                    qty=qty,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    stop_price=plan["stop_loss"],
+                )
+                stop_order = alpaca_client.submit_order(stop_req)
+                log.info(
+                    "[EXIT_MGR] %s: stop order submitted — stop=$%.2f  order_id=%s",
+                    sym, plan["stop_loss"], stop_order.id,
+                )
+            log_trade({
+                "event":      "exit_refresh_stop",
+                "symbol":     sym,
+                "reason":     reason,
+                "stop_price": plan["stop_loss"],
+                "order_id":   str(stop_order.id),
+            })
+            _last_stop_exc = None
+            break
+        except Exception as exc:
+            _last_stop_exc = exc
+            if "40310000" in str(exc) and _attempt < 3:
+                log.warning(
+                    "[EXIT_MGR] %s: stop attempt %d/3 hit OCA lock (40310000) — sleeping 3s",
+                    sym, _attempt,
+                )
+                time.sleep(3)
+            else:
+                break
+
+    if _last_stop_exc is not None:
+        log.error(
+            "[EXIT_MGR] %s: CRITICAL — stop placement failed after 3 retries"
+            " qty=%s stop=$%.2f err=%s — manual intervention required",
+            sym, qty, plan["stop_loss"], _last_stop_exc,
+        )
         return False
 
     # Also submit a take-profit limit order (separate from the stop since the

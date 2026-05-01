@@ -13,6 +13,7 @@ Risk rules enforced:
 """
 
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -494,6 +495,72 @@ def _submit_buy(action: dict) -> tuple:
         )
     order = _get_alpaca().submit_order(req)
     fp, fq, ft = _extract_fill(order)
+
+    # Verify the bracket stop leg is live — Alpaca silently voids stop children
+    # on OCA collision with a lingering order from a prior cycle.
+    from alpaca.trading.enums import QueryOrderStatus  # noqa: PLC0415
+    from alpaca.trading.requests import GetOrdersRequest  # noqa: PLC0415
+
+    try:
+        _open_orders = _get_alpaca().get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, symbols=[symbol],
+        ))
+    except Exception as _exc:
+        log.warning("[EXECUTOR] %s: could not verify bracket stop — skipping check: %s", symbol, _exc)
+        _open_orders = None
+
+    if _open_orders is not None:
+        _stop_active = any(
+            o.side == OrderSide.SELL
+            and str(getattr(o, "order_type", "")).lower().split(".")[-1]
+            in ("stop", "stop_limit", "trailing_stop")
+            for o in _open_orders
+        )
+        if not _stop_active:
+            log.warning(
+                "[EXECUTOR] %s: bracket stop leg missing after fill — attempting standalone stop"
+                " qty=%d stop=$%.2f",
+                symbol, qty, stop_loss,
+            )
+            for _o in _open_orders:
+                try:
+                    _get_alpaca().cancel_order_by_id(str(_o.id))
+                except Exception:
+                    pass
+            time.sleep(3)
+            _stop_placed = False
+            _last_exc = None
+            for _attempt in range(1, 4):
+                try:
+                    _stop_req = StopOrderRequest(
+                        symbol=symbol, qty=qty, side=OrderSide.SELL,
+                        time_in_force=TimeInForce.GTC, stop_price=round(stop_loss, 2),
+                    )
+                    _stop_ord = _get_alpaca().submit_order(_stop_req)
+                    log.info(
+                        "[EXECUTOR] %s: standalone stop placed attempt %d/3"
+                        " qty=%d stop=$%.2f  order_id=%s",
+                        symbol, _attempt, qty, stop_loss, _stop_ord.id,
+                    )
+                    _stop_placed = True
+                    break
+                except Exception as _exc:
+                    _last_exc = _exc
+                    if "40310000" in str(_exc) and _attempt < 3:
+                        log.warning(
+                            "[EXECUTOR] %s: standalone stop attempt %d/3 hit OCA lock — sleeping 3s",
+                            symbol, _attempt,
+                        )
+                        time.sleep(3)
+                    else:
+                        break
+            if not _stop_placed:
+                log.error(
+                    "[EXECUTOR] CRITICAL — bracket stop failed, standalone stop failed after 3 retries"
+                    " for %s. Manual intervention required. qty=%d stop=$%.2f err=%s",
+                    symbol, qty, stop_loss, _last_exc,
+                )
+
     return str(order.id), fp, fq, ft
 
 

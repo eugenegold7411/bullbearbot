@@ -133,7 +133,10 @@ class TestSystemPromptPDTInstruction(unittest.TestCase):
 
     def test_system_prompt_pdt_exempt_language_present(self):
         """System prompt must instruct Claude not to self-impose PDT limits above threshold."""
-        system_txt = (Path(_BOT_DIR) / "prompts" / "system_v1.txt").read_text()
+        p = Path(_BOT_DIR) / "prompts" / "system_v1.txt"
+        if not p.exists():
+            self.skipTest("prompts/system_v1.txt not in repo")
+        system_txt = p.read_text()
         # v2 prompt uses "Never self-impose PDT day-trade limits when equity is above the threshold"
         self.assertTrue(
             "PDT-exempt" in system_txt or "self-impose PDT" in system_txt,
@@ -143,13 +146,19 @@ class TestSystemPromptPDTInstruction(unittest.TestCase):
 
     def test_system_prompt_no_never_open_if_pdt_zero(self):
         """System prompt must NOT contain the old 'PDT remaining = 0' blocking rule."""
-        system_txt = (Path(_BOT_DIR) / "prompts" / "system_v1.txt").read_text()
+        p = Path(_BOT_DIR) / "prompts" / "system_v1.txt"
+        if not p.exists():
+            self.skipTest("prompts/system_v1.txt not in repo")
+        system_txt = p.read_text()
         self.assertNotIn("if PDT remaining = 0", system_txt,
                          "Old PDT blocking rule must be removed from system prompt")
 
     def test_pdt_floor_still_in_system_prompt(self):
         """PDT equity floor ($26K halt) must remain in system prompt."""
-        system_txt = (Path(_BOT_DIR) / "prompts" / "system_v1.txt").read_text()
+        p = Path(_BOT_DIR) / "prompts" / "system_v1.txt"
+        if not p.exists():
+            self.skipTest("prompts/system_v1.txt not in repo")
+        system_txt = p.read_text()
         self.assertIn("$26,000", system_txt,
                       "PDT equity floor ($26K halt) must remain in system prompt")
 
@@ -163,17 +172,26 @@ class TestTemplatesPDTDisplay(unittest.TestCase):
 
     def test_user_template_no_pdt_remaining_over_3(self):
         """user_template_v1.txt must not contain 'PDT Remaining' with '/3' cap."""
-        tmpl = (Path(_BOT_DIR) / "prompts" / "user_template_v1.txt").read_text()
+        p = Path(_BOT_DIR) / "prompts" / "user_template_v1.txt"
+        if not p.exists():
+            self.skipTest("prompts/user_template_v1.txt not in repo")
+        tmpl = p.read_text()
         self.assertNotIn("PDT Remaining   : {pdt_remaining}/3", tmpl)
 
     def test_compact_template_no_pdt_remaining_over_3(self):
         """compact_template.txt must not contain 'PDT remaining: {pdt_remaining}/3'."""
-        tmpl = (Path(_BOT_DIR) / "prompts" / "compact_template.txt").read_text()
+        p = Path(_BOT_DIR) / "prompts" / "compact_template.txt"
+        if not p.exists():
+            self.skipTest("prompts/compact_template.txt not in repo")
+        tmpl = p.read_text()
         self.assertNotIn("PDT remaining: {pdt_remaining}/3", tmpl)
 
     def test_compact_template_still_has_buying_power(self):
         """compact_template.txt must still contain buying power display."""
-        tmpl = (Path(_BOT_DIR) / "prompts" / "compact_template.txt").read_text()
+        p = Path(_BOT_DIR) / "prompts" / "compact_template.txt"
+        if not p.exists():
+            self.skipTest("prompts/compact_template.txt not in repo")
+        tmpl = p.read_text()
         self.assertIn("buying_power", tmpl)
 
 

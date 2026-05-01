@@ -517,6 +517,14 @@ def _submit_buy(action: dict) -> tuple:
             for o in _open_orders
         )
         if not _stop_active:
+            if not fp or not fq or int(float(fq)) == 0:
+                log.error(
+                    "[EXECUTOR] %s: bracket buy did not fill "
+                    "(fill_price=%s filled_qty=%s) — "
+                    "skipping stop fallback, no position to protect",
+                    symbol, fp, fq,
+                )
+                return str(order.id), fp, fq, ft
             log.warning(
                 "[EXECUTOR] %s: bracket stop leg missing after fill — attempting standalone stop"
                 " qty=%d stop=$%.2f",
@@ -955,6 +963,17 @@ def execute_all(
             log.warning("[EXECUTOR] unknown action type %s — skipping", type(_raw).__name__)
     actions = _normalised
 
+    # Exits before entries: prevent submitting bracket buys while a concurrent
+    # market sell is pending, which causes Alpaca paper trading to silently
+    # cancel the bracket primary order (observed May 2026).
+    _EXIT_ACTS = {"sell", "close"}
+    actions = sorted(
+        actions,
+        key=lambda a: (0 if a.get("action", "").lower() in _EXIT_ACTS else 1),
+    )
+
+    _pending_sell_oids: list[str] = []
+
     for action in actions:
         symbol     = action.get("symbol", "UNKNOWN")
         act        = action.get("action", "").lower()
@@ -1014,11 +1033,38 @@ def execute_all(
         try:
             _fp, _fq, _ft = None, None, None   # fill data — populated for buy/sell
             if act == "buy":
+                # Wait for any pending sells to fill before submitting a bracket
+                # buy — Alpaca paper trading silently cancels bracket primaries
+                # when submitted while a concurrent market sell is in-flight.
+                if _pending_sell_oids:
+                    log.info(
+                        "[EXECUTOR] waiting for %d sell(s) to settle before submitting buy %s",
+                        len(_pending_sell_oids), symbol,
+                    )
+                    for _wait_attempt in range(30):
+                        time.sleep(0.5)
+                        try:
+                            _settled = all(
+                                _get_alpaca().get_order_by_id(_oid).status.value
+                                in ("filled", "cancelled", "canceled", "expired")
+                                for _oid in _pending_sell_oids
+                            )
+                        except Exception:
+                            _settled = False
+                        if _settled:
+                            log.info("[EXECUTOR] sell(s) confirmed settled — proceeding with buy %s", symbol)
+                            _pending_sell_oids.clear()
+                            break
+                    else:
+                        log.warning("[EXECUTOR] timeout waiting for sell settlement — proceeding with buy %s anyway", symbol)
+                        _pending_sell_oids.clear()
                 oid, _fp, _fq, _ft = _submit_buy(action)
             elif act == "close":
                 oid = _submit_close(symbol)
             elif act == "sell":
                 oid, _fp, _fq, _ft = _sell_with_oca_retry(action, positions)
+                if oid:
+                    _pending_sell_oids.append(oid)
             elif act in ("buy_option", "sell_option_spread",
                          "buy_straddle", "close_option"):
                 oid = _submit_options(action)

@@ -120,8 +120,12 @@ class TestCompactPromptNoPDTConstraint(unittest.TestCase):
         prompt = self._build(daytrade_count=10)
         self.assertNotIn("no new stock/ETF entries", prompt)
 
+    @pytest.mark.requires_prompts
     def test_vix_constraint_still_present_when_high(self):
         """VIX >= 35 constraint must still appear (unrelated to PDT fix)."""
+        p = Path(_BOT_DIR) / "prompts" / "compact_template.txt"
+        if not p.exists():
+            self.skipTest("prompts/compact_template.txt not in repo")
         prompt = self._build(daytrade_count=0, vix=36.0)
         self.assertIn("HALT", prompt)
 

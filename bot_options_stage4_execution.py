@@ -249,7 +249,7 @@ def submit_selected_candidate(
                     max_cost_usd=max_loss_usd,
                     chain=_chain,
                     equity=equity,
-                    config={},
+                    config=_a2_cfg,
                 )
             except Exception as _be:
                 log.error("[OPTS] %s: chain/build failed: %s", sym, _be)
@@ -335,7 +335,7 @@ def submit_selected_candidate(
                 max_cost_usd=action.get("max_cost_usd", proposal.max_cost_usd),
                 chain=chain,
                 equity=equity,
-                config={},
+                config=_a2_cfg,
             )
         except Exception as exc:
             log.error("[OPTS] %s: chain/build failed: %s", sym, exc)

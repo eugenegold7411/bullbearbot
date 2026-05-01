@@ -558,11 +558,28 @@ def _log_skip_cycle(state) -> None:
     )
 
 
+def _repair_truncated_json(raw: str) -> dict | None:
+    """
+    If Claude's response was token-truncated mid-string in the trailing 'notes'
+    field, drop the incomplete field and close the JSON so the trade ideas
+    (which always precede 'notes') are still usable.
+    """
+    import re
+    match = re.search(r',\s*"notes"\s*:', raw)
+    if match:
+        candidate = raw[: match.start()] + "\n}"
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
 def ask_claude(user_prompt: str) -> dict:
     system_prompt, _ = _load_prompts()
     response = _get_claude().messages.create(
         model=MODEL,
-        max_tokens=2048,
+        max_tokens=4096,
         system=[{
             "type": "text",
             "text": system_prompt,
@@ -594,6 +611,11 @@ def ask_claude(user_prompt: str) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
+        if "Unterminated string" in str(exc):
+            repaired = _repair_truncated_json(raw)
+            if repaired is not None:
+                log.warning("ask_claude: JSON truncated at token limit — repaired (notes dropped)")
+                return repaired
         raise ValueError(f"Claude returned non-JSON:\n{raw}") from exc
 
 

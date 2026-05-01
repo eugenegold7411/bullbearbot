@@ -567,10 +567,14 @@ def run_a2_preflight(
             reconcile_options_structures,
         )
         _open_structs = options_state.get_open_structures()
+        # Pass all structures (including SUBMITTED) to reconcile_options_structures so
+        # their OCC symbols are registered as known.  This prevents orphan-close of
+        # positions whose fills arrived between cycles before _update_fill_prices() ran.
+        _all_structs = options_state.load_structures()
         if _open_structs:
             _recon_snapshot = _build_a2_broker_snapshot(alpaca_client)
             _struct_diff = reconcile_options_structures(
-                structures=_open_structs,
+                structures=_all_structs,
                 snapshot=_recon_snapshot,
                 current_time=datetime.now(timezone.utc).isoformat(),
                 config=_s_cfg,

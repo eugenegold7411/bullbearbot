@@ -2206,6 +2206,35 @@ class TestReconciliationOptionsStructures(unittest.TestCase):
         result = self.reconcile([s], snapshot, self._NOW, {})
         self.assertNotIn(s.structure_id, result.intact)
 
+    def test_submitted_structure_fill_not_orphaned(self):
+        """
+        Regression: fill arrives between cycles leaving lifecycle=SUBMITTED.
+
+        Before the fix, reconcile_options_structures only added OCC symbols from
+        is_open() (FULLY_FILLED) structures to all_known_occs.  A SUBMITTED
+        structure whose order just filled would have its OCC position detected as
+        orphaned and immediately closed.
+
+        After the fix, all-lifecycle structures contribute to all_known_occs so
+        the newly-filled position is not flagged.
+        """
+        occ = "CAT260515C00890000"
+        legs = [self._make_leg(occ)]
+        submitted = self._make_structure(
+            sid="cat001", legs=legs,
+            lifecycle=self.StructureLifecycle.SUBMITTED,
+        )
+        # Broker already shows the filled position
+        snapshot = self._make_snapshot([occ])
+        # Also have an unrelated open structure so reconciliation runs in the caller
+        open_s = self._make_structure(
+            sid="googl001",
+            legs=[self._make_leg("GOOGL260620C00380000")],
+            lifecycle=self.StructureLifecycle.FULLY_FILLED,
+        )
+        result = self.reconcile([open_s, submitted], snapshot, self._NOW, {})
+        self.assertNotIn(occ, result.orphaned_legs)
+
     def test_empty_input_all_lists_empty(self):
         """Empty structures list and empty snapshot → all result lists empty."""
         result = self.reconcile([], self._make_snapshot([]), self._NOW, {})

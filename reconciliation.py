@@ -930,15 +930,22 @@ def reconcile_options_structures(
     # Also index by alpaca_sym in case normalisation differs
     snapshot_syms |= {p.alpaca_sym for p in snapshot.positions}
 
-    # Collect all known OCC symbols across all structures (for orphan check)
+    # Collect all known OCC symbols across all structures (for orphan check).
+    # Must include SUBMITTED structures: a fill arriving between cycles leaves the
+    # lifecycle at SUBMITTED until stage-4 _update_fill_prices() runs, but the
+    # position is already live in the broker.  Including all lifecycle states here
+    # prevents reconciliation from treating that position as an orphan and closing it.
     all_known_occs: set[str] = set()
+    for struct in structures:
+        for leg in struct.legs:
+            if leg.occ_symbol:
+                all_known_occs.add(leg.occ_symbol)
 
     for struct in structures:
         if not struct.is_open():
             continue
 
         occ_syms = [leg.occ_symbol for leg in struct.legs if leg.occ_symbol]
-        all_known_occs.update(occ_syms)
 
         # ── INTACT / BROKEN check ─────────────────────────────────────────────
         if occ_syms:

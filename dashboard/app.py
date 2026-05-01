@@ -1688,7 +1688,7 @@ def _page_overview(status: dict, now_et: str) -> str:
         _pos_rows = '<div style="color:var(--text-muted);font-size:11px">No open positions.</div>'
 
     # conviction picks from morning brief
-    _brief = status.get("morning_brief", {})
+    _brief = status.get("morning_brief") or {}
     _picks = _brief.get("conviction_picks", [])
     _conv_rows = ""
     for _pk in _picks[:6]:

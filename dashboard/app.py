@@ -56,7 +56,7 @@ SHARED_CSS = """
   --grad-combo: linear-gradient(135deg, #2a1a4a 0%, #1a0d35 100%);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg-base); color: var(--text-secondary); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 12px; line-height: 1.5; }
+body { background: var(--bg-base); color: var(--text-secondary); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; line-height: 1.5; }
 a { color: var(--accent-blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
 details > summary { cursor: pointer; }
@@ -73,7 +73,7 @@ details > summary::-webkit-details-marker { display: none; }
 .nav-tab:hover { color: var(--text-secondary); text-decoration: none; }
 .nav-tab.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); }
 .nav-pills { display: flex; align-items: center; gap: 5px; margin-left: 10px; }
-.npill { font-size: 9px; padding: 2px 7px; border-radius: 3px; border: 1px solid; letter-spacing: 0.4px; }
+.npill { font-size: 10px; padding: 2px 7px; border-radius: 3px; border: 1px solid; letter-spacing: 0.4px; }
 .npill-g { background: rgba(0,230,118,.1); border-color: rgba(0,230,118,.3); color: var(--accent-green); }
 .npill-a { background: rgba(255,170,32,.1); border-color: rgba(255,170,32,.3); color: var(--accent-amber); }
 .npill-r { background: rgba(255,80,80,.1); border-color: rgba(255,80,80,.3); color: var(--accent-red); }
@@ -89,15 +89,15 @@ details > summary::-webkit-details-marker { display: none; }
 .tk-dim { color: var(--text-dim); }
 
 /* Section titles */
-.section-label { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); margin: 18px 0 8px; }
+.section-label { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); margin: 18px 0 8px; }
 
 /* Cards */
 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 10px; }
 .card-2 { background: var(--bg-card-2); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 8px; }
 .card-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--border-subtle); }
 .card-row:last-child { border-bottom: none; }
-.card-label { font-size: 10px; color: var(--text-muted); }
-.card-val { font-size: 11px; color: var(--text-secondary); }
+.card-label { font-size: 12px; color: var(--text-muted); }
+.card-val { font-size: 12px; color: var(--text-secondary); }
 
 /* Hero gradient cards */
 .hero-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 12px; }
@@ -107,14 +107,14 @@ details > summary::-webkit-details-marker { display: none; }
 .hero-card-a2 { background: var(--grad-a2); }
 .hero-card-combo { background: var(--grad-combo); }
 .hero-inner { display: flex; justify-content: space-between; align-items: flex-start; }
-.hero-lbl { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
+.hero-lbl { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
 .hero-num { font-size: 26px; font-weight: 600; letter-spacing: -1px; line-height: 1; }
-.hero-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
-.hero-badge { display: inline-block; font-size: 9px; padding: 2px 8px; border-radius: 3px; border: 1px solid; margin-top: 8px; }
+.hero-sub { font-size: 12px; color: var(--text-muted); margin-top: 5px; }
+.hero-badge { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 3px; border: 1px solid; margin-top: 8px; }
 .hero-badge-g { background: rgba(0,230,118,.12); border-color: rgba(0,230,118,.3); color: var(--accent-green); }
 .hero-badge-r { background: rgba(255,80,80,.12); border-color: rgba(255,80,80,.3); color: var(--accent-red); }
 .hero-mini-stats { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
-.hero-mini-row { display: flex; justify-content: space-between; font-size: 10px; }
+.hero-mini-row { display: flex; justify-content: space-between; font-size: 11px; }
 .hero-mini-lbl { color: var(--text-muted); }
 .hero-mini-val { color: var(--text-secondary); }
 
@@ -124,8 +124,8 @@ details > summary::-webkit-details-marker { display: none; }
 
 /* Tables */
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-table.data-table { width: 100%; border-collapse: collapse; font-size: 11px; white-space: nowrap; }
-table.data-table th { background: var(--bg-card-2); color: var(--text-muted); font-size: 9px; font-weight: 500; text-align: right; padding: 8px 10px; text-transform: uppercase; letter-spacing: 0.8px; border-bottom: 1px solid var(--border); }
+table.data-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+table.data-table th { background: var(--bg-card-2); color: var(--text-muted); font-size: 10px; font-weight: 500; text-align: right; padding: 8px 10px; text-transform: uppercase; letter-spacing: 0.8px; border-bottom: 1px solid var(--border); }
 table.data-table th:first-child { text-align: left; }
 table.data-table td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); }
 table.data-table td:first-child { text-align: left; color: var(--text-primary); }
@@ -133,17 +133,17 @@ table.data-table tr:last-child td { border-bottom: none; }
 table.data-table tr:hover td { background: rgba(79,172,254,.03); }
 
 /* qs-table kept for kv widgets */
-.qs-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-.qs-table th { background: var(--bg-card-2); color: var(--text-muted); font-size: 9px; padding: 7px 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.8px; text-align: left; border-bottom: 1px solid var(--border); }
-.qs-table td { padding: 7px 10px; border-bottom: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-secondary); }
+.qs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.qs-table th { background: var(--bg-card-2); color: var(--text-muted); font-size: 10px; padding: 7px 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.8px; text-align: left; border-bottom: 1px solid var(--border); }
+.qs-table td { padding: 7px 10px; border-bottom: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-secondary); }
 .qs-table tr:last-child td { border-bottom: none; }
 .qs-table td:first-child { color: var(--text-muted); }
 .qs-table td:not(:first-child) { text-align: right; }
 .qs-table th:not(:first-child) { text-align: right; }
 
 /* pos-table alias for backward compat */
-table.pos-table { width: 100%; border-collapse: collapse; font-size: 11px; white-space: nowrap; }
-table.pos-table th { background: var(--bg-card-2); color: var(--text-muted); font-weight: 500; text-align: right; padding: 8px 10px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; border-bottom: 1px solid var(--border); }
+table.pos-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+table.pos-table th { background: var(--bg-card-2); color: var(--text-muted); font-weight: 500; text-align: right; padding: 8px 10px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; border-bottom: 1px solid var(--border); }
 table.pos-table th:first-child { text-align: left; }
 table.pos-table td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); }
 table.pos-table td:first-child { text-align: left; color: var(--text-primary); }
@@ -151,7 +151,7 @@ table.pos-table tr:last-child td { border-bottom: none; }
 table.pos-table tr:hover td { background: rgba(79,172,254,.03); }
 
 /* Badges */
-.badge { display: inline-block; font-size: 9px; padding: 2px 8px; border-radius: 3px; border: 1px solid; letter-spacing: 0.3px; vertical-align: middle; }
+.badge { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 3px; border: 1px solid; letter-spacing: 0.3px; vertical-align: middle; }
 .badge-g { background: rgba(0,230,118,.1); border-color: rgba(0,230,118,.3); color: var(--accent-green); }
 .badge-r { background: rgba(255,80,80,.1); border-color: rgba(255,80,80,.3); color: var(--accent-red); }
 .badge-a { background: rgba(255,170,32,.1); border-color: rgba(255,170,32,.3); color: var(--accent-amber); }
@@ -178,14 +178,14 @@ table.pos-table tr:hover td { background: rgba(79,172,254,.03); }
 /* Stat boxes */
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
 .stat-box { background: var(--bg-card-2); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 12px; }
-.stat-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; }
+.stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; }
 .stat-val { font-size: 18px; font-weight: 600; margin-top: 3px; color: var(--text-primary); letter-spacing: -0.5px; }
 
 /* kv rows */
-.kv { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
+.kv { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
 .kv:last-child { border-bottom: none; }
-.kv-label { color: var(--text-muted); font-size: 10px; }
-.kv-val { color: var(--text-secondary); text-align: right; }
+.kv-label { color: var(--text-muted); font-size: 12px; }
+.kv-val { color: var(--text-secondary); text-align: right; font-size: 12px; }
 
 /* Reasoning */
 .reasoning { background: var(--bg-card-2); border-left: 2px solid var(--accent-blue); padding: 10px 14px; border-radius: 0 8px 8px 0; font-size: 11px; color: var(--text-secondary); font-style: italic; margin: 8px 0; }
@@ -196,7 +196,7 @@ table.pos-table tr:hover td { background: rgba(79,172,254,.03); }
 .thesis-card:last-child { margin-bottom: 0; }
 
 /* Watch bullets */
-.watch-bullet { padding: 5px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
+.watch-bullet { padding: 5px 0; border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
 .watch-bullet:last-child { border-bottom: none; }
 
 /* Compact grids */
@@ -222,14 +222,14 @@ table.pos-table tr:hover td { background: rgba(79,172,254,.03); }
 .acct-bar { display: flex; gap: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 10px; }
 .acct-bar-item { padding: 12px 16px; flex: 1; border-right: 1px solid var(--border-subtle); }
 .acct-bar-item:last-child { border-right: none; }
-.acct-bar-lbl { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px; }
+.acct-bar-lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px; }
 .acct-bar-val { font-size: 13px; color: var(--text-primary); }
 
 /* Legacy acct rows */
 .acct-title { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 10px; }
-.acct-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
+.acct-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
 .acct-row:last-child { border-bottom: none; }
-.acct-label { color: var(--text-muted); font-size: 10px; }
+.acct-label { color: var(--text-muted); font-size: 12px; }
 .acct-val { color: var(--text-secondary); }
 
 /* Color utilities */
@@ -1305,7 +1305,10 @@ def _nav_html(active_page: str, now_et: str, a1_mode: str = "NORMAL", a2_mode: s
         f'<span class="npill {a2_pill_cls}">A2 {a2_mode}</span>'
         f'{sess_pill}'
         f'</div>'
-        f'<div class="nav-right">{now_et}&nbsp;&nbsp;&#x21BB;&nbsp;<span id="cd">60</span>s</div>'
+        f'<div class="nav-right">'
+        f'<span style="font-size:10px;color:var(--text-muted);margin-right:12px">Paper trading &middot; not financial advice</span>'
+        f'{now_et}&nbsp;&nbsp;&#x21BB;&nbsp;<span id="cd">60</span>s'
+        f'</div>'
         f'</div>'
     )
 
@@ -2050,17 +2053,21 @@ def _page_a1(status: dict, now_et: str) -> str:
     dec_quality_html = _perf_a1_decisions_html(status.get("perf_summary", {}))
 
     # Recent errors
+    import html as _html
     log_errors = status["log_errors"]
-    errors_html = ""
+    _err_lines = ""
     for err in log_errors:
         lc = "#f85149" if "  ERROR  " in err or "  CRITICAL  " in err else "#d29922"
-        errors_html += f'<div class="log-line" style="color:{lc}">{err[-180:]}</div>'
-    if not errors_html:
-        errors_html = '<div class="log-line" style="color:#3fb950">No recent warnings or errors</div>'
+        _err_lines += f'<div class="log-line" style="color:{lc}">{_html.escape(err[-180:])}</div>'
+    if not _err_lines:
+        _err_lines = '<div class="log-line" style="color:#3fb950">No recent warnings or errors</div>'
+    errors_html = (
+        f'<details><summary style="font-size:11px;color:var(--text-muted);cursor:pointer;padding:4px 0">'
+        f'Raw logs (debug) &#x25BE;</summary>'
+        f'<div style="margin-top:6px">{_err_lines}</div></details>'
+    )
 
     a1_orders_html = _fmt_orders_html(a1d.get("recent_orders", []), is_options=False, limit=6)
-
-    errors_html = errors_html or '<div class="log-line" style="color:var(--accent-green)">No recent warnings or errors</div>'
 
     body = f"""
 <div class="container">
@@ -2143,8 +2150,7 @@ def _page_a1(status: dict, now_et: str) -> str:
       <div class="kv"><span class="kv-label">Status</span><span class="kv-val">{alloc_st}</span></div>
       <div class="kv"><span class="kv-label">Last Run</span><span class="kv-val muted">{alloc_last}</span></div>
     </div>
-    <div class="section-label">Recent Log Events</div>
-    <div class="card">{errors_html}</div>
+    <div class="card" style="padding:10px 14px">{errors_html}</div>
   </div>
 </div>
 <div style="height:24px"></div>
@@ -2310,10 +2316,6 @@ def _page_a2(status: dict, now_et: str) -> str:
   <div class="acct-bar-item"><div class="acct-bar-lbl">Structures</div><div class="acct-bar-val">{a2_pos_count}</div></div>
   <div class="acct-bar-item"><div class="acct-bar-lbl">Today P&amp;L</div><div class="acct-bar-val" style="color:{a2_pnl_color}">{a2_pnl_sign}{_fm(a2_pnl)} ({a2_pnl_sign}{a2_pnl_pct:.2f}%)</div></div>
   <div class="acct-bar-item"><div class="acct-bar-lbl">Mode</div><div class="acct-bar-val" style="color:{a2_color}">{a2_mode}</div></div>
-</div>
-<div class="card" style="display:none">
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
-    <div>
 </div>
 
 <div class="section-label">Top A2 Theses</div>
@@ -2752,35 +2754,30 @@ def _load_perf_summary() -> dict:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.route("/")
-@requires_auth
 def index():
     status = _build_status()
     return _page_overview(status, _now_et())
 
 
 @app.route("/a1")
-@requires_auth
 def page_a1():
     status = _build_status()
     return _page_a1(status, _now_et())
 
 
 @app.route("/a2")
-@requires_auth
 def page_a2():
     status = _build_status()
     return _page_a2(status, _now_et())
 
 
 @app.route("/brief")
-@requires_auth
 def page_brief():
     status = _build_status()
     return _page_brief(status, _now_et())
 
 
 @app.route("/api/status")
-@requires_auth
 def api_status():
     status = _build_status()
     return jsonify({
@@ -2906,27 +2903,91 @@ def _page_trades(now_et: str) -> str:
             '</table></div>'
         )
 
-    # ── trade detail cards (reasoning) ────────────────────────────────────────
+    # ── trade detail cards (full context + bug annotations) ───────────────────
+    # Build bug lookup for quick access
+    _bug_by_id = {b["id"]: b for b in bug_log}
+
     detail_html = ""
     for t in trades[:5]:
         sym = t.get("symbol", "")
         reasoning = t.get("reasoning") or ""
-        if not reasoning:
-            continue
         pnl = t.get("pnl", 0.0) or 0.0
         clr = "#3fb950" if pnl >= 0 else "#f85149"
         sign = "+" if pnl >= 0 else ""
         flags = t.get("bug_flags", [])
-        flag_html = " ".join(
-            f'<span class="flag flag-warn">{f}</span>' for f in flags
+        has_bug = bool(flags)
+        title_suffix = " · BUG EXIT" if has_bug else ""
+        title_color = "#d29922" if has_bug else clr
+
+        # Trade meta details
+        entry_p = t.get("entry_price", 0)
+        exit_p = t.get("exit_price", 0)
+        qty = int(t.get("qty", 0))
+        conviction = (t.get("conviction") or "").upper() or "?"
+        tier = (t.get("tier") or "").upper() or "?"
+        regime_score = t.get("regime_score", "")
+        score_str = f" (score {regime_score})" if regime_score not in ("", None) else ""
+        # Compute hold duration
+        entry_ts = t.get("entry_time", "")
+        exit_ts = t.get("exit_time", "")
+        hold_label = ""
+        if entry_ts and exit_ts:
+            try:
+                _et = datetime.fromisoformat(entry_ts.replace("Z", "+00:00"))
+                _xt = datetime.fromisoformat(exit_ts.replace("Z", "+00:00"))
+                _mins = int((_xt - _et).total_seconds() / 60)
+                hold_label = f"{_mins}m hold" if _mins < 1440 else f"{_mins // 1440}d hold"
+            except Exception:
+                hold_label = ""
+
+        # Trade context block
+        meta_parts = []
+        if conviction and conviction != "?":
+            meta_parts.append(f'Conviction: <b style="color:#d29922">{conviction}</b>{score_str} &middot; Tier: <b>{tier}</b>')
+        if entry_p and exit_p:
+            meta_parts.append(f'Entry: <b>${entry_p:,.2f}</b> &times; {qty}sh &rarr; Exit: <b>${exit_p:,.2f}</b>{(" (" + hold_label + ")") if hold_label else ""}')
+        meta_html = "".join(
+            f'<div style="font-size:12px;color:var(--text-muted);padding:2px 0">{m}</div>'
+            for m in meta_parts
         )
+
+        # Bug annotation blocks (additive, below thesis)
+        bug_annotations = ""
+        for bug_id in flags:
+            bug = _bug_by_id.get(bug_id, {})
+            if not bug:
+                bug_annotations += f'<div style="margin-top:8px;padding:8px 10px;background:rgba(255,170,32,.08);border:1px solid rgba(255,170,32,.3);border-radius:6px;font-size:12px;color:#d29922">&#x26A0; {bug_id}</div>'
+                continue
+            sev = bug.get("severity", "")
+            sev_c = "#f85149" if sev == "HIGH" else "#d29922"
+            resolution = bug.get("resolution", "")
+            desc = bug.get("description", "")
+            res_short = (resolution[:120] + "…") if len(resolution) > 120 else resolution
+            res_div = (f'<div style="font-size:11px;color:var(--text-secondary)">Fixed: {res_short}</div>'
+                       if resolution else "")
+            desc_short = (desc[:160] + "…") if len(desc) > 160 else desc
+            bug_annotations += (
+                f'<div style="margin-top:8px;padding:8px 10px;background:rgba(255,170,32,.08);'
+                f'border:1px solid rgba(255,170,32,.3);border-radius:6px">'
+                f'<div style="font-size:11px;font-weight:700;color:{sev_c};margin-bottom:3px">'
+                f'&#x26A0; {bug_id}: {bug.get("title","")}</div>'
+                f'<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">{desc_short}</div>'
+                f'{res_div}'
+                f'</div>'
+            )
+
+        thesis_html = (
+            f'<div class="reasoning" style="margin:6px 0 4px">{reasoning[:400]}{"…" if len(reasoning) > 400 else ""}</div>'
+            if reasoning else ""
+        )
+
         detail_html += (
             f'<div class="thesis-card">'
-            f'<div style="font-size:13px;font-weight:700;margin-bottom:4px">'
-            f'{sym} <span style="color:{clr}">{sign}${pnl:,.2f}</span>'
-            f'{(" " + flag_html) if flag_html else ""}'
-            f'</div>'
-            f'<div class="reasoning">{reasoning[:400]}{"…" if len(reasoning) > 400 else ""}</div>'
+            f'<div style="font-size:14px;font-weight:700;margin-bottom:4px;color:{title_color}">'
+            f'{sym} <span style="color:{clr}">{sign}${pnl:,.2f}</span>{title_suffix}</div>'
+            f'{thesis_html}'
+            f'{meta_html}'
+            f'{bug_annotations}'
             f'</div>'
         )
 
@@ -2963,13 +3024,11 @@ def _page_trades(now_et: str) -> str:
 
 
 @app.route("/trades")
-@requires_auth
 def page_trades():
     return _page_trades(_now_et())
 
 
 @app.route("/api/trades")
-@requires_auth
 def api_trades():
     result = _closed_trades()
     trades, bug_log = result if isinstance(result, tuple) else (result, [])
@@ -3081,17 +3140,63 @@ def _page_transparency(now_et: str) -> str:
     else:
         tba_html = ""
 
-    body = (
-        '<div class="container">'
+    # ── left column: public context, architecture, bug log, learnings ─────────
+    try:
+        from trade_journal import build_bug_fix_log as _bfl  # noqa: I001
+        _bugs = _bfl()
+    except Exception:
+        _bugs = []
+
+    # Architecture overview cards
+    arch_rows = (
+        f'<div class="kv"><span class="kv-label">Strategy</span><span class="kv-val" style="text-transform:uppercase">{active_strategy}</span></div>'
+        f'<div class="kv"><span class="kv-label">Accounts</span><span class="kv-val">A1 Equities/ETF/Crypto &middot; A2 Options</span></div>'
+        f'<div class="kv"><span class="kv-label">Pipeline</span><span class="kv-val" style="font-size:11px">Regime&rarr;Signals&rarr;Scratchpad&rarr;Gate&rarr;Sonnet&rarr;Kernel&rarr;Exec</span></div>'
+        f'<div class="kv"><span class="kv-label">Models</span><span class="kv-val">Haiku (stages 1-2) &middot; Sonnet (stage 3)</span></div>'
+        f'<div class="kv"><span class="kv-label">Cycle</span><span class="kv-val">5 min market / 15 min extended / 30 min overnight</span></div>'
+        f'<div class="kv"><span class="kv-label">Memory</span><span class="kv-val">ChromaDB 3-tier vector store + hot scratchpads</span></div>'
+        f'<div class="kv"><span class="kv-label">Paper trading</span><span class="kv-val" style="color:var(--accent-green)">Alpaca Paper &mdash; launch 2026-04-13</span></div>'
+    )
+
+    # Bug fix log
+    bug_left_html = ""
+    for b in _bugs:
+        sev = b.get("severity", "LOW")
+        sev_c = "#f85149" if sev == "HIGH" else ("#d29922" if sev == "MEDIUM" else "#8b949e")
+        full_res = b.get("resolution", "")
+        res = (full_res[:120] + "…") if len(full_res) > 120 else full_res
+        res_div = f'<div style="font-size:11px;color:var(--text-muted)">&#x2714; {res}</div>' if res else ""
+        bug_left_html += (
+            f'<div style="padding:8px 0;border-bottom:1px solid var(--border-subtle)">'
+            f'<div style="display:flex;gap:6px;align-items:baseline;margin-bottom:3px">'
+            f'<span style="font-size:11px;font-weight:700;font-family:monospace;color:var(--accent-blue)">{b["id"]}</span>'
+            f'<span style="font-size:10px;font-weight:700;color:{sev_c}">{sev}</span>'
+            f'<span style="font-size:10px;color:var(--text-muted)">{b["start"]} – {b["end"]}</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:var(--text-primary);margin-bottom:2px">{b["title"]}</div>'
+            f'{res_div}'
+            f'</div>'
+        )
+    if not bug_left_html:
+        bug_left_html = '<div style="color:var(--text-muted);font-size:12px">No bugs logged.</div>'
+
+    # Director notes (learning journal)
+    director_html = (
+        f'<p style="font-size:12px;color:var(--text-secondary);line-height:1.7;margin:0">'
+        f'{director_notes}</p>'
+    )
+
+    left_col = (
+        '<div class="section-label">Architecture</div>'
+        f'<div class="card">{arch_rows}</div>'
+        '<div class="section-label">Bug Fix Log</div>'
+        f'<div class="card" style="padding:10px 14px">{bug_left_html}</div>'
+        '<div class="section-label">Strategy Director Notes</div>'
+        f'<div class="card">{director_html}</div>'
+    )
+
+    right_col = (
         # ── strategy overview ──────────────────────────────────────────────────
-        '<div class="section-label">Strategy</div>'
-        f'<div class="card">'
-        f'<div class="kv"><span class="kv-k">Active Strategy</span>'
-        f'<span class="kv-v" style="text-transform:uppercase;letter-spacing:.05em">{active_strategy}</span></div>'
-        f'<div class="section-label" style="margin-top:12px">Director Notes</div>'
-        f'<p style="font-size:12px;color:var(--text-secondary);line-height:1.6;margin:0">{director_notes}</p>'
-        f'</div>'
-        # ── risk parameters ────────────────────────────────────────────────────
         '<div class="section-label">Risk Parameters</div>'
         '<div class="card" style="padding:0">'
         '<table class="data-table"><thead><tr><th>Parameter</th><th style="text-align:right">Value</th></tr></thead>'
@@ -3117,13 +3222,20 @@ def _page_transparency(now_et: str) -> str:
         '<th>Caller</th><th style="text-align:right">Calls</th><th style="text-align:right">Cost</th><th>Share</th>'
         f'</tr></thead><tbody>{caller_rows}</tbody></table>'
         f'</div>'
-        + '</div>'
+    )
+
+    body = (
+        '<div class="container">'
+        f'<div class="compact-grid">'
+        f'<div>{left_col}</div>'
+        f'<div>{right_col}</div>'
+        f'</div>'
+        '</div>'
     )
     return _page_shell("Transparency", nav, body, ticker)
 
 
 @app.route("/transparency")
-@requires_auth
 def page_transparency():
     return _page_transparency(_now_et())
 
@@ -3399,7 +3511,7 @@ function renderStageDetail(st, name) {{
 function loadCycle(index) {{
   var li = document.getElementById('loading-indicator');
   if (li) li.style.display = 'inline-block';
-  fetch('/api/theater/cycle/' + index, {{headers: {{'Authorization': _authHeader()}}}})
+  fetch('/api/theater/cycle/' + index)
     .then(r => r.json())
     .then(function(data) {{
       _currentCycle = data;
@@ -3467,8 +3579,7 @@ function loadTrade(symbol, entryDate) {{
   document.querySelectorAll('.trade-pill').forEach(p => p.classList.remove('selected'));
   var li = document.getElementById('loading-indicator');
   if (li) li.style.display = 'inline-block';
-  fetch('/api/theater/trade/' + symbol + '?entry_date=' + entryDate,
-        {{headers: {{'Authorization': _authHeader()}}}})
+  fetch('/api/theater/trade/' + symbol + '?entry_date=' + entryDate)
     .then(r => r.json())
     .then(function(data) {{
       renderTradeLifecycle(data);
@@ -3611,10 +3722,6 @@ function renderThesis(data) {{
   el.innerHTML = html;
 }}
 
-function _authHeader() {{
-  return 'Basic ' + btoa(document.cookie.match(/du=([^;]+)/)?.[1] || 'admin:bullbearbot');
-}}
-
 // Pre-render ideas on load
 document.getElementById('ideas-panel').innerHTML = renderIdeas(
   (_cycleData.stages && _cycleData.stages.sonnet && _cycleData.stages.sonnet.ideas) || []
@@ -3679,13 +3786,11 @@ def _theater_ideas_html(ideas: list) -> str:
 
 
 @app.route("/theater")
-@requires_auth
 def page_theater():
     return _page_theater(_now_et())
 
 
 @app.route("/api/theater/cycle/<cycle_index>")
-@requires_auth
 def api_theater_cycle(cycle_index: str):
     try:
         from decision_theater import get_cycle_view
@@ -3695,7 +3800,6 @@ def api_theater_cycle(cycle_index: str):
 
 
 @app.route("/api/theater/trade/<symbol>")
-@requires_auth
 def api_theater_trade(symbol: str):
     try:
         from decision_theater import get_trade_lifecycle
@@ -3706,7 +3810,6 @@ def api_theater_trade(symbol: str):
 
 
 @app.route("/api/theater/trades")
-@requires_auth
 def api_theater_trades():
     try:
         from decision_theater import get_all_trades_summary

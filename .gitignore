@@ -2,6 +2,14 @@
 .env
 *.env
 .env.save
+.env.backup.*
+
+# Private — not for public repo
+CLAUDE.private.md
+prompts/system_v1.txt
+prompts/system_options_v1.txt
+prompts/user_template_v1.txt
+prompts/compact_template.txt
 
 # Claude Code
 .claude/
@@ -19,6 +27,7 @@ venv/
 *.bak.*
 *.bak
 =*
+=0.5.0
 
 # Logs and runtime
 logs/
@@ -50,7 +59,6 @@ data/account2/positions/
 data/analytics/
 
 # Keep these
-!data/macro_intelligence/citrini_positions.json
 !data/account2/structures.json
 !data/analytics/.gitkeep
 

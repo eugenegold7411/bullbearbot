@@ -12,9 +12,7 @@ RI-06: iron_low_conviction_threshold config key respected
 
 from types import SimpleNamespace
 
-import pytest
 from bot_options_stage2_structures import _route_strategy
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -11,17 +11,14 @@ VX-07: VIX=45 → exits and stops never blocked
 VX-08: Config thresholds respected (not hardcoded)
 """
 
-import pytest
 from risk_kernel import eligibility_check, get_vix_context_note
 from schemas import (
     AccountAction,
     BrokerSnapshot,
     Direction,
-    NormalizedPosition,
     Tier,
     TradeIdea,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -1325,25 +1325,25 @@ def _alloc_chart_html(data: dict, fallback_text: str = "") -> str:
         f'<div style="position:relative;height:{chart_h}px;width:100%"><canvas id="allocChart"></canvas></div>' +
         f'<div style="margin-top:8px;display:flex;flex-wrap:wrap">{tiles}</div>' +
         '</div>' +
-        f'<script>window.addEventListener("load",function(){{' +
-        f'if(window._acd)return;window._acd=true;' +
-        f'var ctx=document.getElementById("allocChart");if(!ctx)return;' +
+        '<script>window.addEventListener("load",function(){' +
+        'if(window._acd)return;window._acd=true;' +
+        'var ctx=document.getElementById("allocChart");if(!ctx)return;' +
         f'new Chart(ctx,{{type:"bar",data:{{labels:{labels_js},' +
         f'datasets:[{{label:"Current %",data:{cur_js},backgroundColor:"rgba(96,165,250,0.65)",' +
-        f'borderColor:"rgba(96,165,250,0.9)",borderWidth:1,borderRadius:2,borderSkipped:false}},' +
+        'borderColor:"rgba(96,165,250,0.9)",borderWidth:1,borderRadius:2,borderSkipped:false},' +
         f'{{label:"Target ceiling %",data:{tgt_js},backgroundColor:"rgba(96,165,250,0.08)",' +
-        f'borderColor:"rgba(96,165,250,0.45)",borderWidth:2,borderRadius:2,borderSkipped:false}}]}},' +
-        f'options:{{indexAxis:"y",responsive:true,maintainAspectRatio:false,' +
-        f'plugins:{{legend:{{display:true,labels:{{color:"#7B8090",' +
-        f'font:{{family:"JetBrains Mono,monospace",size:10}},boxWidth:10,padding:12}}}},' +
-        f'tooltip:{{callbacks:{{label:function(c){{return c.dataset.label+": "+c.raw.toFixed(1)+"%";}}}},' +
-        f'backgroundColor:"#181B26",borderColor:"#1F2330",borderWidth:1}}}},' +
-        f'scales:{{x:{{max:25,grid:{{color:"rgba(31,35,48,0.8)"}},' +
-        f'ticks:{{color:"#4A4F60",font:{{family:"JetBrains Mono,monospace",size:10}},' +
-        f'callback:function(v){{return v+"%";}}}}}},' +
-        f'y:{{grid:{{display:false}},' +
-        f'ticks:{{color:"#7B8090",font:{{family:"JetBrains Mono,monospace",size:11}}}}}}}}}}}}' +
-        f'}});</script>'
+        'borderColor:"rgba(96,165,250,0.45)",borderWidth:2,borderRadius:2,borderSkipped:false}]},' +
+        'options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,' +
+        'plugins:{legend:{display:true,labels:{color:"#7B8090",' +
+        'font:{family:"JetBrains Mono,monospace",size:10},boxWidth:10,padding:12}},' +
+        'tooltip:{callbacks:{label:function(c){return c.dataset.label+": "+c.raw.toFixed(1)+"%";}},' +
+        'backgroundColor:"#181B26",borderColor:"#1F2330",borderWidth:1}},' +
+        'scales:{x:{max:25,grid:{color:"rgba(31,35,48,0.8)"},' +
+        'ticks:{color:"#4A4F60",font:{family:"JetBrains Mono,monospace",size:10},' +
+        'callback:function(v){return v+"%";}}},' +
+        'y:{grid:{display:false},' +
+        'ticks:{color:"#7B8090",font:{family:"JetBrains Mono,monospace",size:11}}}}}}' +
+        '});</script>'
     )
 
 
@@ -1352,8 +1352,9 @@ def _alloc_chart_html(data: dict, fallback_text: str = "") -> str:
 def _equity_curve_data() -> dict:
     """Fetch A1+A2 daily equity from Alpaca portfolio history. Returns {dates, a1, a2, combined}."""
     try:
-        import requests as _req
         from datetime import datetime as _dt
+
+        import requests as _req
         LAUNCH_TS = 1776038400  # 2026-04-13 00:00 UTC
         rows = {}  # date_str -> {a1, a2, ts}
         for name, k, s in [("a1", ALPACA_KEY, ALPACA_SECRET), ("a2", ALPACA_KEY_OPT, ALPACA_SECRET_OPT)]:
@@ -1603,8 +1604,8 @@ def _pos_card_html(p: dict, bars: list, label: str = "today") -> str:
         )
     else:
         tp_lbl = (
-            f'<div style="font-family:monospace;font-size:9px;color:#FBBF24;'
-            f'line-height:1.3;min-width:50px">no TP</div>'
+            '<div style="font-family:monospace;font-size:9px;color:#FBBF24;'
+            'line-height:1.3;min-width:50px">no TP</div>'
         )
 
     prior_note = (' <span style="font-family:monospace;font-size:9px;color:var(--text-muted)">prior close</span>'
@@ -2211,12 +2212,11 @@ def _bbb_hero_strip_html(status: dict) -> str:
 
     # Regime string: "risk_on(62)"
     dec = status.get("decision", {})
-    regime_raw = dec.get("regime_view", dec.get("regime", "")) or ""
+    dec.get("regime_view", dec.get("regime", "")) or ""
     try:
-        regime_score = float(dec.get("regime_score") or 50)
+        float(dec.get("regime_score") or 50)
     except (TypeError, ValueError):
-        regime_score = 50.0
-    regime_str = f"{regime_raw}({regime_score:.0f})" if regime_raw else "—"
+        pass
 
     # Cycle count (Sonnet calls today)
     gate = status.get("gate") or {}
@@ -2621,30 +2621,24 @@ def _page_overview(status: dict, now_et: str) -> str:
     a2_acc = a2d.get("account")
     a1_mode = status["a1_mode"].get("mode", "unknown").upper()
     a2_mode = status["a2_mode"].get("mode", "unknown").upper()
-    a1_color = _mode_color(a1_mode)
-    a2_color = _mode_color(a2_mode)
+    _mode_color(a1_mode)
+    _mode_color(a2_mode)
     nav = _nav_html("overview", now_et, a1_mode, a2_mode)
     warn_html = _warnings_html(status.get("warnings", []))
 
     a1_pnl, a1_pnl_pct = status.get("today_pnl_a1", (0.0, 0.0))
     a2_pnl, a2_pnl_pct = status.get("today_pnl_a2", (0.0, 0.0))
-    a1_pnl_color = "#3fb950" if a1_pnl >= 0 else "#f85149"
-    a2_pnl_color = "#3fb950" if a2_pnl >= 0 else "#f85149"
-    a1_pnl_sign = "+" if a1_pnl >= 0 else ""
-    a2_pnl_sign = "+" if a2_pnl >= 0 else ""
 
     if a1_acc:
         a1_equity = float(a1_acc.equity or 0)
         a1_pos_count = len(status["positions"])
-        a1_unreal = sum(p["unreal_pl"] for p in status["positions"])
-        a1_unreal_c = "#3fb950" if a1_unreal >= 0 else "#f85149"
-        a1_unreal_s = "+" if a1_unreal >= 0 else ""
+        sum(p["unreal_pl"] for p in status["positions"])
         a1_invested = sum(p["market_val"] for p in status["positions"])
-        a1_util = min(100.0, a1_invested / a1_equity * 100) if a1_equity else 0.0
+        min(100.0, a1_invested / a1_equity * 100) if a1_equity else 0.0
     else:
-        a1_equity = a1_invested = a1_util = 0.0
+        a1_equity = a1_invested = 0.0
         a1_pos_count = 0
-        a1_unreal = 0.0; a1_unreal_c = "#8b949e"; a1_unreal_s = ""
+         
 
     if a2_acc:
         a2_equity = float(a2_acc.equity or 0)
@@ -2667,8 +2661,8 @@ def _page_overview(status: dict, now_et: str) -> str:
         proj_color = "#3fb950"
         proj_icon = ""
     sonnet_calls = gate.get("total_calls_today", "—")
-    buys = status["buys_today"]
-    sells = status["sells_today"]
+    status["buys_today"]
+    status["sells_today"]
 
     # Top-3 callers by cost
     by_caller = costs.get("by_caller", {}) if isinstance(costs, dict) else {}
@@ -2700,8 +2694,8 @@ def _page_overview(status: dict, now_et: str) -> str:
     flags_html = "\n".join(flags_list)
 
     a2_dec = status.get("a2_decision") or {}
-    a2_ts = _to_et(a2_dec.get("built_at", "")) if a2_dec else "—"
-    git_hash = status["git_hash"]
+    _to_et(a2_dec.get("built_at", "")) if a2_dec else "—"
+    status["git_hash"]
     svc_uptime = status["service_uptime"]
     build_pill = _bbb_build_pill()
 
@@ -2739,9 +2733,7 @@ def _page_overview(status: dict, now_et: str) -> str:
     perf_7d_html = _perf_overview_html(status.get("perf_summary", {}))
 
     # P&L hero
-    combined_pnl = a1_pnl + a2_pnl
-    combined_color = "#3fb950" if combined_pnl >= 0 else "#f85149"
-    combined_sign = "+" if combined_pnl >= 0 else ""
+    a1_pnl + a2_pnl
 
     # Trail table
     trail_tiers = status.get("trail_tiers", [])
@@ -2763,7 +2755,7 @@ def _page_overview(status: dict, now_et: str) -> str:
     # A2 pipeline today
     a2_pipe = status.get("a2_pipeline", {})
     a2_pipe_total = a2_pipe.get("total", 0)
-    a2_pipe_str = (
+    (
         f'Today: {a2_pipe_total} structures &mdash; '
         f'{a2_pipe.get("fully_filled",0)} filled / '
         f'{a2_pipe.get("submitted",0)} submitted / '
@@ -3446,11 +3438,10 @@ def _a2_payoff_bar_html(max_loss, max_gain, breakeven) -> str:
         loss_pct = ml / total * 100
         gain_pct = mg / total * 100
         rr = mg / ml
-        rr_str = "R/R " + f"{rr:.1f}" + "×"
+        "R/R " + f"{rr:.1f}" + "×"
     else:
         loss_pct = 38
         gain_pct = 62
-        rr_str = ""
 
     loss_label = ("-$" + f"{ml:,.0f}") if ml else "−?"
     if is_unlimited:
@@ -3829,7 +3820,7 @@ def _a2_pipeline_section_html(all_decs: list) -> str:
     n_syms = len(cand_sets)
     n_gen = sum(len(cs.get("generated_candidates") or []) for cs in cand_sets if isinstance(cs, dict))
     n_surv = sum(len(cs.get("surviving_candidates") or []) for cs in cand_sets if isinstance(cs, dict))
-    n_debated = 1 if last.get("selected_candidate") else 0
+    1 if last.get("selected_candidate") else 0
     n_filled = sum(1 for d in all_decs if d.get("execution_result") == "submitted")
     funnel = (
         str(n_syms) + " symbols → " + str(n_gen) + " generated → " +
@@ -5319,7 +5310,7 @@ def _page_trades(now_et: str) -> str:
     # ── statistics ────────────────────────────────────────────────────────
     n = len(trades)
     wins = sum(1 for t in trades if t.get("outcome") == "win")
-    losses = sum(1 for t in trades if t.get("outcome") == "loss")
+    sum(1 for t in trades if t.get("outcome") == "loss")
     total_pnl = sum(t.get("pnl", 0.0) or 0.0 for t in trades)
     win_rate = (wins / n * 100) if n else 0.0
 
@@ -5719,7 +5710,7 @@ def _gallery_card_html(t: dict, idx: int) -> str:
         + (tier_chip if tier_chip else "")
         + ('<span style="color:var(--bbb-fg-dim);font-size:10px">·</span>' if tier_chip and regime_chip else "")
         + (regime_chip if regime_chip else "")
-        + f'</div>'
+        + '</div>'
 
         # meta row
         + (f'<div style="font-family:var(--bbb-font-mono);font-size:11px;color:var(--bbb-fg-muted)">{meta_str}</div>'
@@ -5730,7 +5721,7 @@ def _gallery_card_html(t: dict, idx: int) -> str:
            f'line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical">'
            f'{snip}</div>' if snip else "")
 
-        + f'</div>'
+        + '</div>'
     )
 
 
@@ -5768,11 +5759,11 @@ def _page_gallery(now_et: str) -> str:
     )
 
     filter_bar = (
-        f'<div style="display:flex;align-items:center;gap:var(--bbb-s-2);flex-wrap:wrap;'
-        f'margin-bottom:var(--bbb-s-4);padding:var(--bbb-s-3) var(--bbb-s-4);'
-        f'background:var(--bbb-surface);border:1px solid var(--bbb-border);border-radius:var(--bbb-r-3)">'
-        f'<span style="font-family:var(--bbb-font-sans);font-size:11px;font-weight:500;'
-        f'letter-spacing:0.06em;text-transform:uppercase;color:var(--bbb-fg-muted);margin-right:4px">Outcome</span>'
+        '<div style="display:flex;align-items:center;gap:var(--bbb-s-2);flex-wrap:wrap;'
+        'margin-bottom:var(--bbb-s-4);padding:var(--bbb-s-3) var(--bbb-s-4);'
+        'background:var(--bbb-surface);border:1px solid var(--bbb-border);border-radius:var(--bbb-r-3)">'
+        '<span style="font-family:var(--bbb-font-sans);font-size:11px;font-weight:500;'
+        'letter-spacing:0.06em;text-transform:uppercase;color:var(--bbb-fg-muted);margin-right:4px">Outcome</span>'
         + outcome_pills +
         f'<span style="flex:1"></span>'
         f'<select id="gSort" onchange="gSort()" '
@@ -5798,10 +5789,10 @@ def _page_gallery(now_et: str) -> str:
     else:
         cards = "".join(_gallery_card_html(t, i) for i, t in enumerate(trades))
         grid_html = (
-            f'<div id="gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));'
-            f'gap:var(--bbb-s-3)">'
+            '<div id="gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));'
+            'gap:var(--bbb-s-3)">'
             + cards +
-            f'</div>'
+            '</div>'
         )
 
     gallery_js = """
@@ -5907,7 +5898,7 @@ def _page_transparency(now_et: str) -> str:
 
     params = _cfg.get("parameters", {})
     _director_notes_raw = _cfg.get("director_notes", "")
-    director_notes = (_director_notes_raw.strip() if isinstance(_director_notes_raw, str) else "")
+    (_director_notes_raw.strip() if isinstance(_director_notes_raw, str) else "")
     active_strategy = _cfg.get("active_strategy", "hybrid")
     ff = _cfg.get("feature_flags", {})
     shadow_flags = _cfg.get("shadow_flags", {})
@@ -6414,7 +6405,6 @@ def _bbb_cycle_wheel_svg() -> str:
     import math as _math
     cx, cy = 140, 140
     R_ring = 120   # outer clock ring
-    R_dot  = 82    # cycle dot radius
     R_hand = 108   # current-time hand length
 
     ticks = []
@@ -6689,7 +6679,7 @@ def _page_theater(now_et: str) -> str:
     import base64 as _b64
     _auth_b64 = _b64.b64encode(f"{DASHBOARD_USER}:{DASHBOARD_PASSWORD}".encode()).decode()
 
-    initial_reasoning = stages.get("sonnet", {}).get("reasoning_full") or \
+    stages.get("sonnet", {}).get("reasoning_full") or \
                         stages.get("sonnet", {}).get("reasoning_excerpt") or ""
     initial_ideas_html = _theater_ideas_html(stages.get("sonnet", {}).get("ideas", []))
 
@@ -8054,32 +8044,32 @@ def _page_social(status: dict, now_et: str) -> str:
 
     # ── HERO ──────────────────────────────────────────────────────────────────
     hero_html = (
-        f'<div style="text-align:center;padding:48px 0 32px;'
-        f'border-bottom:1px solid var(--bbb-border);margin-bottom:0">'
-        f'<div style="font-family:var(--bbb-font-mono);font-size:36px;font-weight:500;'
-        f'color:var(--bbb-fg);letter-spacing:-0.03em;margin-bottom:12px">BullBearBot</div>'
-        f'<div style="font-family:var(--bbb-font-mono);font-size:13px;color:var(--bbb-fg-muted)">'
-        f'Autonomous AI trading &middot; two strategies &middot; paper since April&nbsp;13&nbsp;2026'
-        f'</div>'
-        f'</div>'
+        '<div style="text-align:center;padding:48px 0 32px;'
+        'border-bottom:1px solid var(--bbb-border);margin-bottom:0">'
+        '<div style="font-family:var(--bbb-font-mono);font-size:36px;font-weight:500;'
+        'color:var(--bbb-fg);letter-spacing:-0.03em;margin-bottom:12px">BullBearBot</div>'
+        '<div style="font-family:var(--bbb-font-mono);font-size:13px;color:var(--bbb-fg-muted)">'
+        'Autonomous AI trading &middot; two strategies &middot; paper since April&nbsp;13&nbsp;2026'
+        '</div>'
+        '</div>'
     )
 
     # ── PERFORMANCE STRIP ─────────────────────────────────────────────────────
     perf_html = (
-        f'<div style="display:flex;background:var(--bbb-surface);border:1px solid var(--bbb-border);'
-        f'border-radius:var(--bbb-r-3);overflow:hidden;margin:24px 0">'
+        '<div style="display:flex;background:var(--bbb-surface);border:1px solid var(--bbb-border);'
+        'border-radius:var(--bbb-r-3);overflow:hidden;margin:24px 0">'
         + _social_perf_pane("Combined return", f"{cum_sign}{_fm(cum_dollars)}",
                              f"{cum_sign}{cum_pct:.2f}% of $200k", cum_cls)
         + _social_perf_pane("Days running", str(days_running), f"since {_LAUNCH_DATE}", "bbb-fg")
         + _social_perf_pane("Win rate", f"{win_rate:.0f}%",
                              f"{wins}W&nbsp;/&nbsp;{n_trades - wins}L", wr_cls)
         + _social_perf_pane("Closed trades", str(n_trades), "", "bbb-fg", last=True)
-        + f'</div>'
+        + '</div>'
     )
 
     # ── TWO-BOT EXPLAINER ─────────────────────────────────────────────────────
     bots_html = (
-        f'<div style="display:flex;gap:16px;margin:0 0 24px">'
+        '<div style="display:flex;gap:16px;margin:0 0 24px">'
         + _social_bot_card("A1", "var(--bbb-info)", "Equity strategy", [
             "Single Claude Sonnet decision loop",
             "7-stage pipeline: regime &rsaquo; signals &rsaquo; scratchpad &rsaquo; gate &rsaquo; Sonnet &rsaquo; kernel &rsaquo; exec",
@@ -8092,7 +8082,7 @@ def _page_social(status: dict, now_et: str) -> str:
             "DIRECTIONAL ADVOCATE &middot; VOL ANALYST &middot; TAPE SKEPTIC &middot; RISK OFFICER",
             "Multi-leg execution + post-execution Alpaca state verification",
         ])
-        + f'</div>'
+        + '</div>'
     )
 
     # ── RECENT DECISIONS ──────────────────────────────────────────────────────
@@ -8135,10 +8125,10 @@ def _page_social(status: dict, now_et: str) -> str:
         )
     else:
         recent_html = (
-            f'<div style="margin-bottom:24px;padding:20px;background:var(--bbb-surface);'
-            f'border:1px solid var(--bbb-border);border-radius:var(--bbb-r-3);'
-            f'font-family:var(--bbb-font-mono);font-size:13px;'
-            f'color:var(--bbb-fg-muted);text-align:center">No closed trades yet.</div>'
+            '<div style="margin-bottom:24px;padding:20px;background:var(--bbb-surface);'
+            'border:1px solid var(--bbb-border);border-radius:var(--bbb-r-3);'
+            'font-family:var(--bbb-font-mono);font-size:13px;'
+            'color:var(--bbb-fg-muted);text-align:center">No closed trades yet.</div>'
         )
 
     # ── HOW IT WORKS ──────────────────────────────────────────────────────────
@@ -8155,8 +8145,8 @@ def _page_social(status: dict, now_et: str) -> str:
     pills = ""
     for i, (name, _) in enumerate(_STAGE_DESCS):
         connector = (
-            f'<div style="font-family:var(--bbb-font-mono);font-size:10px;'
-            f'color:var(--bbb-fg-dim);padding:0 2px">&rsaquo;</div>'
+            '<div style="font-family:var(--bbb-font-mono);font-size:10px;'
+            'color:var(--bbb-fg-dim);padding:0 2px">&rsaquo;</div>'
             if i < len(_STAGE_DESCS) - 1 else ""
         )
         pills += (
@@ -8186,16 +8176,16 @@ def _page_social(status: dict, now_et: str) -> str:
 
     # ── FOOTER ────────────────────────────────────────────────────────────────
     footer_html = (
-        f'<div style="border-top:1px solid var(--bbb-border);padding:20px 0;text-align:center;'
-        f'font-family:var(--bbb-font-mono);font-size:11px;color:var(--bbb-fg-dim)">'
-        f'Paper trading &middot; not financial advice &middot; dashboard at 161.35.120.8'
-        f'</div>'
+        '<div style="border-top:1px solid var(--bbb-border);padding:20px 0;text-align:center;'
+        'font-family:var(--bbb-font-mono);font-size:11px;color:var(--bbb-fg-dim)">'
+        'Paper trading &middot; not financial advice &middot; dashboard at 161.35.120.8'
+        '</div>'
     )
 
     feed_html = _social_post_feed_html()
 
     body = (
-        f'<div style="max-width:860px;margin:0 auto;padding:0 24px 40px">'
+        '<div style="max-width:860px;margin:0 auto;padding:0 24px 40px">'
         + hero_html
         + perf_html
         + feed_html
@@ -8203,7 +8193,7 @@ def _page_social(status: dict, now_et: str) -> str:
         + recent_html
         + pipeline_html
         + footer_html
-        + f'</div>'
+        + '</div>'
     )
     _soc_positions = [
         {"symbol": getattr(p, "symbol", ""), "current": float(getattr(p, "current_price", 0) or 0),
@@ -8404,7 +8394,7 @@ def _board_readiness_section() -> str:
             rd = json.load(f)
 
         overall   = rd.get("overall_status", "unknown").upper()
-        a1_ready  = rd.get("a1_live_ready", False)
+        rd.get("a1_live_ready", False)
         passed    = rd.get("gates_passed", 0)
         total     = rd.get("gates_total", 18)
         sev1_days = rd.get("sev1_clean_days", 0)
@@ -8412,7 +8402,6 @@ def _board_readiness_section() -> str:
         gen_at    = rd.get("generated_at", "")[:19].replace("T", " ")
 
         status_c = "var(--bbb-profit)" if overall == "READY" else "var(--bbb-loss)"
-        live_c   = "var(--bbb-profit)" if a1_ready else "var(--bbb-warn)"
 
         # Full gate list (static — from validate_config.py)
         gate_list = [
@@ -8438,7 +8427,7 @@ def _board_readiness_section() -> str:
         ]
 
         # Determine which gates failed
-        failed_strs = " ".join(failures).lower()
+        " ".join(failures).lower()
         gate_rows = ""
         for gid, gdesc in gate_list:
             key = f"gate {gid}"
@@ -8486,7 +8475,7 @@ def _board_annex_section() -> str:
     sealed    = eval_dir / "SEALED"
     outputs   = eval_dir / "outputs"
     scoring   = eval_dir / "scoring_sheet_filled.csv"
-    pre_reg   = eval_dir / "PRE_REGISTRATION.md"
+    eval_dir / "PRE_REGISTRATION.md"
 
     pre_reg_date = "2026-04-16"
     if manifest.exists():

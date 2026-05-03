@@ -378,8 +378,8 @@ def validate_action(action: dict, account, positions: list, market_status: str,
     if position_value > effective_tier_ceiling * 1.05:   # 5% tolerance
         log.warning(
             "[EXEC] %s: soft policy check (kernel primary): "
-            "position $%,.0f exceeds tier ceiling $%,.0f (%s tier, %s conviction)",
-            symbol, position_value, effective_tier_ceiling, tier, _conv_str,
+            "position $%s exceeds tier ceiling $%s (%s tier, %s conviction)",
+            symbol, f"{position_value:,.0f}", f"{effective_tier_ceiling:,.0f}", tier, _conv_str,
         )
 
     # Conviction-adjusted exposure cap (soft — kernel enforced via size_position)

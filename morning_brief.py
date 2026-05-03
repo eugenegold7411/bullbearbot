@@ -1909,32 +1909,39 @@ def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
     Generate a comprehensive intelligence brief. Saves morning_brief_full.json,
     morning_brief_sonnet.json, and legacy morning_brief.json.
     Returns the full brief dict (or {} on failure).
-    brief_type: "premarket" | "market_open" | "intraday_update"
+    brief_type: "premarket" | "market_open" | "intraday_update" | "closing"
     """
     log.info("[INTELLIGENCE] Generating %s intelligence brief", brief_type)
     context = _load_intelligence_context(brief_type)
 
     # Compute next_update_at based on brief_type
     import zoneinfo as _zi
+    from datetime import timedelta as _td  # noqa: PLC0415
     ET_ZONE = _zi.ZoneInfo("America/New_York")
     now_et = datetime.now(ET_ZONE)
     if brief_type == "premarket":
-        # Next update: market_open at 9:25 AM
-        from datetime import timedelta as _td  # noqa: PLC0415
+        # Next update: market_open at 9:25 AM same day
         next_update = now_et.replace(hour=9, minute=25, second=0, microsecond=0)
         if next_update <= now_et:
             next_update = next_update + _td(days=1)
     elif brief_type == "market_open":
-        # Next update: 10:30 AM
+        # Next update: first intraday slot at 10:30 AM
         next_update = now_et.replace(hour=10, minute=30, second=0, microsecond=0)
+    elif brief_type == "closing":
+        # Next update: premarket on the next trading day at 4:00 AM
+        next_day = now_et + _td(days=1)
+        while next_day.weekday() >= 5:  # skip Saturday (5) and Sunday (6)
+            next_day += _td(days=1)
+        next_update = next_day.replace(hour=4, minute=0, second=0, microsecond=0)
     else:
-        # intraday_update: next hour on the slot schedule
-        slots = [10, 11, 12, 13, 14, 15]
-        next_hour = next((h for h in slots if h > now_et.hour), None)
+        # intraday_update: next hourly slot, or closing brief at 4:30 PM
+        _intraday_hours = [10, 11, 12, 13, 14, 15]
+        next_hour = next((h for h in _intraday_hours if h > now_et.hour), None)
         if next_hour:
             next_update = now_et.replace(hour=next_hour, minute=30, second=0, microsecond=0)
         else:
-            next_update = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+            # Last intraday slot — next is the closing brief at 4:30 PM
+            next_update = now_et.replace(hour=16, minute=30, second=0, microsecond=0)
     next_update_iso = next_update.isoformat()
 
     user_content = (

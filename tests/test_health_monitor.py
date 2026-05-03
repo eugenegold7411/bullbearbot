@@ -155,8 +155,7 @@ class TestA2FillRate(unittest.TestCase):
         self.assertEqual(r.severity, "CRITICAL")
 
     def test_some_filled_is_ok(self):
-        from alpaca.trading.enums import OrderStatus
-        orders = [MagicMock(status=OrderStatus.NEW)] * 2 + [MagicMock(status=OrderStatus.FILLED)] * 3
+        orders = [self._make_order("new")] * 2 + [self._make_order("filled")] * 3
         with patch.dict("os.environ", {"ALPACA_API_KEY_OPTIONS": "k", "ALPACA_SECRET_KEY_OPTIONS": "s"}):
             with patch("alpaca.trading.client.TradingClient") as mock_tc:
                 mock_tc.return_value.get_orders.return_value = orders
@@ -164,8 +163,7 @@ class TestA2FillRate(unittest.TestCase):
         self.assertTrue(r.ok)
 
     def test_below_threshold_submitted_is_ok(self):
-        from alpaca.trading.enums import OrderStatus
-        orders = [MagicMock(status=OrderStatus.NEW)] * 2
+        orders = [self._make_order("new")] * 2
         with patch.dict("os.environ", {"ALPACA_API_KEY_OPTIONS": "k", "ALPACA_SECRET_KEY_OPTIONS": "s"}):
             with patch("alpaca.trading.client.TradingClient") as mock_tc:
                 mock_tc.return_value.get_orders.return_value = orders

@@ -18,7 +18,6 @@ Last updated: 2026-05-03
 | Task | Notes |
 |------|-------|
 | Vector memory & learning loop fixes | Waiting for Session 4 diagnosis |
-| test_bug009b_tp_fallback.py path isolation | Session 2 in progress |
 
 ---
 
@@ -62,17 +61,6 @@ Does NOT:
 
 Output: Pass/fail report per stage + full trace log. Any stage that
 fails or produces unexpected output flagged with exact error.
-
----
-
-### Crypto Outside-Market-Hours Entry & Cycles
-Priority: High
-Estimated effort: 1–2 hour build session
-Dependencies: None — infrastructure 90% built
-
-Enable BTC/ETH new position entry and full cycle management during
-overnight and extended sessions. See crypto prompt below for full
-scope.
 
 ---
 
@@ -142,19 +130,13 @@ Dashboard shows position size as % of buying_power instead of
 
 ---
 
-### order_executor.py:354 ValueError
-Priority: Low
-Estimated effort: 15 minutes
-
-ValueError: unsupported format character ',' in validate_action().
-Silent logging error, not blocking execution. Fix the format string.
-
----
-
 ## COMPLETED TODAY (2026-05-03)
 
 | Commit  | What |
 |---------|------|
+| TBD     | Three small fixes: order_executor ValueError + health_monitor OrderStatus.NEW + backlog update |
+| bfd49c7 | S18: overnight crypto new-entry — BTC/ETH enter_long via Haiku; 10 OE tests |
+| d58689f | test(bug009b): patch pathlib.Path in _run_submit_buy — path isolation |
 | 9285766 | ET_OFFSET → ZoneInfo auto-DST (dashboard/app.py + 6 new tests) |
 | 7854b1e | Dashboard A2 redesign + lint + test fix |
 | b954bbd | Weekly agent overhaul + Friday 9PM schedule + Agent 7 3-call pipeline |
@@ -171,7 +153,5 @@ Silent logging error, not blocking execution. Fix the format string.
 | ID | Description | Severity |
 |----|-------------|----------|
 | BUG-015 | OCO on existing positions requires cancel+resubmit with unprotected window | Low |
-| — | order_executor.py:354 ValueError in validate_action() | Low |
 | — | Dashboard OVERSIZE display bug (display only) | Low |
-| — | test_health_monitor.py OrderStatus.NEW mock failure | Pre-existing |
 | — | test_scratchpad_memory / test_sprint2_5 ChromaDB failures | Pre-existing |

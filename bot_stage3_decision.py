@@ -423,6 +423,7 @@ def build_compact_prompt(
     time_bound_actions: list,
     pi_data:            dict,
     exit_status:        str = "",
+    condensed_memories: str = "",
 ) -> str:
     """
     Build the compact 6-block prompt (~1,500 tokens vs ~7,500 for full).
@@ -538,7 +539,7 @@ def build_compact_prompt(
     constraints_block = "\n".join(f"  {l}" for l in clines) if clines else "  No active constraints."
 
     try:
-        return template.format(
+        rendered = template.format(
             equity=f"{equity:,.2f}",
             cash_pct=f"{cash_pct:.1f}",
             exposure_pct=f"{exposure_pct:.1f}",
@@ -564,6 +565,15 @@ def build_compact_prompt(
     except KeyError as _ke:
         log.warning("[GATE] compact prompt format error: %s", _ke)
         return ""
+
+    if condensed_memories:
+        mem_block = f"=== RELEVANT MEMORIES ===\n{condensed_memories[:600]}\n\n"
+        if "=== OUTPUT" in rendered:
+            rendered = rendered.replace("=== OUTPUT", mem_block + "=== OUTPUT", 1)
+        else:
+            rendered += "\n\n" + mem_block
+
+    return rendered
 
 
 def _log_skip_cycle(state) -> None:
@@ -644,6 +654,7 @@ def _ask_claude_overnight(
     crypto_signals: str = "",
     equity: float = 0.0,
     buying_power: float = 0.0,
+    condensed_memories: str = "",
 ) -> dict:
     """
     Lightweight Haiku decision for overnight crypto-only sessions.
@@ -688,12 +699,17 @@ def _ask_claude_overnight(
         except Exception:
             pass
 
+        _mem_block = (
+            f"=== RELEVANT MEMORY ===\n{condensed_memories[:350]}\n\n"
+            if condensed_memories else ""
+        )
         prompt = (
             f"=== OVERNIGHT SESSION ===\n"
             f"Time: {_time_str}\n\n"
             f"=== OPEN POSITIONS ===\n{pos_block}\n\n"
             f"=== REGIME ===\n"
             f"Score: {regime_score}  Bias: {bias}\n\n"
+            f"{_mem_block}"
             f"=== CRYPTO SIGNALS (prices + technicals) ===\n"
             f"{crypto_signals or '  (unavailable)'}\n\n"
             f"=== ACCOUNT ===\n"

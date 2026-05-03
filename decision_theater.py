@@ -241,12 +241,15 @@ def _build_signals_stage(cycle: dict, log_data: dict) -> dict:
         sym = a.get("symbol", "")
         if sym:
             top_3.append({"symbol": sym, "tier": a.get("tier", ""), "catalyst": a.get("catalyst", "")[:60]})
+    top_syms = ", ".join(s["symbol"] for s in top_3) if top_3 else ""
+    summary = f"{symbols_scored} scored" + (f" — top: {top_syms}" if top_syms else "")
     return {
         "status": "ok" if symbols_scored > 0 else "warn",
         "symbols_scored": symbols_scored,
         "batches": log_data.get("signals_batches", 0),
         "top_3": top_3,
         "n_actions": cycle.get("n_actions", 0),
+        "summary": summary,
     }
 
 
@@ -257,12 +260,16 @@ def _build_scratchpad_stage(cycle: dict, log_data: dict) -> dict:
     watching = sp.get("watching", [])
     blocking = sp.get("blocking", [])
     conviction = sp.get("conviction_ranking", [])
+    summary = f"watching {len(watching[:6])}"
+    if blocking:
+        summary += f" · {len(blocking[:4])} blocking"
     return {
         "status": "ok" if watching else "warn",
         "watching": watching[:6],
         "blocking": blocking[:4],
         "conviction_ranking": conviction[:5],
         "cost_usd": log_data.get("scratchpad_cost"),
+        "summary": summary,
     }
 
 
@@ -308,6 +315,7 @@ def _build_sonnet_stage(cycle: dict, log_data: dict) -> dict:
         "output_tokens": log_data.get("sonnet_out"),
         "cost_usd": log_data.get("sonnet_cost"),
         "reasoning_excerpt": reasoning[:300] + ("…" if len(reasoning) > 300 else ""),
+        "reasoning_full": reasoning,
         "regime_view": cycle.get("regime") or cycle.get("regime_view", ""),
     }
 
@@ -399,6 +407,118 @@ def _build_trades_index(trade_lines: list[dict]) -> dict:
     return {"submitted": submitted, "rejected": rejected}
 
 
+# ── Public: calibration data ──────────────────────────────────────────────────
+
+_CONVICTION_MAP = {
+    "high": 0.85, "HIGH": 0.85, "HIG↑": 0.90,
+    "medium": 0.65, "MED": 0.65,
+    "low": 0.45, "LOW": 0.45,
+    "core": 0.80, "satellite": 0.60, "exploratory": 0.45,
+}
+
+
+def get_calibration_data() -> dict:
+    """
+    Returns conviction × realized-return data for closed trades.
+    Points: [{symbol, conviction_str, conviction_x, pnl_pct, outcome}]
+    Also computes a Brier score (lower = better calibrated).
+    Returns empty points list gracefully when no closed trade data exists.
+    """
+    points = []
+
+    # Primary source: build_closed_trades (requires Alpaca, may return empty)
+    try:
+        closed = _build_closed_trades_safe()
+        for t in closed:
+            pnl_pct = float(t.get("pnl_pct") or 0)
+            conv_str = (t.get("conviction") or "").strip()
+            conv_x = _CONVICTION_MAP.get(conv_str)
+            if conv_x is None:
+                continue
+            points.append({
+                "symbol": t.get("symbol", ""),
+                "conviction_str": conv_str,
+                "conviction_x": conv_x,
+                "pnl_pct": round(pnl_pct, 2),
+                "outcome": "win" if pnl_pct > 0 else "loss",
+            })
+    except Exception:
+        pass
+
+    # Fallback: scan decisions.json for actions where pnl field is populated
+    if not points:
+        try:
+            for d in _load_decisions():
+                for a in (d.get("actions") or []):
+                    pnl = a.get("pnl")
+                    conv_str = (a.get("confidence") or a.get("tier") or "").strip()
+                    if pnl is None or not conv_str:
+                        continue
+                    conv_x = _CONVICTION_MAP.get(conv_str)
+                    if conv_x is None:
+                        continue
+                    pnl_pct = float(pnl)
+                    points.append({
+                        "symbol": a.get("symbol", ""),
+                        "conviction_str": conv_str,
+                        "conviction_x": conv_x,
+                        "pnl_pct": round(pnl_pct, 2),
+                        "outcome": "win" if pnl_pct > 0 else "loss",
+                    })
+        except Exception:
+            pass
+
+    # Brier score: (conviction_x - binary_outcome)²
+    brier = None
+    if len(points) >= 3:
+        sq_errors = [(p["conviction_x"] - (1.0 if p["outcome"] == "win" else 0.0)) ** 2
+                     for p in points]
+        brier = round(sum(sq_errors) / len(sq_errors), 3)
+
+    return {"points": points, "n": len(points), "brier_score": brier}
+
+
+# ── Public: all-cycles metadata (lightweight) ─────────────────────────────────
+
+def get_all_cycles_metadata() -> list[dict]:
+    """
+    Returns [{ts, outcome}] for every cycle, oldest-first.
+    Reads decisions.json only — no log parsing, no Alpaca calls.
+    """
+    decisions = _load_decisions()
+    result = []
+    for d in decisions:
+        ts = d.get("ts", "")
+        reasoning = d.get("reasoning", "").lower()
+        actions = d.get("actions") or []
+        if "gate skipped" in reasoning or not reasoning:
+            outcome = "skipped"
+        elif len(actions) > 0:
+            outcome = "filled"
+        else:
+            outcome = "hold"
+        result.append({"ts": ts, "outcome": outcome})
+    return result
+
+
+# ── Public: last-filled index ─────────────────────────────────────────────────
+
+def find_last_filled_cycle_index() -> int:
+    """
+    Return the index of the most recent cycle where at least one trade
+    action was proposed (actions list non-empty). Falls back to the
+    most recent cycle if none found.
+    """
+    decisions = _load_decisions()
+    if not decisions:
+        return 0
+    for i in range(len(decisions) - 1, -1, -1):
+        actions = decisions[i].get("actions") or []
+        if len(actions) > 0:
+            return i
+    return len(decisions) - 1
+
+
 # ── Public: cycle view ────────────────────────────────────────────────────────
 
 def get_cycle_view(cycle_index: int = -1) -> dict:
@@ -419,22 +539,34 @@ def get_cycle_view(cycle_index: int = -1) -> dict:
     trades_index = _build_trades_index(trade_lines)
     log_data = _parse_log_lines_for_cycle(cycle.get("ts", ""))
 
+    stages = {
+        "regime": _build_regime_stage(cycle, log_data),
+        "signals": _build_signals_stage(cycle, log_data),
+        "scratchpad": _build_scratchpad_stage(cycle, log_data),
+        "gate": _build_gate_stage(cycle, log_data),
+        "sonnet": _build_sonnet_stage(cycle, log_data),
+        "kernel": _build_kernel_stage(cycle, trades_index),
+        "execution": _build_execution_stage(cycle, trades_index),
+        "a2": _build_a2_stage(cycle),
+    }
+
+    gate_st = stages["gate"]
+    cycle_actions = cycle.get("actions") or []
+    if gate_st.get("status") == "skip":
+        outcome = "skipped"
+    elif len(cycle_actions) > 0:
+        outcome = "filled"
+    else:
+        outcome = "hold"
+
     return {
         "cycle_number": actual_index,
         "total_cycles": n,
         "timestamp": cycle.get("ts", ""),
         "session": cycle.get("session", "unknown"),
         "decision_id": cycle.get("decision_id", ""),
-        "stages": {
-            "regime": _build_regime_stage(cycle, log_data),
-            "signals": _build_signals_stage(cycle, log_data),
-            "scratchpad": _build_scratchpad_stage(cycle, log_data),
-            "gate": _build_gate_stage(cycle, log_data),
-            "sonnet": _build_sonnet_stage(cycle, log_data),
-            "kernel": _build_kernel_stage(cycle, trades_index),
-            "execution": _build_execution_stage(cycle, trades_index),
-            "a2": _build_a2_stage(cycle),
-        },
+        "outcome": outcome,
+        "stages": stages,
     }
 
 

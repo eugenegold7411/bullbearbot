@@ -310,6 +310,7 @@ def run_cycle(
             crypto_signals=state.md.get("crypto_signals", ""),
             equity=state.equity,
             buying_power=state.buying_power_float,
+            condensed_memories=state.vector_memories[:350] if state.vector_memories else "",
         )
     else:
         # Derive regime_str from VIX + bias (classify_regime returns bias, not halt/caution)
@@ -384,6 +385,7 @@ def run_cycle(
                     time_bound_actions=_tba_list,
                     pi_data=state.pi_data,
                     exit_status=state.exit_status_str,
+                    condensed_memories=state.vector_memories[:600] if state.vector_memories else "",
                 )
             else:
                 log.info("[GATE] SONNET triggered (%s) — FULL",

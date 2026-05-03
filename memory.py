@@ -246,6 +246,7 @@ def update_outcomes_from_alpaca() -> None:
             if not sym or sym not in sell_fills:
                 continue
 
+            entry_fills = buy_fills.get(sym)
             for fill in sell_fills[sym]:
                 stop  = float(action.get("stop_loss", 0) or 0)
                 tp    = float(action.get("take_profit", 0) or 0)
@@ -255,11 +256,18 @@ def update_outcomes_from_alpaca() -> None:
                     outcome = "win"
                 elif stop > 0 and exit_price <= stop * 1.01:
                     outcome = "loss"
+                elif tp > 0 and stop > 0:
+                    midpoint = (tp + stop) / 2
+                    outcome = "win" if exit_price >= midpoint else "loss"
+                    action["close_reason"] = "managed"
+                elif entry_fills:
+                    # No TP/stop recorded — compare exit to actual entry fill price
+                    outcome = "win" if exit_price > entry_fills[0]["fill_price"] else "loss"
+                    action["close_reason"] = "price_comparison"
                 else:
-                    continue
+                    continue  # no TP/stop and no entry fill — truly unresolvable
 
                 # Use BUY fill price as entry for PnL; fall back to stop_loss approximation
-                entry_fills = buy_fills.get(sym)
                 if entry_fills:
                     entry_price = entry_fills[0]["fill_price"]
                 elif stop > 0:

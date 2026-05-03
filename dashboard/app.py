@@ -9,6 +9,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
@@ -25,7 +26,7 @@ ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY", "")
 ALPACA_KEY_OPT = os.getenv("ALPACA_API_KEY_OPTIONS", "")
 ALPACA_SECRET_OPT = os.getenv("ALPACA_SECRET_KEY_OPTIONS", "")
 
-ET_OFFSET = timedelta(hours=-4)  # EDT; adjust to -5 in winter
+ET = ZoneInfo("America/New_York")
 
 app = Flask(__name__)
 
@@ -592,7 +593,7 @@ def _morning_brief() -> dict:
 def _morning_brief_time() -> str:
     try:
         mtime = (BOT_DIR / "data/market/morning_brief.json").stat().st_mtime
-        dt = datetime.fromtimestamp(mtime, tz=timezone.utc) + ET_OFFSET
+        dt = datetime.fromtimestamp(mtime, tz=ET)
         return dt.strftime("%-I:%M %p ET")
     except Exception:
         return "?"
@@ -800,7 +801,7 @@ def _to_et(ts_str: str) -> str:
         if "T" not in s:
             s = s[:19].replace(" ", "T") + "+00:00"
         ts = datetime.fromisoformat(s)
-        et = ts + ET_OFFSET
+        et = ts.astimezone(ET)
         return et.strftime("%-m/%-d %-I:%M %p ET")
     except Exception:
         return ts_str[:16]
@@ -838,7 +839,7 @@ def _freshness_stamp(ts_str: str, warn_min: int = 60, crit_min: int = 240) -> st
 
 
 def _now_et() -> str:
-    return (datetime.now(timezone.utc) + ET_OFFSET).strftime("%-m/%-d %-I:%M:%S %p ET")
+    return datetime.now(ET).strftime("%-m/%-d %-I:%M:%S %p ET")
 
 
 def _fm(v, prefix="$") -> str:
@@ -880,7 +881,7 @@ def _trail_status_badge(entry: float, stop: float) -> str:
 
 
 def _is_market_hours() -> bool:
-    et = datetime.now(timezone.utc) + ET_OFFSET
+    et = datetime.now(ET)
     if et.weekday() >= 5:
         return False
     h, m = et.hour, et.minute
@@ -1214,7 +1215,7 @@ def _allocator_shadow_compact() -> str:
                 if "T" not in s:
                     s = s[:19].replace(" ", "T") + "+00:00"
                 dt = datetime.fromisoformat(s)
-                et = dt + ET_OFFSET
+                et = dt.astimezone(ET)
                 ts_label = et.strftime("%-I:%M %p")
             except Exception:
                 ts_label = ""
@@ -1263,7 +1264,7 @@ def _allocator_chart_data() -> dict:
                 if "T" not in s:
                     s = s[:19].replace(" ", "T") + "+00:00"
                 dt = datetime.fromisoformat(s)
-                et = dt + ET_OFFSET
+                et = dt.astimezone(ET)
                 ts_label = et.strftime("%-I:%M %p ET")
             except Exception:
                 pass
@@ -1446,10 +1447,10 @@ def _intraday_bars_a1() -> dict:
             return {"bars": {}, "label": "today"}
         syms = [p.symbol for p in positions]
         now_utc = datetime.now(timezone.utc)
-        now_et  = now_utc + ET_OFFSET
+        now_et  = datetime.now(ET)
         market_open_et  = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
         market_close_et = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
-        market_open_utc = market_open_et - ET_OFFSET
+        market_open_utc = market_open_et.astimezone(timezone.utc)
 
         # Determine date range.  IEX requires an explicit end to return all symbols.
         market_is_open = market_open_et <= now_et < market_close_et
@@ -4218,7 +4219,7 @@ _BRIEF_SLOTS_ET = [
 
 def _next_brief_slot_display() -> str:
     """Human-readable label for the next scheduled intelligence brief slot."""
-    et = datetime.now(timezone.utc) + ET_OFFSET
+    et = datetime.now(ET)
     now_min = et.hour * 60 + et.minute
     if et.weekday() < 5:
         for h, m in _BRIEF_SLOTS_ET:
@@ -6608,6 +6609,8 @@ def _page_theater(now_et: str) -> str:
                  "decision_id": "", "outcome": "hold", "stages": {}}
         trades_sum = {"trades": [], "open_count": 0, "closed_count": 0, "total": 0}
 
+    _et_offset_h = int(datetime.now(ET).utcoffset().total_seconds() // 3600)
+
     cycle_num = cycle.get("cycle_number", 0)
     total = cycle.get("total_cycles", 0)
     session = cycle.get("session", "")
@@ -7519,7 +7522,7 @@ function renderThesis(data) {{
 // ── Cycle wheel ───────────────────────────────────────────────────────────────
 var _allCycles = [];
 var _WCX = 140, _WCY = 140, _WR = 82;
-var _ET_OFFSET_H = -4;  // EDT; -5 in winter
+var _ET_OFFSET_H = {_et_offset_h};  // injected by Python; auto-DST
 
 function _cycleAngle(ts) {{
   if (!ts) return null;

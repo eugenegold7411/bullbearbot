@@ -142,15 +142,6 @@ Dashboard shows position size as % of buying_power instead of
 
 ---
 
-### ET_OFFSET Seasonal Fix
-Priority: Low — becomes active in November
-Estimated effort: 5 minutes
-
-ET_OFFSET hardcoded to -4 (EDT). Replace with ZoneInfo auto-DST
-handling so it switches automatically in November.
-
----
-
 ### order_executor.py:354 ValueError
 Priority: Low
 Estimated effort: 15 minutes
@@ -164,6 +155,7 @@ Silent logging error, not blocking execution. Fix the format string.
 
 | Commit  | What |
 |---------|------|
+| TBD     | ET_OFFSET → ZoneInfo auto-DST (dashboard/app.py + 6 new tests) |
 | 7854b1e | Dashboard A2 redesign + lint + test fix |
 | b954bbd | Weekly agent overhaul + Friday 9PM schedule + Agent 7 3-call pipeline |
 | 67e789a | BUG-009b + position_targets SW-TP fix — 8 positions now protected |
@@ -180,7 +172,6 @@ Silent logging error, not blocking execution. Fix the format string.
 |----|-------------|----------|
 | BUG-015 | OCO on existing positions requires cancel+resubmit with unprotected window | Low |
 | — | order_executor.py:354 ValueError in validate_action() | Low |
-| — | ET_OFFSET hardcoded to -4, needs -5 in November | Seasonal |
 | — | Dashboard OVERSIZE display bug (display only) | Low |
 | — | test_health_monitor.py OrderStatus.NEW mock failure | Pre-existing |
 | — | test_scratchpad_memory / test_sprint2_5 ChromaDB failures | Pre-existing |

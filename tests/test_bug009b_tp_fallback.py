@@ -150,9 +150,11 @@ def _run_submit_buy(action, open_orders, side_effects=None):
     client.submit_order.side_effect = side_effects
     client.get_orders.return_value = open_orders
 
+    _path_mock = MagicMock()  # absorbs position_targets.json write — no real I/O
     with patch("order_executor._get_alpaca", return_value=client), \
          patch("order_executor.log_trade"), \
-         patch("time.sleep"):
+         patch("time.sleep"), \
+         patch("pathlib.Path", return_value=_path_mock):
         oe._submit_buy(action)
 
     return client

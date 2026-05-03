@@ -93,6 +93,7 @@ _STATUS_DIR = Path("data/status")   # flag files for once-per-day jobs
 # ── PID lockfile — prevent duplicate scheduler instances ─────────────────────
 
 _PID_FILE = Path("data/runtime/scheduler.pid")
+_BRIEF_SLOTS_PATH = Path("data/runtime/brief_slots_ran.json")
 
 
 def _check_pid_lock(pid_path: Path = _PID_FILE) -> None:
@@ -148,6 +149,57 @@ def _release_pid_lock(pid_path: Path = _PID_FILE) -> None:
             log.info("[PID] Lockfile released: %s", pid_path)
     except Exception as exc:
         log.warning("[PID] Could not release lockfile: %s", exc)
+
+
+def _load_brief_slots_ran() -> set:
+    """Load persisted brief slot keys for today from disk.
+
+    Returns an empty set if the file doesn't exist, belongs to a previous
+    day, or is corrupt.  Never raises.
+    """
+    try:
+        raw = _BRIEF_SLOTS_PATH.read_text()
+        data = json.loads(raw)
+        today = datetime.now(ET).strftime("%Y-%m-%d")
+        if data.get("date") == today:
+            loaded: set = set(data.get("slots", []))
+            log.info(
+                "[BRIEF-SLOTS] Loaded %d persisted slot(s) from disk: %s",
+                len(loaded), loaded,
+            )
+            return loaded
+        log.info(
+            "[BRIEF-SLOTS] Disk slots are for %s (today=%s) — discarding (new day)",
+            data.get("date"), today,
+        )
+    except FileNotFoundError:
+        pass  # first run or file was deleted — safe to start empty
+    except Exception as exc:
+        log.warning(
+            "[BRIEF-SLOTS] Could not load %s (%s) — starting empty",
+            _BRIEF_SLOTS_PATH, exc,
+        )
+    return set()
+
+
+def _persist_brief_slots_ran() -> None:
+    """Write current _intelligence_brief_slots_ran to disk atomically.
+
+    Uses write-then-rename so a partial write never leaves a corrupt file.
+    Never raises.
+    """
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    tmp = _BRIEF_SLOTS_PATH.with_suffix(".tmp")
+    try:
+        _BRIEF_SLOTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            {"date": today, "slots": sorted(_intelligence_brief_slots_ran)},
+            indent=2,
+        )
+        tmp.write_text(payload)
+        tmp.replace(_BRIEF_SLOTS_PATH)
+    except Exception as exc:
+        log.warning("[BRIEF-SLOTS] Could not persist %s (%s)", _BRIEF_SLOTS_PATH, exc)
 
 
 def _handle_sigterm(signum, frame) -> None:
@@ -971,6 +1023,7 @@ def _maybe_run_intelligence_brief(dry_run: bool = False) -> None:
             log.info("[dry-run] Skipping intelligence brief slot=%s type=%s", slot_key, brief_type)
 
         _intelligence_brief_slots_ran.add(slot_key)
+        _persist_brief_slots_ran()
         return  # only fire one slot per call
 
 
@@ -1648,6 +1701,10 @@ def _sleep_watching_triggers(seconds: int) -> list[str]:
 
 def run(dry_run: bool = False) -> None:
     _acquire_pid_lock()
+
+    # Restore brief slot dedup state from previous run (prevents re-fire on restart)
+    global _intelligence_brief_slots_ran
+    _intelligence_brief_slots_ran = _load_brief_slots_ran()
 
     # Convert SIGTERM → KeyboardInterrupt so the finally block always runs.
     try:

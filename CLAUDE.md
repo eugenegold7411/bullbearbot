@@ -5,6 +5,60 @@ Read this at the start of every session before touching any code.
 
 ---
 
+## Claude Code session conventions
+
+The following rules apply to every session, every task, every change.
+
+### Session prompt format
+Every Claude Code prompt must begin with an `EstimatedTime: ~N minutes` line at the top. This tracks session load and sets expectations.
+
+### Pre-flight sync
+Before starting any task:
+1. Confirm local, server, and origin are all on the same commit. Show all three hashes.
+2. If server is behind origin by commits that are test-file-only or docs-only (no production `.py` changes) — pull to server without stopping, no restart needed. Report the pull in the summary but do not block.
+3. If server has uncommitted modifications to production `.py` files that differ from origin — stop and report before proceeding.
+4. If local has uncommitted modifications to files that will be touched by the current task — show the diff for those specific files before proceeding, then confirm with Eugene.
+
+### Parallel session awareness
+Multiple Claude Code sessions may run in parallel. Before modifying any file, check whether that file appears in the local git diff (modified by another in-flight session). If it does, show the diff for that file and confirm before overwriting. Never stash or revert another session's in-flight work.
+
+### Phase gates (investigate → propose → implement)
+All non-trivial changes follow three phases:
+- **Phase 1 — Investigate only.** Read all relevant files. No changes.
+- **Phase 2 — Propose.** Show full diff preview. STOP and wait for explicit approval before touching any file.
+- **Phase 3 — Implement.** Only after explicit approval. Eugene's approval phrase is: "Approved. Commit, push, deploy."
+  Post-flight: full test suite, ruff, commit, push, deploy, confirm CI.
+
+### Test requirements
+After every code change:
+- Run full test suite: `pytest --ignore=tests/requires_prompts --ignore=tests/requires_chromadb -x -q`
+- Run ruff on all modified files.
+- New functionality requires new tests.
+- No step is complete until data is traced end-to-end through actual live wiring (not mocks) for any pipeline change.
+- Test data must be cleaned up after verification.
+
+### Silent failure pattern
+Nothing in the codebase should fail silently. The approved pattern for exception handling in safety-critical functions:
+- Log at ERROR level (not WARNING).
+- Fire a WhatsApp CRITICAL alert via `send_whatsapp_direct()` with 5-minute dedup window per function name.
+- Add `TODO(DASHBOARD)` comment for future safety panel visibility.
+- Return the safest available fallback value.
+- Never crash the scheduler on exception.
+
+### Dashboard lane separation
+Dashboard work (`dashboard/app.py`, `dashboard/static/`) runs in a separate commit lane from bot work. Never mix dashboard changes and bot `.py` changes in the same commit.
+
+### Strategy config vs code
+`strategy_config.json` is a runtime file — it is **not** committed to git and is **not** synced by deploy. Changes to `strategy_config.json` must be made directly on the server via SSH after deploy. Always confirm the server value after any config change.
+
+### Backlog maintenance
+`docs/backlog.md` is the source of truth for all pending work. After any session that completes a task or introduces a new one:
+- Move completed items to COMPLETED TODAY with commit hash.
+- Add new items to BACKLOG with priority and effort estimate.
+- Update IN PROGRESS and QUEUED to reflect current state.
+
+---
+
 ## Project overview
 
 Two autonomous trading bots running on a DigitalOcean VPS (161.35.120.8, SSH alias `tradingbot`, key `~/.ssh/trading_bot`):
@@ -413,7 +467,7 @@ All credentials in `.env` (gitignored):
 ## Patterns and gotchas
 
 ### Commit messages
-Never include a `Co-Authored-By` line in any commit message under any circumstances. No exceptions.
+**NEVER** include Co-Authored-By attribution in any commit message. No exceptions. No "Co-Authored-By: Claude" lines, no AI attribution lines of any kind. Commit messages are authored by Eugene Gold only.
 
 ### String vs f-string
 `SHARED_CSS`, `_COUNTDOWN_JS`, and `_COMMAND_PALETTE_HTML` are plain Python strings — they contain literal `{}` CSS/JS braces. **Never convert them to f-strings.** All Python interpolation happens in the page functions that embed them.

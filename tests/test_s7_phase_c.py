@@ -5,7 +5,7 @@ S7-G: max_recommendations_per_cycle raised from 3 to 5
 S7-H: ADD conviction gate in eligibility_check() — BUY on held symbol requires conviction >= add_conviction_gate
 S7-I: Graduated TRIM severity — trim_pct scales with thesis_score weakness
 S7-L: Conviction score appended to allocator ADD reason string
-S8-cancel-replace: _trail_cancel_and_replace fallback in maybe_trail_stop for Alpaca 42210000
+S8-cancel-replace: cancel+resubmit trail stop path in maybe_trail_stop
 """
 import unittest
 
@@ -455,7 +455,7 @@ class TestAddConvictionNote(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# S8 — _trail_cancel_and_replace: cancel-and-replace fallback for 42210000
+# S8 — cancel+resubmit trail stop: cancel existing stop, resubmit fresh GTC stop
 # ─────────────────────────────────────────────────────────────────────────────
 
 from unittest.mock import MagicMock, patch
@@ -489,7 +489,7 @@ def _strategy_cfg(**exit_overrides):
     return {"exit_management": base}
 
 
-class TestTrailCancelAndReplace(unittest.TestCase):
+class TestCancelResubmitTrailStop(unittest.TestCase):
     """S8: maybe_trail_stop uses cancel+resubmit as primary path — no replace_order calls."""
 
     def setUp(self):

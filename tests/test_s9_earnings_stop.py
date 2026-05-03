@@ -63,7 +63,6 @@ def _em_cfg(**overrides) -> dict:
             "trail_stop_enabled": True,
             "trail_trigger_r": 1.0,
             "trail_to_breakeven_plus_pct": 0.005,
-            "trail_cancel_replace_enabled": False,
             "trail_replace_max_failures": 3,
             "earnings_aware_stop_enabled": True,
             "earnings_stop_eda_trigger": 1,

@@ -722,18 +722,16 @@ def _extract_and_validate_agent6_json(text: str, caller: str = "Agent6") -> dict
 
 _SYSTEM_AGENT1 = """You are an expert quantitative analyst reviewing the performance of an autonomous AI trading bot. Your role is to analyze the bot's trade signal quality over the past week by examining which signals led to wins versus losses, identifying patterns in trade timing (session tier, time of day), spotting which sectors and strategies performed best, and evaluating signal convergence quality — whether multiple confirming signals were present before trades were taken. Focus on actionable patterns rather than generalities. Your analysis should be data-driven and specific to the statistics provided.
 
-Additionally, check all HOLD reasoning from the past week for systematic framing bias: specifically, are FX movements, trade policy, and geopolitical signals being consistently framed as tailwinds rather than risks? Flag any position where tariff exposure, semiconductor export controls, or supply chain dependencies were available in macro wire but not named as concerns in the reasoning field. Report the count and specific examples.
+Additionally, check all HOLD and BUY reasoning from the past week for systematic confirmation bias: is the bot consistently interpreting ambiguous signals as bullish? Flag any decision where a catalyst that could reasonably be read as either bullish or bearish was framed only as bullish. Count the bear-framing instances vs bull-framing instances across all decisions and report the ratio. Specific examples required.
 
 DIVERGENCE ANALYSIS — run every session:
 Review divergence events from the past week. Flag any event_type appearing more than 3 times. Flag any halt or de_risk events. Recommend parameter changes if stop_missing or protection_missing events are recurring. Report: total events, most common type, severity distribution, whether operating mode ever left NORMAL this week."""
 
-_SYSTEM_AGENT2 = """You are an expert risk manager auditing an autonomous AI trading bot's risk controls. Your role is to review position sizing relative to account equity, assess drawdown exposure and whether the high-water mark logic is functioning, evaluate stop-loss effectiveness by examining how many stopped positions hit their loss targets versus drifting further, review PDT (Pattern Day Trader) usage to ensure limits are respected, and identify any dangerous sector or single-name concentration. Flag any risk parameter that appears miscalibrated and recommend specific numeric adjustments."""
+_SYSTEM_AGENT2 = """You are an expert risk manager auditing an autonomous AI trading bot's risk controls. Your role is to review position sizing relative to account equity, assess drawdown exposure and whether the high-water mark logic is functioning, evaluate stop-loss effectiveness by examining how many stopped positions hit their loss targets versus drifting further, identify any dangerous sector or single-name concentration, and audit portfolio allocation quality — specifically whether the allocator is sizing positions proportionally to signal conviction and whether the capital is concentrated in the right names. Flag any risk parameter that appears miscalibrated and recommend specific numeric adjustments."""
 
-_SYSTEM_AGENT3 = """You are an expert execution engineer reviewing the order execution quality of an autonomous AI trading bot. Your role is to analyze order fill rates, examine rejection reasons and whether they indicate systematic issues (risk limits too tight, wrong market hours, invalid parameters), assess timing patterns (which sessions produce clean fills vs rejections), evaluate API error rates and whether they suggest connectivity or configuration issues, and identify any execution patterns that cause unnecessary slippage or missed opportunities. Focus on concrete, fixable issues."""
+_SYSTEM_AGENT3 = """You are an expert execution engineer reviewing the order execution quality of an autonomous AI trading bot. Your role is to analyze order fill rates, examine rejection reasons and whether they indicate systematic issues (risk limits too tight, wrong market hours, invalid parameters), assess timing patterns (which sessions produce clean fills vs rejections), evaluate API error rates and whether they suggest connectivity or configuration issues, and identify any execution patterns that cause unnecessary slippage or missed opportunities. Additionally, audit bracket order integrity: verify that every submitted bracket has all three legs (entry + stop + take-profit) and flag any bracket where a leg was canceled or never confirmed by Alpaca. Focus on concrete, fixable issues."""
 
-_SYSTEM_AGENT4 = """You are an expert backtest analyst reviewing how an autonomous AI trading bot's live trading results compare to expectations. Your role is to analyze the vector memory collection to understand how many decisions have been made and how many have resolved outcomes, compute the win rate and average P&L of resolved decisions, identify any divergence between the bot's confidence signals and actual outcomes, and assess whether the decision quality is improving over time or stagnating. Highlight any patterns that suggest the bot's model of the market is miscalibrated."""
-
-import threading as _threading
+_SYSTEM_AGENT4 = """You are an expert backtest analyst reviewing how an autonomous AI trading bot's live trading results compare to expectations. Your role is to analyze the vector memory collection to understand how many decisions have been made and how many have resolved outcomes, compute the win rate and average P&L of resolved decisions, identify any divergence between the bot's confidence signals and actual outcomes, and assess whether the decision quality is improving over time or stagnating. Additionally, audit ChromaDB vector store health: is memory size growing normally, are embeddings being written on every cycle, and are older tiers being maintained? Also audit take-profit target tracking: for open positions that have a TP target, how close is the current price to the target, and did any positions exit below their stated TP? Highlight any patterns that suggest the bot's model of the market is miscalibrated."""
 
 # ── Phase 2 paths ─────────────────────────────────────────────────────────────
 _ROADMAP_FILE       = _BASE_DIR / "data" / "roadmap" / "features.json"
@@ -749,9 +747,13 @@ _MODEL_HAIKU = "claude-haiku-4-5-20251001"
 
 _SYSTEM_AGENT5 = """You are the Chief Technology Officer of an AI trading bot. You review the performance of the bot's own architecture and code quality each week. Your job is to identify whether the bot's intelligence pipeline is well-calibrated, whether any module is over-engineered or under-performing, and whether the cost/complexity profile of each component is justified by its contribution to trading outcomes. You receive reports from 4 specialists.
 
-Produce a focused technical audit in markdown. Cover: (1) module performance ROI — which components are earning their complexity cost; (2) pipeline bottlenecks — where latency or cost is concentrated; (3) architecture risks — tight couplings, missing fallbacks, fragile dependencies; (4) one concrete recommendation to increase intelligence per dollar spent. Do not recommend the same change two weeks in a row. Be specific: name modules, cite costs, propose exact changes. Keep under 800 words."""
+Produce a focused technical audit in markdown. Cover: (1) module performance ROI — which components are earning their complexity cost; (2) pipeline bottlenecks — where latency or cost is concentrated; (3) architecture risks — tight couplings, missing fallbacks, fragile dependencies; (4) one concrete recommendation to increase intelligence per dollar spent. Do not recommend the same change two weeks in a row. Be specific: name modules, cite costs, propose exact changes. Keep under 800 words.
+
+IMPROVEMENT PROPOSALS — append a section titled "## Improvement Proposals" listing exactly 3 specific, actionable code changes (not vague directions) that could improve the bot's profitability or reliability. Each proposal must include: (a) the target module/function, (b) the specific change, (c) the expected measurable benefit. Label each P1/P2/P3 by urgency."""
 
 _SYSTEM_AGENT6 = """You are the Strategy Director of an AI trading operation. You receive weekly reports from specialist analysts and must synthesize their findings into a definitive strategic direction for the coming week. Be specific and concrete: recommend exact parameter values, not vague directions. Your memo should explain the strategic rationale clearly, then provide a JSON block with the precise parameter adjustments to be applied. Prioritize changes with the strongest evidence base and flag any conflicting recommendations across analysts.
+
+PROFITABILITY MANDATE: Every recommendation must be evaluated against one question — does this increase expected P&L per cycle? Risk reduction is only valuable insofar as it prevents drawdowns that impair compounding. Do not recommend parameter tightening for its own sake. If the analysts recommend a change that reduces risk but also reduces opportunity, explicitly weigh the tradeoff and state whether it passes the profitability test.
 
 IMPORTANT — director_notes format: The "director_notes" field in your JSON output MUST be a structured object, not a plain string:
 {
@@ -763,13 +765,26 @@ Use priority "elevated" when major regime changes or governance issues need urge
 
 IMPORTANT — recommendations format: The "recommendations" field MUST be a list of objects:
 [{"text": "<concrete action>", "target_metric": "<what to measure>", "priority": "high|medium|low"}]
-Limit to 3 items. Each recommendation must be actionable within one week."""
+Limit to 3 items. Each recommendation must be actionable within one week. Each recommendation must include a "profitability_case" key explaining the expected P&L impact: {"text": "...", "target_metric": "...", "priority": "...", "profitability_case": "<1-2 sentence P&L rationale>"}."""
 
-_SYSTEM_AGENT7 = """You are the Market Intelligence Researcher for an AI trading bot. Your job is to survey the external landscape weekly — what strategies are working, what signals people are finding, what academic research is relevant, what competitors are doing. You have access to web search.
+_SYSTEM_AGENT7A = """You are the Market Intelligence Researcher for an AI trading bot. Given the bot's current strategy, signal weights, and recent performance, produce a JSON research agenda for this week's external intelligence sweep.
 
-You are NOT analyzing the bot's own performance. You are looking OUTWARD at the world.
+You are NOT doing the research yet — you are planning it. Identify 5-7 specific, answerable questions that would most improve the bot's edge if answered. Focus on: signals that may be decaying or strengthening, strategies working in the current macro regime, alternative data sources gaining traction, and relevant academic findings from the last 6 months.
 
-Produce a structured JSON report only. No markdown. Output valid JSON with these keys: research_date, new_strategies_found (list), signal_research (list), competitor_observations (list), academic_papers (list), market_regime_observations (string), recommended_additions (list), recommended_removals (list)."""
+Output valid JSON only with these keys: research_date (string), agenda (list of objects with: question, priority (1-3), search_terms (list of 2-3 search strings), why_relevant (string))."""
+
+_SYSTEM_AGENT7B = """You are the Market Intelligence Researcher for an AI trading bot. You have been given a research agenda. Use web_search to answer each question on the agenda. Search broadly and synthesize your findings. You may perform up to 20 searches.
+
+You are looking OUTWARD at the world — not at the bot's own performance. Report what you actually find, not what you expect to find.
+
+After searching, produce a detailed research brief in plain text (not JSON). For each agenda question: (1) what you searched, (2) what you found, (3) whether it is relevant to the bot. Be specific: cite sources, quote key claims, note dates. Target 1500-2500 words total."""
+
+_SYSTEM_AGENT7C = """You are the Market Intelligence Researcher for an AI trading bot. You have been given raw research findings from a deep web search session. Synthesize these findings into a structured JSON report.
+
+Produce valid JSON only with these keys: research_date (string), new_strategies_found (list of objects: name, description, relevance_score 1-10), signal_research (list of objects: signal_type, finding, source, actionable), competitor_observations (list), academic_papers (list of objects: title, finding, applicable_to_bot), market_regime_observations (string, 2-3 sentences), recommended_additions (list of concrete additions to bot strategy), recommended_removals (list of strategies/signals to deprioritize)."""
+
+# Alias for backward-compatibility with test suite
+_SYSTEM_AGENT7 = _SYSTEM_AGENT7A
 
 _SYSTEM_AGENT8 = """You are the CFO of an AI trading bot. Your job is to track all costs, project forward spend, identify waste, and ensure the bot's intelligence layer is generating more value than it costs to run.
 
@@ -779,11 +794,13 @@ Produce JSON only. Output valid JSON with these keys: report_date, weekly_costs 
 
 _SYSTEM_AGENT9 = """You are the Product Manager of an AI trading bot. Your job is to maintain the feature roadmap, evaluate what was shipped vs planned, prioritize what comes next based on performance data, and identify technical debt. You make pragmatic, data-driven prioritization decisions.
 
-Produce JSON only. Output valid JSON with these keys: report_date, sprint_summary (object), roadmap_updates (list of objects with feature_id, action, new_priority, new_status, rationale), new_features_recommended (list), next_sprint_recommendation (list), technical_debt_updates (list), blockers_to_resolve (list), metrics (object)."""
+CODEBASE HEALTH AUDIT — include a "codebase_health" object in your JSON output covering: (1) test coverage health — are new modules being tested, are test counts growing, are any test files stale; (2) dead code indicators — modules imported but whose output is not used downstream; (3) schema drift — are dataclass schemas (A2CandidateSet, A2DecisionRecord, OptionsStructure) consistent across all modules that reference them; (4) one highest-priority tech debt item to tackle next sprint. Base this assessment on the codebase context provided.
 
-_SYSTEM_AGENT10 = """You are the Compliance and Risk Auditor for an AI trading bot. Your job is to verify the bot operated within its own stated rules this week. You are not a regulator — you are an internal consistency checker. You look for rule violations, near-misses, data integrity issues, and systematic behavioral patterns that deviate from stated strategy.
+Produce JSON only. Output valid JSON with these keys: report_date, sprint_summary (object), roadmap_updates (list of objects with feature_id, action, new_priority, new_status, rationale), new_features_recommended (list), next_sprint_recommendation (list), technical_debt_updates (list), blockers_to_resolve (list), metrics (object), codebase_health (object)."""
 
-Produce JSON only. Output valid JSON with these keys: audit_date, audit_period, rule_violations (list), near_misses (list), pdt_compliance (object), position_sizing_compliance (object), stop_loss_compliance (object), catalyst_discipline (object), data_integrity (object), orb_window_compliance (object), overall_compliance_score (0-100), critical_findings (list), recommendations (list)."""
+_SYSTEM_AGENT10 = """You are the Compliance and Risk Auditor for an AI trading bot. Your job is to verify the bot operated within its own stated rules this week. You are not a regulator — you are an internal consistency checker. You look for rule violations, near-misses, data integrity issues, and systematic behavioral patterns that deviate from stated strategy. Focus on bracket integrity (did every submitted bracket have all three legs confirmed?), stop-loss discipline (were stops placed at stated widths?), catalyst discipline (were trades only taken on stated catalyst types?), and taxonomy compliance (are all decisions correctly labeled with known catalyst/strategy types?).
+
+Produce JSON only. Output valid JSON with these keys: audit_date, audit_period, rule_violations (list), near_misses (list), bracket_integrity (object), position_sizing_compliance (object), stop_loss_compliance (object), catalyst_discipline (object), data_integrity (object), orb_window_compliance (object), taxonomy_compliance (object), overall_compliance_score (0-100), critical_findings (list), recommendations (list)."""
 
 _SYSTEM_AGENT11 = """You are the Narrative and Communications Director for @BullBearBotAI, an AI trading bot with a specific voice.
 
@@ -894,15 +911,14 @@ def _build_review_context() -> dict:
     }
 
 
-# ── Agent 7 input builder ─────────────────────────────────────────────────────
+# ── Agent 7A/7B/7C input builders ────────────────────────────────────────────
 
-def _build_agent7_input(ctx: dict) -> str:
+def _build_agent7a_input(ctx: dict) -> str:
     cfg = ctx.get("strategy_cfg", {})
     params = cfg.get("parameters", {})
     signal_weights = cfg.get("signal_weights", {})
     perf = ctx.get("perf_summary", {})
 
-    # Build sector list from watchlist manager
     sectors_str = "(not available)"
     try:
         import watchlist_manager as _wm  # noqa: PLC0415
@@ -915,8 +931,9 @@ def _build_agent7_input(ctx: dict) -> str:
         pass
 
     top_macro = ctx.get("macro_wire_events", [])[-5:] if ctx.get("macro_wire_events") else []
+    today_str = ctx.get("today_str", "")
 
-    return f"""## MARKET INTELLIGENCE RESEARCHER — WEEKLY BRIEF
+    return f"""## MARKET INTELLIGENCE RESEARCHER — AGENDA PLANNING
 
 ### Current Bot Strategy
 Active strategy: {cfg.get('active_strategy', 'hybrid')}
@@ -926,17 +943,39 @@ Active signals: congressional={signal_weights.get('congressional','?')}, insider
 ### Current Watchlist Symbols (sample)
 {sectors_str}
 
-### This Week's Market Context
+### Recent Market Context
 {json.dumps(top_macro[:3], indent=2) if top_macro else '(macro wire data unavailable)'}
 
-### Performance Context
-Win rates by type: {json.dumps(perf.get('by_type', {}), indent=2)[:500]}
-Win rates by sector: {json.dumps(perf.get('by_sector', {}), indent=2)[:500]}
+### Performance Context (win rates by type/sector)
+By type: {json.dumps(perf.get('by_type', {}), indent=2)[:400]}
+By sector: {json.dumps(perf.get('by_sector', {}), indent=2)[:400]}
 
-### Research Focus
-Search for and report on: (1) latest LLM/AI trading research 2026, (2) congressional trading signal performance data, (3) what r/algotrading community is discussing, (4) any new alternative data sources gaining traction, (5) current market regime observations from practitioners.
+### Today
+{today_str}
 
-Produce your JSON report. Search broadly and synthesize findings."""
+Produce a research agenda JSON. Identify the 5-7 most valuable questions to answer this week."""
+
+
+def _build_agent7b_input(ctx: dict, agenda_json: str) -> str:
+    return f"""## MARKET INTELLIGENCE — DEEP RESEARCH SESSION
+
+### Research Agenda (from planning phase)
+{agenda_json}
+
+Execute each agenda item using web_search. Search specifically and broadly. Produce a detailed plain-text research brief answering each question with sources and quotes. Be specific — name strategies, cite papers, quote practitioners. Target 1500-2500 words."""
+
+
+def _build_agent7c_input(ctx: dict, research_brief: str) -> str:
+    today_str = ctx.get("today_str", "")
+    return f"""## MARKET INTELLIGENCE — SYNTHESIS
+
+### Raw Research Findings
+{research_brief[:6000]}
+
+### Synthesis Date
+{today_str}
+
+Synthesize the research findings into a structured JSON report. Include only findings that are concretely actionable or directly relevant to an AI equity/options trading bot."""
 
 
 # ── Agent 8 input builder ─────────────────────────────────────────────────────
@@ -1026,8 +1065,13 @@ By session: {json.dumps(perf.get('by_session', {}))[:200]}
 The bot launched 2026-04-13 (day {(ctx.get('today_str','2026-04-14')[8:10])} of paper trading).
 Crypto intelligence (F007), Portfolio intelligence (F008), Sequential synthesis (F009), Market Intelligence Researcher (F010) were completed this week.
 
+### CODEBASE HEALTH INPUTS
+Tests in suite: (check tests/ directory count from context)
+Known active modules: bot.py, bot_stage0-4, bot_options*.py, scheduler.py, weekly_review.py, dashboard/app.py
+Recent additions this sprint: (infer from roadmap completed items)
+
 ### Your Task
-Review the roadmap, identify what shipped vs planned, re-prioritize pending features based on current performance data, recommend next sprint. What should be built next? Produce your JSON report."""
+Review the roadmap, identify what shipped vs planned, re-prioritize pending features based on current performance data, recommend next sprint. What should be built next? Include codebase_health assessment. Produce your JSON report."""
 
 
 # ── Agent 10 input builder ────────────────────────────────────────────────────
@@ -1059,9 +1103,8 @@ def _build_agent10_input(ctx: dict) -> str:
     # Sample rejections
     rejection_reasons = [r.get("reason", "") for r in rejected[:15]]
 
-    # Check for crypto/PDT flags
+    # Check for crypto orders
     crypto_orders = [r for r in submitted if "/" in str(r.get("symbol", ""))]
-    pdt_blocks    = [r for r in rejected if "PDT" in str(r.get("reason", "")) or "daytrade" in str(r.get("reason", ""))]
 
     from_date = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
 
@@ -1085,7 +1128,6 @@ Total cycle decisions: {len(cycle_decs)}
 Orders submitted: {len(submitted)}
 Orders rejected: {len(rejected)}
 Crypto orders: {len(crypto_orders)}
-PDT-related blocks: {len(pdt_blocks)}
 
 ### Rejection Reasons (sample)
 {json.dumps(rejection_reasons[:10], indent=2)}
@@ -1105,7 +1147,7 @@ PDT-related blocks: {len(pdt_blocks)}
 {_get_divergence_summary_section()}
 
 ### Your Task
-Audit for rule violations, near-misses, PDT compliance, position sizing, stop loss widths, catalyst discipline. Was the bot operating within its stated rules? Flag any module with abstention_rate > 0.80 as a potential lazy-abstainer. Note any taxonomy drift fields with unknown values — these indicate labeling gaps that degrade signal quality over time. Produce your JSON compliance report with a score 0-100."""
+Audit for rule violations, near-misses, bracket integrity (all three legs confirmed?), position sizing, stop loss widths, catalyst discipline, and taxonomy compliance. Was the bot operating within its stated rules? Flag any module with abstention_rate > 0.80 as a potential lazy-abstainer. Note any taxonomy drift fields with unknown values — these indicate labeling gaps that degrade signal quality over time. Produce your JSON compliance report (bracket_integrity instead of pdt_compliance) with a score 0-100."""
 
 
 # ── Agent 11 input builder ────────────────────────────────────────────────────
@@ -1159,64 +1201,132 @@ Compliance score (Agent 10): {_safe_first_200('agent10')[:200]}
 Craft this week's Twitter/X content package. Be honest about the zero-trade week (if applicable). Make it interesting. Produce your JSON output."""
 
 
-# ── Agent 7 runner (web search, synchronous) ──────────────────────────────────
+# ── Agent 7A/7B/7C runners (3-call pipeline) ─────────────────────────────────
 
-def _run_agent7_researcher(ctx: dict) -> str:
-    """Run Agent 7 with web search. Uses Sonnet (reasoning needed for search)."""
+def _run_agent7a(ctx: dict) -> str:
+    """Agent 7A: Sonnet produces a research agenda JSON."""
     try:
         response = _get_claude().messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=3000,
-            system=[{
-                "type": "text",
-                "text": _SYSTEM_AGENT7,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            tools=[{
-                "type": "web_search_20250305",
-                "name": "web_search",
-            }],
-            messages=[{
-                "role": "user",
-                "content": _build_agent7_input(ctx),
-            }],
+            max_tokens=1000,
+            system=[{"type": "text", "text": _SYSTEM_AGENT7A,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": _build_agent7a_input(ctx)}],
             extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
-        # Extract text blocks (response may also contain tool_use blocks)
-        text_parts = []
-        for block in response.content:
-            if hasattr(block, "text") and block.type == "text":
-                text_parts.append(block.text)
-        result = "\n".join(text_parts)
-        log.info("Agent 7 (Researcher) completed  chars=%d", len(result))
-        return result if result else "(Agent 7: no text output)"
+        result = response.content[0].text
+        log.info("Agent 7A (agenda) completed  chars=%d", len(result))
+        return result
     except Exception as exc:
-        log.warning("Agent 7 (Researcher) failed: %s", exc)
-        return f"(Agent 7 failed: {exc})"
+        log.warning("Agent 7A failed: %s", exc)
+        return f"(Agent 7A failed: {exc})"
+
+
+def _run_agent7b(ctx: dict, agenda_json: str) -> str:
+    """Agent 7B: Opus with web_search performs deep research from the agenda."""
+    # Load prior archive for cache context (last 2 reports)
+    prior_archive = ""
+    try:
+        _agent7_archive_dir = _WEEKLY_REPORTS_DIR / "agent7_archive"
+        if _agent7_archive_dir.exists():
+            past_files = sorted(_agent7_archive_dir.glob("*.json"))[-2:]
+            prior_parts = []
+            for pf in past_files:
+                try:
+                    prior_parts.append(f"--- {pf.name} ---\n{pf.read_text()[:1500]}")
+                except Exception:
+                    pass
+            prior_archive = "\n\n".join(prior_parts)
+    except Exception:
+        pass
+
+    system_blocks = [{"type": "text", "text": _SYSTEM_AGENT7B,
+                      "cache_control": {"type": "ephemeral"}}]
+    if prior_archive:
+        system_blocks.append({"type": "text",
+                               "text": f"### PRIOR RESEARCH ARCHIVE (context only)\n{prior_archive}",
+                               "cache_control": {"type": "ephemeral"}})
+
+    try:
+        response = _get_claude().messages.create(
+            model="claude-opus-4-6",
+            max_tokens=4000,
+            system=system_blocks,
+            tools=[{"type": "web_search_20250305", "name": "web_search",
+                    "max_uses": 20}],
+            messages=[{"role": "user", "content": _build_agent7b_input(ctx, agenda_json)}],
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+        )
+        text_parts = [b.text for b in response.content
+                      if hasattr(b, "text") and b.type == "text"]
+        result = "\n".join(text_parts)
+        log.info("Agent 7B (deep research) completed  chars=%d", len(result))
+        return result if result else "(Agent 7B: no text output)"
+    except Exception as exc:
+        log.warning("Agent 7B failed: %s", exc)
+        return f"(Agent 7B failed: {exc})"
+
+
+def _run_agent7c(ctx: dict, research_brief: str) -> str:
+    """Agent 7C: Sonnet synthesizes research brief into final JSON. Writes to archive."""
+    try:
+        response = _get_claude().messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2000,
+            system=[{"type": "text", "text": _SYSTEM_AGENT7C,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": _build_agent7c_input(ctx, research_brief)}],
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+        )
+        result = response.content[0].text
+        log.info("Agent 7C (synthesis) completed  chars=%d", len(result))
+
+        # Archive the synthesis
+        try:
+            _agent7_archive_dir = _WEEKLY_REPORTS_DIR / "agent7_archive"
+            _agent7_archive_dir.mkdir(parents=True, exist_ok=True)
+            from datetime import date as _date  # noqa: PLC0415
+            archive_path = _agent7_archive_dir / f"{_date.today().isoformat()}_agent7.json"
+            archive_path.write_text(json.dumps({
+                "date": _date.today().isoformat(),
+                "synthesis": result,
+                "brief_chars": len(research_brief),
+            }, indent=2))
+            log.info("Agent 7C archived to %s", archive_path)
+        except Exception as _arc_exc:
+            log.warning("Agent 7C archive write failed: %s", _arc_exc)
+
+        return result
+    except Exception as exc:
+        log.warning("Agent 7C failed: %s", exc)
+        return f"(Agent 7C failed: {exc})"
 
 
 # ── Phase 2 batch runner (agents 7-10) ────────────────────────────────────────
 
 def _run_phase2_agents(ctx: dict, phase1_outputs: dict) -> dict:
     """
-    Runs agents 7-10 in parallel.
-    Agent 7 uses web search via threading.
-    Agents 8-10 use Batch API (50% discount).
+    Runs agents 7-10.
+    Agent 7 uses a 3-call sequential pipeline (7A Sonnet agenda → 7B Opus web research → 7C Sonnet synthesis).
+    Agents 8-10 use Batch API (50% discount) while 7A/7B/7C run sequentially first.
     """
-    # Agent 7 in a thread (web search requires sync execution)
-    agent7_result: dict = {"output": "", "error": None}
-
-    def _run_a7() -> None:
-        try:
-            agent7_result["output"] = _run_agent7_researcher(ctx)
-        except Exception as exc:
-            agent7_result["error"] = str(exc)
-            agent7_result["output"] = f"(Agent 7 failed: {exc})"
-            log.warning("Agent 7 thread failed: %s", exc)
-
-    t7 = _threading.Thread(target=_run_a7, daemon=True)
-    t7.start()
-    log.info("Agent 7 thread started")
+    # Agent 7 — 3-call sequential pipeline
+    agent7_output = "(unavailable)"
+    print("[Phase 2] Running Agent 7A (research agenda)...")
+    try:
+        agenda_json = _run_agent7a(ctx)
+        print("[Phase 2] Running Agent 7B (deep research with web_search)...")
+        research_brief = _run_agent7b(ctx, agenda_json)
+        if research_brief.startswith("(Agent 7B failed"):
+            log.warning("Agent 7B failed — skipping 7C, using 7A agenda as fallback")
+            agent7_output = f"(Agent 7B unavailable)\n\nResearch Agenda:\n{agenda_json}"
+        else:
+            print("[Phase 2] Running Agent 7C (synthesis)...")
+            agent7_output = _run_agent7c(ctx, research_brief)
+    except Exception as exc:
+        log.warning("Agent 7 pipeline failed: %s", exc)
+        agent7_output = f"(Agent 7 pipeline failed: {exc})"
+    log.info("Agent 7 pipeline complete  chars=%d", len(agent7_output))
 
     # Agents 8-10 via Batch API
     batch_outputs: dict = {}
@@ -1312,13 +1422,8 @@ def _run_phase2_agents(ctx: dict, phase1_outputs: dict) -> dict:
     except Exception as exc:
         log.warning("Phase 2 batch failed: %s — agents 8-10 unavailable", exc)
 
-    # Wait for Agent 7 thread (max 5 min)
-    t7.join(timeout=300)
-    if t7.is_alive():
-        log.warning("Agent 7 thread timed out after 5 min")
-
     return {
-        "agent7":  agent7_result["output"] or "(unavailable)",
+        "agent7":  agent7_output,
         "agent8":  batch_outputs.get("agent8_cfo",         "(unavailable)"),
         "agent9":  batch_outputs.get("agent9_pm",          "(unavailable)"),
         "agent10": batch_outputs.get("agent10_compliance",  "(unavailable)"),
@@ -2516,6 +2621,9 @@ When reviewing the above global indices history:
 
 Please analyze signal quality, timing patterns, sector/strategy performance, and global session signal interpretation. Provide your findings as a markdown section with 3-5 specific recommendations.
 
+### BENCHMARK COMPARISON
+Compare this week's bot P&L (from Performance Breakdown above) against SPY weekly return. If SPY data is unavailable, flag it. Compute: (a) alpha generated (bot return minus SPY return), (b) whether the bot outperformed or underperformed its benchmark, (c) if underperformance — was it due to excessive cash (no positions), poor signal timing, or adverse sector selection? Include a one-paragraph benchmark assessment in your report.
+
 Also analyze:
 - Regime classifier accuracy: when regime_score > 70, did markets trend directionally?
   When constraints were flagged, did they prove relevant to outcomes?
@@ -2637,6 +2745,17 @@ Please include pattern watchlist analysis in your report section.
     except Exception as _exp_a2_err:
         log.warning("[REVIEW] experience_library agent2 failed: %s", _exp_a2_err)
 
+    _allocator_line = "(allocator shadow data unavailable)"
+    try:
+        from pathlib import Path as _Path3
+        _shadow_path = _Path3(__file__).parent / "data" / "analytics" / "portfolio_allocator_shadow.jsonl"
+        if _shadow_path.exists():
+            _shadow_lines = _shadow_path.read_text().strip().splitlines()
+            if _shadow_lines:
+                _allocator_line = _shadow_lines[-1]
+    except Exception as _al_err:
+        log.warning("[REVIEW] allocator shadow read failed: %s", _al_err)
+
     agent2_input = f"""## WEEKLY RISK MANAGER REVIEW INPUT
 
 ### Recent Log — REJECTED / DRAWDOWN Events
@@ -2662,7 +2781,10 @@ Please include pattern watchlist analysis in your report section.
 ### Experience Library (last 30 days)
 {_experience_library_section_a2}
 
-Please audit risk controls, position sizing, drawdown exposure, stop-loss effectiveness, and PDT usage. Provide your findings as a markdown section with 3-5 specific parameter adjustments (include numeric values)."""
+### PORTFOLIO ALLOCATOR OUTPUT (last cycle)
+{_allocator_line}
+
+Please audit risk controls, position sizing, drawdown exposure, stop-loss effectiveness, and portfolio allocation quality. Provide your findings as a markdown section with 3-5 specific parameter adjustments (include numeric values)."""
 
 
 
@@ -2689,6 +2811,15 @@ Please audit risk controls, position sizing, drawdown exposure, stop-loss effect
             if symbol:
                 symbol_counts[symbol][status] += 1
 
+    _alpaca_bracket_audit = "(bracket audit unavailable)"
+    try:
+        _bracket_lines = [ln for ln in log_tail_500.splitlines()
+                          if any(kw in ln for kw in ("bracket", "BRACKET", "take_profit", "stop_loss", "leg cancel", "OCO"))]
+        _bracket_audit_lines = _bracket_lines[-30:] if _bracket_lines else []
+        _alpaca_bracket_audit = "\n".join(_bracket_audit_lines) if _bracket_audit_lines else "(no bracket events found in log)"
+    except Exception:
+        pass
+
     agent3_input = f"""## WEEKLY EXECUTION ENGINEER REVIEW INPUT
 
 ### Log Excerpt — Execution Events (last 500 lines filtered)
@@ -2704,7 +2835,13 @@ Please audit risk controls, position sizing, drawdown exposure, stop-loss effect
 
 ### Full 7-Day Journal Record Count: {len(journal_records)}
 
-Please analyze order fill quality, rejection reasons, timing patterns, and API reliability. Provide your findings as a markdown section with 3-5 concrete improvements."""
+### ALPACA ORDER AUDIT — Bracket Integrity
+```
+{_alpaca_bracket_audit}
+```
+For any bracket order, verify all three legs (entry, stop, take-profit) were confirmed by Alpaca. Flag any case where a leg was canceled or missing.
+
+Please analyze order fill quality, rejection reasons, timing patterns, API reliability, and bracket integrity. Provide your findings as a markdown section with 3-5 concrete improvements."""
 
     last_14 = decisions_raw[-14:] if len(decisions_raw) >= 14 else decisions_raw
     resolved_wins   = 0
@@ -2787,6 +2924,23 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
     except Exception as _er_err:
         log.warning("[REVIEW] experience_retrieval failed: %s", _er_err)
 
+    _open_position_tp_section = "(open position target price data unavailable)"
+    try:
+        _tp_lines = []
+        for dec in decisions_raw[-30:]:
+            for action in dec.get("actions", []):
+                if action.get("outcome") not in ("win", "loss") and action.get("tp"):
+                    _tp_lines.append({
+                        "symbol": action.get("symbol"),
+                        "entry": action.get("entry"),
+                        "tp": action.get("tp"),
+                        "current": action.get("current_price"),
+                        "date": dec.get("timestamp", "")[:10],
+                    })
+        _open_position_tp_section = json.dumps(_tp_lines, indent=2) if _tp_lines else "(no open positions with TP targets found)"
+    except Exception as _tp_err:
+        log.warning("[REVIEW] TP section build failed: %s", _tp_err)
+
     agent4_input = f"""## WEEKLY BACKTEST ANALYST REVIEW INPUT
 
 ### Vector Memory (ChromaDB) Stats
@@ -2828,7 +2982,13 @@ Please analyze order fill quality, rejection reasons, timing patterns, and API r
 
 {_experience_retrieval_section}
 
-Please analyze decision quality, compare live results to expectations, identify divergence patterns, and assess signal alpha from the backtest. For any symbol with has_alpha=true, note whether the bot acted on it. Provide your findings as a markdown section with 3-5 insights."""
+### OPEN POSITION TARGET PRICES
+```json
+{_open_position_tp_section}
+```
+For each open position with a TP target: note distance from current price to TP, flag any position that exited below stated TP (missed take-profit).
+
+Please analyze decision quality, compare live results to expectations, identify divergence patterns, assess signal alpha from the backtest, and audit ChromaDB health and TP discipline. For any symbol with has_alpha=true, note whether the bot acted on it. Provide your findings as a markdown section with 3-5 insights."""
 
     # ── Agents 1-4: try batch first, fall back to sequential ─────────────────
     agent_inputs_1_to_4 = [

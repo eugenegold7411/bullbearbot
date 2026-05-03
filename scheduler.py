@@ -12,7 +12,7 @@ Scheduled jobs:
   4:00 AM ET daily    — data_warehouse.py + scanner.py (pre-market prep)
   8:00 PM ET daily    — dynamic/intraday watchlist reset
   9:00 AM PST / noon ET — daily email report
-  Sunday 6:00 AM ET   — weekly performance summary
+  Friday 9:00 PM ET   — weekly performance summary (= 6:00 PM PST)
 
 Usage:
   python scheduler.py
@@ -924,6 +924,7 @@ def _maybe_run_intelligence_brief(dry_run: bool = False) -> None:
         (13 * 60 + 30, 13 * 60 + 40, "intraday_update"), # 1:30–1:40 PM
         (14 * 60 + 30, 14 * 60 + 40, "intraday_update"), # 2:30–2:40 PM
         (15 * 60 + 30, 15 * 60 + 40, "intraday_update"), # 3:30–3:40 PM
+        (16 * 60 + 30, 16 * 60 + 40, "closing"),          # 4:30–4:40 PM
     ]
 
     for (start_min, end_min, brief_type) in slots:
@@ -1442,7 +1443,7 @@ def _maybe_publish_monthly_milestone() -> None:
 
 def _maybe_generate_weekly_summary() -> None:
     """
-    Every Sunday at 6 AM ET:
+    Every Friday at 9 PM ET:
     1. Generate JSON performance summary (memory.generate_weekly_summary)
     2. Run the 5-agent strategic review (weekly_review.run_review)
     """
@@ -1454,9 +1455,9 @@ def _maybe_generate_weekly_summary() -> None:
 
     if _weekly_summary_date == today:
         return
-    if weekday != 6:   # only Sunday
+    if weekday != 4:   # only Friday
         return
-    if now_min < 6 * 60:   # after 6 AM
+    if now_min < 21 * 60:   # after 9:00 PM ET (= 6:00 PM PST)
         return
 
     try:

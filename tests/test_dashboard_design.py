@@ -271,6 +271,15 @@ class TestDash07Routes(unittest.TestCase):
             "allocator_line": "",
             "today_pnl_a1": (0.0, 0.0),
             "today_pnl_a2": (0.0, 0.0),
+            # Keys hard-accessed by page renderers (added with A2 redesign)
+            "decision": {},
+            "shadow": {},
+            "git_hash": "",
+            "service_uptime": "",
+            "log_errors": [],
+            "trades": [],
+            "buys_today": 0,
+            "sells_today": 0,
         }
 
     @patch("dashboard.app._build_status")

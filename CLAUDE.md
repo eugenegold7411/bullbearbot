@@ -412,6 +412,9 @@ All credentials in `.env` (gitignored):
 
 ## Patterns and gotchas
 
+### Commit messages
+Never include a `Co-Authored-By` line in any commit message under any circumstances. No exceptions.
+
 ### String vs f-string
 `SHARED_CSS`, `_COUNTDOWN_JS`, and `_COMMAND_PALETTE_HTML` are plain Python strings — they contain literal `{}` CSS/JS braces. **Never convert them to f-strings.** All Python interpolation happens in the page functions that embed them.
 

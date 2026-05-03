@@ -155,7 +155,7 @@ Silent logging error, not blocking execution. Fix the format string.
 
 | Commit  | What |
 |---------|------|
-| TBD     | ET_OFFSET → ZoneInfo auto-DST (dashboard/app.py + 6 new tests) |
+| 9285766 | ET_OFFSET → ZoneInfo auto-DST (dashboard/app.py + 6 new tests) |
 | 7854b1e | Dashboard A2 redesign + lint + test fix |
 | b954bbd | Weekly agent overhaul + Friday 9PM schedule + Agent 7 3-call pipeline |
 | 67e789a | BUG-009b + position_targets SW-TP fix — 8 positions now protected |

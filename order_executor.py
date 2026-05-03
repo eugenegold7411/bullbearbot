@@ -496,6 +496,28 @@ def _submit_buy(action: dict) -> tuple:
     order = _get_alpaca().submit_order(req)
     fp, fq, ft = _extract_fill(order)
 
+    # Write intended TP to position_targets.json for SW-TP check in exit_manager.
+    # Captured here — before OCA voiding — so the target is preserved even if the
+    # Alpaca bracket TP leg is silently voided on fill.
+    try:
+        import json as _json  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+        _tp_path = _Path("data/runtime/position_targets.json")
+        _tp_data = _json.loads(_tp_path.read_text()) if _tp_path.exists() else {}
+        _tp_data[symbol] = {
+            "symbol":       symbol,
+            "take_profit":  round(take_profit, 2),
+            "entry_price":  round(fp, 4) if fp else None,
+            "qty":          float(qty),
+            "stop_loss":    round(stop_loss, 2),
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "order_id":     str(order.id),
+        }
+        _tp_path.write_text(_json.dumps(_tp_data, indent=2))
+        log.info("[EXECUTOR] %s: target written — TP=%.2f", symbol, take_profit)
+    except Exception as _tpe:
+        log.warning("[EXECUTOR] %s: position_targets write failed (non-fatal): %s", symbol, _tpe)
+
     # Verify the bracket stop leg is live — Alpaca silently voids stop children
     # on OCA collision with a lingering order from a prior cycle.
     from alpaca.trading.enums import QueryOrderStatus  # noqa: PLC0415

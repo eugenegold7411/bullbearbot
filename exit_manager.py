@@ -14,9 +14,11 @@ Logs at INFO level with [EXIT_MGR] and [TRAIL_STOP] prefixes.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -175,6 +177,30 @@ _DEFAULT_CFG = {
     "refresh_if_stop_stale_pct":    0.15,   # refresh if stop >15% below current price
     "backstop_days":                7,      # new-entry backstop horizon (calendar days)
 }
+
+_TARGETS_PATH = Path("data/runtime/position_targets.json")
+
+
+def _load_position_targets() -> dict:
+    """Return position_targets.json as a dict, or {} on any error."""
+    try:
+        if _TARGETS_PATH.exists():
+            return json.loads(_TARGETS_PATH.read_text())
+    except Exception as exc:
+        log.warning("[EXIT_MGR] position_targets load failed (non-fatal): %s", exc)
+    return {}
+
+
+def _remove_position_target(symbol: str) -> None:
+    """Remove a symbol entry from position_targets.json after SW-TP fires."""
+    try:
+        data = _load_position_targets()
+        if symbol in data:
+            del data[symbol]
+            _TARGETS_PATH.write_text(json.dumps(data, indent=2))
+            log.info("[EXIT_MGR] %s: removed from position_targets after SW-TP", symbol)
+    except Exception as exc:
+        log.warning("[EXIT_MGR] %s: position_targets remove failed (non-fatal): %s", symbol, exc)
 
 
 def _em_config(strategy_config: dict) -> dict:
@@ -476,7 +502,8 @@ def _refresh_exits_locked(
                 # protected by the stop; trail stop manages the upside exit.
                 log.warning(
                     "[EXIT_MGR] %s: standalone TP blocked by existing stop (Alpaca 40310000"
-                    " — stop holds shares). Stop is live; partial protection accepted.",
+                    " — stop holds shares). Stop is live; SW-TP check active via"
+                    " position_targets.json.",
                     sym,
                 )
             else:
@@ -888,6 +915,8 @@ def run_exit_manager(
         log.debug("[EXIT_MGR] get_active_exits failed: %s", exc)
         exits = {}
 
+    _targets = _load_position_targets()
+
     for pos in positions:
         if float(pos.qty) == 0:
             continue
@@ -910,6 +939,46 @@ def run_exit_manager(
                         "  target=$%s", sym, _tp)
         elif _status in ("unprotected", "unknown"):
             log.warning("[EXIT_MGR] %s: UNPROTECTED — no stop order found", sym)
+
+        # SW-TP: software-level take-profit check.  Fires when the Alpaca broker-side
+        # TP leg was silently voided (OCA collision) but the intended target price is
+        # stored in position_targets.json, written at bracket submission time.
+        if not is_short and sym in _targets:
+            _tgt = _targets[sym]
+            _target_price = float(_tgt.get("take_profit", 0))
+            try:
+                _current_price = float(pos.current_price or 0)
+            except Exception:
+                _current_price = 0.0
+            if _target_price > 0 and _current_price >= _target_price * 0.999:
+                log.info(
+                    "[EXIT_MGR] %s: SW-TP triggered — current=%.2f >= target=%.2f"
+                    " (0.1%% buffer). Submitting market close.",
+                    sym, _current_price, _target_price,
+                )
+                try:
+                    from alpaca.trading.enums import (  # noqa: PLC0415
+                        OrderSide,
+                        TimeInForce,
+                    )
+                    from alpaca.trading.requests import (
+                        MarketOrderRequest,  # noqa: PLC0415
+                    )
+                    _close_req = MarketOrderRequest(
+                        symbol=sym,
+                        qty=abs(float(pos.qty)),
+                        side=OrderSide.SELL,
+                        time_in_force=TimeInForce.DAY,
+                    )
+                    alpaca_client.submit_order(_close_req)
+                    _remove_position_target(sym)
+                    actions_taken.append({
+                        "symbol": sym, "action": "sw_tp_close",
+                        "detail": f"SW-TP fired at {_current_price:.2f} (target {_target_price:.2f})",
+                    })
+                    continue
+                except Exception as exc:
+                    log.error("[EXIT_MGR] %s: SW-TP market close failed: %s", sym, exc)
 
         if is_short:
             log.info("[EXIT_MGR] %s: SHORT position (qty=%.0f) — auto-management skipped",

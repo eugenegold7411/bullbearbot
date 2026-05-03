@@ -134,7 +134,9 @@ Dashboard shows position size as % of buying_power instead of
 
 | Commit  | What |
 |---------|------|
-| TBD     | Three small fixes: order_executor ValueError + health_monitor OrderStatus.NEW + backlog update |
+| 7722847 | docs(claude): never include Co-Authored-By in commit messages |
+| beceb3c | S20: Fix D — ChromaDB health check + test suite cleanup (health_monitor OrderStatus stub) |
+| 787a9dc | S19: silent failure remediation HIGH severity #9–#17 (order_executor ValueError) |
 | bfd49c7 | S18: overnight crypto new-entry — BTC/ETH enter_long via Haiku; 10 OE tests |
 | d58689f | test(bug009b): patch pathlib.Path in _run_submit_buy — path isolation |
 | 9285766 | ET_OFFSET → ZoneInfo auto-DST (dashboard/app.py + 6 new tests) |

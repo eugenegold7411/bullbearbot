@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -159,7 +160,8 @@ def _prepare_cycle_cache() -> None:
                     insider_counts[sym] = insider_counts.get(sym, 0) + 1
             for evt in fetch_form4_insider_trades(all_syms, days_back=2) or []:
                 sym = evt.get("ticker") or evt.get("symbol") or ""
-                if sym:
+                tc  = evt.get("transaction_code", "")
+                if sym and tc == "P":  # open-market purchase only; skip A/M/S/F grants/exercises
                     insider_counts[sym] = insider_counts.get(sym, 0) + 1
     except Exception as exc:
         log.debug("[L2] insider events read failed: %s", exc)
@@ -184,6 +186,21 @@ def score_symbol_python(sym: str, md: dict, regime: dict) -> dict:
         id_sum = (md.get("intraday_summaries") or {}).get(sym, {}) or {}
         current_prices = md.get("current_prices", {}) or {}
         price = float(current_prices.get(sym) or ind.get("price") or 0) or None
+
+        _bar_fetched_at = ind.get("bar_fetched_at")
+        bar_age_minutes: int | None = None
+        data_stale = False
+        if _bar_fetched_at:
+            try:
+                _bft = datetime.fromisoformat(_bar_fetched_at)
+                if _bft.tzinfo is None:
+                    _bft = _bft.replace(tzinfo=timezone.utc)
+                bar_age_minutes = int(
+                    (datetime.now(timezone.utc) - _bft).total_seconds() / 60
+                )
+                data_stale = bar_age_minutes > 60
+            except Exception:
+                pass
 
         signals: list[str]   = []
         conflicts: list[str] = []
@@ -303,7 +320,7 @@ def score_symbol_python(sym: str, md: dict, regime: dict) -> dict:
         insider_evt = _CYCLE_CACHE.get("insider_evt") or {}
         if insider_evt.get(sym, 0) >= 1:
             score += 5
-            signals.append("insider_activity_48h")
+            signals.append("insider_purchase_48h")
 
         # --- Pattern watchlist caution flag ----------------------------------
         pwl = _CYCLE_CACHE.get("pattern_wl") or {}
@@ -358,6 +375,8 @@ def score_symbol_python(sym: str, md: dict, regime: dict) -> dict:
             "pattern_watchlist": pwl_flag,
             "earnings_days_away": eda,
             "price":            price,
+            "data_stale":       data_stale,
+            "bar_age_minutes":  bar_age_minutes,
         }
     except Exception as exc:
         log.debug("[L2] score_symbol_python(%s) failed (non-fatal): %s", sym, exc)

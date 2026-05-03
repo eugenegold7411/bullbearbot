@@ -1,0 +1,32 @@
+{
+  "QCOM": {
+    "china_revenue_pct": 67,
+    "export_control_risk": "high",
+    "notes": "~2/3 revenue from China; QCT chips subject to BIS export controls; tariff risk elevated"
+  },
+  "NVDA": {
+    "china_revenue_pct": 17,
+    "export_control_risk": "medium",
+    "notes": "H100/H20 restricted; DataCenter revenue partially at risk from BIS/CSET rules"
+  },
+  "AMD": {
+    "china_revenue_pct": 22,
+    "export_control_risk": "medium",
+    "notes": "MI300X exports to China restricted; data center GPU sales blocked"
+  },
+  "INTC": {
+    "china_revenue_pct": 27,
+    "export_control_risk": "medium",
+    "notes": "Advanced node exports require BIS license; fab partnerships restricted"
+  },
+  "AVGO": {
+    "china_revenue_pct": 35,
+    "export_control_risk": "medium",
+    "notes": "Networking and storage chips sold to Huawei; some SKUs restricted"
+  },
+  "TSM": {
+    "china_revenue_pct": 10,
+    "export_control_risk": "low",
+    "notes": "US CHIPS Act beneficiary; fab business mostly ex-China"
+  }
+}

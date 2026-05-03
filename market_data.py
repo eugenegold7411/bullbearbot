@@ -466,6 +466,17 @@ def get_stock_signals(
             # don't need to re-fetch / re-join against current_prices.
             ind_with_price = dict(ind)
             ind_with_price["price"] = price
+            if sym in live_bars:
+                ind_with_price["bar_fetched_at"] = datetime.utcnow().isoformat()
+            else:
+                try:
+                    import data_warehouse as _dw
+                    _csv = _dw.BARS_DIR / f"{sym}_daily.csv"
+                    ind_with_price["bar_fetched_at"] = datetime.utcfromtimestamp(
+                        _csv.stat().st_mtime
+                    ).isoformat()
+                except Exception:
+                    ind_with_price["bar_fetched_at"] = datetime.utcnow().isoformat()
             ind_by_symbol[sym] = ind_with_price
 
             ma20 = ind.get("ma20")

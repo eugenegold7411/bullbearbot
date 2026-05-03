@@ -441,6 +441,7 @@ def eligibility_check(
     Hard gates — returns rejection reason string, or None if eligible.
 
     Checks (in order):
+     -1. Blocked symbols (BUY only) — config.parameters.blocked_symbols
       0. Time-bound action block (same-day mandatory exits)
       1. VIX halt (> 35)
       2. PDT equity floor (< $26K)
@@ -452,6 +453,12 @@ def eligibility_check(
     act    = idea.action
     symbol = normalize_symbol(idea.symbol)
     crypto = is_crypto(symbol)
+
+    # ── -1. Blocked symbols (BUY only) ────────────────────────────────────────
+    if act == AccountAction.BUY:
+        _blocked = config.get("parameters", {}).get("blocked_symbols", [])
+        if symbol in _blocked:
+            return f"blocked_symbol: {symbol} is on the blocked_symbols list"
 
     # ── 0. Time-bound action block ────────────────────────────────────────────
     _tba_time = current_time_utc or datetime.now(timezone.utc).isoformat()

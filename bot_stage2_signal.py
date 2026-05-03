@@ -20,6 +20,7 @@ score_signals(watchlist_symbols, regime, md, positions) -> dict
 """
 from __future__ import annotations
 
+import functools
 import json
 from datetime import datetime
 from itertools import islice
@@ -32,6 +33,17 @@ from log_setup import get_logger, log_trade
 log = get_logger(__name__)
 
 _BASE = Path(__file__).parent
+_RISK_FACTORS_PATH = _BASE / "data/config/symbol_risk_factors.json"
+
+
+@functools.lru_cache(maxsize=1)
+def _load_symbol_risk_factors() -> dict:
+    """Load per-symbol structural risk factors (e.g. China revenue, export controls)."""
+    try:
+        return json.loads(_RISK_FACTORS_PATH.read_text()) if _RISK_FACTORS_PATH.exists() else {}
+    except Exception:
+        return {}
+
 
 # L3 batch size is smaller than the legacy scorer's because each symbol now
 # carries an L1+L2 context block (~80-120 tokens) in addition to the bare
@@ -263,6 +275,21 @@ def _format_l2_for_l3(sym: str, l2: dict, qual_entry: Optional[dict],
     sym_news = _load_cached_symbol_news(sym)
     if sym_news:
         lines.append("  SYMBOL_NEWS: " + " | ".join(sym_news))
+
+    # Inject symbol structural risk factors (China revenue, export control risk)
+    _risk = _load_symbol_risk_factors().get(sym)
+    if _risk:
+        _pct  = _risk.get("china_revenue_pct", "?")
+        _ctrl = str(_risk.get("export_control_risk", "unknown")).upper()
+        _note = (_risk.get("notes") or "")[:100]
+        lines.append(f"  SYMBOL_RISK: china_revenue={_pct}% export_control={_ctrl} — {_note}")
+
+    # Flag stale bar data so Haiku discounts technical signals
+    if l2.get("data_stale"):
+        _age = l2.get("bar_age_minutes", "?")
+        lines.append(
+            f"  DATA_STALE: bar data is {_age} min old — treat technical signals with lower confidence"
+        )
 
     return "\n".join(lines)
 

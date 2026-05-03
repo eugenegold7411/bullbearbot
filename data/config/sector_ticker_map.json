@@ -1,0 +1,16 @@
+{
+  "semiconductors": ["QCOM", "NVDA", "AMD", "INTC", "AVGO", "MRVL", "MU", "TSM"],
+  "semiconductor equipment": ["AMAT", "KLAC", "LRCX", "ASML"],
+  "technology hardware": ["AAPL", "QCOM", "DELL", "HPQ"],
+  "telecommunications": ["QCOM", "T", "VZ", "TMUS"],
+  "artificial intelligence": ["NVDA", "AMD", "GOOGL", "MSFT", "META", "AMZN"],
+  "defense": ["LMT", "RTX", "NOC", "GD"],
+  "energy": ["XOM", "CVX", "COP", "SLB", "HAL"],
+  "financials": ["JPM", "BAC", "WFC", "GS", "MS"],
+  "consumer discretionary": ["AMZN", "TSLA", "NKE", "TGT", "COST"],
+  "healthcare": ["JNJ", "UNH", "PFE", "MRK", "ABBV"],
+  "cloud computing": ["AMZN", "MSFT", "GOOGL", "CRM", "ORCL"],
+  "electric vehicles": ["TSLA", "RIVN", "F", "GM"],
+  "trade policy": ["QCOM", "NVDA", "AAPL", "CAT", "DE"],
+  "export controls": ["QCOM", "NVDA", "AMD", "INTC", "AVGO", "AMAT", "KLAC", "LRCX"]
+}

@@ -14,6 +14,7 @@ Usage:
   from macro_wire import refresh_macro_wire, build_macro_wire_section
 """
 
+import functools
 import json
 import os
 import re
@@ -32,7 +33,17 @@ from log_setup import get_logger
 load_dotenv()
 log = get_logger(__name__)
 ET  = ZoneInfo("America/New_York")
-_SEEN_IDS_FILE = Path("data/macro_wire/seen_ids.json")
+_SEEN_IDS_FILE     = Path("data/macro_wire/seen_ids.json")
+_SECTOR_MAP_PATH   = Path(__file__).parent / "data/config/sector_ticker_map.json"
+
+
+@functools.lru_cache(maxsize=1)
+def _load_sector_ticker_map() -> dict[str, list[str]]:
+    """Return sector-name → [ticker, ...] map for macro wire symbol expansion."""
+    try:
+        return json.loads(_SECTOR_MAP_PATH.read_text()) if _SECTOR_MAP_PATH.exists() else {}
+    except Exception:
+        return {}
 
 
 def _load_seen_ids() -> set:
@@ -321,6 +332,20 @@ def fetch_macro_wire() -> list:
 
 # ── Haiku classifier ──────────────────────────────────────────────────────────
 
+def _apply_sector_expansion(articles: list) -> None:
+    """Expand affected_symbols via sector map for critical/high-tier articles (in-place)."""
+    _smap = _load_sector_ticker_map()
+    if not _smap:
+        return
+    for art in articles:
+        if art.get("keyword_tier") not in ("critical", "high"):
+            continue
+        for _sector in (art.get("affected_sectors") or []):
+            for _ticker in _smap.get(_sector.lower().strip(), []):
+                if _ticker not in art["affected_symbols"]:
+                    art["affected_symbols"].append(_ticker)
+
+
 def classify_articles(articles: list) -> list:
     """
     Single Haiku call classifying all articles with impact_score >= 5.
@@ -401,6 +426,8 @@ def classify_articles(articles: list) -> list:
             art["affected_symbols"] = cls.get("affected_symbols", [])
             art["urgency"]          = cls.get("urgency", "background")
             art["one_line_summary"] = cls.get("one_line_summary", "")
+
+        _apply_sector_expansion(to_classify)
 
         try:
             from cost_tracker import get_tracker

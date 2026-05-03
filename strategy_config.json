@@ -9,6 +9,8 @@
   },
   "position_sizing": {
     "core_tier_pct": 0.20,
+    "core_high_conviction_pct": 0.25,
+    "_core_high_conviction_pct_note": "Max fraction of sizing basis for HIGH conviction CORE position. Read by both risk_kernel.size_position() and portfolio_intelligence.compute_dynamic_sizes() — must stay in sync.",
     "dynamic_tier_pct": 0.15,
     "intraday_tier_pct": 0.05,
     "max_total_exposure_pct": 0.95,

@@ -337,7 +337,7 @@ class TestBPAwareDynamicSizesAllocator:
         """
         compute_dynamic_sizes() should expose conviction-tiered caps so Sonnet
         sees BP-aware sizing. With margin_authorized=true and multiplier=3.0,
-        a HIGH-conviction core slot should be 20% of min(bp, equity*3).
+        a HIGH-conviction core slot should be 25% of min(bp, equity*3).
         """
         from portfolio_intelligence import compute_dynamic_sizes
         cfg = {
@@ -357,8 +357,8 @@ class TestBPAwareDynamicSizesAllocator:
             equity=100_000.0, config=cfg,
             current_exposure_dollars=0.0, buying_power=300_000.0,
         )
-        # sizing_basis_high = min(300K, 300K) = 300K → core HIGH (20%) = 60K
-        assert abs(sizes["core_high"] - 60_000.0) < 1.0
+        # sizing_basis_high = min(300K, 300K) = 300K → core HIGH (25%) = 75K
+        assert abs(sizes["core_high"] - 75_000.0) < 1.0
         # sizing_basis_med = min(300K, 150K) = 150K → core 15% = 22.5K
         assert abs(sizes["core_med"] - 22_500.0) < 1.0
         # sizing_basis_low = equity = 100K → core 15% = 15K
@@ -379,7 +379,7 @@ class TestBPAwareDynamicSizesAllocator:
             equity=100_000.0, config=cfg,
             current_exposure_dollars=0.0, buying_power=300_000.0,
         )
-        # margin disabled → all sizing bases = equity → core HIGH = 20% × 100K = 20K
-        assert abs(sizes["core_high"] - 20_000.0) < 1.0
+        # margin disabled → all sizing bases = equity → core HIGH = 25% × 100K = 25K
+        assert abs(sizes["core_high"] - 25_000.0) < 1.0
         assert abs(sizes["core_med"]  - 15_000.0) < 1.0
         assert abs(sizes["core_low"]  - 15_000.0) < 1.0

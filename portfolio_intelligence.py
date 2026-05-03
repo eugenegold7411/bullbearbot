@@ -117,8 +117,8 @@ def compute_dynamic_sizes(
     cap_low    = round(sizing_basis_low, 2)
     margin_available = round(max(0.0, buying_power - equity), 2)
 
-    # Per-tier dollar maxes at each conviction level (HIGH core uses 20% bump)
-    _core_pct_high = 0.20
+    # Per-tier dollar maxes — HIGH core reads from config, same key as risk_kernel
+    _core_pct_high = float(sizing.get("core_high_conviction_pct", 0.25))
     core_high      = round(sizing_basis_high * _core_pct_high, 2)
     core_med       = round(sizing_basis_med  * core_pct,        2)
     core_low       = round(sizing_basis_low  * core_pct,        2)
@@ -145,14 +145,15 @@ def compute_dynamic_sizes(
         "cap_high":           cap_high,
         "cap_medium":         cap_medium,
         "cap_low":            cap_low,
-        "core_high":          core_high,
-        "core_med":           core_med,
-        "core_low":           core_low,
-        "dynamic_high":       dynamic_high,
-        "dynamic_med":        dynamic_med,
-        "margin_authorized":  margin_ok,
-        "margin_multiplier":  mult,
-        "excess_cash_dollars": excess_cash_dollars,
+        "core_high":              core_high,
+        "core_high_conviction_pct": _core_pct_high,
+        "core_med":               core_med,
+        "core_low":               core_low,
+        "dynamic_high":           dynamic_high,
+        "dynamic_med":            dynamic_med,
+        "margin_authorized":      margin_ok,
+        "margin_multiplier":      mult,
+        "excess_cash_dollars":    excess_cash_dollars,
     }
 
 
@@ -168,7 +169,7 @@ def format_dynamic_sizes_section(sizes: dict, equity: float) -> str:
         "",
         "Core tier:",
         f"  HIGH conviction:   up to ${sizes.get('core_high', sizes['core']):,.0f}  "
-        f"(20% of ${sizes.get('cap_high', equity):,.0f} sizing basis)",
+        f"({sizes.get('core_high_conviction_pct', 0.25):.0%} of ${sizes.get('cap_high', equity):,.0f} sizing basis)",
         f"  MEDIUM conviction: up to ${sizes.get('core_med', sizes['core']):,.0f}  "
         f"(15% of ${sizes.get('cap_medium', equity):,.0f} sizing basis)",
         f"  LOW conviction:    up to ${sizes.get('core_low', sizes['core']):,.0f}  "

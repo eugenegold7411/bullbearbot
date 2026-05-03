@@ -613,7 +613,7 @@ def size_position(
         _params(config).get("margin_sizing_conviction_thresholds", {}).get("high", 0.75)
     )
     if idea.conviction >= _high_thresh and idea.tier == Tier.CORE:
-        tier_pct = _CORE_HIGH_CONVICTION_PCT  # 25%
+        tier_pct = float(_sizing(config).get("core_high_conviction_pct", _CORE_HIGH_CONVICTION_PCT))
 
     # ── VIX scaling ───────────────────────────────────────────────────────────
     size_mult = 0.5 if vix >= _vix_params(config)["vix_elevated_threshold"] else 1.0

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from schemas import OptionsStructure
@@ -27,6 +28,31 @@ from schemas import OptionsStructure
 log = logging.getLogger(__name__)
 
 _STRUCTURES_PATH = Path(__file__).parent / "data" / "account2" / "positions" / "structures.json"
+
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        from datetime import datetime, timezone  # noqa: PLC0415
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] options_state.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -60,7 +86,11 @@ def save_structure(structure: OptionsStructure) -> None:
     if not found:
         all_structs.append(structure.to_dict())
 
-    _write_atomic(all_structs)
+    try:
+        _write_atomic(all_structs)
+    except OSError as exc:
+        _fire_safety_alert("save_structure", exc)
+        raise
     log.debug(
         "[OPTIONS_STATE] saved structure_id=%s lifecycle=%s",
         structure.structure_id,

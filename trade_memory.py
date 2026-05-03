@@ -37,12 +37,37 @@ Scratchpad cold storage (v3):
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from log_setup import get_logger
 
 log = get_logger(__name__)
+
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] trade_memory.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -524,6 +549,7 @@ def save_trade_memory(
 
     except Exception as exc:  # pylint: disable=broad-except
         log.warning("trade_memory: save failed: %s", exc)
+        _fire_safety_alert("save_trade_memory", exc)
         return ""
 
 

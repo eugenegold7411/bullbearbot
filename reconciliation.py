@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -56,6 +57,30 @@ from schemas import (
 )
 
 log = logging.getLogger(__name__)
+
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] reconciliation.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 _CONFIG_PATH = Path(__file__).parent / "strategy_config.json"
 
@@ -496,6 +521,7 @@ def execute_reconciliation_plan(
             except Exception as exc:  # noqa: BLE001
                 log.error("[RECON] %s failed for %s: %s", atype, sym, exc)
                 results.append(f"[RECON] ERROR {atype} {sym}: {exc}")
+                _fire_safety_alert(f"reconciliation_{atype}", exc)
 
         elif isinstance(action, dict):
             # ── A2 options repair actions ─────────────────────────────────────
@@ -535,6 +561,7 @@ def execute_reconciliation_plan(
             except Exception as exc:  # noqa: BLE001
                 log.error("[OPTS_RECON] %s failed for %s: %s", atype, sid or sym, exc)
                 results.append(f"[OPTS_RECON] ERROR {atype} {sid or sym}: {exc}")
+                _fire_safety_alert(f"reconciliation_{atype}", exc)
 
         else:
             log.warning("[RECON] Unrecognised plan item type: %s", type(action))

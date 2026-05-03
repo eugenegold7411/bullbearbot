@@ -21,6 +21,30 @@ log = logging.getLogger(__name__)
 
 ATTRIBUTION_LOG = Path("data/analytics/attribution_log.jsonl")
 
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] attribution.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Decision ID
@@ -184,6 +208,7 @@ def log_attribution_event(
             log.warning("[ATTR] spine emit failed: %s", _spine_exc)
     except Exception as exc:  # noqa: BLE001
         log.warning("[ATTR] log_attribution_event failed: %s", exc)
+        _fire_safety_alert("log_attribution_event", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

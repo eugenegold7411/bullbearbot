@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -36,6 +37,31 @@ from schemas import (
 )
 
 log = logging.getLogger(__name__)
+
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] options_executor.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 # ── Phase 1 strategies ───────────────────────────────────────────────────────
 _PHASE1_STRATEGIES: frozenset[OptionStrategy] = frozenset({
@@ -402,6 +428,7 @@ def _emergency_close_leg(trading_client, occ_symbol: str, qty: int) -> None:
         log.info("[EXECUTOR] emergency close submitted for %s qty=%d", occ_symbol, qty)
     except Exception as exc:
         log.error("[EXECUTOR] emergency close FAILED for %s: %s", occ_symbol, exc)
+        _fire_safety_alert("emergency_close_leg_failed", exc)
 
 
 def _send_spread_abort_sms(structure: OptionsStructure) -> None:
@@ -511,12 +538,16 @@ def close_structure(
             all_submitted = False
             structure.add_audit(f"close leg {occ_sym} FAILED: {exc}")
             log.error("[EXECUTOR] close %s failed: %s", occ_sym, exc)
+            _fire_safety_alert("close_structure_leg_failed", exc)
 
     structure.closed_at = datetime.now(timezone.utc).isoformat()
 
     if method == "market":
-        structure = _set_lifecycle(structure, StructureLifecycle.CLOSED,
-                                   f"market close submitted: {reason}")
+        structure = _set_lifecycle(
+            structure,
+            StructureLifecycle.CLOSED if all_submitted else StructureLifecycle.CANCELLED,
+            f"market close submitted: {reason}",
+        )
     else:
         structure = _set_lifecycle(structure, StructureLifecycle.CLOSED
                                    if all_submitted else StructureLifecycle.CANCELLED,

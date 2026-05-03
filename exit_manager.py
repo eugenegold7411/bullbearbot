@@ -28,6 +28,31 @@ from log_setup import get_logger, log_trade
 load_dotenv()
 log = get_logger(__name__)
 
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    try:
+        from datetime import datetime, timezone  # noqa: PLC0415
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] exit_manager.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 def _get_eda(sym: str, strategy_config: dict) -> Optional[int]:  # noqa: ARG001
     """Return days-to-earnings for sym from earnings_calendar.json. None if not found."""
@@ -641,6 +666,8 @@ def _refresh_exits_locked(
             })
         except Exception as exc:
             log.warning("[EXIT_MGR] %s: take-profit order submission failed: %s", sym, exc)
+            if "40310000" not in str(exc):
+                _fire_safety_alert("refresh_exits_tp_submission", exc)
             # Stop is already placed — still counts as a successful refresh
 
     return True

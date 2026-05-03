@@ -42,6 +42,31 @@ from schemas import alpaca_symbol
 load_dotenv()
 log = get_logger(__name__)
 
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] order_executor.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _load_stop_limits() -> dict:
     """
     Load stop loss limits from strategy_config.json.
@@ -1023,6 +1048,15 @@ def _check_pending_fills() -> None:
         except Exception as exc:
             log.warning("[EXECUTOR] Fill check failed for order %s (%s): %s",
                         oid, info.get("symbol", "?"), exc)
+            _fire_safety_alert("_check_pending_fills", exc)
+            age = time.time() - info.get("registered_at", time.time())
+            if age > 600:
+                log.error(
+                    "[EXECUTOR] Evicting stuck order %s (%s) after %.0fs"
+                    " — fill/cancel status unknown. Manual review required.",
+                    oid, info.get("symbol", "?"), age,
+                )
+                del _pending_fill_checks[oid]
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -1358,6 +1392,7 @@ def execute_all(
                     "action":         act,
                     "qty":            action.get("qty"),
                     "alert_deferred": (_fp is None),  # True when fill not confirmed at submission
+                    "registered_at":  time.time(),
                 }
             _req_qty   = float(action.get("qty") or 0) or None
             _req_otype = action.get("order_type", "market") or "market"

@@ -372,6 +372,7 @@ def transition_mode(
             }) + "\n")
     except Exception as e:
         log.warning("[DIV] mode transition log failed: %s", e)
+        _fire_safety_alert("transition_mode_audit_log", e)
 
     if new_mode.value != old_mode.mode.value:
         log.warning(

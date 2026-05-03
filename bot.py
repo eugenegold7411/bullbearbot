@@ -307,6 +307,9 @@ def run_cycle(
             crypto_context=state.crypto_context,
             regime_obj=regime_obj,
             macro_wire=state.md.get("macro_wire_section", ""),
+            crypto_signals=state.md.get("crypto_signals", ""),
+            equity=state.equity,
+            buying_power=state.buying_power_float,
         )
     else:
         # Derive regime_str from VIX + bias (classify_regime returns bias, not halt/caution)

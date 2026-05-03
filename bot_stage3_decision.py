@@ -68,19 +68,36 @@ def is_claude_trading_window(now_et: datetime | None = None,
     return start_min <= now_min <= end_min
 
 _OVERNIGHT_SYS = (
-    "You are a crypto position manager for an overnight trading session. "
+    "You are a crypto trading manager for an overnight session. "
     "Only BTC/USD and ETH/USD are tradeable. JSON only, no markdown.\n"
-    "Output: "
+    "TWO modes:\n"
+    "  1. MANAGE OPEN POSITIONS: For each open crypto position, decide hold or close.\n"
+    "  2. NEW ENTRY (only if no positions open and conviction >= 0.70 and regime_view=normal):\n"
+    "     Entry criteria: RSI 40-65, trend aligned with MA20 and EMA9/EMA21, "
+    "clear catalyst, not overbought. "
+    "Conservative sizing: tier='dynamic' (not core). "
+    "Stop >= 8% below entry. Target >= 16% above entry (2R minimum). "
+    "Do NOT enter if BTC/USD or ETH/USD position already in holds[] or open positions.\n"
+    "Output schema:\n"
     '{"reasoning":"<1 sentence>","regime_view":"normal"|"caution"|"halt",'
-    '"ideas":[{"intent":"close","symbol":"BTC/USD"|"ETH/USD",'
-    '"conviction":0.7,"tier":"core","catalyst":"<reason>",'
-    '"direction":"neutral","concerns":""}],'
-    '"holds":["<symbol of position to hold — omit if closing>"],'
-    '"notes":"<flag anything unusual>","concerns":""}'
+    '"ideas":['
+    '{"intent":"close"|"enter_long",'
+    '"symbol":"BTC/USD"|"ETH/USD",'
+    '"conviction":0.75,'
+    '"tier":"dynamic"|"core",'
+    '"stop_loss_pct":0.09,'
+    '"take_profit_pct":0.18,'
+    '"catalyst":"<required — specific technical reason>",'
+    '"direction":"bullish"|"neutral",'
+    '"concerns":""}'
+    "],"
+    '"holds":["<symbol to hold unchanged>"],'
+    '"notes":"","concerns":""}'
     "\n"
-    "Use intent='close' for positions to exit. "
-    "Put held symbol strings in the holds[] array (not in ideas[]). "
-    "Empty ideas[] and empty holds[] means no action."
+    "close: exit a held position. "
+    "enter_long: new buy (include stop_loss_pct and take_profit_pct). "
+    "holds[]: symbols to keep without action. "
+    "If in doubt or macro is uncertain, hold cash — return empty ideas[] and holds[]."
 )
 
 _OVERNIGHT_DEFAULT: dict = {
@@ -624,11 +641,17 @@ def _ask_claude_overnight(
     crypto_context: str,
     regime_obj: dict,
     macro_wire: str,
+    crypto_signals: str = "",
+    equity: float = 0.0,
+    buying_power: float = 0.0,
 ) -> dict:
     """
     Lightweight Haiku decision for overnight crypto-only sessions.
-    Uses a minimal prompt — no signal scores, no sector data, no watchlist.
     Falls back to hold-all default on any error, never raises.
+
+    Supports two modes:
+      - Manage existing crypto positions (hold or close)
+      - New entry when no positions open and conviction >= 0.70
 
     C3: saves ~$0.042/cycle × 24 overnight cycles/day ≈ $1.01/day vs Sonnet.
     """
@@ -651,24 +674,45 @@ def _ask_claude_overnight(
         regime_score = regime_obj.get("regime_score", 50)
         bias         = regime_obj.get("bias", "neutral")
 
+        # Extract current prices from crypto_signals for stop/target computation
+        import re as _re
+        _crypto_prices: dict[str, float] = {}
+        try:
+            for _sym in ("BTC/USD", "ETH/USD"):
+                _m = _re.search(
+                    rf"{_re.escape(_sym)}\s+\$([0-9,]+\.?[0-9]*)",
+                    crypto_signals or "",
+                )
+                if _m:
+                    _crypto_prices[_sym] = float(_m.group(1).replace(",", ""))
+        except Exception:
+            pass
+
         prompt = (
             f"=== OVERNIGHT SESSION ===\n"
             f"Time: {_time_str}\n\n"
             f"=== OPEN POSITIONS ===\n{pos_block}\n\n"
             f"=== REGIME ===\n"
             f"Score: {regime_score}  Bias: {bias}\n\n"
+            f"=== CRYPTO SIGNALS (prices + technicals) ===\n"
+            f"{crypto_signals or '  (unavailable)'}\n\n"
+            f"=== ACCOUNT ===\n"
+            f"Equity: ${equity:,.0f}  Buying power: ${buying_power:,.0f}\n\n"
             f"=== CRYPTO CONTEXT ===\n{crypto_context or '  (unavailable)'}\n\n"
             f"=== MACRO WIRE (top items) ===\n{macro_wire or '  (none)'}\n\n"
             "=== TASK ===\n"
             "Overnight session. Only BTC/USD and ETH/USD are tradeable.\n"
-            "For each open crypto position: hold (with updated stop/target) or close.\n"
-            "If no crypto positions exist, return empty actions list.\n"
-            "Never fabricate catalysts. If in doubt, hold."
+            "For each open crypto position: hold or close.\n"
+            "If no positions open: you MAY enter BTC/USD or ETH/USD if conviction >= 0.70,\n"
+            "  regime_view is 'normal', RSI is 40-65, and a clear catalyst exists.\n"
+            "  Use intent='enter_long'. Include stop_loss_pct (>= 0.08) and take_profit_pct (>= 0.16).\n"
+            "  Do NOT enter if a position in that symbol is already open.\n"
+            "Never fabricate catalysts. If conviction is below 0.70 or setup is ambiguous, hold cash."
         )
 
         response = _get_claude().messages.create(
             model=MODEL_FAST,
-            max_tokens=400,
+            max_tokens=700,
             system=[{"type": "text", "text": _OVERNIGHT_SYS}],
             messages=[{"role": "user", "content": prompt}],
         )
@@ -690,6 +734,26 @@ def _ask_claude_overnight(
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         result = json.loads(raw)
+
+        # Post-process enter_long ideas: convert pct fields to absolute prices,
+        # enforce overnight tier cap (core → dynamic).
+        _processed: list = []
+        for _idea in result.get("ideas", []):
+            if _idea.get("intent") == "enter_long":
+                _sym       = _idea.get("symbol", "")
+                _cur_price = _crypto_prices.get(_sym, 0.0)
+                _sl_pct    = float(_idea.get("stop_loss_pct",   0.09))
+                _tp_pct    = float(_idea.get("take_profit_pct", 0.18))
+                if _cur_price > 0:
+                    _idea["stop_loss"]   = round(_cur_price * (1 - _sl_pct), 2)
+                    _idea["take_profit"] = round(_cur_price * (1 + _tp_pct), 2)
+                    _idea["entry_price"] = _cur_price
+                if _idea.get("tier") == "core":
+                    _idea["tier"] = "dynamic"
+                    log.info("[OVERNIGHT] enter_long tier capped core→dynamic for %s", _sym)
+            _processed.append(_idea)
+        result["ideas"] = _processed
+
         log.info("[OVERNIGHT] Haiku decision: regime=%s  ideas=%d",
                  result.get("regime_view", "?"), len(result.get("ideas", [])))
         return result

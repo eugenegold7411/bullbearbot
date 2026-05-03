@@ -140,10 +140,30 @@ def _stub_alpaca_tree() -> None:
         setattr(_rq_mod, _name, _KwargsRequest)
     for _name in (
         "AssetClass", "AssetStatus", "ContractType", "ExerciseStyle",
-        "OrderClass", "OrderStatus", "OrderType",
+        "OrderClass", "OrderType",
         "PositionSide",
     ):
         setattr(_en_mod, _name, _cls(_name))
+    # OrderStatus: proper StrEnum matching alpaca-py 0.43.x so attribute access
+    # (OrderStatus.NEW, OrderStatus.FILLED, etc.) and value comparisons both work
+    # in tests running without alpaca installed.
+    from enum import Enum as _Enum
+    class _OrderStatus(str, _Enum):
+        NEW               = "new"
+        PENDING_NEW       = "pending_new"
+        ACCEPTED          = "accepted"
+        PARTIALLY_FILLED  = "partially_filled"
+        FILLED            = "filled"
+        DONE_FOR_DAY      = "done_for_day"
+        CANCELED          = "canceled"
+        EXPIRED           = "expired"
+        REPLACED          = "replaced"
+        PENDING_CANCEL    = "pending_cancel"
+        PENDING_REPLACE   = "pending_replace"
+        HELD              = "held"
+        REJECTED          = "rejected"
+        SUSPENDED         = "suspended"
+    setattr(_en_mod, "OrderStatus", _OrderStatus)
     setattr(_en_mod, "OrderSide", types.SimpleNamespace(BUY="buy", SELL="sell"))
     setattr(_en_mod, "TimeInForce", types.SimpleNamespace(
         GTC="gtc", DAY="day", IOC="ioc", FOK="fok", OPG="opg", CLS="cls",

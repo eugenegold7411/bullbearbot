@@ -452,12 +452,14 @@ class TestOutcomeResolutionSellFill(unittest.TestCase):
         self.assertIsNotNone(action["pnl"])
         self.assertAlmostEqual(action["pnl"], (200.0 - 170.0) * 10, places=0)
 
-    def test_midrange_sell_does_not_resolve(self):
-        """SELL fill between stop and take_profit → no outcome (pending)."""
+    def test_midrange_sell_resolves_via_midpoint(self):
+        """SELL fill between stop and take_profit resolves via midpoint heuristic."""
         self._write_pending_buy("NVDA", stop=150.0, tp=200.0)
         sell = self._mock_sell_order("NVDA", fill_price=175.0)
         action = self._run_update([sell])
-        self.assertIsNone(action["outcome"])
+        # midpoint = (200+150)/2 = 175 → fill at 175 >= 175 → win
+        self.assertEqual(action["outcome"], "win")
+        self.assertEqual(action.get("close_reason"), "managed")
 
     def test_no_resolution_when_no_matching_symbol(self):
         """SELL fill for a different symbol must not resolve the action."""

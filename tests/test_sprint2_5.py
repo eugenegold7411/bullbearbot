@@ -160,8 +160,14 @@ class TestChromaDBEnvVar:
         """chromadb must be importable (PROTOCOL_BUFFERS workaround active)."""
         import importlib
         import os
-        # Skip if chromadb is not installed in this environment
-        if importlib.util.find_spec("chromadb") is None:
+        # Skip if chromadb is not installed in this environment.
+        # Guard ValueError: stub modules (from other tests) have __spec__=None
+        # which causes find_spec to raise in Python 3.11+.
+        try:
+            spec = importlib.util.find_spec("chromadb")
+        except ValueError:
+            pytest.skip("chromadb stub in sys.modules — OK in local/CI test environment")
+        if spec is None:
             pytest.skip("chromadb not installed in this environment — OK in CI/local")
         # The env var is set in systemd service + .env; when running tests via pytest
         # on the server, the service sets it. If not set here, skip gracefully.

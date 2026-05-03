@@ -397,6 +397,35 @@ def _check_a2_stuck_structures(now_et: datetime) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# Check 8 — ChromaDB vector memory health
+# ---------------------------------------------------------------------------
+
+def _check_chromadb() -> CheckResult:
+    name = "chromadb"
+    try:
+        import trade_memory as _tm
+        short, medium, long_ = _tm._get_collections()
+        if short is None:
+            return CheckResult(
+                name=name, ok=False, severity="CRITICAL",
+                message="ChromaDB collections are None — vector memory disabled",
+            )
+        total = sum(
+            c.count() for c in (short, medium, long_)
+            if c is not None
+        )
+        return CheckResult(
+            name=name, ok=True, severity="OK",
+            message=f"ChromaDB OK — {total} records",
+        )
+    except Exception as exc:
+        return CheckResult(
+            name=name, ok=False, severity="CRITICAL",
+            message=f"ChromaDB check failed: {exc}",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -409,6 +438,7 @@ def _run_all_checks(now_et: datetime) -> list[CheckResult]:
         _check_modes(),
         _check_equity_drawdown(now_et),
         _check_a2_stuck_structures(now_et),
+        _check_chromadb(),
     ]
 
 

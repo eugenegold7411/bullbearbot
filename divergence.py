@@ -195,6 +195,43 @@ RUNTIME_DIR = Path("data/runtime")
 MODE_TRANSITION_LOG = RUNTIME_DIR / "mode_transitions.jsonl"
 DIVERGENCE_COUNTS_PATH = RUNTIME_DIR / "divergence_counts.json"
 
+# ---------------------------------------------------------------------------
+# Safety alert infrastructure — fail-alert for critical function exceptions
+# ---------------------------------------------------------------------------
+
+_SAFETY_DEDUP_SECS: float = 300.0  # 5 minutes between repeat alerts per function
+_SAFETY_ALERT_CACHE: dict[str, float] = {}  # function_name → unix time of last alert
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    """
+    Fire a CRITICAL WhatsApp alert when a safety-system function throws.
+    Deduped per function name with a 5-minute window. Never raises.
+
+    # TODO(DASHBOARD): surface safety_system_degraded alerts on dashboard
+    # Each fail-alert should write to data/runtime/safety_alerts.json with:
+    # {"timestamp": "...", "function": "...", "error": "...", "level": "CRITICAL"}
+    # Dashboard will display these in a dedicated Safety panel (not yet built)
+    """
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] divergence.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 def get_mode_path(account: str) -> Path:
     return RUNTIME_DIR / f"{account.lower()}_mode.json"
@@ -243,7 +280,8 @@ def load_account_mode(account: str) -> AccountMode:
                 version=d.get("version", 1),
             )
     except Exception as e:
-        log.warning("[DIV] load_account_mode failed: %s", e)
+        log.error("[DIV] load_account_mode failed: %s", e)
+        _fire_safety_alert("load_account_mode", e)
     return AccountMode(
         account=account,
         mode=OperatingMode.NORMAL,
@@ -281,7 +319,8 @@ def save_account_mode(mode_state: AccountMode) -> None:
         }, indent=2))
         tmp.rename(path)
     except Exception as e:
-        log.warning("[DIV] save_account_mode failed: %s", e)
+        log.error("[DIV] save_account_mode failed: %s", e)
+        _fire_safety_alert("save_account_mode", e)
 
 
 def transition_mode(
@@ -568,7 +607,8 @@ def is_action_allowed(
 
         return True, ""
     except Exception as e:
-        log.warning("[DIV] is_action_allowed failed: %s", e)
+        log.error("[DIV] is_action_allowed failed: %s", e)
+        _fire_safety_alert("is_action_allowed", e)
         return True, ""  # fail open — never block on error
 
 
@@ -885,7 +925,8 @@ def respond_to_divergence(
                 )
 
     except Exception as e:
-        log.warning("[DIV] respond_to_divergence failed: %s", e)
+        log.error("[DIV] respond_to_divergence failed: %s", e)
+        _fire_safety_alert("respond_to_divergence", e)
 
     return current_mode
 
@@ -946,7 +987,8 @@ def check_clean_cycle(
             save_account_mode(current_mode)
 
     except Exception as e:
-        log.warning("[DIV] check_clean_cycle failed: %s", e)
+        log.error("[DIV] check_clean_cycle failed: %s", e)
+        _fire_safety_alert("check_clean_cycle", e)
 
     return current_mode
 

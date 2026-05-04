@@ -232,9 +232,14 @@ def compute_position_health(position, equity: float, total_capacity: float = 0.0
     market_value  = float(position.market_value)
     unrealized_pl = float(position.unrealized_pl)
 
-    _denom       = total_capacity if total_capacity > 0 else equity
-    drawdown_pct = ((entry_price - current_price) / entry_price * 100) if entry_price > 0 else 0.0
-    account_pct  = (market_value / _denom * 100) if _denom > 0 else 0.0
+    _denom    = total_capacity if total_capacity > 0 else equity
+    is_short  = float(position.qty) < 0
+    if is_short:
+        drawdown_pct = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0.0
+        account_pct  = (abs(market_value) / _denom * 100) if _denom > 0 else 0.0
+    else:
+        drawdown_pct = ((entry_price - current_price) / entry_price * 100) if entry_price > 0 else 0.0
+        account_pct  = (market_value / _denom * 100) if _denom > 0 else 0.0
 
     if drawdown_pct > 12 or (drawdown_pct > 8 and account_pct > 6):
         health = "CRITICAL"
@@ -272,11 +277,11 @@ def get_forced_exits(positions: list, equity: float, total_capacity: float = 0.0
     """
     forced = []
     for pos in positions:
-        if float(pos.qty) <= 0:
+        if float(pos.qty) == 0:
             continue
         health = compute_position_health(pos, equity, total_capacity)
         if health["health"] == "CRITICAL":
-            full_qty = int(float(pos.qty))
+            full_qty = int(abs(float(pos.qty)))
             half_qty = max(1, full_qty // 2)
             forced.append({
                 "symbol":   pos.symbol,
@@ -309,7 +314,7 @@ def get_deadline_exits(strategy_config: dict, positions: list) -> list[dict]:
         return []
 
     now  = datetime.now(timezone.utc)
-    held = {pos.symbol: pos for pos in positions if float(pos.qty) > 0}
+    held = {pos.symbol: pos for pos in positions if float(pos.qty) != 0}
 
     expired = []
     for item in tba:
@@ -328,7 +333,7 @@ def get_deadline_exits(strategy_config: dict, positions: list) -> list[dict]:
                     "reason":       item.get("reason", ""),
                     "deadline_et":  item.get("deadline_et", ""),
                     "deadline_utc": dl_str,
-                    "full_qty":     int(float(pos.qty)),
+                    "full_qty":     int(abs(float(pos.qty))),
                 })
         except (ValueError, TypeError):
             continue
@@ -354,7 +359,7 @@ def format_positions_with_health(
         return "  (none)"
 
     _total_cap = (
-        sum(float(p.market_value) for p in positions if float(p.qty) > 0)
+        sum(abs(float(p.market_value)) for p in positions if float(p.qty) != 0)
         + (buying_power if buying_power > 0 else 0.0)
     )
 
@@ -363,15 +368,16 @@ def format_positions_with_health(
         health = compute_position_health(p, equity, _total_cap)
         unreal = float(p.unrealized_pl)
         sign   = "+" if unreal >= 0 else ""
-        pnl_pct = (unreal / (float(p.avg_entry_price) * float(p.qty)) * 100
-                   if float(p.avg_entry_price) > 0 and float(p.qty) > 0 else 0.0)
+        _qty_abs = abs(float(p.qty))
+        pnl_pct = (unreal / (float(p.avg_entry_price) * _qty_abs) * 100
+                   if float(p.avg_entry_price) > 0 and _qty_abs > 0 else 0.0)
         flag = ""
         if health["health"] == "CRITICAL":
             flag = "  *** CRITICAL DRAWDOWN — HALF POSITION FORCED EXIT ***"
         elif health["health"] == "WARNING":
             flag = "  !! WARNING: drawdown approaching stop threshold"
 
-        cap_pct = float(p.market_value) / _total_cap * 100 if _total_cap > 0 else 0.0
+        cap_pct = abs(float(p.market_value)) / _total_cap * 100 if _total_cap > 0 else 0.0
         if cap_pct > 15.0:
             oversize_flag = (
                 f"\n             !! OVERSIZE — {cap_pct:.1f}% of total capacity"
@@ -380,8 +386,9 @@ def format_positions_with_health(
         else:
             oversize_flag = ""
 
+        _side_pfx = "[SHORT] " if float(p.qty) < 0 else ""
         rows.append(
-            f"  {p.symbol:<9} qty={float(p.qty):>8.4f}  "
+            f"  {_side_pfx}{p.symbol:<9} qty={_qty_abs:>8.4f}  "
             f"entry=${float(p.avg_entry_price):>10.2f}  "
             f"current=${float(p.current_price):>10.2f}  "
             f"P&L={sign}${unreal:.2f} ({sign}{pnl_pct:.1f}%)\n"

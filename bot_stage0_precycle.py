@@ -434,13 +434,54 @@ def run_precycle(
     div_events: list = []
     try:
         from divergence import (  # noqa: PLC0415
+            AccountMode,
+            DivergenceScope,
             OperatingMode,
             check_clean_cycle,
             detect_protection_divergence,
             load_account_mode,
             respond_to_divergence,
+            save_account_mode,
         )
         a1_mode = load_account_mode("A1")
+        # Startup auto-reset: if A1 halted for protection_missing before this
+        # restart, clear it so the cycle runs.  protection_missing fires because
+        # Alpaca propagates bracket/OCO fills with a 1-3s lag; on the cycle that
+        # triggered the HALT the orders were genuinely missing, but they exist now.
+        # Divergence will re-fire within 6 min if the problem persists.
+        if (
+            a1_mode.mode == OperatingMode.HALTED
+            and a1_mode.reason_code == "protection_missing"
+        ):
+            try:
+                import os as _os
+                with open(f"/proc/{_os.getpid()}/stat") as _f:
+                    _ticks = int(_f.read().split()[21])
+                with open("/proc/uptime") as _f:
+                    _sysup = float(_f.read().split()[0])
+                _uptime = _sysup - (_ticks / _os.sysconf("SC_CLK_TCK"))
+            except Exception:
+                _uptime = 0.0  # conservative: treat as fresh start
+            if _uptime < 90:
+                log.warning(
+                    "[PREFLIGHT] startup auto-reset: HALTED/protection_missing cleared"
+                    " (uptime=%.0fs < 90s) — divergence re-fires if issue persists",
+                    _uptime,
+                )
+                _now_iso = datetime.now(timezone.utc).isoformat()
+                a1_mode = AccountMode(
+                    account="A1",
+                    mode=OperatingMode.NORMAL,
+                    scope=DivergenceScope.ACCOUNT,
+                    scope_id="",
+                    reason_code="startup_reset",
+                    reason_detail="auto-reset from HALTED/protection_missing on restart",
+                    entered_at=_now_iso,
+                    entered_by="startup_reset",
+                    recovery_condition="one_clean_cycle",
+                    last_checked_at=_now_iso,
+                )
+                save_account_mode(a1_mode)
         if snapshot is not None and snapshot.positions:
             # Exclude short positions from protection divergence detection: short
             # positions need buy-stop coverage, which divergence.py does not check.

@@ -1,7 +1,7 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-03 (Agent 6 config write safety audit)
+Last updated: 2026-05-04 (Agent 6 config write guards — 408e7f6)
 
 ---
 
@@ -123,81 +123,9 @@ _merge_blocked_symbols() now enforces append-only semantics at both write paths.
 ---
 
 ### Agent 6 Config Write Guards
-Priority: HIGH — before May 16 live promotion
-Estimated effort: 2 hour build session
-File: weekly_review.py
-
-Audit identified the following unguarded write paths:
-
-CRITICAL (boolean safety gates — make write-protected):
-- session_gate_enforce
-- margin_authorized
-- session_unknown_hard_block
-- session_tag_assert_non_unknown_before_route
-
-HIGH (numeric fields missing from _PARAM_RANGES):
-- margin_sizing_multiplier: (1.0, 5.0)
-- max_crypto_margin_multiplier: (1.0, 4.0)
-- vix_calm_threshold, vix_elevated_threshold,
-  vix_cautious_threshold, vix_stressed_threshold
-  — must also validate as ordered sequence
-- vix_stressed_conviction_floor: (0.5, 1.0)
-- add_conviction_gate: (0.4, 0.9)
-
-HIGH (boolean feature toggles — make write-protected):
-- overnight_order_evaluation
-- catalyst_tag_required_for_entry
-
-HIGH (nested dicts — add cross-value invariant validation):
-- margin_sizing_multiplier_tiers
-- margin_sizing_conviction_thresholds
-
-MEDIUM (list fields — add membership validation):
-- preferred_sessions: non-empty subset of valid sessions
-- preferred_tiers: non-empty subset of valid tiers
-- catalyst_tag_disallowed_values: minimum required set
-
-MEDIUM (string enum validation):
-- min_confidence_threshold: {"low","medium","high"}
-- sector_rotation_bias: valid regime values
-
-MEDIUM (signal_source_weights):
-- Validate all values against {"low","medium","high"}
-- Validate all expected keys present after write
-
-Implementation approach:
-- CRITICAL/HIGH boolean gates: add to a
-  _READONLY_PARAM_KEYS set; reject any Agent 6 write
-  attempt with WARNING log
-- Numeric range additions: add to _PARAM_RANGES
-- VIX ordering: add _validate_vix_sequence() check
-- Nested dicts: add _validate_nested_param() helper
-- List/string fields: add to validation loop
-
-Also investigate: max_overnight_position_pct_equity
-re-asserted at 0.04 for 3 consecutive cycles without
-taking effect — possible server/deploy config divergence.
+COMPLETED — commit 408e7f6
 
 ---
-
-### CI Ubuntu Test Failure — Diagnostic Required
-Priority: HIGH — CI was green before S21; now fails at Test step on Ubuntu
-Estimated effort: 30 min–1 hour
-Dependencies: GitHub token (to read CI logs directly)
-
-Tests pass from clean clone on Python 3.12 macOS (2875/0 failures).
-CI fails at Test step on Ubuntu GitHub Actions runner. Not reproducible
-locally. Possible causes:
-- Package binary difference on Ubuntu (protobuf, pandas, chromadb)
-- Ubuntu-specific os/subprocess behavior in a test
-- Flaky test sensitive to timing or ordering on Linux
-
-Investigation steps:
-1. Add GitHub token to enable log download via API
-2. Or: add `pytest -v` flag to CI to expose which test fails in summary
-3. Or: add `--tb=long` to capture full traceback in step summary
-Quick fix option: in workflow, add `--tb=long -r f` to surface failures
-in the GitHub step summary without needing log downloads.
 
 ---
 
@@ -205,6 +133,8 @@ in the GitHub step summary without needing log downloads.
 
 | Commit  | What |
 |---------|------|
+| 408e7f6 | feat(weekly-review): Agent 6 config write guards A–I — _PARAM_READONLY frozenset (6 booleans + 4 arch fields); 9 unguarded numerics + max_day_trades added to _NUMERIC_PARAM_FIELDS/_PARAM_RANGES; nested-dict/list/enum guards in extractor; _validate_signal_source_weights(); active_strategy + director_notes.priority enum guards at both Phase 1 + Phase 3b write sites; 15 new tests; 3048 passing |
+| b00b0df | fix(test): ET timezone in test_br05_old_files_pruned — fixes Ubuntu CI failure (naive datetime.now() produced UTC date, off by 1 day vs ET pruning cutoff) |
 | ab75de3 | S25: MEDIUM/LOW silent failure remediation #18–#29 — _fire_safety_alert() in 5 modules; 9 MEDIUM upgrades (log.error + WhatsApp); 2 LOW upgrades (log.error only); bars_save was debug level; 29 new tests; 3033 passing |
 | c45da26 | S24: blocked_symbols append-only guard in weekly_review.py — _merge_blocked_symbols() helper; Phase 1 + Phase 3b guards; 6 new tests; QCOM restored to server config |
 | 09a9592 | S23: Wiring test schema validation — 23-check suite (17→23); D-04b/D-05b/D-06b/D-09b/D-11/E-07b; WARN status; 32 unit tests |
@@ -238,4 +168,3 @@ in the GitHub step summary without needing log downloads.
 | BUG-015 | OCO on existing positions requires cancel+resubmit with unprotected window | Low |
 | — | Dashboard OVERSIZE display bug (display only) | Low |
 | — | test_scratchpad_memory / test_sprint2_5 ChromaDB failures | Pre-existing |
-| — | CI Ubuntu test failure — passes locally on py3.12 clean clone but fails on Ubuntu runner | Medium |

@@ -924,6 +924,16 @@ def build_candidate_structures(
         )
         if _cand_structs is not None:
             generated = list(_cand_structs)
+            if not generated:
+                log.info(
+                    "[OPTS] %s: generate_candidate_structures returned 0 "
+                    "(allowed=%s spot=%.2f dte=%s-%s)",
+                    pack.symbol,
+                    allowed_structures,
+                    float(chain.get("current_price", 0) or 0),
+                    (config or {}).get("min_dte", "?"),
+                    (config or {}).get("max_dte", "?"),
+                )
             for c in generated:
                 reason = _apply_veto_rules(c, pack, equity, config=config)
                 if reason is None:
@@ -934,8 +944,8 @@ def build_candidate_structures(
             if _vetoed_count:
                 log.debug("[OPTS] %s: %d/%d structures vetoed",
                           pack.symbol, _vetoed_count, len(generated))
-            if not surviving:
-                _sample_reason = vetoed[0]["reason"] if vetoed else "no_structures"
+            if not surviving and generated:
+                _sample_reason = vetoed[0]["reason"] if vetoed else "all_vetoed"
                 log.info("[OPTS] %s: all %d structures vetoed (%s) -- skipping",
                          pack.symbol, len(generated), _sample_reason)
             # Enrich surviving candidates with Alpaca greeks where chain data was absent

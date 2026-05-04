@@ -252,22 +252,31 @@ def _ensure_account_modes_initialized() -> None:
             save_account_mode,
         )
         now_iso = datetime.now(timezone.utc).isoformat()
+        import json as _json  # noqa: PLC0415
+
+        def _mode_file_valid(mp) -> bool:
+            try:
+                md = _json.loads(mp.read_text())
+                return {"account", "mode", "scope"}.issubset(md.keys())
+            except Exception:
+                return False
+
         for account in ("A1", "A2"):
             path = get_mode_path(account)
-            if not path.exists():
+            if not path.exists() or not _mode_file_valid(path):
                 save_account_mode(AccountMode(
                     account=account,
                     mode=OperatingMode.NORMAL,
                     scope=DivergenceScope.ACCOUNT,
                     scope_id="",
                     reason_code="",
-                    reason_detail=f"{account} mode file absent on startup — initialized to NORMAL",
+                    reason_detail=f"{account} mode file absent/malformed on startup — initialized to NORMAL",
                     entered_at=now_iso,
                     entered_by="system_init",
                     recovery_condition="one_clean_cycle",
                     last_checked_at=now_iso,
                 ))
-                log.info("[INIT] %s mode file created with NORMAL mode", account)
+                log.info("[INIT] %s mode file created/repaired with NORMAL mode", account)
 
         # Ensure A2 decisions directory exists (gitignored, excluded from rsync).
         # persist_decision_record() also mkdir-on-writes, but creating it here
@@ -736,6 +745,8 @@ def _maybe_refresh_iv_history(dry_run: bool = False) -> None:
                 log.info("[IV] History refresh complete: %d equity symbols", len(equity_symbols))
             else:
                 log.debug("[IV] No equity symbols in watchlist — skipping IV refresh")
+            import options_universe_manager as _oum  # noqa: PLC0415
+            _oum.queue_all_thin_symbols()
         except Exception:
             log.debug("IV history refresh failed (non-fatal)", exc_info=True)
     else:
@@ -1792,35 +1803,35 @@ def run(dry_run: bool = False) -> None:
                     except Exception as _orb_upd_exc:
                         log.debug("ORB candidate update failed (non-fatal): %s", _orb_upd_exc)
 
+                # Account 2 — options bot, triggered immediately after A1 signal
+                # scoring via post_signal_hook. Eliminates the 200-600s gap where
+                # A2 sat idle waiting for A1's Sonnet + execution to finish.
+                _a2_gate = (
+                    session in ("market", "pre_open")
+                    and _is_claude_trading_window(cfg=_load_strategy_config_safe())
+                )
+
+                def _a2_post_signal() -> None:
+                    if not _is_claude_trading_window(cfg=_load_strategy_config_safe()):
+                        log.info("[A2] trading window closed at signal handoff — skipping")
+                        return
+                    try:
+                        import bot_options as _bot_opts  # noqa: PLC0415
+                        _bot_opts.run_options_cycle(
+                            session_tier=session,
+                            next_cycle_time=next_str,
+                        )
+                    except Exception as _opts_exc:
+                        log.error("[OPTS] Account 2 cycle error (non-fatal): %s",
+                                  _opts_exc, exc_info=True)
+
                 bot.run_cycle(
                     session_tier=session,
                     session_instruments=SESSION_INSTRUMENTS[instr_session],
                     next_cycle_time=next_str,
                     trigger_reason=trigger_reason,
+                    post_signal_hook=_a2_post_signal if _a2_gate else None,
                 )
-
-                # Account 2 — options bot (90s offset, market hours only).
-                # Also gated by the hard trading window so A2 cannot bleed into
-                # post-4:00 PM ET via the 90 s offset or close-window cycles.
-                if session in ("market", "pre_open") and _is_claude_trading_window(
-                    cfg=_load_strategy_config_safe()
-                ):
-                    try:
-                        time.sleep(90)
-                        # Re-check after sleep — 90 s may push us past 4:15 PM
-                        if not _is_claude_trading_window(
-                            cfg=_load_strategy_config_safe()
-                        ):
-                            log.info("[A2] window closed during 90s offset — skipping debate")
-                        else:
-                            import bot_options as _bot_opts  # noqa: PLC0415
-                            _bot_opts.run_options_cycle(
-                                session_tier=session,
-                                next_cycle_time=next_str,
-                            )
-                    except Exception as _opts_exc:
-                        log.error("[OPTS] Account 2 cycle error (non-fatal): %s", _opts_exc,
-                                  exc_info=True)
 
             except KeyboardInterrupt:
                 raise

@@ -7,6 +7,7 @@ Run via scheduler for 24/7 mode:  python scheduler.py
 import json
 import os
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -209,6 +210,7 @@ def run_cycle(
     session_instruments: str = "stocks, ETFs, crypto",
     next_cycle_time:     str = "?",
     trigger_reason:      str = "",
+    post_signal_hook:    "Callable[[], None] | None" = None,
 ) -> None:
     t_start = time.monotonic()
     log.info("── Cycle start  session=%s ─────────────────────────────", session_tier)
@@ -268,6 +270,15 @@ def run_cycle(
                       len(signal_scores_obj.get("scored_symbols", {})))
         except Exception as _ss_exc:
             log.warning("[SIGNALS] could not write signal_scores.json (non-fatal): %s", _ss_exc)
+
+        # Fire A2 options pipeline immediately after signal scoring — before Stage 3.
+        # A2 only needs signal_scores.json; running it here eliminates the 200-600s
+        # gap where A2 sat idle waiting for A1's Sonnet decision and execution.
+        if post_signal_hook is not None:
+            try:
+                post_signal_hook()
+            except Exception as _hook_exc:
+                log.warning("[A2] post_signal_hook failed (non-fatal): %s", _hook_exc)
 
     # Stage 2.5 — Haiku scratchpad pre-analysis (market session only)
     scratchpad_result = {}

@@ -38,12 +38,24 @@ def load_a1_signals() -> dict:
     try:
         # Account 1 may have written signal scores to data/market/signal_scores.json
         path = Path(__file__).parent / "data" / "market" / "signal_scores.json"
-        if path.exists() and (time.time() - path.stat().st_mtime) < 600:  # fresh < 10 min
+        if path.exists():
             import json  # noqa: PLC0415
-            data = json.loads(path.read_text())
-            # score_signals() returns {"scored_symbols": {...}, "top_3": [...], ...}
-            # Extract the flat symbol→score dict from the nested structure.
-            return data.get("scored_symbols", data) if isinstance(data, dict) else {}
+            _age_s = time.time() - path.stat().st_mtime
+            if _age_s >= 1200:  # stale > 20 min — skip
+                log.warning(
+                    "[OPTS] signal_scores.json is %.0f min old — skipping A2 (A1 may be stuck)",
+                    _age_s / 60,
+                )
+            else:
+                if _age_s >= 600:
+                    log.warning(
+                        "[OPTS] signal_scores.json is %.0f min old — A1 cycle running slow",
+                        _age_s / 60,
+                    )
+                data = json.loads(path.read_text())
+                # score_signals() returns {"scored_symbols": {...}, "top_3": [...], ...}
+                # Extract the flat symbol→score dict from the nested structure.
+                return data.get("scored_symbols", data) if isinstance(data, dict) else {}
     except Exception as exc:
         log.debug("[OPTS] Could not load Account 1 signal scores: %s", exc)
     return {}

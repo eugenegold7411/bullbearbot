@@ -31,7 +31,7 @@ _BOOTSTRAP_QUEUE = _DATA_DIR / "iv_pending_bootstrap.json"
 _IV_DIR          = _DATA_DIR / "iv_history"
 
 _MIN_IV_HISTORY       = 20   # mirrors options_data._MIN_IV_HISTORY
-_MAX_DAILY_BOOTSTRAPS = 5
+_MAX_DAILY_BOOTSTRAPS = 25
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -140,6 +140,34 @@ def queue_for_bootstrap(symbol: str, source: str) -> None:
             log.info("[UNIVERSE] %s: queued for bootstrap (source=%s)", symbol, source)
     except Exception as exc:
         log.debug("[UNIVERSE] queue_for_bootstrap(%s) failed (non-fatal): %s", symbol, exc)
+
+
+def queue_all_thin_symbols(min_entries: int = 20) -> list[str]:
+    """
+    Add all symbols with insufficient IV history to the bootstrap queue.
+    Called at 4 AM before run_bootstrap_queue() so thin symbols are processed
+    in the same daily batch. Returns list of newly-queued symbols.
+    """
+    queued: list[str] = []
+    try:
+        if not _IV_DIR.exists():
+            return queued
+        for f in _IV_DIR.glob("*.json"):
+            try:
+                d = json.loads(f.read_text())
+                entries = len(d) if isinstance(d, list) else len(d.get("history", []))
+                if 0 < entries < min_entries:
+                    sym = f.stem.removesuffix("_iv_history")
+                    queue_for_bootstrap(sym, source="thin_iv_auto")
+                    queued.append(sym)
+            except Exception:
+                pass
+        if queued:
+            log.info("[UNIVERSE] queued %d thin symbols for IV bootstrap: %s",
+                     len(queued), queued)
+    except Exception as exc:
+        log.warning("[UNIVERSE] queue_all_thin_symbols failed (non-fatal): %s", exc)
+    return queued
 
 
 def run_bootstrap_queue() -> dict:

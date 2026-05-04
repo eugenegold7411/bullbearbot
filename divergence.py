@@ -253,12 +253,23 @@ class AccountMode:
     version: int = 1
 
 
+_REQUIRED_MODE_KEYS: frozenset[str] = frozenset({"account", "mode", "scope"})
+
+
 def load_account_mode(account: str) -> AccountMode:
     """Load current mode. Returns NORMAL if file missing. Non-fatal."""
     path = get_mode_path(account)
     try:
         if path.exists():
             d = json.loads(path.read_text())
+            _missing = _REQUIRED_MODE_KEYS - d.keys()
+            if _missing:
+                raise RuntimeError(
+                    f"[SCHEMA] {path.name} missing required keys: {sorted(_missing)}. "
+                    f"Present: {sorted(d.keys())}. "
+                    f"Fix: delete the file or restart scheduler to trigger "
+                    f"_ensure_account_modes_initialized()."
+                )
             return AccountMode(
                 account=d["account"],
                 # T1-4: normalize case before enum lookup — prevents silent HALTED→NORMAL

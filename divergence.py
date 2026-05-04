@@ -753,7 +753,10 @@ def detect_protection_divergence(
         for o in open_orders:
             raw_type = str(getattr(o, "order_type", "")).lower()
             order_type = raw_type.split(".")[-1]
-            if order_type in ("stop", "stop_limit", "trailing_stop"):
+            raw_class = str(getattr(o, "order_class", "")).lower().split(".")[-1]
+            # OCO/bracket parents have type=limit but embed a stop leg -- treat as protected.
+            # Alpaca list responses do not expand legs, so we check order_class instead.
+            if order_type in ("stop", "stop_limit", "trailing_stop") or raw_class in ("oco", "bracket"):
                 # PENDING_REPLACE = in-flight replacement, not an independent stop.
                 # Counting it causes false duplicate_exit events when the trail-stop
                 # replace() call fails and exit_manager places a new stop alongside it.

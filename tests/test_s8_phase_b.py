@@ -138,6 +138,7 @@ class TestProtectionDivergenceGraceWindow(unittest.TestCase):
         # don't bleed into each other.
         divergence._fill_seen.clear()
         divergence._protection_miss_cycles.clear()
+        divergence._STARTUP_EPOCH = 0.0  # treat startup as long past for these tests
 
     def _call(self, positions, open_orders, grace_seconds=120.0):
         import divergence

@@ -118,6 +118,9 @@ EVENT_TYPES = [
 _fill_seen: dict[str, float] = {}   # symbol → epoch of first no-stop detection
 _protection_miss_cycles: dict[str, int] = {}  # symbol → consecutive unprotected cycles past grace
 
+_STARTUP_EPOCH: float = time.time()  # set at import; guards first scan after restart
+_STARTUP_GRACE_S: float = 90.0
+
 # ---------------------------------------------------------------------------
 # Section 2 — Event log
 # ---------------------------------------------------------------------------
@@ -800,6 +803,17 @@ def detect_protection_divergence(
                     log.warning(
                         "[DIV] %s: no stop (miss %d/2) — deferring HALT one cycle for OCA retry",
                         sym, _protection_miss_cycles[sym],
+                    )
+                    continue
+
+                # Startup grace — skip firing for first 90 s after module import.
+                # Prevents protection_missing on the very first post-restart scan
+                # before Alpaca's GET /orders response includes OCO orders.
+                _startup_elapsed = time.time() - _STARTUP_EPOCH
+                if _startup_elapsed < _STARTUP_GRACE_S:
+                    log.info(
+                        "[DIV] %s: no stop — startup grace window (%.0fs remaining)",
+                        sym, _STARTUP_GRACE_S - _startup_elapsed,
                     )
                     continue
 

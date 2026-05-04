@@ -5466,6 +5466,8 @@ class TestSuite24DivergenceC7(unittest.TestCase):
                 # Seed _fill_seen with an expired timestamp so the grace window
                 # is already elapsed and the event fires immediately.
                 _div_mod._fill_seen["GLD"] = time.time() - 200
+                _div_mod._protection_miss_cycles["GLD"] = 1  # past miss threshold
+                _div_mod._STARTUP_EPOCH = 0.0  # treat startup as long past
                 events = _div_mod.detect_protection_divergence(
                     account="A1_TEST",
                     positions=[MockPosition("GLD", 800)],  # <2000 → stop_missing
@@ -5479,6 +5481,8 @@ class TestSuite24DivergenceC7(unittest.TestCase):
                 _div_mod.DIVERGENCE_LOG = original_log
                 _div_mod.DIVERGENCE_COUNTS_PATH = original_counts
                 _div_mod._fill_seen.pop("GLD", None)
+                _div_mod._protection_miss_cycles.pop("GLD", None)
+                _div_mod._STARTUP_EPOCH = time.time()
 
     # ── E2E T23: detect → respond → clean-cycle recovery ─────────────────────
 
@@ -5522,6 +5526,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
                 import time as _time
                 _div_mod._fill_seen["GLD"] = _time.time() - 200
                 _div_mod._protection_miss_cycles["GLD"] = 1  # simulate first post-grace miss already logged
+                _div_mod._STARTUP_EPOCH = 0.0  # treat startup as long past
                 events = _div_mod.detect_protection_divergence(
                     account="A1_E2E_TEST",
                     positions=[MockPosition("GLD", 800)],

@@ -9,15 +9,10 @@ Fix 5 (3 tests): Form 4 transaction_code filter (open-market P only)
 """
 from __future__ import annotations
 
-import json
 import sys
 import types
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
-
+from unittest.mock import patch
 
 # ── stubs needed for Alpaca-dependent modules ─────────────────────────────────
 
@@ -84,7 +79,7 @@ class TestBlockedSymbols:
 
     def test_blocked_symbol_does_not_block_sell(self):
         from risk_kernel import eligibility_check
-        from schemas import AccountAction, Direction, Tier, TradeIdea, BrokerSnapshot
+        from schemas import AccountAction, Direction, Tier, TradeIdea
         idea = TradeIdea(
             symbol="QCOM",
             action=AccountAction.SELL,

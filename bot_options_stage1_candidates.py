@@ -494,6 +494,20 @@ def run_candidate_stage(
         reverse=True
     )[:8]  # top 8 candidates only
 
+    # blocked_symbols gate — mirrors A1 risk_kernel check (parameters.blocked_symbols).
+    # Fail-safe: any config read error yields empty block set so A2 never halts on bad config.
+    try:
+        _blocked = set(config.get("parameters", {}).get("blocked_symbols", []))
+    except Exception:
+        log.warning("[OPTS] Could not read blocked_symbols from config — proceeding with empty block set")
+        _blocked = set()
+    if _blocked:
+        _blocked_hits = [sym for sym, _ in scored_symbols if sym in _blocked]
+        if _blocked_hits:
+            log.info("[OPTS] Filtered %d blocked symbol(s) from A2 candidates: %s",
+                     len(_blocked_hits), _blocked_hits)
+        scored_symbols = [(sym, sig) for sym, sig in scored_symbols if sym not in _blocked]
+
     # Symbols with a pending mleg DAY order from a prior cycle — skip re-submission.
     _pending_underlyings = config.get("_pending_underlyings", frozenset())
 

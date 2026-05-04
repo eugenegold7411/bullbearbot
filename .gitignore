@@ -77,9 +77,6 @@ data/fundamentals/
 data/crypto/
 data/weekly_reports/
 
-# Runtime config (managed by weekly_review on server — never deploy-synced)
-strategy_config.json
-
 # Runtime rolling memory (changes every cycle)
 memory/*.json
 

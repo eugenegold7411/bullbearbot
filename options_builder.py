@@ -158,10 +158,14 @@ def build_structure(
         return None, f"no valid current_price in chain for {symbol}"
 
     direction  = str(action.get("direction", "bullish")).lower()
-    iv_rank    = float(action.get("iv_rank") or 50.0)
+    iv_rank_raw = action.get("iv_rank")
+    if iv_rank_raw is None:
+        log.warning("[OPTS_BUILD] %s: iv_rank absent in action — build rejected", symbol)
+        return None, "iv_rank absent"
+    iv_rank    = float(iv_rank_raw)
     catalyst   = str(action.get("catalyst", ""))
     max_cost   = float(action.get("max_cost_usd") or 0)
-    conviction = float(action.get("conviction") or 0.75)
+    conviction = float(action.get("conviction") or 0.0)
 
     tier_raw = str(action.get("tier", "core")).lower()
     try:

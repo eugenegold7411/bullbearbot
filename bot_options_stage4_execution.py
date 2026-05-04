@@ -251,7 +251,16 @@ def submit_selected_candidate(
 
             proposal = next((c for c in candidates if c.symbol == sym), None)
             direction_val = proposal.direction if proposal else selected_cand.get("a1_direction", "bullish")
-            iv_rank_val   = iv_summaries.get(sym, {}).get("iv_rank", 50.0) or 50.0
+            if proposal is not None:
+                iv_rank_val = proposal.iv_rank
+            else:
+                _iv = iv_summaries.get(sym, {}).get("iv_rank")
+                if _iv is None:
+                    log.warning("[OPTS] %s: iv_rank absent, no proposal â skipping", sym)
+                    decision_record.execution_result = "no_trade"
+                    decision_record.no_trade_reason = "iv_rank_absent"
+                    return "no_trade"
+                iv_rank_val = float(_iv)
             max_loss_usd  = selected_cand.get("max_loss", equity * 0.03) * _size_mod
 
             try:

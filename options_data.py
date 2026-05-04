@@ -190,7 +190,11 @@ def compute_iv_rank(symbol: str) -> float | None:
     high = max(ivs)
 
     if high == low:
-        return 50.0  # flat IV history — return neutral rank
+        log.debug(
+            "[OPTIONS_DATA] %s: flat IV history (high==low=%.4f) — iv_rank=None",
+            symbol, high,
+        )
+        return None
 
     rank = (current - low) / (high - low) * 100
     return round(rank, 1)

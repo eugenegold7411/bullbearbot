@@ -74,6 +74,9 @@ load_dotenv()
 log = get_logger(__name__)
 ET  = ZoneInfo("America/New_York")
 
+_VIX_CACHE: dict = {"value": None, "ts": 0.0}
+_VIX_CACHE_MAX_AGE_S: float = 14400.0  # 4 hours
+
 _SAFETY_DEDUP_SECS: float = 300.0
 _SAFETY_ALERT_CACHE: dict[str, float] = {}
 
@@ -215,20 +218,30 @@ def get_market_clock() -> dict:
 
 # ── VIX ──────────────────────────────────────────────────────────────────────
 
-def get_vix() -> float:
+def get_vix() -> float | None:
     """
     Section type: REQUIRED
     Compact prompt: YES ({vix}, {vix_label})
-    Fallback: returns 0.0 on exception (already implemented)
+    Fetches live VIX. Caches successful fetches for up to 4 hours.
+    Returns None (not 0.0) when data is genuinely absent -- callers must degrade.
     """
     try:
         hist = yf.Ticker("^VIX").history(period="2d")
         if not hist.empty:
-            return round(float(hist["Close"].iloc[-1]), 2)
-    except Exception:
-        pass
-    return 0.0
+            val = round(float(hist["Close"].iloc[-1]), 2)
+            _VIX_CACHE["value"] = val
+            _VIX_CACHE["ts"] = time.time()
+            return val
+    except Exception as exc:
+        log.warning("[VIX] Live fetch failed: %s", exc)
 
+    age = time.time() - _VIX_CACHE["ts"]
+    if _VIX_CACHE["value"] is not None and age < _VIX_CACHE_MAX_AGE_S:
+        log.warning("[VIX] Using cached VIX=%.1f (%.0f min old)", _VIX_CACHE["value"], age / 60)
+        return _VIX_CACHE["value"]
+
+    log.error("[VIX] No valid VIX data -- cache absent or >%.0fh old", _VIX_CACHE_MAX_AGE_S / 3600)
+    return None
 
 def vix_regime(vix: float) -> tuple[str, str]:
     """Returns (regime_label, instruction)."""
@@ -1174,8 +1187,13 @@ def fetch_all(symbols_stock: list, symbols_crypto: list, session_tier: str,
         sector_news   = get_news(news_syms, limit=5)
         watchlist_signals = "  (extended session — stock bars not fetched)"
 
-    vix_val              = get_vix()
-    vix_label, vix_instr = vix_regime(vix_val)
+    vix_val = get_vix()
+    if vix_val is None:
+        log.warning("[VIX] Absent -- degrading to elevated_caution")
+        vix_label = "ELEVATED"
+        vix_instr = "VIX data unavailable -- treating as elevated. Cut sizes 50%. No options."
+    else:
+        vix_label, vix_instr = vix_regime(vix_val)
 
     # ── New intelligence sections (degrade gracefully) ───────────────────────
     all_stock_syms = [s for s in symbols_stock if "/" not in s]
@@ -1283,7 +1301,7 @@ def fetch_all(symbols_stock: list, symbols_crypto: list, session_tier: str,
         "session_tier":            session_tier,
         "next_cycle_time":         next_cycle_time,
         "vix":                     vix_val,
-        "vix_regime":              f"{vix_label} (VIX={vix_val:.1f})",
+        "vix_regime":              f"{vix_label}" + (f" (VIX={vix_val:.1f})" if vix_val is not None else " (VIX=N/A)"),
         "regime_instruction":      vix_instr,
         "market_status":           clock["status"],
         "time_et":                 clock["time_et"],

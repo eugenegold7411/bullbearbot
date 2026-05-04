@@ -152,7 +152,9 @@ def _buy_premium_strategy(
     prefer_spread: bool = True,
 ) -> StructureProposal:
     """ATM debit spread or single leg when IV is cheap."""
-    iv_rank = iv_summary.get("iv_rank", 50)
+    iv_rank = iv_summary.get("iv_rank")
+    if iv_rank is None:
+        return None
     direction = signal_data.get("direction", "bullish")
 
     # Max cost: 5% of equity for core spread, 3% for single leg
@@ -195,7 +197,9 @@ def _spread_strategy(
     signal_score: int,
 ) -> StructureProposal:
     """Debit or credit spread for neutral IV environment."""
-    iv_rank = iv_summary.get("iv_rank", 50)
+    iv_rank = iv_summary.get("iv_rank")
+    if iv_rank is None:
+        return None
     direction = signal_data.get("direction", "bullish")
 
     strategy = "call_debit_spread" if direction == "bullish" else "put_debit_spread"
@@ -230,7 +234,9 @@ def _sell_premium_strategy(
     signal_score: int,
 ) -> StructureProposal:
     """OTM credit spread when IV is expensive."""
-    iv_rank = iv_summary.get("iv_rank", 75)
+    iv_rank = iv_summary.get("iv_rank")
+    if iv_rank is None:
+        return None
     direction = signal_data.get("direction", "bullish")
 
     if direction == "bullish":
@@ -268,7 +274,9 @@ def _dynamic_single_leg(
     signal_score: int,
 ) -> StructureProposal:
     """Same-week single-leg for dynamic tier momentum plays."""
-    iv_rank = iv_summary.get("iv_rank", 50)
+    iv_rank = iv_summary.get("iv_rank")
+    if iv_rank is None:
+        return None
     direction = signal_data.get("direction", "bullish")
 
     strategy = "single_call" if direction == "bullish" else "single_put"

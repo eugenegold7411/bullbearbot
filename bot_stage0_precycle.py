@@ -450,7 +450,7 @@ def run_precycle(
                 account="A1",
                 positions=_long_positions,
                 open_orders=snapshot.open_orders,
-                vix=float(md.get("vix", 20) or 20),
+                vix=float(md.get("vix") or 20.0),
                 grace_seconds=float(
                     cfg.get("exit_management", {}).get("protection_grace_seconds", 120)
                 ),

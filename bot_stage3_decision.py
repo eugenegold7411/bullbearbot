@@ -355,7 +355,7 @@ def build_user_prompt(
         pdt_used=pdt_used,
         pdt_remaining=pdt_remaining,
         exposure_pct=exposure_pct,
-        vix=md.get("vix", 20.0),
+        vix=float(md.get("vix") or 20.0),
         vix_regime=md.get("vix_regime", str(md.get("vix", 20.0))),
         regime_instruction=md.get("regime_instruction", "Standard rules apply."),
         market_status=md["market_status"],
@@ -444,19 +444,23 @@ def build_compact_prompt(
     exposure_pct      = (long_val / _total_cap * 100) if _total_cap > 0 else ((long_val / equity * 100) if equity > 0 else 0.0)
     cash_pct          = (cash / equity * 100) if equity > 0 else 0.0
     available_for_new = buying_power
-    vix           = float(md.get("vix", 0) or 0)
+    _vix_raw = md.get("vix")
+    if _vix_raw is None:
+        vix       = 0.0
+        vix_label = "elevated_caution"
+    else:
+        vix = float(_vix_raw)
+        if vix > 35:
+            vix_label = "HALT"
+        elif vix > 25:
+            vix_label = "elevated"
+        elif vix < 15:
+            vix_label = "calm"
+        else:
+            vix_label = "normal"
 
     _pi          = pi_data or {}
     drawdown_pct = float(_pi.get("drawdown_pct", 0) or 0)
-
-    if vix > 35:
-        vix_label = "HALT"
-    elif vix > 25:
-        vix_label = "elevated"
-    elif vix < 15:
-        vix_label = "calm"
-    else:
-        vix_label = "normal"
 
     if positions:
         rows = []

@@ -609,8 +609,8 @@ class TestOvernightGateC3(unittest.TestCase):
         """_OVERNIGHT_DEFAULT must be a hold-all response (safe fallback structure)."""
         default = self.bot._OVERNIGHT_DEFAULT
         # SQ-1: schema normalized — key is now regime_view (intent-based format)
-        self.assertEqual(default["regime_view"], "normal",
-                         "_OVERNIGHT_DEFAULT regime_view must be 'normal'")
+        self.assertEqual(default["regime_view"], "neutral",
+                         "_OVERNIGHT_DEFAULT regime_view must be 'neutral'")
         self.assertEqual(default["ideas"], [],
                          "_OVERNIGHT_DEFAULT ideas must be empty list (hold-all)")
         self.assertIn("reasoning", default,
@@ -639,7 +639,7 @@ class TestOvernightGateC3(unittest.TestCase):
         # SQ-1: schema normalized — use intent-based format (regime_view + ideas)
         _hold_all = {
             "reasoning": "test",
-            "regime_view": "normal",
+            "regime_view": "neutral",
             "ideas": [],
             "holds": [],
             "notes": "",
@@ -663,7 +663,7 @@ class TestOvernightGateC3(unittest.TestCase):
             mock_sonnet.assert_not_called()
 
         # SQ-1: schema normalized — check intent-based fields
-        self.assertEqual(result["regime_view"], "normal")
+        self.assertEqual(result["regime_view"], "neutral")
         self.assertEqual(result["ideas"], [])
 
 

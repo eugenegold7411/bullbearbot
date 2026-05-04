@@ -87,7 +87,7 @@ def test_ask_claude_overnight_returns_expected_schema(monkeypatch):
     # Build the LLM response in the new intent-based format
     llm_payload = {
         "reasoning": "Market stable, hold BTC.",
-        "regime_view": "normal",
+        "regime_view": "neutral",
         "ideas": [],
         "holds": ["BTC/USD"],
         "notes": "",
@@ -126,7 +126,7 @@ def test_ask_claude_overnight_no_legacy_schema_warning(monkeypatch):
 
     llm_payload = {
         "reasoning": "Holding overnight.",
-        "regime_view": "normal",
+        "regime_view": "neutral",
         "ideas": [],
         "holds": ["ETH/USD"],
         "notes": "",
@@ -235,8 +235,8 @@ def test_overnight_default_uses_intent_schema():
     assert _OVERNIGHT_DEFAULT["ideas"] == [], (
         "_OVERNIGHT_DEFAULT ideas must be empty list (hold-all fallback)"
     )
-    assert _OVERNIGHT_DEFAULT["regime_view"] == "normal", (
-        "_OVERNIGHT_DEFAULT regime_view must be 'normal'"
+    assert _OVERNIGHT_DEFAULT["regime_view"] == "neutral", (
+        "_OVERNIGHT_DEFAULT regime_view must be 'neutral'"
     )
 
 

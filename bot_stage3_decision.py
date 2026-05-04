@@ -72,14 +72,14 @@ _OVERNIGHT_SYS = (
     "Only BTC/USD and ETH/USD are tradeable. JSON only, no markdown.\n"
     "TWO modes:\n"
     "  1. MANAGE OPEN POSITIONS: For each open crypto position, decide hold or close.\n"
-    "  2. NEW ENTRY (only if no positions open and conviction >= 0.70 and regime_view=normal):\n"
+    "  2. NEW ENTRY (only if no positions open and conviction >= 0.70 and regime_view=neutral):\n"
     "     Entry criteria: RSI 40-65, trend aligned with MA20 and EMA9/EMA21, "
     "clear catalyst, not overbought. "
     "Conservative sizing: tier='dynamic' (not core). "
     "Stop >= 8% below entry. Target >= 16% above entry (2R minimum). "
     "Do NOT enter if BTC/USD or ETH/USD position already in holds[] or open positions.\n"
     "Output schema:\n"
-    '{"reasoning":"<1 sentence>","regime_view":"normal"|"caution"|"halt",'
+    '{"reasoning":"<1 sentence>","regime_view":"neutral"|"caution"|"halt",'
     '"ideas":['
     '{"intent":"close"|"enter_long",'
     '"symbol":"BTC/USD"|"ETH/USD",'
@@ -102,7 +102,7 @@ _OVERNIGHT_SYS = (
 
 _OVERNIGHT_DEFAULT: dict = {
     "reasoning": "Overnight default — hold all positions.",
-    "regime_view": "normal",
+    "regime_view": "neutral",
     "ideas": [],
     "holds": [],
     "notes": "",
@@ -720,7 +720,7 @@ def _ask_claude_overnight(
             "Overnight session. Only BTC/USD and ETH/USD are tradeable.\n"
             "For each open crypto position: hold or close.\n"
             "If no positions open: you MAY enter BTC/USD or ETH/USD if conviction >= 0.70,\n"
-            "  regime_view is 'normal', RSI is 40-65, and a clear catalyst exists.\n"
+            "  regime_view is 'neutral', RSI is 40-65, and a clear catalyst exists.\n"
             "  Use intent='enter_long'. Include stop_loss_pct (>= 0.08) and take_profit_pct (>= 0.16).\n"
             "  Do NOT enter if a position in that symbol is already open.\n"
             "Never fabricate catalysts. If conviction is below 0.70 or setup is ambiguous, hold cash."

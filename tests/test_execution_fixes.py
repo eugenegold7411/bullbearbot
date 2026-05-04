@@ -138,6 +138,14 @@ class TestRegimeLabelNormalization(unittest.TestCase):
         self.assertIs(out, d)
         self.assertEqual(d["bias"], "risk_on")
 
+    def test_normal_bias_normalized_to_neutral(self):
+        out = self.fn({"bias": "normal"})
+        self.assertEqual(out["bias"], "neutral")
+
+    def test_normal_upper_case_normalized(self):
+        out = self.fn({"bias": "NORMAL"})
+        self.assertEqual(out["bias"], "neutral")
+
 
 # ── helpers shared by T006 / T010 ─────────────────────────────────────────────
 

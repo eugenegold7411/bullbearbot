@@ -97,11 +97,17 @@ _REGIME_SYS = (
 )
 
 
+_BIAS_SYNONYMS = {"normal": "neutral"}
+
+
 def _normalize_regime_labels(result: dict) -> dict:
-    """T-005: Claude sometimes emits 'risk-on'/'risk-off' with hyphens; normalize to underscores."""
+    """Normalize Claude regime output: hyphens → underscores, case fold, 'normal' → 'neutral'."""
     for _f in ("bias", "macro_regime"):
-        if isinstance(result.get(_f), str):
-            result[_f] = result[_f].replace("-", "_")
+        v = result.get(_f)
+        if not isinstance(v, str):
+            continue
+        v = v.strip().lower().replace("-", "_")
+        result[_f] = _BIAS_SYNONYMS.get(v, v)
     return result
 
 

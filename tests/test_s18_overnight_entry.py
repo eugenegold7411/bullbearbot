@@ -43,7 +43,7 @@ _FAKE_SIGNALS = (
 
 _ENTER_LONG_RESPONSE = {
     "reasoning": "BTC trending above all MAs with moderate RSI and bullish MACD cross.",
-    "regime_view": "normal",
+    "regime_view": "neutral",
     "ideas": [{
         "intent": "enter_long",
         "symbol": "BTC/USD",
@@ -73,7 +73,7 @@ _CLOSE_RESPONSE = {
 
 _HOLD_RESPONSE = {
     "reasoning": "Holding BTC overnight — trend intact.",
-    "regime_view": "normal",
+    "regime_view": "neutral",
     "ideas": [],
     "holds": ["BTC/USD"],
     "notes": "",

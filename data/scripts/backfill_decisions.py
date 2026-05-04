@@ -11,7 +11,7 @@ lives only in this script — no production code is modified.
 
 Conviction and regime are not touched:
   - conviction: field was never written to action dicts; no source to backfill.
-  - regime: 0 records missing; "normal" is a live LLM output, not stale data.
+  - regime: normalisation handled by data/scripts/backfill_regime.py (separate script).
 
 Usage:
     cd /home/trading-bot

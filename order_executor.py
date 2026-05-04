@@ -721,6 +721,54 @@ def _submit_close(symbol: str) -> str:
     return str(order.id)
 
 
+def _close_with_oca_retry(symbol: str) -> str:
+    """
+    Close a full position, handling Alpaca OCA share-lock (error 40310000).
+    OCO/bracket orders hold all shares — cancel them first, then close.
+    Returns order_id.
+    """
+    try:
+        return _submit_close(symbol)
+    except Exception as exc:
+        if "40310000" not in str(exc):
+            raise
+        log.info(
+            "[EXECUTOR] %s: OCA share-lock on close (40310000) — cancelling locking orders",
+            symbol,
+        )
+        from alpaca.trading.enums import QueryOrderStatus  # noqa: PLC0415
+        from alpaca.trading.requests import GetOrdersRequest  # noqa: PLC0415
+        alpaca = _get_alpaca()
+        try:
+            open_orders = alpaca.get_orders(GetOrdersRequest(
+                status=QueryOrderStatus.OPEN, symbols=[symbol],
+            ))
+            for o in open_orders:
+                o_side  = str(getattr(o, "side",         "")).lower().split(".")[-1]
+                o_type  = str(getattr(o, "order_type",   getattr(o, "type", ""))).lower().split(".")[-1]
+                o_class = str(getattr(o, "order_class",  "")).lower().split(".")[-1]
+                if o_side == "sell" and (
+                    o_type in ("stop", "stop_limit", "trailing_stop")
+                    or o_class in ("oco", "bracket")
+                ):
+                    try:
+                        alpaca.cancel_order_by_id(str(o.id))
+                        log.info(
+                            "[EXECUTOR] %s: cancelled locking order %s (class=%s type=%s) for close",
+                            symbol, o.id, o_class, o_type,
+                        )
+                    except Exception as cancel_exc:
+                        log.warning(
+                            "[EXECUTOR] %s: cancel order %s failed: %s", symbol, o.id, cancel_exc,
+                        )
+        except Exception as fetch_exc:
+            log.warning(
+                "[EXECUTOR] %s: could not fetch orders for OCA-unlock close: %s", symbol, fetch_exc,
+            )
+        time.sleep(1)
+        return _submit_close(symbol)
+
+
 def _submit_sell(action: dict) -> tuple:
     """Returns (order_id, fill_price, filled_qty, fill_timestamp)."""
     req = MarketOrderRequest(
@@ -817,9 +865,13 @@ def _sell_cancel_stop_and_sell(
         ))
         stop_orders = [
             o for o in open_orders
-            if o.side == OrderSide.SELL
-            and str(o.order_type).lower().split(".")[-1]
-            in ("stop", "stop_limit", "trailing_stop")
+            if str(getattr(o, "side", "")).lower().split(".")[-1] == "sell"
+            and (
+                str(getattr(o, "order_type", getattr(o, "type", ""))).lower().split(".")[-1]
+                in ("stop", "stop_limit", "trailing_stop")
+                or str(getattr(o, "order_class", "")).lower().split(".")[-1]
+                in ("oco", "bracket")
+            )
         ]
     except Exception as exc:
         log.warning(
@@ -1255,7 +1307,7 @@ def execute_all(
                         _pending_sell_oids.clear()
                 oid, _fp, _fq, _ft = _submit_buy(action)
             elif act == "close":
-                oid = _submit_close(symbol)
+                oid = _close_with_oca_retry(symbol)
             elif act == "sell":
                 oid, _fp, _fq, _ft = _sell_with_oca_retry(action, positions)
                 if oid:

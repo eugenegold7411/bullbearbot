@@ -511,9 +511,29 @@ def run_candidate_stage(
     # Symbols with a pending mleg DAY order from a prior cycle — skip re-submission.
     _pending_underlyings = config.get("_pending_underlyings", frozenset())
 
+    # Active structures gate — skip symbols already held in an active structure.
+    # Prevents a 2-minute Claude debate on symbols Stage 4 will block as DUPLICATE_SUBMIT.
+    try:
+        import options_state as _os  # noqa: PLC0415
+        _ACTIVE_LC = {"submitted", "partially_filled", "fully_filled"}
+        _active_structure_syms = {
+            s.underlying
+            for s in _os.load_structures()
+            if (s.lifecycle.value if hasattr(s.lifecycle, "value") else str(s.lifecycle))
+            in _ACTIVE_LC
+        }
+        if _active_structure_syms:
+            log.info("[OPTS] Active structure gate: skipping %s", sorted(_active_structure_syms))
+    except Exception as _ase:
+        log.warning("[OPTS] Could not load active structures for duplicate gate (non-fatal): %s", _ase)
+        _active_structure_syms = set()
+
     for sym, sig_data in scored_symbols:
         if sym in _pending_underlyings:
             log.info("[OPTS] %s: skipping — mleg order pending from prior cycle", sym)
+            continue
+        if sym in _active_structure_syms:
+            log.debug("[OPTS] %s: already has active structure — skipping candidate generation", sym)
             continue
         iv_summary = iv_summaries.get(sym, {
             "symbol": sym, "iv_environment": "unknown", "observation_mode": True

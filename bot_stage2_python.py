@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -55,6 +56,33 @@ _SIGNAL_SOURCE_WEIGHTS_DEFAULT: dict = {
 
 _SIGNAL_WEIGHTS_CACHE: Optional[dict] = None
 _SIGNAL_SOURCE_WEIGHTS_CACHE: Optional[dict] = None
+
+_SAFETY_DEDUP_SECS = 300
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    """Fire a CRITICAL WhatsApp alert when a safety function throws. 5-min dedup. Never raises.
+    # TODO(DASHBOARD): surface safety_system_degraded alerts on dashboard
+    """
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] bot_stage2_python.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _load_signal_weights() -> tuple[dict, dict]:
@@ -129,7 +157,8 @@ def _prepare_cycle_cache() -> None:
             sym: earnings_days_away(sym, raw_cal) for sym in raw_cal
         }
     except Exception as exc:
-        log.debug("[L2] earnings_map read failed: %s", exc)
+        log.error("[L2] earnings_map load failed — signal scorer running without earnings context: %s", exc)
+        _fire_safety_alert("earnings_map_load", exc)
         _CYCLE_CACHE["earnings_map"] = {}
 
     # Pattern watchlist

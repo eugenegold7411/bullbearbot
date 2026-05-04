@@ -810,6 +810,227 @@ def _run_a2_pipeline() -> None:
                 pass
 
 
+
+# ---------------------------------------------------------------------------
+# E-08: a2_mode_schema
+# ---------------------------------------------------------------------------
+def _check_e08_a2_mode_schema() -> None:
+    """Hard FAIL if a1_mode.json or a2_mode.json missing required schema keys."""
+    try:
+        import json as _json
+        _mode_dir = Path(__file__).parent / "data" / "runtime"
+        _required = {"account", "mode", "scope"}
+        for _acct_file in ("a2_mode.json", "a1_mode.json"):
+            _mf = _mode_dir / _acct_file
+            if not _mf.exists():
+                _record("E-08  a2_mode_schema", "FAIL",
+                        f"{_acct_file} missing — divergence will fire safety alert every cycle")
+                return
+            _d = _json.loads(_mf.read_text())
+            _missing = _required - _d.keys()
+            if _missing:
+                _record("E-08  a2_mode_schema", "FAIL",
+                        f"{_acct_file} missing keys {sorted(_missing)} — "
+                        "divergence.py will fire safety alert on every cycle")
+                return
+        _record("E-08  a2_mode_schema", "PASS",
+                "a1_mode.json and a2_mode.json have all required keys")
+    except Exception:
+        _record("E-08  a2_mode_schema", "FAIL", traceback.format_exc(limit=3))
+
+
+# ---------------------------------------------------------------------------
+# E-09: iv_history_coverage
+# ---------------------------------------------------------------------------
+def _check_e09_iv_history_coverage() -> None:
+    """Hard FAIL if fewer than 10 symbols have >= 20 IV history entries."""
+    try:
+        import json as _json
+        _iv_dir = Path(__file__).parent / "data" / "options" / "iv_history"
+        _ready = 0
+        if _iv_dir.exists():
+            for _f in _iv_dir.glob("*.json"):
+                try:
+                    _d = _json.loads(_f.read_text())
+                    _cnt = len(_d) if isinstance(_d, list) else len(_d.get("history", []))
+                    if _cnt >= 20:
+                        _ready += 1
+                except Exception:
+                    pass
+        if _ready < 10:
+            _record("E-09  iv_history_coverage", "FAIL",
+                    f"only {_ready} symbols have >= 20 IV history entries — "
+                    "A2 candidate pool is empty by construction")
+        else:
+            _record("E-09  iv_history_coverage", "PASS",
+                    f"{_ready} symbols have sufficient IV history (>= 20 entries)")
+    except Exception:
+        _record("E-09  iv_history_coverage", "FAIL", traceback.format_exc(limit=3))
+
+
+# ---------------------------------------------------------------------------
+# E-10: a2_staleness_gate
+# ---------------------------------------------------------------------------
+def _check_e10_staleness_gate() -> None:
+    """Hard FAIL if the staleness gate threshold in load_a1_signals() is < 15 min."""
+    try:
+        import re
+        _src = (Path(__file__).parent / "bot_options_stage1_candidates.py").read_text()
+        _m = re.search(r"_age_s >= (\d+).*stale", _src)
+        _threshold = int(_m.group(1)) if _m else None
+        if _threshold is None:
+            _record("E-10  a2_staleness_gate", "WARN",
+                    "could not parse staleness threshold from source")
+        elif _threshold < 900:
+            _record("E-10  a2_staleness_gate", "FAIL",
+                    f"staleness threshold {_threshold}s ({_threshold // 60}min) — "
+                    "too tight, A2 will skip cycles when A1 runs slow")
+        else:
+            _record("E-10  a2_staleness_gate", "PASS",
+                    f"staleness threshold {_threshold}s ({_threshold // 60}min)")
+    except Exception:
+        _record("E-10  a2_staleness_gate", "FAIL", traceback.format_exc(limit=3))
+
+
+# ---------------------------------------------------------------------------
+# E-11: a2_debate_persistence
+# ---------------------------------------------------------------------------
+def _check_e11_a2_debate_persistence() -> None:
+    """
+    Hard FAIL if:
+    - OptionsStructure missing 'debate' or 'pnl_unrealized' fields
+    - _build_debate_snapshot() doesn't produce required keys
+    - debate dict doesn't round-trip through to_dict/from_dict
+    """
+    try:
+        import dataclasses
+
+        from schemas import (
+            OptionsLeg,
+            OptionsStructure,
+            OptionStrategy,
+            StructureLifecycle,
+            Tier,
+        )
+
+        # Part A: schema fields present
+        _fields = {f.name for f in dataclasses.fields(OptionsStructure)}
+        if "debate" not in _fields:
+            _record("E-11  a2_debate_persistence", "FAIL",
+                    "OptionsStructure missing 'debate' field")
+            return
+        if "pnl_unrealized" not in _fields:
+            _record("E-11  a2_debate_persistence", "FAIL",
+                    "OptionsStructure missing 'pnl_unrealized' field")
+            return
+
+        # Part B: _build_debate_snapshot produces required keys
+        from bot_options_stage4_execution import _build_debate_snapshot
+        _mock_result = {
+            "confidence": 0.82,
+            "key_risks": ["IV crush risk"],
+            "reasons": "Strong bullish setup.",
+            "reject": False,
+            "selected_candidate_id": "c-001",
+            "recommended_size_modifier": 1.0,
+        }
+        _snap = _build_debate_snapshot(_mock_result, "a2_dec_test_001")
+        _required_keys = {"confidence", "key_risks", "reasons", "reject",
+                          "selected_candidate_id", "ran_at", "decision_id"}
+        _missing = _required_keys - _snap.keys()
+        if _missing:
+            _record("E-11  a2_debate_persistence", "FAIL",
+                    f"_build_debate_snapshot missing keys: {sorted(_missing)}")
+            return
+        if _snap["confidence"] != 0.82:
+            _record("E-11  a2_debate_persistence", "FAIL",
+                    f"confidence not preserved: got {_snap['confidence']}")
+            return
+
+        # Part C: debate round-trips through to_dict / from_dict
+        _leg = OptionsLeg(
+            occ_symbol="AAPL260101C00100000",
+            underlying="AAPL",
+            side="buy",
+            qty=1,
+            option_type="call",
+            strike=100.0,
+            expiration="2026-01-01",
+        )
+        _s = OptionsStructure(
+            structure_id="wiring-test-e11",
+            underlying="AAPL",
+            strategy=OptionStrategy.SINGLE_CALL,
+            lifecycle=StructureLifecycle.PROPOSED,
+            legs=[_leg],
+            contracts=1,
+            max_cost_usd=100.0,
+            opened_at="2026-01-01T00:00:00+00:00",
+            catalyst="test",
+            tier=Tier.CORE,
+        )
+        _s.debate = _snap
+        _s.pnl_unrealized = -25.0
+
+        _d = _s.to_dict()
+        if not _d.get("debate", {}).get("confidence"):
+            _record("E-11  a2_debate_persistence", "FAIL",
+                    "debate not present in to_dict() output")
+            return
+        if _d.get("pnl_unrealized") != -25.0:
+            _record("E-11  a2_debate_persistence", "FAIL",
+                    "pnl_unrealized not preserved in to_dict()")
+            return
+
+        _s2 = OptionsStructure.from_dict(_d)
+        if _s2.debate.get("confidence") != 0.82:
+            _record("E-11  a2_debate_persistence", "FAIL",
+                    "debate.confidence not restored by from_dict()")
+            return
+        if _s2.pnl_unrealized != -25.0:
+            _record("E-11  a2_debate_persistence", "FAIL",
+                    "pnl_unrealized not restored by from_dict()")
+            return
+
+        _record("E-11  a2_debate_persistence", "PASS",
+                "debate + pnl_unrealized fields present, snapshot builds correctly, round-trip OK")
+    except Exception:
+        _record("E-11  a2_debate_persistence", "FAIL", traceback.format_exc(limit=3))
+
+
+# ---------------------------------------------------------------------------
+# E-12: earnings_calendar_freshness
+# ---------------------------------------------------------------------------
+def _check_e12_earnings_calendar_freshness() -> None:
+    """Hard FAIL if earnings_calendar.json is missing, >24h old, or has 0 entries."""
+    try:
+        import json as _json
+        from datetime import datetime, timezone
+        _cal = Path(__file__).parent / "data" / "market" / "earnings_calendar.json"
+        if not _cal.exists():
+            _record("E-12  earnings_calendar_freshness", "FAIL",
+                    "earnings_calendar.json missing — signal scorer running without earnings context")
+            return
+        _age_h = (datetime.now(timezone.utc) - datetime.fromtimestamp(
+            _cal.stat().st_mtime, tz=timezone.utc)).total_seconds() / 3600
+        if _age_h > 24:
+            _record("E-12  earnings_calendar_freshness", "FAIL",
+                    f"earnings_calendar.json is {_age_h:.1f}h old (>24h) — "
+                    "signal scorer running without earnings context")
+            return
+        _d = _json.loads(_cal.read_text())
+        _entries = len(_d.get("calendar", [])) if isinstance(_d, dict) else 0
+        if _entries == 0:
+            _record("E-12  earnings_calendar_freshness", "FAIL",
+                    "earnings_calendar.json has 0 entries — "
+                    "signal scorer running without earnings context")
+            return
+        _record("E-12  earnings_calendar_freshness", "PASS",
+                f"earnings_calendar.json {_age_h:.1f}h old, {_entries} entries")
+    except Exception:
+        _record("E-12  earnings_calendar_freshness", "FAIL", traceback.format_exc(limit=3))
+
+
 # ---------------------------------------------------------------------------
 # Cleanup (correction #2: delete by vector_id; correction #5: wiring_test flag)
 # ---------------------------------------------------------------------------
@@ -971,6 +1192,11 @@ def run_wiring_test() -> None:
     try:
         _run_a1_pipeline()
         _run_a2_pipeline()
+        _check_e08_a2_mode_schema()
+        _check_e09_iv_history_coverage()
+        _check_e10_staleness_gate()
+        _check_e11_a2_debate_persistence()
+        _check_e12_earnings_calendar_freshness()
     finally:
         _uninstall_claude_stop_recorder()
         _uninstall_trade_log_intercept()

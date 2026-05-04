@@ -21,6 +21,7 @@ from health_monitor import (
     _check_a2_cycle,
     _check_a2_fill_rate,
     _check_a2_stuck_structures,
+    _check_earnings_calendar,
     _check_equity_drawdown,
     _check_modes,
     _dispatch_alert,
@@ -440,6 +441,82 @@ class TestRunHealthChecks(unittest.TestCase):
             status = get_health_status()
         self.assertFalse(status["all_ok"])
         self.assertEqual(status["checks"][0]["severity"], "CRITICAL")
+
+
+# ---------------------------------------------------------------------------
+# Check 9 — Earnings calendar
+# ---------------------------------------------------------------------------
+
+def _make_calendar_str(n_entries: int = 5, today_entries: int = 1,
+                       date: str = "2026-05-05") -> str:
+    entries = [{"symbol": f"SYM{i}", "earnings_date": date, "timing": "post-market"}
+               for i in range(today_entries)]
+    entries += [{"symbol": f"FUT{i}", "earnings_date": "2026-12-31", "timing": "unknown"}
+                for i in range(n_entries - today_entries)]
+    return json.dumps({"fetched_at": "2026-05-04T08:15:00+00:00", "calendar": entries})
+
+
+def _mock_cal_dir(content: str | None = None, exists: bool = True, age_h: float = 1.0) -> MagicMock:
+    """_DATA_DIR mock for earnings_calendar.json (2-level path chain)."""
+    leaf = MagicMock()
+    leaf.exists.return_value = exists
+    mock_stat = MagicMock()
+    mock_stat.st_mtime = (datetime.now(timezone.utc) - timedelta(hours=age_h)).timestamp()
+    leaf.stat.return_value = mock_stat
+    if content is not None:
+        leaf.read_text.return_value = content
+    mock_dir = MagicMock()
+    mock_dir.__truediv__.return_value.__truediv__.return_value = leaf
+    return mock_dir
+
+
+class TestEarningsCalendar(unittest.TestCase):
+    def test_missing_file_is_critical(self):
+        now = _market_time()
+        with patch("health_monitor._DATA_DIR", _mock_cal_dir(exists=False)):
+            r = _check_earnings_calendar(now)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.severity, "CRITICAL")
+        self.assertIn("missing", r.message)
+
+    def test_fresh_file_with_entries_is_ok(self):
+        now = _market_time()
+        with patch("health_monitor._DATA_DIR", _mock_cal_dir(_make_calendar_str(5, 1), age_h=1.0)):
+            r = _check_earnings_calendar(now)
+        self.assertTrue(r.ok)
+        self.assertEqual(r.severity, "OK")
+
+    def test_stale_during_market_hours_is_critical(self):
+        now = _market_time(hour=11)
+        with patch("health_monitor._DATA_DIR", _mock_cal_dir(_make_calendar_str(5, 1), age_h=8.0)):
+            r = _check_earnings_calendar(now)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.severity, "CRITICAL")
+
+    def test_stale_overnight_is_warning_not_critical(self):
+        now = _outside_time()
+        with patch("health_monitor._DATA_DIR", _mock_cal_dir(_make_calendar_str(5, 0), age_h=20.0)):
+            r = _check_earnings_calendar(now)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.severity, "WARNING")
+
+    def test_zero_entries_is_critical(self):
+        now = _market_time()
+        with patch("health_monitor._DATA_DIR",
+                   _mock_cal_dir(json.dumps({"calendar": []}), age_h=1.0)):
+            r = _check_earnings_calendar(now)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.severity, "CRITICAL")
+
+    def test_details_populated(self):
+        now = _market_time()
+        with patch("health_monitor._DATA_DIR", _mock_cal_dir(_make_calendar_str(10, 3), age_h=2.0)):
+            r = _check_earnings_calendar(now)
+        self.assertIn("age_h", r.details)
+        self.assertIn("today_entries", r.details)
+        self.assertIn("total_entries", r.details)
+        self.assertEqual(r.details["today_entries"], 3)
+        self.assertEqual(r.details["total_entries"], 10)
 
 
 if __name__ == "__main__":

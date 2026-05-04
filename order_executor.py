@@ -276,12 +276,18 @@ def validate_action(action: dict, account, positions: list, market_status: str,
     _check(equity >= PDT_FLOOR,
            f"equity ${equity:,.0f} below PDT floor ${PDT_FLOOR:,.0f}")
 
-    if act in ("close", "sell"):
+    if act in ("close", "sell", "cover"):
         return
 
     if act in ("hold", "monitor", "watch", "observe"):
         log.debug("HOLD %s — no order submitted",
                   action.get("symbol", "?"))
+        return
+
+    if act == "short_sell":
+        qty = action.get("qty")
+        _check(qty and float(qty) > 0, "qty must be positive for short_sell")
+        _check(action.get("stop_loss") is not None, "stop_loss required for short_sell")
         return
 
     if act != "buy":
@@ -726,6 +732,48 @@ def _submit_sell(action: dict) -> tuple:
     return str(order.id), fp, fq, ft
 
 
+def _submit_short(action: dict) -> tuple:
+    """Short entry — market sell borrowed shares. Returns (order_id, fill_price, filled_qty, fill_timestamp)."""
+    symbol    = action["symbol"]
+    stop_loss = float(action["stop_loss"])
+    qty       = int(float(action["qty"]))
+
+    req = MarketOrderRequest(
+        symbol=symbol, qty=qty, side=OrderSide.SELL,
+        time_in_force=TimeInForce.DAY,
+    )
+    order = _get_alpaca().submit_order(req)
+    log.info("[EXECUTOR] %s: short entry — qty=%d", symbol, qty)
+    fp, fq, ft = _extract_fill(order)
+
+    if fp and fq and int(float(fq)) > 0:
+        try:
+            stop_req = StopOrderRequest(
+                symbol=symbol, qty=int(float(fq)), side=OrderSide.BUY,
+                time_in_force=TimeInForce.GTC, stop_price=round(stop_loss, 2),
+            )
+            stop_ord = _get_alpaca().submit_order(stop_req)
+            log.info(
+                "[EXECUTOR] %s: short protective stop placed  stop=$%.2f  order_id=%s",
+                symbol, stop_loss, stop_ord.id,
+            )
+        except Exception as exc:
+            log.error("[EXECUTOR] %s: short protective stop failed: %s", symbol, exc)
+
+    return str(order.id), fp, fq, ft
+
+
+def _submit_cover(action: dict) -> tuple:
+    """Cover short — market buy to close. Returns (order_id, fill_price, filled_qty, fill_timestamp)."""
+    req = MarketOrderRequest(
+        symbol=action["symbol"], qty=int(float(action["qty"])),
+        side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
+    )
+    order = _get_alpaca().submit_order(req)
+    fp, fq, ft = _extract_fill(order)
+    return str(order.id), fp, fq, ft
+
+
 def _replace_stop(symbol: str, qty: int, stop_price: float) -> None:
     """Re-place a GTC stop order after a sell. Non-fatal."""
     try:
@@ -1113,7 +1161,7 @@ def execute_all(
     # Exits before entries: prevent submitting bracket buys while a concurrent
     # market sell is pending, which causes Alpaca paper trading to silently
     # cancel the bracket primary order (observed May 2026).
-    _EXIT_ACTS = {"sell", "close"}
+    _EXIT_ACTS = {"sell", "close", "cover"}
     actions = sorted(
         actions,
         key=lambda a: (0 if a.get("action", "").lower() in _EXIT_ACTS else 1),
@@ -1128,8 +1176,8 @@ def execute_all(
         confidence = action.get("confidence", "")
         tier       = action.get("tier", "core")
 
-        # T-006: block BUY orders when session tier is unresolved
-        if act == "buy" and session_tier == "unknown":
+        # T-006: block entry orders when session tier is unresolved
+        if act in ("buy", "short_sell") and session_tier == "unknown":
             log.warning("[EXECUTOR] T-006 %s: session=unknown — BUY blocked until session is identified", symbol)
             _reason = "session=unknown: BUY order blocked (session not yet classified)"
             results.append(ExecutionResult(symbol=symbol, action=act, status="rejected", reason=_reason))
@@ -1142,7 +1190,7 @@ def execute_all(
             continue
 
         # T-010: suppress entry orders after 10 consecutive rejections for a symbol
-        if act == "buy" and _consecutive_rejections.get(symbol, 0) >= 10:
+        if act in ("buy", "short_sell") and _consecutive_rejections.get(symbol, 0) >= 10:
             log.warning("[EXECUTOR] T-010 %s suppressed: %d consecutive rejections — skipping new entry",
                         symbol, _consecutive_rejections[symbol])
             _supp_reason = f"suppressed: {_consecutive_rejections[symbol]} consecutive rejections"
@@ -1170,7 +1218,7 @@ def execute_all(
                 "session": session_tier,
             })
             # T-010: track consecutive rejections for entry suppression
-            if act == "buy":
+            if act in ("buy", "short_sell"):
                 _consecutive_rejections[symbol] = _consecutive_rejections.get(symbol, 0) + 1
                 if _consecutive_rejections[symbol] == 10:
                     log.warning("[EXECUTOR] T-010 %s: hit 10 consecutive rejections — future entries suppressed",
@@ -1212,6 +1260,10 @@ def execute_all(
                 oid, _fp, _fq, _ft = _sell_with_oca_retry(action, positions)
                 if oid:
                     _pending_sell_oids.append(oid)
+            elif act == "short_sell":
+                oid, _fp, _fq, _ft = _submit_short(action)
+            elif act == "cover":
+                oid, _fp, _fq, _ft = _submit_cover(action)
             elif act in ("buy_option", "sell_option_spread",
                          "buy_straddle", "close_option"):
                 oid = _submit_options(action)

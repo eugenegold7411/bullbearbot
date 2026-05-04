@@ -394,11 +394,14 @@ def generate_exit_plan(
     current_price: float,
     strategy_config: dict,
     conviction: str = "medium",
+    is_short: bool = False,
 ) -> dict:
     """
     Compute stop_loss and take_profit for a position based on current price.
 
-    Trails the stop up when in profit (uses current_price as base, not entry).
+    For longs: stop below entry, take_profit above.
+    For shorts (is_short=True): stop (buy-stop) above entry, take_profit (buy limit) below.
+    Trails when in profit using current_price as base.
     conviction: "high" = wider stop (more room), "medium" = standard, "low" = tighter.
     """
     params   = strategy_config.get("parameters", {})
@@ -418,18 +421,31 @@ def generate_exit_plan(
     entry_price  = float(position.avg_entry_price)
     unrealized   = float(position.unrealized_pl)
 
-    # Trail: use current price as base when in profit
-    if unrealized > 0 and current_price > entry_price:
-        stop_base = current_price
-        rationale = f"trailing stop {stop_pct:.1%} below current ${current_price:.2f}"
+    if is_short:
+        in_profit = unrealized > 0 and current_price < entry_price
+        stop_base = current_price if in_profit else entry_price
+        rationale = (
+            f"trailing buy-stop {stop_pct:.1%} above current ${current_price:.2f}"
+            if in_profit else
+            f"standard buy-stop {stop_pct:.1%} above entry ${entry_price:.2f}"
+        )
+        stop_loss   = round(stop_base * (1 + stop_pct), 2)
+        stop_dist   = stop_loss - current_price
+        take_profit = round(current_price - stop_dist * take_profit_multiple, 2)
+        target_pct  = round((current_price - take_profit) / current_price * 100, 2)
     else:
-        stop_base = entry_price
-        rationale = f"standard stop {stop_pct:.1%} below entry ${entry_price:.2f}"
+        # Trail: use current price as base when in profit
+        if unrealized > 0 and current_price > entry_price:
+            stop_base = current_price
+            rationale = f"trailing stop {stop_pct:.1%} below current ${current_price:.2f}"
+        else:
+            stop_base = entry_price
+            rationale = f"standard stop {stop_pct:.1%} below entry ${entry_price:.2f}"
 
-    stop_loss   = round(stop_base * (1 - stop_pct), 2)
-    stop_dist   = current_price - stop_loss
-    take_profit = round(current_price + stop_dist * take_profit_multiple, 2)
-    target_pct  = round((take_profit - current_price) / current_price * 100, 2)
+        stop_loss   = round(stop_base * (1 - stop_pct), 2)
+        stop_dist   = current_price - stop_loss
+        take_profit = round(current_price + stop_dist * take_profit_multiple, 2)
+        target_pct  = round((take_profit - current_price) / current_price * 100, 2)
 
     return {
         "stop_loss":   stop_loss,
@@ -461,8 +477,8 @@ def refresh_exits_for_position(
     qty    = _position_qty(position)
     price  = float(position.current_price)
 
-    if qty <= 0:
-        log.warning("[EXIT_MGR] %s: qty=%s — skipping (zero qty, check position)", sym, qty)
+    if qty == 0:
+        log.warning("[EXIT_MGR] %s: qty=0 — skipping (zero qty, check position)", sym)
         return False
 
     # Acquire per-ticker lock (non-blocking). If a concurrent call is already
@@ -501,6 +517,8 @@ def _refresh_exits_locked(
         TakeProfitRequest,
     )
 
+    is_short = float(position.qty) < 0
+
     ei = exit_info if exit_info is not None else (
         get_active_exits([position], alpaca_client).get(sym, {})
     )
@@ -511,10 +529,16 @@ def _refresh_exits_locked(
     is_unprotected = ei_status in ("unprotected", "unknown") or is_tp_only
     is_tp_missing  = ei_status == "partial"   # stop live, TP voided (BUG-009b)
     stale_threshold = em_cfg["refresh_if_stop_stale_pct"]
+    # For longs: stale when stop is far below current price.
+    # For shorts: stale when buy-stop is far above current price.
     is_stale = (
         stop_price is not None
         and price > 0
-        and (price - stop_price) / price > stale_threshold
+        and (
+            (stop_price - price) / price > stale_threshold
+            if is_short else
+            (price - stop_price) / price > stale_threshold
+        )
     )
 
     if not (is_unprotected or is_stale or is_tp_missing):
@@ -523,7 +547,8 @@ def _refresh_exits_locked(
     # Fast path for BUG-009b: stop is healthy, only the TP is missing.
     # Standalone orders cannot share the same shares — cancel the existing stop
     # and resubmit as an OCO pair (stop + TP in the same OCA group).
-    if is_tp_missing and not is_unprotected and not is_stale:
+    # Shorts never have is_tp_missing status (get_active_exits does not track TP for shorts).
+    if is_tp_missing and not is_short and not is_unprotected and not is_stale:
         plan         = generate_exit_plan(position, price, strategy_config, conviction)
         stop_oid     = ei.get("stop_order_id")
         stop_at      = ei.get("stop_price")
@@ -615,7 +640,8 @@ def _refresh_exits_locked(
         except Exception as exc:
             log.debug("[EXIT_MGR] %s: cancel stale stop failed: %s", sym, exc)
 
-    plan = generate_exit_plan(position, price, strategy_config, conviction)
+    plan = generate_exit_plan(position, price, strategy_config, conviction, is_short=is_short)
+    _protective_side = OrderSide.BUY if is_short else OrderSide.SELL
 
     _last_stop_exc = None
     for _attempt in range(1, 4):
@@ -623,11 +649,11 @@ def _refresh_exits_locked(
         try:
             if _is_crypto(sym):
                 # Alpaca does not support StopOrderRequest for crypto — use a limit
-                # sell at the stop price instead (executes if price falls to that level).
+                # order at the stop price instead.
                 stop_req = LimitOrderRequest(
                     symbol=sym,
                     qty=qty,
-                    side=OrderSide.SELL,
+                    side=_protective_side,
                     time_in_force=TimeInForce.GTC,
                     limit_price=plan["stop_loss"],
                 )
@@ -640,7 +666,7 @@ def _refresh_exits_locked(
                 stop_req = StopOrderRequest(
                     symbol=sym,
                     qty=qty,
-                    side=OrderSide.SELL,
+                    side=_protective_side,
                     time_in_force=TimeInForce.GTC,
                     stop_price=plan["stop_loss"],
                 )
@@ -692,7 +718,7 @@ def _refresh_exits_locked(
             tp_req = LimitOrderRequest(
                 symbol=sym,
                 qty=qty,
-                side=OrderSide.SELL,
+                side=_protective_side,
                 time_in_force=TimeInForce.GTC,
                 limit_price=plan["take_profit"],
             )
@@ -794,9 +820,14 @@ def maybe_trail_stop(
     entry_price = float(position.avg_entry_price)
     current     = float(position.current_price)
     unreal      = float(position.unrealized_pl)
+    is_short    = float(position.qty) < 0
 
-    if unreal <= 0 or current <= entry_price:
-        return False
+    if is_short:
+        if unreal <= 0 or current >= entry_price:
+            return False
+    else:
+        if unreal <= 0 or current <= entry_price:
+            return False
 
     ei         = exit_info if exit_info is not None else (
         get_active_exits([position], alpaca_client).get(sym, {})
@@ -808,6 +839,8 @@ def maybe_trail_stop(
         return False
 
     trail_tiers = em_cfg.get("trail_tiers", [])
+    if is_short:
+        trail_tiers = []  # graduated tiers are long-specific gain_pct checks; use legacy path for shorts
     if trail_tiers:
         result = _graduated_trail_stop(
             entry_price=entry_price,
@@ -833,16 +866,24 @@ def maybe_trail_stop(
             )
 
     if not trail_tiers:
-        # Legacy path — preserved exactly
-        stop_dist = entry_price - stop_price
-        if stop_dist <= 0:
-            return False
-        profit_r = (current - entry_price) / stop_dist
+        plus_pct  = em_cfg.get("trail_to_breakeven_plus_pct", 0.005)
         trigger_r = float(em_cfg.get("trail_trigger_r", 1.0))
-        if profit_r < trigger_r:
-            return False
-        plus_pct = em_cfg.get("trail_to_breakeven_plus_pct", 0.005)
-        new_stop = round(entry_price * (1 + plus_pct), 2)
+        if is_short:
+            stop_dist = stop_price - entry_price  # buy-stop is ABOVE entry for short
+            if stop_dist <= 0:
+                return False
+            profit_r = (entry_price - current) / stop_dist
+            if profit_r < trigger_r:
+                return False
+            new_stop = round(entry_price * (1 - plus_pct), 2)  # lower the buy-stop
+        else:
+            stop_dist = entry_price - stop_price
+            if stop_dist <= 0:
+                return False
+            profit_r = (current - entry_price) / stop_dist
+            if profit_r < trigger_r:
+                return False
+            new_stop = round(entry_price * (1 + plus_pct), 2)
 
     # Earnings-aware stop floor: when earnings are imminent, replace the tight
     # trail target with a wider IV-based floor so the position isn't stopped out
@@ -911,6 +952,7 @@ def maybe_trail_stop(
         _time.sleep(1.5)
 
         # Step 2: submit fresh GTC stop with 3-attempt retry
+        _trail_side = OrderSide.BUY if is_short else OrderSide.SELL
         _last_exc = None
         for _attempt in range(1, 4):
             try:
@@ -918,7 +960,7 @@ def maybe_trail_stop(
                     _stop_req = LimitOrderRequest(
                         symbol=sym,
                         qty=_position_qty(position),
-                        side=OrderSide.SELL,
+                        side=_trail_side,
                         time_in_force=TimeInForce.GTC,
                         limit_price=new_stop,
                     )
@@ -926,7 +968,7 @@ def maybe_trail_stop(
                     _stop_req = StopOrderRequest(
                         symbol=sym,
                         qty=_position_qty(position),
-                        side=OrderSide.SELL,
+                        side=_trail_side,
                         time_in_force=TimeInForce.GTC,
                         stop_price=new_stop,
                     )
@@ -1049,11 +1091,6 @@ def run_exit_manager(
                     continue
                 except Exception as exc:
                     log.error("[EXIT_MGR] %s: SW-TP market close failed: %s", sym, exc)
-
-        if is_short:
-            log.info("[EXIT_MGR] %s: SHORT position (qty=%.0f) — auto-management skipped",
-                     sym, float(pos.qty))
-            continue
 
         # Refresh if UNPROTECTED / tp_only / stale
         try:

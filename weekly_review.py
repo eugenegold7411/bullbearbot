@@ -264,7 +264,7 @@ def _load_global_indices_history(days: int = 7) -> str:
         return "  (no global indices archive found — feature deployed this week)"
 
     lines = [f"  Global indices snapshots found: {len(snapshots)} days"]
-    for snap in snapshots[-7:]:
+    for snap in sorted(snapshots, key=lambda s: s.get("fetched_at", ""))[-7:]:
         fetched = snap.get("fetched_at", "?")[:10]
         indices = snap.get("indices", {})
         # Show key movers: ES=F (US Futures), ^N225 (Asia), ^GDAXI (Europe)

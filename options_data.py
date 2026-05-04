@@ -382,6 +382,58 @@ def _extract_atm_iv(chain: dict, spot: float) -> float | None:
         return None
 
 
+def compute_iv_skew(symbol: str, chain: dict | None = None) -> float | None:
+    """
+    Compute put/call IV skew ratio at ATM for the nearest valid expiration.
+
+    Returns put_iv / call_iv. >1.0 = puts more expensive (bearish skew).
+    <1.0 = calls more expensive (bullish skew, unusual). None if unavailable.
+    """
+    try:
+        if chain is None:
+            chain = fetch_options_chain(symbol)
+        if not chain or not chain.get("expirations") or not chain.get("current_price"):
+            return None
+
+        spot = float(chain["current_price"])
+        today_dt = datetime.now(ZoneInfo("America/New_York")).date()
+
+        chosen_exp: str | None = None
+        for exp_key in sorted(chain["expirations"].keys()):
+            try:
+                dte = (datetime.strptime(exp_key, "%Y-%m-%d").date() - today_dt).days
+            except ValueError:
+                continue
+            if dte < 2:
+                continue
+            chosen_exp = exp_key
+            if dte >= 7:
+                break
+
+        if chosen_exp is None:
+            return None
+
+        exp_data = chain["expirations"][chosen_exp]
+
+        def _atm_iv(contracts: list) -> float | None:
+            if not contracts:
+                return None
+            closest = min(contracts, key=lambda c: abs(float(c.get("strike", 0)) - spot))
+            iv = closest.get("impliedVolatility")
+            return float(iv) if iv and float(iv) > 0.01 else None
+
+        call_iv = _atm_iv(exp_data.get("calls", []))
+        put_iv  = _atm_iv(exp_data.get("puts",  []))
+
+        if call_iv and put_iv and call_iv > 0:
+            return round(put_iv / call_iv, 4)
+        return None
+
+    except Exception as exc:
+        log.debug("[OPTIONS_DATA] compute_iv_skew %s failed: %s", symbol, exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Batch refresh
 # ---------------------------------------------------------------------------

@@ -137,31 +137,31 @@ class TestRule5DirectionAware(unittest.TestCase):
 class TestRule6DirectionAware(unittest.TestCase):
 
     def test_BR04_rule6_bullish_call_spread_only(self):
-        """BR-04: RULE6 bullish → debit_call_spread only."""
+        """BR-04: RULE6 bullish → debit_call_spread only (score=60 above caution gate)."""
         pack = _make_pack(iv_environment="neutral", iv_rank=40.0, a1_direction="bullish",
-                          a1_signal_score=30.0)
+                          a1_signal_score=60.0)
         result = _route(pack)
         self.assertEqual(result, ["debit_call_spread"])
 
     def test_BR04_rule6_bullish_no_put_spread(self):
         """BR-04: RULE6 bullish must not include debit_put_spread."""
         pack = _make_pack(iv_environment="neutral", iv_rank=40.0, a1_direction="bullish",
-                          a1_signal_score=30.0)
+                          a1_signal_score=60.0)
         result = _route(pack)
         self.assertNotIn("debit_put_spread", result)
         self.assertNotIn("long_put", result)
 
     def test_BR05_rule6_bearish_put_spread_only(self):
-        """BR-05: RULE6 bearish → debit_put_spread only."""
+        """BR-05: RULE6 bearish → debit_put_spread only (score=60 above caution gate)."""
         pack = _make_pack(iv_environment="neutral", iv_rank=40.0, a1_direction="bearish",
-                          a1_signal_score=30.0)
+                          a1_signal_score=60.0)
         result = _route(pack)
         self.assertEqual(result, ["debit_put_spread"])
 
     def test_BR05_rule6_bearish_no_call_spread(self):
         """BR-05: RULE6 bearish must not include debit_call_spread."""
         pack = _make_pack(iv_environment="neutral", iv_rank=40.0, a1_direction="bearish",
-                          a1_signal_score=30.0)
+                          a1_signal_score=60.0)
         result = _route(pack)
         self.assertNotIn("debit_call_spread", result)
         self.assertNotIn("long_call", result)
@@ -248,7 +248,7 @@ class TestBR08Regressions(unittest.TestCase):
     def test_rule6_bearish_traces_meta(self):
         """META neutral IV + bearish → debit_put_spread only."""
         pack = _make_pack(iv_environment="neutral", iv_rank=40.0, a1_direction="bearish",
-                          symbol="META", a1_signal_score=30.0)
+                          symbol="META", a1_signal_score=60.0)
         result = _route(pack)
         self.assertEqual(result, ["debit_put_spread"])
 

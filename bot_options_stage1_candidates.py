@@ -352,11 +352,22 @@ def _build_a2_feature_pack(
         except Exception as _fi_exc:
             log.debug("[OPTS] A2FeaturePack: %s flow_imbalance calc failed: %s", symbol, _fi_exc)
 
+    # Compute IV skew (put IV / call IV at ATM) — bearish skew >1.0
+    iv_skew_val: float | None = None
+    if chain and chain.get("expirations") and chain.get("current_price"):
+        try:
+            import options_data  # noqa: PLC0415
+            iv_skew_val = options_data.compute_iv_skew(symbol, chain)
+        except Exception as _sk_exc:
+            log.debug("[OPTS] A2FeaturePack: %s skew calc failed: %s", symbol, _sk_exc)
+
     data_sources = ["signal_scores", "iv_history"]
     if chain:
         data_sources.append("options_chain")
     if flow_imbalance_30m is not None:
         data_sources.append("flow_signals")
+    if iv_skew_val is not None:
+        data_sources.append("iv_skew")
 
     pack = A2FeaturePack(
         symbol               = symbol,
@@ -368,7 +379,7 @@ def _build_a2_feature_pack(
         iv_rank              = float(iv_rank),
         iv_environment       = str(iv.get("iv_environment", "unknown")),
         term_structure_slope = None,
-        skew                 = None,
+        skew                 = iv_skew_val,
         expected_move_pct    = expected_move_pct,
         flow_imbalance_30m   = flow_imbalance_30m,
         sweep_count          = None,
@@ -381,9 +392,12 @@ def _build_a2_feature_pack(
         built_at             = datetime.now(timezone.utc).isoformat(),
         data_sources         = data_sources,
     )
-    log.debug("[OPTS] A2FeaturePack built for %s: iv_rank=%.1f env=%s dir=%s earn=%s liq=%.2f",
-              symbol, pack.iv_rank, pack.iv_environment, pack.a1_direction,
-              pack.earnings_days_away, pack.liquidity_score)
+    log.debug(
+        "[OPTS] A2FeaturePack built for %s: iv_rank=%.1f env=%s dir=%s earn=%s liq=%.2f skew=%s",
+        symbol, pack.iv_rank, pack.iv_environment, pack.a1_direction,
+        pack.earnings_days_away, pack.liquidity_score,
+        f"{pack.skew:.3f}" if pack.skew is not None else "N/A",
+    )
     return pack
 
 
@@ -575,7 +589,7 @@ def run_candidate_stage(
 
         # Deterministic strategy router — gates debate before AI sees this candidate
         if pack is not None:
-            allowed = _route_strategy(pack, config=config)
+            allowed = _route_strategy(pack, config=config, options_regime=options_regime)
             if not allowed:
                 log.debug("[OPTS] %s: routing gate blocked — no allowed structures", sym)
                 # Build candidate set (with empty surviving) to track the routing decision

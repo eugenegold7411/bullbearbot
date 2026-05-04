@@ -582,6 +582,10 @@ def should_close_structure(
         Only fires when account2.iv_monitoring.auto_close_on_crush is True.
     5.  Loss ≥ 50% of max_risk → close (stop_loss_hit)
     6.  Gain ≥ 80% of max_profit → close (target_profit_hit)
+    5c. pnl_unrealized-based stop/target (fires when current_prices unavailable
+        or net_debit is zero — closes both gaps in Rules 5 & 6).
+        Config: account2.max_loss_exit_pct (default 0.50),
+                account2.profit_target_pct (default 0.75).
 
     Returns (False, "") if none apply.
     """
@@ -593,9 +597,12 @@ def should_close_structure(
     if not structure.is_open():
         return False, ""
 
-    # Rule 3: manual close list
-    force_list = config.get("force_close_structures", [])
-    if structure.structure_id in force_list or structure.underlying in force_list:
+    # Rule 3: manual close list (check both top-level and account2 sub-dict)
+    force_list = list(config.get("force_close_structures", []))
+    force_list.extend(config.get("account2", {}).get("force_close_structures", []))
+    if (structure.structure_id in force_list
+            or structure.underlying in force_list
+            or any(structure.structure_id.startswith(fid) for fid in force_list if fid)):
         return True, "manual_close"
 
     # Rule 4: DTE check
@@ -656,6 +663,21 @@ def should_close_structure(
 
             if max_profit and current_pnl >= (max_profit * 0.80):
                 return True, "target_profit_hit"
+
+    # Rule 5c: pnl_unrealized-based stop/target — fires when current_prices unavailable
+    # (reconciliation always passes {}) or when net_debit is zero (equal-fill spreads).
+    _max_loss_pct = float(config.get("account2", {}).get("max_loss_exit_pct", 0.50))
+    _profit_tgt   = float(config.get("account2", {}).get("profit_target_pct", 0.75))
+    if structure.pnl_unrealized is not None:
+        _buy_cost = sum(
+            float(leg.filled_price) * structure.contracts * 100
+            for leg in structure.legs
+            if leg.side == "buy" and leg.filled_price is not None
+        )
+        if _buy_cost > 0 and structure.pnl_unrealized <= -(_buy_cost * _max_loss_pct):
+            return True, "max_loss_exit"
+        if max_profit and structure.pnl_unrealized >= (max_profit * _profit_tgt):
+            return True, "profit_target_pct_hit"
 
     return False, ""
 

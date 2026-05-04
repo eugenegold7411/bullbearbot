@@ -44,6 +44,22 @@ def _get_strategy_map() -> dict:
     return _STRATEGY_FROM_STRUCTURE
 
 
+# ── Debate snapshot builder ───────────────────────────────────────────────────
+
+def _build_debate_snapshot(debate_result: dict, decision_id: str) -> dict:
+    """Build the debate dict persisted to OptionsStructure.debate."""
+    return {
+        "confidence":                debate_result.get("confidence"),
+        "key_risks":                 debate_result.get("key_risks", []),
+        "reasons":                   debate_result.get("reasons", ""),
+        "reject":                    debate_result.get("reject", False),
+        "selected_candidate_id":     debate_result.get("selected_candidate_id"),
+        "recommended_size_modifier": debate_result.get("recommended_size_modifier", 1.0),
+        "ran_at":                    datetime.now(ET).isoformat(),
+        "decision_id":               decision_id,
+    }
+
+
 # ── Duplicate-submission guard (T2-1) ─────────────────────────────────────────
 
 def _is_duplicate_submission(symbol: str, legs: list) -> bool:
@@ -269,6 +285,7 @@ def submit_selected_candidate(
                 decision_record.no_trade_reason = "duplicate_submission_blocked"
                 return "no_trade"
 
+            structure.debate = _build_debate_snapshot(debate_result, decision_record.decision_id)
             options_state.save_structure(structure)
             _effective_obs = obs_mode or (not pf_allow_live_orders)
             if not pf_allow_live_orders:
@@ -353,6 +370,9 @@ def submit_selected_candidate(
             })
             continue
 
+        structure.debate = _build_debate_snapshot(
+            decision_record.debate_parsed or {}, decision_record.decision_id
+        )
         options_state.save_structure(structure)
         _effective_obs = obs_mode or (not pf_allow_live_orders)
         if not pf_allow_live_orders:
@@ -571,6 +591,26 @@ def _fetch_close_check_prices(open_structs: list) -> dict:
     return prices
 
 
+def _compute_pnl_unrealized(struct, current_prices: dict) -> float | None:
+    """
+    Compute unrealized PnL for a structure from current mid prices vs fill prices.
+    Returns None if any leg is missing fill or current price data.
+    """
+    try:
+        total = 0.0
+        for leg in struct.legs:
+            entry = leg.filled_price
+            current = current_prices.get(leg.occ_symbol)
+            if entry is None or current is None:
+                return None
+            # Buy legs: profit when price rises; sell legs: profit when price falls.
+            sign = 1.0 if leg.side == "buy" else -1.0
+            total += sign * (current - entry) * leg.qty * struct.contracts * 100
+        return round(total, 2)
+    except Exception:
+        return None
+
+
 def close_check_loop(alpaca_client) -> None:
     """
     Check all open structures for close or roll conditions.
@@ -578,6 +618,7 @@ def close_check_loop(alpaca_client) -> None:
     """
     import options_executor  # noqa: PLC0415
     import options_state  # noqa: PLC0415
+    from schemas import StructureLifecycle  # noqa: PLC0415
 
     try:
         _strategy_cfg = _load_strategy_config()
@@ -586,9 +627,57 @@ def close_check_loop(alpaca_client) -> None:
         _all_structs = options_state.load_structures()
         _sync_submitted_lifecycles(_all_structs, alpaca_client)
         _update_fill_prices(_all_structs, alpaca_client)
+
+        # Fix 3: detect positions gone from Alpaca (manually closed / expired).
+        # Fetch all A2 positions once and check each open struct's OCC symbols.
+        _alpaca_syms: set[str] | None = None
+        try:
+            _alpaca_syms = {str(p.symbol) for p in alpaca_client.get_all_positions()}
+        except Exception as _pe:
+            log.debug("[CLOSE_CHECK] position fetch failed (non-fatal): %s", _pe)
+
         if open_structs:
+            _now_utc = datetime.now(ET)
             _current_prices = _fetch_close_check_prices(open_structs)
-            for struct in open_structs:
+
+            for struct in list(open_structs):
+                # Fix 3: position-gone guard (skip structures opened < 10 min ago).
+                if _alpaca_syms is not None:
+                    try:
+                        _age_min = (
+                            _now_utc
+                            - datetime.fromisoformat(struct.opened_at.replace("Z", "+00:00"))
+                              .astimezone(ET)
+                        ).total_seconds() / 60
+                    except Exception:
+                        _age_min = 9999.0
+                    _leg_occs = {leg.occ_symbol for leg in struct.legs if leg.occ_symbol}
+                    if _leg_occs and _age_min > 10 and not any(
+                        occ in _alpaca_syms for occ in _leg_occs
+                    ):
+                        log.info(
+                            "[CLOSE_CHECK] %s (%s): no Alpaca position found — lifecycle→closed",
+                            struct.underlying, struct.structure_id,
+                        )
+                        struct.lifecycle = StructureLifecycle.CLOSED
+                        struct.closed_at = datetime.now(ET).isoformat()
+                        struct.close_reason_code = "position_not_in_alpaca"
+                        struct.close_reason_detail = (
+                            f"auto-closed: position absent from Alpaca at "
+                            f"{datetime.now(ET).isoformat()}"
+                        )
+                        struct.add_audit(
+                            "auto-closed: no matching Alpaca position found in close_check_loop"
+                        )
+                        options_state.save_structure(struct)
+                        continue
+
+                # Fix 2: update pnl_unrealized snapshot.
+                _pnl = _compute_pnl_unrealized(struct, _current_prices)
+                if _pnl is not None and struct.pnl_unrealized != _pnl:
+                    struct.pnl_unrealized = _pnl
+                    options_state.save_structure(struct)
+
                 should_close, close_reason = options_executor.should_close_structure(
                     struct, current_prices=_current_prices, config=_strategy_cfg,
                     current_time=None,

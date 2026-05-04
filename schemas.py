@@ -704,6 +704,10 @@ class OptionsStructure:
     rolled_to_structure_id:  Optional[str]  = None   # set when new structure is linked
     initiated_by:            Optional[str]  = None   # "auto_rule" | method name
     last_cancelled_at:       Optional[str]  = None   # ISO-8601 UTC; set by auto-cancel
+    # Debate persistence (populated at structure creation from A2DecisionRecord)
+    debate:          dict           = field(default_factory=dict)
+    # PnL snapshot (updated each close_check_loop cycle)
+    pnl_unrealized:  Optional[float] = None
 
     @property
     def symbol(self) -> str:
@@ -845,6 +849,8 @@ class OptionsStructure:
             rolled_to_structure_id=d.get("rolled_to_structure_id"),
             initiated_by=d.get("initiated_by"),
             last_cancelled_at=d.get("last_cancelled_at"),
+            debate=d.get("debate", {}),
+            pnl_unrealized=_maybe_float(d.get("pnl_unrealized")),
         )
 
 

@@ -588,6 +588,8 @@ def _submit_buy(action: dict) -> tuple:
             in ("stop", "stop_limit", "trailing_stop")
             for o in _open_orders
         )
+        _stop_placed = False
+        _stop_ord    = None
         if not _stop_active:
             if not fp or not fq or int(float(fq)) == 0:
                 log.error(
@@ -644,6 +646,8 @@ def _submit_buy(action: dict) -> tuple:
         # BUG-009b: verify the TP leg is also live — Alpaca voids it on the
         # same OCA collision that voids the stop.  _open_orders is a pre-fallback
         # snapshot; if no limit sell was present then, none exists now.
+        # Fix: cancel the current stop and resubmit as OCO (stop + TP share one
+        # OCA group, so Alpaca allows both on the same shares).
         if fp and fq and int(float(fq)) > 0:
             _tp_active = any(
                 o.side == OrderSide.SELL
@@ -651,65 +655,57 @@ def _submit_buy(action: dict) -> tuple:
                 for o in _open_orders
             )
             if not _tp_active:
-                log.warning(
-                    "[EXECUTOR] %s: bracket TP leg missing after fill — attempting standalone TP"
-                    " qty=%d target=$%.2f",
-                    symbol, qty, take_profit,
-                )
-                _tp_placed = False
-                _last_tp_exc = None
-                for _attempt in range(1, 4):
-                    try:
-                        _tp_req = LimitOrderRequest(
-                            symbol=symbol, qty=qty, side=OrderSide.SELL,
-                            time_in_force=TimeInForce.GTC, limit_price=round(take_profit, 2),
-                        )
-                        _tp_ord = _get_alpaca().submit_order(_tp_req)
-                        log.info(
-                            "[EXECUTOR] %s: standalone TP placed attempt %d/3"
-                            " qty=%d target=$%.2f  order_id=%s",
-                            symbol, _attempt, qty, take_profit, _tp_ord.id,
-                        )
-                        log_trade({
-                            "event":        "exit_tp_fallback",
-                            "symbol":       symbol,
-                            "target_price": round(take_profit, 2),
-                            "order_id":     str(_tp_ord.id),
-                        })
-                        _tp_placed = True
-                        break
-                    except Exception as _exc:
-                        _last_tp_exc = _exc
-                        if "40310000" in str(_exc):
-                            # Alpaca constraint: standalone stop holds all shares,
-                            # blocking a second sell order.  Only bracket OCA groups
-                            # can hold stop + TP simultaneously.  Do not retry.
-                            log.warning(
-                                "[EXECUTOR] %s: standalone TP blocked by stop order"
-                                " (Alpaca 40310000 — stop holds shares, TP unplaceable"
-                                " as standalone). Stop is live; trail stop manages upside exit.",
-                                symbol,
-                            )
-                        elif _attempt < 3:
-                            log.warning(
-                                "[EXECUTOR] %s: standalone TP attempt %d/3 failed — retrying: %s",
-                                symbol, _attempt, _exc,
-                            )
-                            time.sleep(3)
-                            continue
-                        else:
-                            log.error(
-                                "[EXECUTOR] %s: standalone TP failed after 3 retries"
-                                " qty=%d target=$%.2f err=%s",
-                                symbol, qty, take_profit, _exc,
-                            )
-                        break
-                if not _tp_placed and _last_tp_exc and "40310000" not in str(_last_tp_exc):
-                    log.error(
-                        "[EXECUTOR] %s: standalone TP placement failed"
-                        " qty=%d target=$%.2f err=%s",
-                        symbol, qty, take_profit, _last_tp_exc,
+                # Determine which stop order to cancel: the just-placed standalone
+                # stop (if the bracket stop leg was missing) or the surviving bracket
+                # stop (if only the TP leg was voided).
+                if _stop_placed:
+                    _eff_stop_id    = str(_stop_ord.id)
+                    _eff_stop_price = stop_loss
+                else:
+                    _s = next(
+                        (o for o in _open_orders
+                         if str(getattr(o, "side", "")).split(".")[-1].lower() == "sell"
+                         and str(getattr(o, "order_type", "")).split(".")[-1].lower()
+                         in ("stop", "stop_limit")),
+                        None,
                     )
+                    _eff_stop_id    = str(_s.id) if _s else None
+                    _eff_stop_price = float(_s.stop_price) if (_s and _s.stop_price) else stop_loss
+
+                log.warning(
+                    "[EXECUTOR] %s: bracket TP leg missing — replacing stop with OCO"
+                    " qty=%d  stop=$%.2f  TP=$%.2f",
+                    symbol, qty, _eff_stop_price, take_profit,
+                )
+                try:
+                    if _eff_stop_id:
+                        _get_alpaca().cancel_order_by_id(_eff_stop_id)
+                        time.sleep(1)
+                    _oco_req = LimitOrderRequest(
+                        symbol=symbol, qty=qty, side=OrderSide.SELL,
+                        time_in_force=TimeInForce.GTC,
+                        order_class=OrderClass.OCO,
+                        limit_price=round(take_profit, 2),
+                        stop_loss=StopLossRequest(stop_price=round(_eff_stop_price, 2)),
+                    )
+                    _oco_ord = _get_alpaca().submit_order(_oco_req)
+                    log.info(
+                        "[EXECUTOR] %s: OCO placed — stop=$%.2f  TP=$%.2f  order_id=%s",
+                        symbol, _eff_stop_price, take_profit, _oco_ord.id,
+                    )
+                    log_trade({
+                        "event":        "exit_oco_entry",
+                        "symbol":       symbol,
+                        "stop_price":   round(_eff_stop_price, 2),
+                        "target_price": round(take_profit, 2),
+                        "order_id":     str(_oco_ord.id),
+                    })
+                except Exception as _oco_exc:
+                    log.error(
+                        "[EXECUTOR] %s: OCO placement failed — restoring standalone stop: %s",
+                        symbol, _oco_exc,
+                    )
+                    _replace_stop(symbol, qty, _eff_stop_price)
 
     return str(order.id), fp, fq, ft
 

@@ -470,8 +470,12 @@ def _refresh_exits_locked(
     em_cfg: dict,
 ) -> bool:
     """Inner implementation of refresh_exits_for_position, called under per-ticker lock."""
-    from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import LimitOrderRequest, StopOrderRequest
+    from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+    from alpaca.trading.requests import (
+        LimitOrderRequest,
+        StopLossRequest,
+        StopOrderRequest,
+    )
 
     ei = exit_info if exit_info is not None else (
         get_active_exits([position], alpaca_client).get(sym, {})
@@ -493,49 +497,64 @@ def _refresh_exits_locked(
         return False
 
     # Fast path for BUG-009b: stop is healthy, only the TP is missing.
-    # Place a standalone GTC limit sell without touching the existing stop.
+    # Standalone orders cannot share the same shares — cancel the existing stop
+    # and resubmit as an OCO pair (stop + TP in the same OCA group).
     if is_tp_missing and not is_unprotected and not is_stale:
-        plan = generate_exit_plan(position, price, strategy_config, conviction)
+        plan         = generate_exit_plan(position, price, strategy_config, conviction)
+        stop_oid     = ei.get("stop_order_id")
+        stop_at      = ei.get("stop_price")
+        pos_qty      = qty  # already an integer-float via _position_qty()
+
         log.info(
-            "[EXIT_MGR] %s: partial protection (BUG-009b) — stop live, TP missing."
-            " Placing standalone TP @ $%.2f",
-            sym, plan["take_profit"],
+            "[EXIT_MGR] %s: BUG-009b OCO repair — cancelling stop %s,"
+            " resubmitting as OCO  stop=$%.2f  TP=$%.2f  qty=%d",
+            sym, stop_oid, stop_at, plan["take_profit"], pos_qty,
         )
         try:
-            tp_req = LimitOrderRequest(
-                symbol=sym, qty=qty, side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC, limit_price=plan["take_profit"],
+            if stop_oid:
+                alpaca_client.cancel_order_by_id(stop_oid)
+                time.sleep(1)
+            oco_req = LimitOrderRequest(
+                symbol=sym, qty=pos_qty, side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC,
+                order_class=OrderClass.OCO,
+                limit_price=plan["take_profit"],
+                stop_loss=StopLossRequest(stop_price=round(stop_at, 2)),
             )
-            tp_ord = alpaca_client.submit_order(tp_req)
+            oco_ord = alpaca_client.submit_order(oco_req)
             log.info(
-                "[EXIT_MGR] %s: TP repair order placed — target=$%.2f  order_id=%s",
-                sym, plan["take_profit"], tp_ord.id,
+                "[EXIT_MGR] %s: OCO placed — stop=$%.2f  TP=$%.2f  order_id=%s",
+                sym, stop_at, plan["take_profit"], oco_ord.id,
             )
             log_trade({
-                "event":    "exit_tp_repair",
-                "symbol":   sym,
-                "reason":   "BUG-009b: partial protection — stop live, TP voided",
-                "target":   plan["take_profit"],
-                "order_id": str(tp_ord.id),
+                "event":   "exit_oco_repair",
+                "symbol":  sym,
+                "reason":  "BUG-009b resolved: standalone stop replaced with OCO",
+                "stop":    stop_at,
+                "target":  plan["take_profit"],
+                "order_id": str(oco_ord.id),
             })
             return True
         except Exception as exc:
-            if "40310000" in str(exc):
-                # Alpaca constraint: the existing standalone stop holds all shares,
-                # blocking a second sell order.  Bracket OCA groups allow stop+TP
-                # to share the same qty; standalone orders cannot.  Position is
-                # protected by the stop; trail stop manages the upside exit.
+            log.error("[EXIT_MGR] %s: OCO repair failed: %s", sym, exc)
+            # Restore standalone stop so position stays protected.
+            try:
+                restore_req = StopOrderRequest(
+                    symbol=sym, qty=int(pos_qty), side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    stop_price=round(stop_at, 2),
+                )
+                alpaca_client.submit_order(restore_req)
                 log.warning(
-                    "[EXIT_MGR] %s: standalone TP blocked by existing stop (Alpaca 40310000"
-                    " — stop holds shares). Stop is live; SW-TP check active via"
-                    " position_targets.json.",
-                    sym,
+                    "[EXIT_MGR] %s: OCO failed — standalone stop restored @ $%.2f",
+                    sym, stop_at,
                 )
-            else:
+            except Exception as restore_exc:
                 log.error(
-                    "[EXIT_MGR] %s: TP repair failed: %s",
-                    sym, exc,
+                    "[EXIT_MGR] %s: CRITICAL — OCO failed AND stop restore failed: %s",
+                    sym, restore_exc,
                 )
+                _fire_safety_alert("oco_repair_and_restore_failed", restore_exc)
             return False
 
     reason = (

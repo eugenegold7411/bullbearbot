@@ -1,26 +1,25 @@
 """
-tests/test_bug009b_tp_fallback.py — 5 failing tests proving BUG-009b.
+tests/test_bug009b_tp_fallback.py — BUG-009b OCO fix verification tests.
 
-BUG-009b: Alpaca paper trading silently voids BOTH the stop-loss AND
-take-profit child legs of bracket orders on OCA collision.  BUG-009
-(commit eefa3e0) added a stop fallback in _submit_buy().  There is NO
-equivalent fallback for the take-profit leg, and refresh_exits_for_position()
-does not repair "partial" status (stop present, no TP).
+BUG-009b root cause: Alpaca's OCA share-lock prevents adding a standalone TP
+when a standalone stop already holds all shares (error 40310000).
 
-All 5 tests FAIL on current code — they are pre-implementation proof of the
-bug, not regression guards.  Do not implement the fix until the diagnosis has
-been reviewed and approved.
+Fix: cancel the existing stop, resubmit as an OCO pair (stop + TP in the same
+OCA group).  Alpaca allows stop + TP to coexist inside one OCA group on the
+same shares.  This applies to both paths:
+  - order_executor._submit_buy(): TP leg voided after bracket fills
+  - exit_manager.refresh_exits_for_position(): status='partial' each cycle
 
 NOTE on assertions: the conftest stubs register all Alpaca request classes as
 _KwargsRequest (a single class that copies all kwargs as attributes), so class-
-name checks are meaningless.  Tests instead identify order TYPE by shape:
-  - GTC limit sell with limit_price + side=SELL + no order_class → TP fallback
-  - GTC stop with stop_price + side=SELL + no order_class       → stop fallback
-  - DAY order with order_class=BRACKET + side=BUY               → bracket entry
+name checks are meaningless.  Tests identify order TYPE by shape:
+  - order_class==OCO + side=SELL + limit_price + stop_loss → OCO repair
+  - order_class==BRACKET + side=BUY                        → bracket entry
 """
 import sys
 import types
 from unittest.mock import MagicMock, patch
+
 
 # ── stubs ─────────────────────────────────────────────────────────────────────
 
@@ -43,7 +42,7 @@ def _ensure_stubs():
     for enum_name, attrs in {
         "OrderSide":        {"BUY": "buy",  "SELL": "sell"},
         "TimeInForce":      {"DAY": "day",  "GTC":  "gtc"},
-        "OrderClass":       {"BRACKET": "bracket"},
+        "OrderClass":       {"BRACKET": "bracket", "OCO": "oco"},
         "QueryOrderStatus": {"OPEN": "open", "ALL": "all"},
     }.items():
         if not hasattr(enums, enum_name):
@@ -82,27 +81,23 @@ _ensure_stubs()
 
 # ── order-shape helpers ───────────────────────────────────────────────────────
 
-def _is_tp_sell(req) -> bool:
-    """
-    Identify a standalone GTC limit sell — the expected TP fallback shape.
+def _is_oco_sell(req) -> bool:
+    """Identify an OCO sell — the correct BUG-009b repair shape.
 
-    Distinguish by the combination of attributes that uniquely identify a
-    standalone TP order vs. a bracket entry or a stop order:
-      - limit_price present and not None  (not a stop)
-      - side == SELL                      (protective, not an entry)
-      - time_in_force == GTC              (standalone; brackets use DAY)
-      - order_class is None               (brackets carry BRACKET)
-
-    Use getattr(...) is None rather than not hasattr() because the real
-    alpaca-py Pydantic model sets order_class=None as a default attribute,
-    so hasattr() returns True even for standalone orders.
+    An OCO order carries:
+      - order_class == OrderClass.OCO
+      - side == SELL
+      - time_in_force == GTC
+      - limit_price present (take-profit leg)
+      - stop_loss present (stop leg)
     """
-    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
     return (
-        getattr(req, "limit_price", None) is not None
-        and getattr(req, "side", None) == OrderSide.SELL
+        getattr(req, "order_class", None) == OrderClass.OCO
+        and getattr(req, "side",        None) == OrderSide.SELL
         and getattr(req, "time_in_force", None) == TimeInForce.GTC
-        and getattr(req, "order_class", None) is None
+        and getattr(req, "limit_price", None) is not None
+        and getattr(req, "stop_loss",   None) is not None
     )
 
 
@@ -117,14 +112,15 @@ def _filled_bracket_order(fill_price=200.0, fill_qty=10):
     return o
 
 
-def _stop_order_mock():
-    """Open stop order — satisfies the existing _stop_active check."""
+def _stop_order_mock(stop_price=192.54):
+    """Open stop order — satisfies the _stop_active check."""
     from alpaca.trading.enums import OrderSide
     o = MagicMock()
     o.id = "existing-stop-id"
-    o.side = OrderSide.SELL   # == "sell" under the stub
+    o.side = OrderSide.SELL
     o.order_type = "stop"
     o.type = "stop"
+    o.stop_price = stop_price
     return o
 
 
@@ -134,7 +130,7 @@ def _buy_action(symbol="NVDA", qty=10, stop_loss=192.54, take_profit=213.36):
         "qty":         qty,
         "stop_loss":   stop_loss,
         "take_profit": take_profit,
-        "order_type":  "market",   # forces MarketOrderRequest for bracket (not LimitOrderRequest)
+        "order_type":  "market",
     }
 
 
@@ -144,13 +140,13 @@ def _run_submit_buy(action, open_orders, side_effects=None):
     import order_executor as oe
 
     if side_effects is None:
-        side_effects = [_filled_bracket_order(), MagicMock(id="fallback-order")]
+        side_effects = [_filled_bracket_order(), MagicMock(id="oco-id")]
 
     client = MagicMock()
     client.submit_order.side_effect = side_effects
     client.get_orders.return_value = open_orders
 
-    _path_mock = MagicMock()  # absorbs position_targets.json write — no real I/O
+    _path_mock = MagicMock()
     with patch("order_executor._get_alpaca", return_value=client), \
          patch("order_executor.log_trade"), \
          patch("time.sleep"), \
@@ -160,102 +156,89 @@ def _run_submit_buy(action, open_orders, side_effects=None):
     return client
 
 
-# ── Test 1: TP fallback placed when stop active, no limit sell ────────────────
+# ── Test 1: OCO placed when bracket stop active, TP missing ──────────────────
 
-def test_tp_fallback_placed_when_stop_present_no_limit_sell():
+def test_oco_placed_when_stop_active_no_tp():
     """
     After a confirmed fill, if open_orders has a stop but NO limit sell,
-    _submit_buy() must place a standalone GTC limit sell at the take_profit price.
+    _submit_buy() must cancel the existing stop and submit an OCO order.
 
-    BUG-009b: FAILS — _submit_buy() has no _tp_active check and no standalone
-    TP placement block.  Only the bracket MarketOrderRequest is submitted.
+    OCO fix: standalone TP is impossible (stop holds all shares, error 40310000).
+    Cancelling stop + resubmitting as OCO puts both legs in one OCA group,
+    which Alpaca allows.
     """
     action = _buy_action(symbol="NVDA", qty=10, stop_loss=192.54, take_profit=213.36)
-    open_orders = [_stop_order_mock()]  # stop present, NO limit sell
-
-    client = _run_submit_buy(action, open_orders)
-    submitted = [c.args[0] for c in client.submit_order.call_args_list]
-
-    assert any(_is_tp_sell(r) for r in submitted), (
-        "Expected a standalone GTC limit sell (TP fallback) after a confirmed fill "
-        "where a stop is active but no take-profit limit sell exists. "
-        f"Submitted orders: {[vars(r) for r in submitted]}. "
-        "BUG-009b: _submit_buy() has no _tp_active check or standalone TP placement."
-    )
-
-
-# ── Test 2: TP placed at exact action['take_profit'] price ────────────────────
-
-def test_tp_fallback_price_matches_action_take_profit():
-    """
-    The standalone TP limit sell must be placed at exactly action['take_profit'],
-    not a recomputed or default-derived value.
-
-    BUG-009b: FAILS — no GTC limit sell is submitted at all.
-    """
-    tp_price = 213.29
-    action = _buy_action(symbol="NVDA", qty=10, stop_loss=192.54, take_profit=tp_price)
     open_orders = [_stop_order_mock()]
 
-    client = _run_submit_buy(action, open_orders)
-    submitted = [c.args[0] for c in client.submit_order.call_args_list]
-
-    tp_orders = [r for r in submitted if _is_tp_sell(r)]
-    assert len(tp_orders) >= 1, (
-        "No standalone GTC limit sell submitted — BUG-009b: TP fallback is missing."
-    )
-    placed_price = getattr(tp_orders[0], "limit_price", None)
-    assert placed_price is not None and abs(placed_price - tp_price) < 0.01, (
-        f"TP limit_price={placed_price!r} does not match action take_profit={tp_price}. "
-        "The fallback must use the value from the action dict, not a recomputed price."
-    )
-
-
-# ── Test 3: both legs voided — stop fallback fires, TP fallback should too ────
-
-def test_tp_placed_alongside_stop_when_both_legs_voided():
-    """
-    When open_orders is empty after fill (both stop AND TP child legs were
-    silently voided by Alpaca OCA collision), _submit_buy() must:
-      1. Place a standalone StopOrderRequest (existing BUG-009 fix — already works)
-      2. Place a standalone GTC limit sell for the TP (BUG-009b — missing)
-
-    BUG-009b: FAILS — the stop fallback fires and places a stop, but there is
-    no TP fallback.  The position is left without a take-profit order.
-    """
-    action = _buy_action(symbol="NVDA", qty=10, stop_loss=192.54, take_profit=213.36)
-    open_orders = []  # both legs voided
-
     side_effects = [
-        _filled_bracket_order(),
-        MagicMock(id="standalone-stop-id"),   # stop fallback
-        MagicMock(id="standalone-tp-id"),     # tp fallback (expected but absent)
+        _filled_bracket_order(),       # bracket buy fills
+        MagicMock(id="oco-order-id"),  # OCO submission
     ]
     client = _run_submit_buy(action, open_orders, side_effects=side_effects)
     submitted = [c.args[0] for c in client.submit_order.call_args_list]
 
-    assert any(_is_tp_sell(r) for r in submitted), (
-        "Expected a standalone GTC limit sell (TP fallback) alongside the stop fallback "
-        "when both bracket legs are silently voided. "
-        f"Submitted orders: {[vars(r) for r in submitted]}. "
-        "BUG-009b: the stop fallback fires (BUG-009 fix) but there is no TP fallback."
+    assert any(_is_oco_sell(r) for r in submitted), (
+        "Expected an OCO sell order (order_class=OCO, limit_price=TP, stop_loss=stop) "
+        "when stop is active but TP is missing. "
+        f"Submitted orders: {[vars(r) for r in submitted]}."
+    )
+    client.cancel_order_by_id.assert_called_once_with("existing-stop-id")
+
+
+# ── Test 2: OCO TP leg price matches action['take_profit'] ───────────────────
+
+def test_oco_tp_price_matches_action_take_profit():
+    """The OCO limit_price (TP leg) must equal action['take_profit'] exactly."""
+    tp_price = 213.29
+    action = _buy_action(symbol="NVDA", qty=10, stop_loss=192.54, take_profit=tp_price)
+    open_orders = [_stop_order_mock()]
+
+    side_effects = [_filled_bracket_order(), MagicMock(id="oco-order-id")]
+    client = _run_submit_buy(action, open_orders, side_effects=side_effects)
+    submitted = [c.args[0] for c in client.submit_order.call_args_list]
+
+    oco_orders = [r for r in submitted if _is_oco_sell(r)]
+    assert len(oco_orders) >= 1, "No OCO sell submitted — BUG-009b fix not wired."
+    placed_price = getattr(oco_orders[0], "limit_price", None)
+    assert placed_price is not None and abs(placed_price - tp_price) < 0.01, (
+        f"OCO limit_price={placed_price!r} does not match action take_profit={tp_price}."
     )
 
 
-# ── Test 4: refresh_exits_for_position returns True for partial status ─────────
+# ── Test 3: both legs voided — stop fallback fires, then OCO replaces it ─────
+
+def test_oco_placed_when_both_bracket_legs_voided():
+    """
+    When open_orders is empty after fill (both bracket legs voided), _submit_buy()
+    must:
+      1. Place a standalone StopOrderRequest (existing BUG-009 fix)
+      2. Cancel that standalone stop
+      3. Resubmit as OCO so stop + TP coexist in one OCA group
+    """
+    action = _buy_action(symbol="NVDA", qty=10, stop_loss=192.54, take_profit=213.36)
+    open_orders = []
+
+    side_effects = [
+        _filled_bracket_order(),              # bracket buy fills
+        MagicMock(id="standalone-stop-id"),   # standalone stop fallback
+        MagicMock(id="oco-order-id"),         # OCO replaces standalone stop
+    ]
+    client = _run_submit_buy(action, open_orders, side_effects=side_effects)
+    submitted = [c.args[0] for c in client.submit_order.call_args_list]
+
+    assert any(_is_oco_sell(r) for r in submitted), (
+        "Expected an OCO sell after standalone stop + OCO upgrade path. "
+        f"Submitted orders: {[vars(r) for r in submitted]}."
+    )
+    client.cancel_order_by_id.assert_called_once_with("standalone-stop-id")
+
+
+# ── Test 4: refresh_exits returns True for partial status ─────────────────────
 
 def test_refresh_exits_returns_true_for_partial_status():
     """
-    When a position has status='partial' (stop present, no take-profit),
-    refresh_exits_for_position() must detect it and return True after placing a TP.
-
-    BUG-009b secondary gap: exit_manager.py line 440 reads
-        if not (is_unprotected or is_stale): return False
-    'partial' does not set is_unprotected (requires 'unprotected', 'unknown', or
-    'tp_only') and is not stale — so the function returns False immediately
-    without placing a TP.
-
-    FAILS on current code.
+    refresh_exits_for_position() must return True for status='partial'
+    (stop present, TP voided) after completing OCO repair.
     """
     _ensure_stubs()
     import exit_manager as em
@@ -268,7 +251,7 @@ def test_refresh_exits_returns_true_for_partial_status():
     position.qty             = "10"
 
     client = MagicMock()
-    client.submit_order.return_value = MagicMock(id="tp-repair-id")
+    client.submit_order.return_value = MagicMock(id="oco-repair-id")
 
     exit_info = {
         "status":            "partial",
@@ -278,7 +261,6 @@ def test_refresh_exits_returns_true_for_partial_status():
         "target_price":      None,
         "target_order_id":   None,
     }
-
     strategy_config = {
         "exit_management": {
             "stop_loss_pct":               0.03,
@@ -300,23 +282,20 @@ def test_refresh_exits_returns_true_for_partial_status():
 
     assert result is True, (
         f"refresh_exits_for_position() returned {result!r} for status='partial'. "
-        "Expected True — should detect the missing TP and place a GTC limit sell. "
-        "BUG-009b: line 440 returns False immediately for 'partial' status."
+        "Expected True — OCO repair should succeed and return True."
     )
 
 
-# ── Test 5: refresh_exits places GTC limit sell for partial status ─────────────
+# ── Test 5: refresh_exits submits OCO for partial status ──────────────────────
 
-def test_refresh_exits_places_limit_sell_for_partial_status():
+def test_refresh_exits_submits_oco_for_partial_status():
     """
-    When status='partial', refresh_exits_for_position() must submit a GTC limit
-    sell (take-profit) order WITHOUT cancelling the existing stop.
+    For status='partial', refresh_exits_for_position() must:
+      1. Cancel the existing stop (releases Alpaca share-lock)
+      2. Submit an OCO order (stop + TP in one OCA group)
 
-    The stop is healthy — only the TP is missing.  The fix must add the TP in
-    isolation, not route through the full stop-refresh path.
-
-    BUG-009b: FAILS — the function returns at line 440 before calling
-    submit_order or cancel_order_by_id at all.
+    Old behavior was: try standalone limit TP → always blocked by 40310000.
+    New behavior: cancel stop, resubmit as OCO.
     """
     _ensure_stubs()
     import exit_manager as em
@@ -329,7 +308,7 @@ def test_refresh_exits_places_limit_sell_for_partial_status():
     position.qty             = "10"
 
     client = MagicMock()
-    client.submit_order.return_value = MagicMock(id="tp-repair-id")
+    client.submit_order.return_value = MagicMock(id="oco-repair-id")
 
     exit_info = {
         "status":            "partial",
@@ -339,7 +318,6 @@ def test_refresh_exits_places_limit_sell_for_partial_status():
         "target_price":      None,
         "target_order_id":   None,
     }
-
     strategy_config = {
         "exit_management": {
             "stop_loss_pct":               0.03,
@@ -360,14 +338,10 @@ def test_refresh_exits_places_limit_sell_for_partial_status():
         )
 
     submitted = [c.args[0] for c in client.submit_order.call_args_list]
-    assert any(_is_tp_sell(r) for r in submitted), (
-        "Expected a standalone GTC limit sell for TP repair when status='partial', "
-        f"but submit_order was called with: {[vars(r) for r in submitted]}. "
-        "BUG-009b: refresh_exits_for_position() returns before submitting any order."
+    assert any(_is_oco_sell(r) for r in submitted), (
+        "Expected an OCO sell (order_class=OCO, limit_price=TP, stop_loss) for "
+        f"status='partial', but submit_order was called with: "
+        f"{[vars(r) for r in submitted]}."
     )
-
-    # The existing stop is healthy — it must NOT be cancelled.
-    assert client.cancel_order_by_id.call_count == 0, (
-        f"cancel_order_by_id called {client.cancel_order_by_id.call_count} time(s) "
-        "for status='partial'. The stop is healthy; only the TP needs to be added."
-    )
+    # The existing stop must be cancelled before OCO is submitted.
+    client.cancel_order_by_id.assert_called_once_with("existing-stop-id")

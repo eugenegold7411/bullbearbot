@@ -31,7 +31,7 @@ jobs:
 
       - name: Test
         run: |
-          pytest tests/ -q --tb=short \
+          pytest tests/ -q --tb=long -r f \
             --ignore=tests/test_scratchpad_memory.py \
             -k "not requires_chromadb and not chromadb" \
             -m "not requires_prompts" \
@@ -40,8 +40,9 @@ jobs:
           if [ $EXIT -ne 0 ]; then
             echo "## Test Failures" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            grep -E "^FAILED|^ERROR|AssertionError" /tmp/test-output.txt >> $GITHUB_STEP_SUMMARY || true
-            tail -60 /tmp/test-output.txt >> $GITHUB_STEP_SUMMARY || true
+            grep -E "^FAILED|^ERROR" /tmp/test-output.txt >> $GITHUB_STEP_SUMMARY || true
+            echo "--- last 100 lines ---" >> $GITHUB_STEP_SUMMARY
+            tail -100 /tmp/test-output.txt >> $GITHUB_STEP_SUMMARY || true
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
           exit $EXIT

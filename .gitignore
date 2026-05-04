@@ -99,3 +99,4 @@ watchlist_rotation.json
 !data/runtime/sev1_clean_days.json
 !data/status/failure_mode_register.json
 !data/status/system_status_snapshot.json
+strategy_config.json

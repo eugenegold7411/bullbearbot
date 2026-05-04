@@ -198,7 +198,9 @@ def test_oco_tp_price_matches_action_take_profit():
     oco_orders = [r for r in submitted if _is_oco_sell(r)]
     assert len(oco_orders) >= 1, "No OCO sell submitted — BUG-009b fix not wired."
     tp_req = getattr(oco_orders[0], "take_profit", None)
-    placed_price = getattr(tp_req, "limit_price", None)
+    # take_profit may be a plain dict {"limit_price": ...} or an object with .limit_price
+    placed_price = (tp_req.get("limit_price") if isinstance(tp_req, dict)
+                    else getattr(tp_req, "limit_price", None))
     assert placed_price is not None and abs(placed_price - tp_price) < 0.01, (
         f"OCO take_profit.limit_price={placed_price!r} does not match action take_profit={tp_price}."
     )

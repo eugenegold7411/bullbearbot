@@ -686,7 +686,7 @@ def _submit_buy(action: dict) -> tuple:
                         time_in_force=TimeInForce.GTC,
                         order_class=OrderClass.OCO,
                         stop_price=round(_eff_stop_price, 2),
-                        take_profit=TakeProfitRequest(limit_price=round(take_profit, 2)),
+                        take_profit={"limit_price": round(take_profit, 2)},
                     )
                     _oco_ord = _get_alpaca().submit_order(_oco_req)
                     log.info(

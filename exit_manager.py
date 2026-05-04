@@ -473,8 +473,8 @@ def _refresh_exits_locked(
     from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
     from alpaca.trading.requests import (
         LimitOrderRequest,
-        StopLossRequest,
         StopOrderRequest,
+        TakeProfitRequest,
     )
 
     ei = exit_info if exit_info is not None else (
@@ -514,12 +514,12 @@ def _refresh_exits_locked(
             if stop_oid:
                 alpaca_client.cancel_order_by_id(stop_oid)
                 time.sleep(1)
-            oco_req = LimitOrderRequest(
+            oco_req = StopOrderRequest(
                 symbol=sym, qty=pos_qty, side=OrderSide.SELL,
                 time_in_force=TimeInForce.GTC,
                 order_class=OrderClass.OCO,
-                limit_price=plan["take_profit"],
-                stop_loss=StopLossRequest(stop_price=round(stop_at, 2)),
+                stop_price=round(stop_at, 2),
+                take_profit=TakeProfitRequest(limit_price=round(plan["take_profit"], 2)),
             )
             oco_ord = alpaca_client.submit_order(oco_req)
             log.info(

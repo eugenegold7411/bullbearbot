@@ -681,12 +681,12 @@ def _submit_buy(action: dict) -> tuple:
                     if _eff_stop_id:
                         _get_alpaca().cancel_order_by_id(_eff_stop_id)
                         time.sleep(1)
-                    _oco_req = LimitOrderRequest(
+                    _oco_req = StopOrderRequest(
                         symbol=symbol, qty=qty, side=OrderSide.SELL,
                         time_in_force=TimeInForce.GTC,
                         order_class=OrderClass.OCO,
-                        limit_price=round(take_profit, 2),
-                        stop_loss=StopLossRequest(stop_price=round(_eff_stop_price, 2)),
+                        stop_price=round(_eff_stop_price, 2),
+                        take_profit=TakeProfitRequest(limit_price=round(take_profit, 2)),
                     )
                     _oco_ord = _get_alpaca().submit_order(_oco_req)
                     log.info(

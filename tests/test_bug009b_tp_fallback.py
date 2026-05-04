@@ -20,7 +20,6 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
-
 # ── stubs ─────────────────────────────────────────────────────────────────────
 
 def _ensure_stubs():
@@ -82,22 +81,21 @@ _ensure_stubs()
 # ── order-shape helpers ───────────────────────────────────────────────────────
 
 def _is_oco_sell(req) -> bool:
-    """Identify an OCO sell — the correct BUG-009b repair shape.
+    """Identify an OCO sell — StopOrderRequest(stop_price, take_profit=TakeProfitRequest).
 
-    An OCO order carries:
+    Alpaca OCO sell structure:
       - order_class == OrderClass.OCO
-      - side == SELL
-      - time_in_force == GTC
-      - limit_price present (take-profit leg)
-      - stop_loss present (stop leg)
+      - side == SELL, time_in_force == GTC
+      - stop_price present  (stop leg — primary on StopOrderRequest)
+      - take_profit present (TakeProfitRequest with limit_price — secondary leg)
     """
     from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
     return (
-        getattr(req, "order_class", None) == OrderClass.OCO
+        getattr(req, "order_class",   None) == OrderClass.OCO
         and getattr(req, "side",        None) == OrderSide.SELL
         and getattr(req, "time_in_force", None) == TimeInForce.GTC
-        and getattr(req, "limit_price", None) is not None
-        and getattr(req, "stop_loss",   None) is not None
+        and getattr(req, "stop_price",  None) is not None
+        and getattr(req, "take_profit", None) is not None
     )
 
 
@@ -199,9 +197,10 @@ def test_oco_tp_price_matches_action_take_profit():
 
     oco_orders = [r for r in submitted if _is_oco_sell(r)]
     assert len(oco_orders) >= 1, "No OCO sell submitted — BUG-009b fix not wired."
-    placed_price = getattr(oco_orders[0], "limit_price", None)
+    tp_req = getattr(oco_orders[0], "take_profit", None)
+    placed_price = getattr(tp_req, "limit_price", None)
     assert placed_price is not None and abs(placed_price - tp_price) < 0.01, (
-        f"OCO limit_price={placed_price!r} does not match action take_profit={tp_price}."
+        f"OCO take_profit.limit_price={placed_price!r} does not match action take_profit={tp_price}."
     )
 
 

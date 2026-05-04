@@ -123,7 +123,6 @@ def _stub_alpaca_tree() -> None:
     for _name in (
         "ClosePositionRequest", "GetOptionContractsRequest", "GetOrdersRequest",
         "GetOrderByIdRequest", "GetAssetsRequest", "GetPortfolioHistoryRequest",
-        "TakeProfitRequest",
     ):
         setattr(_rq_mod, _name, _cls(_name))
 
@@ -135,7 +134,7 @@ def _stub_alpaca_tree() -> None:
     for _name in (
         "LimitOrderRequest", "MarketOrderRequest",
         "StopLossRequest", "StopOrderRequest", "TrailingStopOrderRequest",
-        "ReplaceOrderRequest",
+        "ReplaceOrderRequest", "TakeProfitRequest",
     ):
         setattr(_rq_mod, _name, _KwargsRequest)
     for _name in (

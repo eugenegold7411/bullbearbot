@@ -43,6 +43,7 @@ Technical indicators (via pandas-ta):
 # ============================================================
 
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -71,6 +72,34 @@ load_dotenv()
 
 log = get_logger(__name__)
 ET  = ZoneInfo("America/New_York")
+
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    """Fire a CRITICAL WhatsApp alert when a safety function throws. 5-min dedup. Never raises.
+    # TODO(DASHBOARD): surface safety_system_degraded alerts on dashboard
+    """
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] market_data.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 _trading: TradingClient | None = None
 _data:    StockHistoricalDataClient | None = None
@@ -172,7 +201,8 @@ def get_market_clock() -> dict:
             "minutes_since_open": minutes_since_open,
         }
     except Exception as exc:
-        log.warning("get_market_clock failed: %s", exc)
+        log.error("get_market_clock failed: %s", exc)
+        _fire_safety_alert("get_market_clock", exc)
         return {
             "is_open":            False,
             "status":             "unknown",
@@ -421,7 +451,8 @@ def get_stock_signals(
                 except Exception:
                     pass
         except Exception as exc:
-            log.warning("Stock bars fetch error: %s", exc)
+            log.error("Stock bars fetch error: %s", exc)
+            _fire_safety_alert("get_stock_data_bars_fetch", exc)
 
     # Latest live prices
     try:

@@ -41,6 +41,33 @@ log = get_logger(__name__)
 _halt_alert_cache: dict[str, float] = {}   # {account: unix_time_of_last_alert}
 _HALT_ALERT_DEDUP_SECS: float = 30 * 60   # 30 minutes between repeat alerts
 
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    """Fire a CRITICAL WhatsApp alert when a safety function throws. 5-min dedup. Never raises.
+    # TODO(DASHBOARD): surface safety_system_degraded alerts on dashboard
+    """
+    try:
+        now = _time_mod.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] bot_stage0_precycle.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 def _maybe_send_halt_alert(
     account: str,
@@ -399,7 +426,8 @@ def run_precycle(
             log.info(_rl)
 
     except Exception as _pi_exc:
-        log.warning("Portfolio intelligence / reconciliation block failed: %s", _pi_exc)
+        log.error("Portfolio intelligence / reconciliation block failed: %s", _pi_exc)
+        _fire_safety_alert("run_precycle_pi_recon", _pi_exc)
 
     # Divergence tracking — load mode, scan protection (non-fatal)
     a1_mode    = None
@@ -452,7 +480,8 @@ def run_precycle(
                         a1_mode.scope.value,
                         a1_mode.scope_id)
     except Exception as _div_exc:
-        log.warning("[DIV] divergence init failed (non-fatal): %s", _div_exc)
+        log.error("[DIV] divergence init failed (non-fatal): %s", _div_exc)
+        _fire_safety_alert("run_precycle_divergence_init", _div_exc)
 
     # 4e. Exit management — refresh stale stops, trail profitable positions
     exit_status_str = "  (unavailable)"

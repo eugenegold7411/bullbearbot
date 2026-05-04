@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import functools
 import json
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,33 @@ log = get_logger(__name__)
 
 _BASE = Path(__file__).parent
 _RISK_FACTORS_PATH = _BASE / "data/config/symbol_risk_factors.json"
+
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    """Fire a CRITICAL WhatsApp alert when a safety function throws. 5-min dedup. Never raises.
+    # TODO(DASHBOARD): surface safety_system_degraded alerts on dashboard
+    """
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] bot_stage2_signal.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 @functools.lru_cache(maxsize=1)
@@ -877,7 +905,8 @@ def score_signals(
             pass
         return result
     except Exception as exc:
-        log.warning("[SIGNALS] Scorer failed (non-fatal): %s", exc)
+        log.error("[SIGNALS] Scorer failed (non-fatal): %s", exc)
+        _fire_safety_alert("score_signals", exc)
         return {}
 
 

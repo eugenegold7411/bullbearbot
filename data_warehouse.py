@@ -14,6 +14,7 @@ import csv
 import io
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -41,6 +42,34 @@ from log_setup import get_logger
 
 log = get_logger(__name__)
 ET  = ZoneInfo("America/New_York")
+
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    """Fire a CRITICAL WhatsApp alert when a safety function throws. 5-min dedup. Never raises.
+    # TODO(DASHBOARD): surface safety_system_degraded alerts on dashboard
+    """
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] data_warehouse.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 DATA     = Path(__file__).parent / "data"
 BARS_DIR         = DATA / "bars"
@@ -162,9 +191,11 @@ def refresh_bars(symbols: list[str]) -> None:
                     } for b in bars]
                     pd.DataFrame(rows).to_csv(BARS_DIR / f"{sym}_daily.csv", index=False)
                 except Exception as e:
-                    log.debug("Bars save failed %s: %s", sym, e)
+                    log.error("Bars save failed %s: %s", sym, e)
+                    _fire_safety_alert("refresh_bars_save", e)
         except Exception as exc:
-            log.warning("Bars fetch batch error: %s", exc)
+            log.error("Bars fetch batch error: %s", exc)
+            _fire_safety_alert("refresh_bars_fetch", exc)
 
 
 def load_bars_cached(symbol: str) -> list[dict] | None:
@@ -674,7 +705,7 @@ def refresh_earnings_calendar_av() -> dict:
         tmp.write_text(json.dumps(saved, indent=2))
         tmp.replace(cal_path)
     except Exception as exc:
-        log.warning("[EARNINGS_AV] write failed (non-fatal): %s", exc)
+        log.error("[EARNINGS_AV] write failed (non-fatal): %s", exc)
         return {}
 
     n_wl = sum(1 for e in new_entries if e["symbol"] in core_stocks)

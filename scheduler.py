@@ -28,7 +28,7 @@ import signal
 import threading
 import time
 import traceback
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -61,6 +61,32 @@ _MARKET_END     = 20 * 60         # 8:00 PM ET
 _EXTENDED_START =  4 * 60         # 4:00 AM ET
 _EXTENDED_END   = 23 * 60         # 11:00 PM ET
 
+_SAFETY_DEDUP_SECS: float = 300.0
+_SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+
+def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
+    """Fire a CRITICAL WhatsApp alert when a safety function throws. 5-min dedup. Never raises.
+    # TODO(DASHBOARD): surface safety_system_degraded alerts on dashboard
+    """
+    try:
+        now = time.time()
+        if now - _SAFETY_ALERT_CACHE.get(fn_name, 0) < _SAFETY_DEDUP_SECS:
+            return
+        _SAFETY_ALERT_CACHE[fn_name] = now
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[SAFETY DEGRADED] scheduler.{fn_name} threw: "
+            f"{type(exc).__name__}: {exc}. "
+            f"Fallback active — manual review required. {ts}"
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _is_claude_trading_window(now_et: datetime | None = None,
@@ -254,7 +280,8 @@ def _ensure_account_modes_initialized() -> None:
             log.warning("[INIT] Failed to pre-create A2 decisions directory (non-fatal): %s", _de)
 
     except Exception as exc:
-        log.warning("[INIT] _ensure_account_modes_initialized failed (non-fatal): %s", exc)
+        log.error("[INIT] _ensure_account_modes_initialized failed (non-fatal): %s", exc)
+        _fire_safety_alert("_ensure_account_modes_initialized", exc)
 
 
 # ── ORB formation tracking ────────────────────────────────────────────────────
@@ -442,7 +469,8 @@ def _maybe_run_health_checks(dry_run: bool = False) -> None:
                 _hm._save_state(state)
         _health_check_last_ts = _time.monotonic()
     except Exception as exc:
-        log.warning("[HEALTH] health check failed (non-fatal): %s", exc)
+        log.error("[HEALTH] health check failed (non-fatal): %s", exc)
+        _fire_safety_alert("_maybe_run_health_checks", exc)
 
 
 def _maybe_check_api_costs() -> None:
@@ -870,7 +898,7 @@ def _maybe_reset_session_watchlist() -> None:
             _session_reset_done = today
             log.info("8 PM session reset: dynamic/intraday watchlist cleared")
         except Exception as exc:
-            log.warning("Session watchlist reset failed (non-fatal): %s", exc, exc_info=True)
+            log.error("Session watchlist reset failed (non-fatal): %s", exc, exc_info=True)
 
 
 def _maybe_refresh_global_indices(dry_run: bool = False) -> None:

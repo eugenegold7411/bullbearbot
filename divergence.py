@@ -751,7 +751,7 @@ def detect_protection_divergence(
         # Build stop order map
         stop_map: dict[str, list] = {}
         for o in open_orders:
-            raw_type = str(getattr(o, "order_type", "")).lower()
+            raw_type  = str(getattr(o, "order_type", "")).lower()
             order_type = raw_type.split(".")[-1]
             raw_class = str(getattr(o, "order_class", "")).lower().split(".")[-1]
             # OCO/bracket parents have type=limit but embed a stop leg -- treat as protected.

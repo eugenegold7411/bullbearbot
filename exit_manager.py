@@ -471,10 +471,7 @@ def _refresh_exits_locked(
 ) -> bool:
     """Inner implementation of refresh_exits_for_position, called under per-ticker lock."""
     from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
-    from alpaca.trading.requests import (
-        LimitOrderRequest,
-        StopOrderRequest,
-    )
+    from alpaca.trading.requests import LimitOrderRequest, StopOrderRequest
 
     ei = exit_info if exit_info is not None else (
         get_active_exits([position], alpaca_client).get(sym, {})
@@ -513,12 +510,12 @@ def _refresh_exits_locked(
             if stop_oid:
                 alpaca_client.cancel_order_by_id(stop_oid)
                 time.sleep(1)
-            oco_req = StopOrderRequest(
+            oco_req = LimitOrderRequest(
                 symbol=sym, qty=pos_qty, side=OrderSide.SELL,
                 time_in_force=TimeInForce.GTC,
                 order_class=OrderClass.OCO,
-                stop_price=round(stop_at, 2),
                 take_profit={"limit_price": round(plan["take_profit"], 2)},
+                stop_loss={"stop_price": round(stop_at, 2)},
             )
             oco_ord = alpaca_client.submit_order(oco_req)
             log.info(

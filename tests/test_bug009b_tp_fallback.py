@@ -81,21 +81,21 @@ _ensure_stubs()
 # ── order-shape helpers ───────────────────────────────────────────────────────
 
 def _is_oco_sell(req) -> bool:
-    """Identify an OCO sell — StopOrderRequest(stop_price, take_profit=TakeProfitRequest).
+    """Identify an OCO sell — LimitOrderRequest with both legs as plain dicts.
 
-    Alpaca OCO sell structure:
+    Alpaca OCO sell structure (canonical REST API format):
       - order_class == OrderClass.OCO
       - side == SELL, time_in_force == GTC
-      - stop_price present  (stop leg — primary on StopOrderRequest)
-      - take_profit present (TakeProfitRequest with limit_price — secondary leg)
+      - take_profit == {"limit_price": ...}  (TP leg)
+      - stop_loss   == {"stop_price":  ...}  (stop leg)
     """
     from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
     return (
         getattr(req, "order_class",   None) == OrderClass.OCO
         and getattr(req, "side",        None) == OrderSide.SELL
         and getattr(req, "time_in_force", None) == TimeInForce.GTC
-        and getattr(req, "stop_price",  None) is not None
         and getattr(req, "take_profit", None) is not None
+        and getattr(req, "stop_loss",   None) is not None
     )
 
 

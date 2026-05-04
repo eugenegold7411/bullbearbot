@@ -44,6 +44,14 @@ clean:
 	rm -rf *.egg-info
 
 deploy:
+	@DIRTY=$$(git diff --name-only HEAD | grep '\.py$$'); \
+	UNTRACKED=$$(git ls-files --others --exclude-standard | grep '\.py$$'); \
+	if [ -n "$$DIRTY" ] || [ -n "$$UNTRACKED" ]; then \
+		echo "ERROR: Uncommitted .py files in working tree — commit or stash before deploying:"; \
+		[ -n "$$DIRTY" ]     && echo "$$DIRTY"     | sed 's/^/  modified: /'; \
+		[ -n "$$UNTRACKED" ] && echo "$$UNTRACKED" | sed 's/^/  untracked: /'; \
+		exit 1; \
+	fi
 	rsync -avz -e 'ssh -i ~/.ssh/trading_bot' \
 		--exclude .venv \
 		--exclude __pycache__ \

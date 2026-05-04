@@ -93,7 +93,7 @@ Dashboard shows position size as % of buying_power instead of
 
 | Commit  | What |
 |---------|------|
-| TBD     | Wiring test lane: python wiring_test.py / scheduler --dry-run-wiring; 17/17 PASS |
+| 41f5bdc | Wiring test lane: python wiring_test.py / scheduler --dry-run-wiring; 17/17 PASS |
 
 ## COMPLETED PREVIOUSLY (2026-05-03)
 

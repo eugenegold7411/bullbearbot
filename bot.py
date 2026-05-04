@@ -1060,6 +1060,88 @@ def run_cycle(
         except Exception as _conv_exc:
             log.warning("[CONVICTION] entry conviction write failed (non-fatal): %s", _conv_exc)
 
+        # Overnight stop gap: place immediate crypto stop after fill.
+        # Without this, the new position has no stop for ~30 minutes until the
+        # next overnight cycle calls run_exit_manager().
+        # Uses the intended stop price from the action dict (9% below entry) rather
+        # than refresh_exits_for_position(), which would compute a 3.5% stop via
+        # generate_exit_plan() — too tight for BTC's normal overnight volatility.
+        if session_tier == "overnight":
+            _sg_fills = [
+                r for r in results
+                if r.status == "submitted" and r.action == "buy" and "/" in r.symbol
+            ]
+            if _sg_fills:
+                import time as _sg_time  # noqa: PLC0415
+                _sg_time.sleep(2)  # allow Alpaca to propagate position
+                try:
+                    _sg_positions = _get_alpaca().get_all_positions()
+                except Exception as _sg_exc:
+                    log.warning(
+                        "[STOP_GAP] get_all_positions failed: %s — stop deferred to next cycle",
+                        _sg_exc,
+                    )
+                    _sg_positions = []
+                _sg_cfg_path = Path(__file__).parent / "strategy_config.json"
+                try:
+                    _sg_cfg = json.loads(_sg_cfg_path.read_text()) if _sg_cfg_path.exists() else {}
+                except Exception:
+                    _sg_cfg = {}
+                for _sgr in _sg_fills:
+                    from schemas import alpaca_symbol as _asym  # noqa: PLC0415
+                    _sg_sym = _asym(_sgr.symbol)  # "BTC/USD" → "BTCUSD"
+                    _sg_pos = next(
+                        (p for p in _sg_positions if p.symbol == _sg_sym), None
+                    )
+                    if _sg_pos is None:
+                        log.warning(
+                            "[STOP_GAP] %s: position not yet visible after 2s — "
+                            "stop deferred to next cycle", _sg_sym,
+                        )
+                        continue
+                    _sg_action = next(
+                        (a for a in actions if a.get("symbol") == _sgr.symbol), {}
+                    )
+                    _sg_stop = _sg_action.get("stop_loss")
+                    if not _sg_stop:
+                        log.warning("[STOP_GAP] %s: no stop_loss in action — skipping", _sg_sym)
+                        continue
+                    try:
+                        from alpaca.trading.enums import (  # noqa: PLC0415
+                            OrderSide as _OrdSide,
+                        )
+                        from alpaca.trading.enums import (
+                            TimeInForce as _TIF,
+                        )
+                        from alpaca.trading.requests import (  # noqa: PLC0415
+                            LimitOrderRequest as _LOR,
+                        )
+                        _sg_qty = round(abs(float(_sg_pos.qty)), 9)
+                        _sg_req = _LOR(
+                            symbol=_sg_sym,
+                            qty=_sg_qty,
+                            side=_OrdSide.SELL,
+                            time_in_force=_TIF.GTC,
+                            limit_price=round(float(_sg_stop), 2),
+                        )
+                        _sg_ord = _get_alpaca().submit_order(_sg_req)
+                        log.info(
+                            "[STOP_GAP] %s: immediate stop placed @ $%.2f  order_id=%s",
+                            _sg_sym, float(_sg_stop), _sg_ord.id,
+                        )
+                        log_trade({
+                            "event":      "overnight_stop_gap",
+                            "symbol":     _sg_sym,
+                            "stop_price": float(_sg_stop),
+                            "order_id":   str(_sg_ord.id),
+                            "session":    session_tier,
+                        })
+                    except Exception as _sg_err:
+                        log.error(
+                            "[STOP_GAP] %s: immediate stop placement failed: %s — "
+                            "position unprotected until next cycle", _sg_sym, _sg_err,
+                        )
+
     else:
         if actions and not state.allow_live_orders and regime != "halt":
             log.warning("[PREFLIGHT] shadow_only — %d action(s) blocked; logging blocked_by_mode",

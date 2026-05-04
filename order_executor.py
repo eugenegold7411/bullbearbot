@@ -498,6 +498,31 @@ def _submit_buy(action: dict) -> tuple:
             symbol, notional,
         )
         fp, fq, ft = _extract_fill(order)
+
+        # Write to position_targets.json for SW-TP monitoring.
+        # Crypto has no broker-side TP (bracket not supported), so SW-TP is the
+        # primary take-profit mechanism. Key must be Alpaca format (BTCUSD).
+        try:
+            import json as _json  # noqa: PLC0415
+            from pathlib import Path as _Path  # noqa: PLC0415
+            _tp_path = _Path("data/runtime/position_targets.json")
+            _tp_data = _json.loads(_tp_path.read_text()) if _tp_path.exists() else {}
+            _alpaca_sym = alpaca_symbol(symbol)
+            _tp_data[_alpaca_sym] = {
+                "symbol":       _alpaca_sym,
+                "take_profit":  round(float(take_profit), 2),
+                "entry_price":  round(fp, 4) if fp else None,
+                "qty":          float(fq) if fq else float(action.get("qty", 0)),
+                "stop_loss":    round(float(stop_loss), 2),
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "order_id":     str(order.id),
+            }
+            _tp_path.write_text(_json.dumps(_tp_data, indent=2))
+            log.info("[EXECUTOR] %s: crypto target written — TP=%.2f", _alpaca_sym, take_profit)
+        except Exception as _tpe:
+            log.warning("[EXECUTOR] %s: crypto position_targets write failed (non-fatal): %s",
+                        symbol, _tpe)
+
         return str(order.id), fp, fq, ft
 
     # Stock / ETF path — bracket order with stop + take-profit

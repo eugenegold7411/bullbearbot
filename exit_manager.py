@@ -995,7 +995,7 @@ def run_exit_manager(
                         symbol=sym,
                         qty=abs(float(pos.qty)),
                         side=OrderSide.SELL,
-                        time_in_force=TimeInForce.DAY,
+                        time_in_force=TimeInForce.GTC if _is_crypto(sym) else TimeInForce.DAY,
                     )
                     alpaca_client.submit_order(_close_req)
                     _remove_position_target(sym)

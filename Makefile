@@ -51,6 +51,7 @@ deploy:
 		--exclude 'data/' \
 		--exclude '.env' \
 		--exclude '.git/' \
+		--exclude 'strategy_config.json' \
 		. tradingbot:/home/trading-bot/
 	@echo "Syncing server git index to origin/main (no working-tree changes)..."
 	ssh tradingbot 'cd /home/trading-bot && git fetch origin --quiet && git reset origin/main --quiet'

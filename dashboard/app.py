@@ -1544,7 +1544,9 @@ def _pos_intraday_spark(prices: list, entry: float, height: int = 52) -> str:
 def _pos_card_html(p: dict, bars: list, label: str = "today") -> str:
     """Full position card: header + intraday sparkline + value line."""
     sym = p.get("symbol", "")
-    qty = int(p.get("qty", 0))
+    _raw_qty = int(p.get("qty", 0))
+    qty = abs(_raw_qty)
+    is_short = _raw_qty < 0
     entry = float(p.get("entry") or 0)
     current = float(p.get("current") or 0)
     pl = float(p.get("unreal_pl") or 0)
@@ -1562,6 +1564,8 @@ def _pos_card_html(p: dict, bars: list, label: str = "today") -> str:
 
     # Badges
     badges = ""
+    if is_short:
+        badges += ' <span style="background:#1a1040;color:#a855f7;font-size:9px;padding:1px 4px;border-radius:3px">SHORT</span>'
     if earnings_flag:
         badges += f' <span style="background:#2d2208;color:#d29922;font-size:9px;padding:1px 4px;border-radius:3px">{earnings_flag}</span>'
     if oversize == "critical":
@@ -1635,7 +1639,7 @@ def _pos_card_html(p: dict, bars: list, label: str = "today") -> str:
     gap_str = f"gap {gap:.1f}%" if gap is not None else "—"
     val_row = (
         f'<div style="font-family:monospace;font-size:10px;color:var(--text-muted);margin-top:2px">'
-        f'{qty} sh × {_fm(current)} = {_fm(market_val)}'
+        f'{qty} sh × {_fm(current)} = {_fm(abs(market_val))}'
         f'<span style="color:#4A4F60;margin-left:8px">{gap_str} · {pct_cap:.1f}% cap</span>'
         f'</div>'
     )
@@ -5122,7 +5126,7 @@ def _build_status() -> dict:
         equity = float(a1_acc.equity or 0)
         buying_power = float(a1_acc.buying_power or 0)
         _raw_positions = a1d.get("positions", [])
-        exposure_dollars = sum(float(p.market_value or 0) for p in _raw_positions)
+        exposure_dollars = sum(abs(float(p.market_value or 0)) for p in _raw_positions)
         total_capacity = (exposure_dollars + buying_power) or equity
         stops = _stop_map(a1d.get("orders", []))
         tps = _tp_map(a1d.get("orders", []))
@@ -5134,7 +5138,7 @@ def _build_status() -> dict:
             market_val = float(p.market_value or 0)
             unreal_pl = float(p.unrealized_pl or 0)
             unreal_plpc = float(p.unrealized_plpc or 0) * 100
-            pct_capacity = (market_val / total_capacity * 100) if total_capacity else 0
+            pct_capacity = (abs(market_val) / total_capacity * 100) if total_capacity else 0
             stop = stops.get(sym)
             tp = tps.get(sym)
             gap = ((current - stop) / current * 100) if stop and current else None

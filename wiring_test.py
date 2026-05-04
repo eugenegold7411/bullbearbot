@@ -330,6 +330,36 @@ def _run_a1_pipeline() -> None:
     except Exception:
         _record("D-04  score_signals", "FAIL", traceback.format_exc(limit=3))
 
+    # D-04c: crypto_signal_completeness — calls REAL get_crypto_signals() and verifies
+    # RSI and MACD contain numeric values (not '?'). Missing signals = broken pipeline.
+    t = time.monotonic()
+    try:
+        import re as _re  # noqa: PLC0415
+
+        from market_data import get_crypto_signals  # noqa: PLC0415
+        _crypto_result = get_crypto_signals(["BTC/USD", "ETH/USD"])
+        _signal_str = _crypto_result[0] if isinstance(_crypto_result, tuple) else _crypto_result
+        _missing: list[str] = []
+        for _sym in ("BTC/USD", "ETH/USD"):
+            if _sym not in _signal_str:
+                _missing.append(f"{_sym}:absent")
+                continue
+            for _field, _pat in (("RSI", r"RSI=([0-9.]+)"), ("MACD", r"MACD=([+-]?[0-9.]+)")):
+                if _field + "=" not in _signal_str:
+                    _missing.append(f"{_sym}:{_field} field absent")
+                elif not _re.search(_pat, _signal_str):
+                    _missing.append(f"{_sym}:{_field}=? (pandas_ta not computing)")
+        if _missing:
+            _record("D-04c crypto_signal_completeness", "FAIL",
+                    f"missing required fields: {_missing}", time.monotonic() - t)
+        else:
+            _rsi_vals = _re.findall(r"RSI=([0-9.]+)", _signal_str)
+            _record("D-04c crypto_signal_completeness", "PASS",
+                    f"BTC RSI={_rsi_vals[0] if _rsi_vals else '?'}, all fields numeric",
+                    time.monotonic() - t)
+    except Exception:
+        _record("D-04c crypto_signal_completeness", "FAIL", traceback.format_exc(limit=3))
+
     # D-05: build_compact_prompt
     t = time.monotonic()
     prompt = ""

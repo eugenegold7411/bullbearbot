@@ -49,6 +49,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pandas_ta  # noqa: F401 — registers df.ta accessor on pd.DataFrame
 import yfinance as yf
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient

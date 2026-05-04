@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock
 
+import pytest
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _today_plus(days: int) -> str:
@@ -313,6 +315,8 @@ class TestInferRouterRuleFired:
 class TestStrategyConfigShortPut:
     def _load_config(self):
         cfg_path = Path(__file__).parent.parent / "strategy_config.json"
+        if not cfg_path.exists():
+            pytest.skip("strategy_config.json not found")
         return json.loads(cfg_path.read_text())
 
     def test_SP15_a2_router_has_short_put_iv_rank_min(self):

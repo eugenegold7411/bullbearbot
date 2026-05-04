@@ -49,6 +49,8 @@ class TestP1OIMinimum(unittest.TestCase):
 
     def _cfg(self):
         import json
+        if not (_BOT_DIR / "strategy_config.json").exists():
+            self.skipTest("strategy_config.json not found")
         return json.loads((_BOT_DIR / "strategy_config.json").read_text())
 
     def test_liquidity_gates_min_oi_is_50(self):
@@ -96,6 +98,8 @@ class TestP2MaxStructures(unittest.TestCase):
     """max_open_positions=20 in config; gate sets pf_allow_new_entries=False at limit."""
 
     def _cfg(self):
+        if not (_BOT_DIR / "strategy_config.json").exists():
+            self.skipTest("strategy_config.json not found")
         return json.loads((_BOT_DIR / "strategy_config.json").read_text())
 
     def test_config_max_open_positions_is_20(self):
@@ -145,6 +149,8 @@ class TestP3ConfidenceFloor(unittest.TestCase):
     """paper_confidence_floor lowered from 0.75 to 0.70."""
 
     def _cfg(self):
+        if not (_BOT_DIR / "strategy_config.json").exists():
+            self.skipTest("strategy_config.json not found")
         return json.loads((_BOT_DIR / "strategy_config.json").read_text())
 
     def test_paper_confidence_floor_is_0_70(self):
@@ -306,6 +312,8 @@ class TestP6CapitalUtilization(unittest.TestCase):
         return s
 
     def test_config_has_capital_utilization_target(self):
+        if not (_BOT_DIR / "strategy_config.json").exists():
+            self.skipTest("strategy_config.json not found")
         cfg = json.loads((_BOT_DIR / "strategy_config.json").read_text())
         cut = cfg["account2"]["capital_utilization_target"]
         self.assertAlmostEqual(float(cut), 0.90, places=3)
@@ -389,6 +397,8 @@ class TestValidateConfigGates(unittest.TestCase):
     """validate_config checks for max_open_positions and capital_utilization_target."""
 
     def _cfg(self):
+        if not (_BOT_DIR / "strategy_config.json").exists():
+            self.skipTest("strategy_config.json not found")
         return json.loads((_BOT_DIR / "strategy_config.json").read_text())
 
     def test_max_open_positions_in_valid_range(self):

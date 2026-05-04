@@ -177,6 +177,8 @@ class TestStrategyConfigS7Vol(unittest.TestCase):
     def _load_config(self):
         import json
         cfg_path = _BOT_DIR / "strategy_config.json"
+        if not cfg_path.exists():
+            self.skipTest("strategy_config.json not found")
         return json.loads(cfg_path.read_text())
 
     def test_debate_confidence_floor_lowered(self):

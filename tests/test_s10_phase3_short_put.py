@@ -202,8 +202,8 @@ class TestRuleShortPut:
         result = self._route({"iv_rank": 60.0, "iv_environment": "neutral",
                                "a1_direction": "bullish", "a1_signal_score": 70.0,
                                "earnings_days_away": 1})
-        # RULE1: eda=1, unknown timing → treated as eda=2 → iv_rank=60 < 85 → debit_call_spread
-        assert "short_put" not in result   # SHORT_PUT does not fire (RULE1 intercepts first)
+        # RULE_EARNINGS: eda=1, iv_rank=60 < earnings_iv_rank_gate=70 → debit_call_spread/straddle
+        assert "short_put" not in result   # SHORT_PUT does not fire (RULE_EARNINGS intercepts first)
 
     def test_SP_fires_for_expensive_iv(self):
         """iv_env=expensive + iv_rank=65 + bullish → RULE_SHORT_PUT fires."""

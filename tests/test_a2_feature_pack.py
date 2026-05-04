@@ -153,14 +153,15 @@ class TestRouteStrategy(unittest.TestCase):
         from bot_options import _route_strategy
         return _route_strategy(self._make_pack(**kw))
 
-    def test_rule1_earnings_blackout(self):
-        """RULE1 smart router: eda=0 unknown timing still blocks (binary event)."""
-        # eda=0 with no calendar data → timing=unknown → post_market path → block
-        self.assertEqual(self._route(earnings_days_away=0), [])
-        # eda=1 now routes (smart router: unknown timing treated as eda=2 → debit spread)
+    def test_earnings_day_routes_normally(self):
+        """RULE1 removed: eda=0 no longer blocks; falls through to normal IV routing."""
+        # eda=0 with cheap IV (default MockPack) → RULE5 fires → long_call/debit_call_spread
+        result_0 = self._route(earnings_days_away=0)
+        self.assertNotEqual(result_0, [], "eda=0 should route (RULE1 removed)")
+        # eda=1 routes normally
         result_1 = self._route(earnings_days_away=1)
-        self.assertNotEqual(result_1, [], "eda=1 smart router should route, not block")
-        # eda=5 falls through RULE1 (no 0/1/2 branch fires) → routes normally
+        self.assertNotEqual(result_1, [], "eda=1 should route")
+        # eda=5 routes normally
         result_5 = self._route(earnings_days_away=5)
         self.assertNotEqual(result_5, [], "eda=5 should reach normal routing")
 

@@ -1,16 +1,19 @@
 """
-tests/test_rule1_rule4_redesign.py — RULE1 smart earnings router + RULE4 macro routing.
+tests/test_rule1_rule4_redesign.py — Earnings routing + RULE4 macro routing.
+
+RULE1 has been removed (earnings_dte_blackout=0). Symbols near earnings now route
+normally via IV environment rules (no blanket earnings block).
 
 Covers:
-  R1-01: eda=0 timing=unknown -> blocked
-  R1-02: eda=1 pre_market iv_rank=95 bullish -> credit_put_spread
-  R1-03: eda=1 pre_market iv_rank=30 bullish -> debit_call_spread
-  R1-04: eda=1 pre_market iv_rank=55 bullish -> blocked (middle-ground)
-  R1-05: eda=2 iv_rank=88 bullish -> credit_put_spread
-  R1-06: eda=2 iv_rank=25 bullish -> debit_call_spread
-  R1-07: eda=2 direction=neutral -> blocked
-  R1-08: eda=4 iv_rank=100 -> RULE_EARNINGS_HIGH_IV fires first, not new RULE1
-  R1-09: eda=-1 -> RULE_POST_EARNINGS fires, not RULE1
+  R1-01: eda=0 timing=unknown -> routes normally (RULE6: debit_call_spread)
+  R1-02: eda=1 pre_market iv_rank=95 bullish -> credit_put_spread (RULE2_CREDIT)
+  R1-03: eda=1 pre_market iv_rank=30 bullish -> debit_call_spread + straddle (RULE_EARNINGS)
+  R1-04: eda=1 pre_market iv_rank=55 bullish -> debit_call_spread + straddle (RULE_EARNINGS)
+  R1-05: eda=2 iv_rank=88 bullish -> credit_put_spread (RULE2_CREDIT)
+  R1-06: eda=2 iv_rank=25 bullish -> debit_call_spread + straddle (RULE_EARNINGS)
+  R1-07: eda=2 direction=neutral -> straddle (RULE_EARNINGS)
+  R1-08: eda=4 iv_rank=100 -> RULE_EARNINGS_HIGH_IV fires first (disabled by default)
+  R1-09: eda=-1 -> RULE_POST_EARNINGS fires
   R4-01: macro_flag=True iv_rank=72 neutral -> iron_condor or iron_butterfly in results
   R4-02: macro_flag=True iv_rank=88 bullish -> credit_put_spread
   R4-03: macro_flag=True iv_rank=25 bearish -> debit_put_spread
@@ -21,9 +24,9 @@ Covers:
 Scenario traces:
   XOM: eda=1, timing=pre_market, iv_rank=95, direction=bullish -> credit_put_spread
   CVX: eda=1, timing=pre_market, iv_rank=89, direction=bullish -> credit_put_spread
-  LLY: eda=0, timing=post_market, iv_rank=7, direction=bullish -> blocked (binary event)
-  AAPL: eda=0, timing=post_market, iv_rank=94, direction=neutral -> blocked
-  PLTR: eda=4, iv_rank=100, direction=bullish -> RULE_EARNINGS_HIGH_IV (not RULE1)
+  LLY: eda=0, iv_rank=7, direction=bullish -> routes normally (long_call/debit_call_spread)
+  AAPL: eda=0, iv_rank=94, direction=neutral -> routes normally (credit_put_spread/credit_call_spread)
+  PLTR: eda=4, iv_rank=100, direction=bullish -> RULE_EARNINGS_HIGH_IV (disabled by default)
   META: eda=-1, iv_rank=13, direction=bearish -> RULE_POST_EARNINGS or fall-through
   Powell: macro_flag=True, iv_rank=72, direction=neutral -> iron_condor/iron_butterfly
 """
@@ -122,28 +125,28 @@ def _route_no_cal(pack, config_overrides=None):
     return _route_strategy(pack, config=config, earnings_calendar_data={"calendar": []})
 
 
-# ── RULE1 tests ───────────────────────────────────────────────────────────────
+# ── Earnings routing tests (RULE1 removed) ────────────────────────────────────
 
 class TestRule1SmartEarningsRouter(unittest.TestCase):
 
-    def test_R1_01_eda0_unknown_timing_blocked(self):
-        """R1-01: eda=0 timing=unknown -> blocked (binary event tonight)."""
+    def test_R1_01_eda0_unknown_timing_routes_normally(self):
+        """R1-01: eda=0 -> RULE1 removed, routes via IV rules (RULE6: debit_call_spread)."""
         pack = _make_pack(symbol="LLY", earnings_days_away=0, iv_rank=7,
                           a1_direction="bullish")
-        result = _route(pack, timing=None)  # unknown timing
-        self.assertEqual(result, [], f"Expected [] for eda=0 unknown timing, got {result}")
+        result = _route(pack, timing=None)
+        self.assertEqual(result, ["debit_call_spread"],
+                         f"Expected RULE6 debit_call_spread for eda=0 neutral IV, got {result}")
 
-    def test_R1_01b_eda0_postmarket_blocked(self):
-        """R1-01b: eda=0 timing=post_market -> blocked (earnings tonight)."""
+    def test_R1_01b_eda0_postmarket_routes_normally(self):
+        """R1-01b: eda=0 timing=post_market -> RULE1 removed, routes via IV rules."""
         pack = _make_pack(symbol="LLY", earnings_days_away=0, iv_rank=7,
                           a1_direction="bullish")
         result = _route(pack, timing="post_market")
-        self.assertEqual(result, [], f"Expected [] for eda=0 post_market, got {result}")
+        self.assertEqual(result, ["debit_call_spread"],
+                         f"Expected RULE6 debit_call_spread for eda=0 post_market, got {result}")
 
     def test_R1_01c_eda0_premarket_falls_through(self):
-        """R1-01c: eda=0 timing=pre_market -> results already in, falls through to normal routing."""
-        # With eda=0 pre_market, RULE1 passes without blocking.
-        # The pack has no special IV/direction to trigger upper rules, so it routes normally.
+        """R1-01c: eda=0 timing=pre_market -> routes via IV rules (RULE1 removed)."""
         pack = _make_pack(symbol="LLY", earnings_days_away=0, iv_rank=7,
                           iv_environment="very_cheap", a1_direction="bullish",
                           macro_event_flag=False)
@@ -169,28 +172,28 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                          f"Expected credit_call_spread for CVX eda=1 pre_market iv=89, got {result}")
 
     def test_R1_03_eda1_premarket_low_iv_bullish_debit(self):
-        """R1-03: eda=1 pre_market iv_rank=30 bullish -> debit_call_spread (cheap premium)."""
+        """R1-03: eda=1 iv_rank=30 bullish -> RULE_EARNINGS fires (debit_call_spread + straddle)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=30,
                           iv_environment="cheap", a1_direction="bullish")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, ["debit_call_spread"],
-                         f"Expected debit_call_spread for eda=1 pre_market iv=30, got {result}")
+        self.assertEqual(result, ["debit_call_spread", "straddle"],
+                         f"Expected RULE_EARNINGS debit+straddle for eda=1 iv=30, got {result}")
 
-    def test_R1_04_eda1_premarket_middle_iv_blocked(self):
-        """R1-04: eda=1 pre_market iv_rank=55 bullish -> blocked (middle-ground, 40-85)."""
+    def test_R1_04_eda1_premarket_middle_iv_routes(self):
+        """R1-04: eda=1 iv_rank=55 bullish -> RULE_EARNINGS fires (debit_call_spread + straddle)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=55,
                           iv_environment="neutral", a1_direction="bullish")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, [],
-                         f"Expected [] for eda=1 pre_market middle-ground iv=55, got {result}")
+        self.assertEqual(result, ["debit_call_spread", "straddle"],
+                         f"Expected RULE_EARNINGS for eda=1 iv=55 bullish, got {result}")
 
-    def test_R1_04b_eda1_premarket_neutral_direction_blocked(self):
-        """R1-04b: eda=1 pre_market high iv but direction=neutral -> blocked."""
+    def test_R1_04b_eda1_premarket_neutral_direction_credit(self):
+        """R1-04b: eda=1 iv_rank=95 very_expensive neutral -> RULE2_CREDIT fires."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=95,
                           iv_environment="very_expensive", a1_direction="neutral")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, [],
-                         f"Expected [] for eda=1 pre_market neutral direction, got {result}")
+        self.assertIn("credit_put_spread", result,
+                      f"Expected RULE2_CREDIT for eda=1 very_expensive neutral, got {result}")
 
     def test_R1_05_eda2_high_iv_bullish_credit(self):
         """R1-05: eda=2 iv_rank=88 bullish -> credit_put_spread."""
@@ -201,30 +204,27 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                          f"Expected credit_put_spread for eda=2 iv=88, got {result}")
 
     def test_R1_06_eda2_low_iv_bullish_debit(self):
-        """R1-06: eda=2 iv_rank=25 bullish -> debit_call_spread (below 40 threshold)."""
+        """R1-06: eda=2 iv_rank=25 bullish -> RULE_EARNINGS fires (debit_call_spread + straddle)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=2, iv_rank=25,
                           iv_environment="cheap", a1_direction="bullish")
         result = _route_no_cal(pack)
-        self.assertEqual(result, ["debit_call_spread"],
-                         f"Expected debit_call_spread for eda=2 iv=25, got {result}")
+        self.assertEqual(result, ["debit_call_spread", "straddle"],
+                         f"Expected RULE_EARNINGS debit+straddle for eda=2 iv=25, got {result}")
 
-    def test_R1_07_eda2_neutral_direction_blocked(self):
-        """R1-07: eda=2 direction=neutral -> blocked (no thesis for earnings play)."""
+    def test_R1_07_eda2_neutral_direction_straddle(self):
+        """R1-07: eda=2 direction=neutral -> RULE_EARNINGS fires (straddle only)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=2, iv_rank=50,
                           iv_environment="neutral", a1_direction="neutral")
         result = _route_no_cal(pack)
-        self.assertEqual(result, [],
-                         f"Expected [] for eda=2 neutral direction, got {result}")
+        self.assertEqual(result, ["straddle"],
+                         f"Expected RULE_EARNINGS straddle for eda=2 neutral, got {result}")
 
     def test_R1_08_eda4_high_iv_rule_earnings_high_iv_fires_first(self):
-        """R1-08: eda=4 iv_rank=100 -> RULE_EARNINGS_HIGH_IV fires (pre_earn_dte_min=7 check)."""
-        # eda=4 is NOT in [7, 14] range for RULE_EARNINGS_HIGH_IV (pre_earn_dte_min=7)
-        # so RULE_EARNINGS_HIGH_IV won't fire. But eda=4 is also > earnings_dte_blackout=2,
-        # so RULE1 won't fire either. This tests that eda=4 doesn't hit RULE1.
+        """R1-08: eda=4 iv_rank=100 -> RULE_EARNINGS_HIGH_IV DTE window is [7,14], eda=4 misses it."""
+        # eda=4 NOT in [7, 14] range → RULE_EARNINGS_HIGH_IV doesn't fire.
+        # iv_env=very_expensive → RULE2_CREDIT fires → credit_put_spread.
         pack = _make_pack(symbol="PLTR", earnings_days_away=4, iv_rank=100,
-                          iv_environment="very_expensive", a1_direction="bullish",
-                          # pre_earn_enabled=False by default in code, but let's confirm:
-                          )
+                          iv_environment="very_expensive", a1_direction="bullish")
         result = _route_no_cal(pack,
                                config_overrides={
                                    "pre_earnings_credit_spread_enabled": True,
@@ -234,13 +234,12 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                                    "earnings_dte_blackout": 2,
                                })
         # eda=4 not in [7,14] -> RULE_EARNINGS_HIGH_IV doesn't fire
-        # eda=4 not in [0,2] -> RULE1 doesn't fire
         # iv_env=very_expensive -> RULE2_CREDIT fires -> credit_put_spread
         self.assertEqual(result, ["credit_put_spread"],
                          f"Expected RULE2_CREDIT for eda=4, got {result}")
 
     def test_R1_08b_eda7_high_iv_rule_earnings_high_iv_fires_first(self):
-        """R1-08b: eda=7 iv_rank=100 -> RULE_EARNINGS_HIGH_IV fires, not RULE1."""
+        """R1-08b: eda=7 iv_rank=100 -> RULE_EARNINGS_HIGH_IV fires (eda in [7,14] window)."""
         pack = _make_pack(symbol="PLTR", earnings_days_away=7, iv_rank=100,
                           iv_environment="very_expensive", a1_direction="bullish")
         result = _route_no_cal(pack,
@@ -254,7 +253,6 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
         # RULE_EARNINGS_HIGH_IV: eda=7 in [7,14], iv_rank=100 >= 85, bullish -> credit_put_spread
         self.assertEqual(result, ["credit_put_spread"],
                          f"Expected RULE_EARNINGS_HIGH_IV for eda=7 iv=100, got {result}")
-        # Confirm RULE1 didn't fire (eda=7 > blackout=2)
 
     def test_R1_09_eda_negative_routes_to_post_earnings_not_rule1(self):
         """R1-09: eda=-1 -> RULE_POST_EARNINGS fires, not RULE1."""
@@ -388,26 +386,28 @@ class TestScenarioTraces(unittest.TestCase):
                                  earnings_calendar_data=self._make_calendar("CVX", 1, "pre_market"))
         self.assertEqual(result, ["credit_put_spread"], f"CVX scenario failed: {result}")
 
-    def test_scenario_lly_eda0_postmarket_blocked(self):
-        """LLY: eda=0, timing=post_market -> blocked (binary event)."""
+    def test_scenario_lly_eda0_routes_normally(self):
+        """LLY: eda=0, iv_rank=7, very_cheap, bullish -> RULE5 fires (long_call/debit_call_spread)."""
         pack = _make_pack(symbol="LLY", earnings_days_away=0, iv_rank=7,
                           iv_environment="very_cheap", a1_direction="bullish")
         from bot_options_stage2_structures import _route_strategy
         result = _route_strategy(pack,
                                  earnings_calendar_data=self._make_calendar("LLY", 0, "post_market"))
-        self.assertEqual(result, [], f"LLY scenario failed: {result}")
+        self.assertIn("long_call", result, f"LLY scenario failed: expected RULE5, got {result}")
+        self.assertIn("debit_call_spread", result, f"LLY scenario failed: {result}")
 
-    def test_scenario_aapl_eda0_postmarket_neutral_blocked(self):
-        """AAPL: eda=0, timing=post_market, iv_rank=94, direction=neutral -> blocked."""
+    def test_scenario_aapl_eda0_credit_routes(self):
+        """AAPL: eda=0, iv_rank=94, very_expensive, neutral -> RULE2_CREDIT fires."""
         pack = _make_pack(symbol="AAPL", earnings_days_away=0, iv_rank=94,
                           iv_environment="very_expensive", a1_direction="neutral")
         from bot_options_stage2_structures import _route_strategy
         result = _route_strategy(pack,
                                  earnings_calendar_data=self._make_calendar("AAPL", 0, "post_market"))
-        self.assertEqual(result, [], f"AAPL scenario failed: {result}")
+        self.assertIn("credit_put_spread", result,
+                      f"AAPL scenario failed: expected RULE2_CREDIT, got {result}")
 
     def test_scenario_pltr_eda4_iv100_rule_earnings_high_iv(self):
-        """PLTR: eda=4, iv_rank=100 -> RULE_EARNINGS_HIGH_IV NOT eda=4 (not in DTE window [7,14])."""
+        """PLTR: eda=4, iv_rank=100 -> eda not in RULE_EARNINGS_HIGH_IV [7,14]; RULE2_CREDIT fires."""
         pack = _make_pack(symbol="PLTR", earnings_days_away=4, iv_rank=100,
                           iv_environment="very_expensive", a1_direction="bullish")
         from bot_options_stage2_structures import _route_strategy
@@ -420,7 +420,7 @@ class TestScenarioTraces(unittest.TestCase):
                                      "earnings_dte_blackout": 2,
                                  }},
                                  earnings_calendar_data={"calendar": []})
-        # eda=4 not in RULE1 range [0,2], not in RULE_EARNINGS_HIGH_IV [7,14]
+        # eda=4 not in [7,14] -> RULE_EARNINGS_HIGH_IV doesn't fire
         # RULE2_CREDIT: very_expensive + bullish -> credit_put_spread
         self.assertEqual(result, ["credit_put_spread"],
                          f"PLTR eda=4 scenario failed: {result}")

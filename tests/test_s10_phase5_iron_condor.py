@@ -311,11 +311,11 @@ class TestRuleIron:
         assert "iron_condor" not in result
         assert "iron_butterfly" not in result
 
-    def test_IC16_does_not_fire_earnings_blackout(self):
-        """eda=1 (within 2-day blackout) → RULE1 blocks before RULE_IRON."""
+    def test_IC16_fires_earnings_eda1_with_zero_blackout(self):
+        """eda=1 + earnings_dte_blackout=0 → RULE_IRON fires (no earnings block)."""
         result = self._route({"iv_rank": 80.0, "iv_environment": "expensive",
                                "a1_direction": "neutral", "earnings_days_away": 1})
-        assert result == []
+        assert "iron_condor" in result, f"Expected RULE_IRON for eda=1, got {result}"
 
     def test_IC17_does_not_fire_bearish_below_85(self):
         """iv_rank=72, bearish direction → RULE_IRON requires neutral for iv_rank < 85."""

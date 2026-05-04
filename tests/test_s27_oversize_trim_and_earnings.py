@@ -287,7 +287,7 @@ class TestEarningsEntryAllowed(unittest.TestCase):
 
 # ── Bug 2b: A2 RULE1 binary event block still intact ────────────────────────
 
-class TestA2BinaryEventStillBlocked(unittest.TestCase):
+class TestA2EarningsRouting(unittest.TestCase):
 
     def _make_pack(self, eda: int | None, iv_rank: float = 60.0):
         from datetime import datetime, timezone
@@ -320,7 +320,7 @@ class TestA2BinaryEventStillBlocked(unittest.TestCase):
     def _route(self, eda: int | None, iv_rank: float = 60.0) -> list:
         from bot_options_stage2_structures import _route_strategy
         cfg = {"a2_router": {
-            "earnings_dte_blackout": 2,
+            "earnings_dte_blackout": 0,
             "earnings_dte_window": 14,
             "earnings_iv_rank_gate": 70,
             "min_liquidity_score": 0.25,
@@ -341,35 +341,29 @@ class TestA2BinaryEventStillBlocked(unittest.TestCase):
             "short_put_iv_rank_min": 50,
             "iron_iv_rank_min": 50,
             "iron_low_conviction_threshold": 0.6,
-            "earnings_dte_premarket_credit_iv_min": 85,
-            "earnings_dte_premarket_debit_iv_max": 40,
-            "earnings_dte_1_premarket_enabled": True,
-            "earnings_dte_2_enabled": True,
             "macro_event_routing_enabled": True,
             "macro_event_credit_iv_min": 85,
             "macro_event_condor_iv_min": 70,
             "macro_event_debit_iv_max": 70,
         }}
-        # Pass empty calendar so timing resolves to "unknown" (triggers block for eda=0)
         return _route_strategy(
             self._make_pack(eda, iv_rank),
             config=cfg,
             earnings_calendar_data={"calendar": []},
         )
 
-    def test_eda_0_unknown_timing_blocked(self):
-        """eda=0 with unknown timing is a binary event — must return [] (blocked)."""
+    def test_eda_0_routes_normally(self):
+        """eda=0 -> RULE1 removed; routes via IV rules (neutral IV + bullish → RULE6)."""
         result = self._route(eda=0)
-        self.assertEqual(result, [],
-                         f"A2 RULE1 eda=0 should block, got structures: {result}")
+        self.assertNotEqual(result, [],
+                            f"eda=0 should route normally (RULE1 removed), got: {result}")
 
-    def test_eda_1_unknown_timing_routes_as_eda2(self):
-        """eda=1 unknown timing falls through to eda=2 routing — allowed, not a hard block."""
+    def test_eda_1_routes_normally(self):
+        """eda=1 -> RULE1 removed; routes via IV rules."""
         result = self._route(eda=1, iv_rank=60.0)
-        # eda=1 + unknown timing reassigns eda=2 internally → bullish debit_call_spread
         self.assertIsInstance(result, list)
         self.assertNotEqual(result, [],
-                            "eda=1 unknown timing should route, not hard-block like eda=0")
+                            "eda=1 should route normally (RULE1 removed)")
 
     def test_eda_none_not_blocked(self):
         """eda=None (no earnings) → not blocked by RULE1 (falls through to other rules)."""

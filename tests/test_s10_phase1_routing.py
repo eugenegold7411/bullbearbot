@@ -4,7 +4,6 @@ tests/test_s10_phase1_routing.py -- Sprint 10 Phase 1: Earnings-Aware Options Ro
 Tests for:
   - _get_earnings_timing()          : timing helper (PE-T1..T5)
   - _iv_already_crushed()           : crush detector (PE-C1..C4)
-  - _route_strategy() RULE1 fix     : 0 <= eda <= blackout (PE-01..PE-03)
   - _route_strategy() RULE_POST_EARNINGS (PE-04..PE-12)
   - _route_strategy() RULE_EARNINGS_HIGH_IV (PE-13..PE-16)
   - _infer_router_rule_fired()      : new rule labels (PE-17..PE-19)
@@ -148,29 +147,6 @@ class TestIvAlreadyCrushed:
                             os.path.join(str(tmp_path), "bot_options_stage2_structures.py"))
         assert _iv_already_crushed("ONE_T", 50.0) is False
 
-
-# ── RULE1 fix: 0 <= eda <= blackout ──────────────────────────────────────────
-
-class TestRule1Fix:
-    """PE-01..PE-03 -- RULE1 must use 0 <= eda <= blackout."""
-
-    def test_rule1_fires_for_eda_zero(self):  # PE-01
-        pack = MockPack(earnings_days_away=0, iv_environment="neutral")
-        result = _route_strategy(pack, _cfg({"earnings_dte_blackout": 2}))
-        assert result == []
-
-    def test_rule1_fires_for_eda_equal_to_blackout(self):  # PE-02
-        # eda=2 with neutral direction → RULE1 blocks (no directional thesis for earnings play)
-        pack = MockPack(earnings_days_away=2, iv_environment="neutral", a1_direction="neutral")
-        result = _route_strategy(pack, _cfg({"earnings_dte_blackout": 2}))
-        assert result == []
-
-    def test_rule1_does_not_fire_for_negative_eda(self):  # PE-03
-        # eda=-1: earnings happened yesterday; RULE1 must NOT fire
-        # neutral iv + bullish -> RULE6 fires
-        pack = MockPack(earnings_days_away=-1, iv_rank=50.0, iv_environment="neutral")
-        result = _route_strategy(pack, _cfg({"earnings_dte_blackout": 2}))
-        assert result != []
 
 
 # ── RULE_POST_EARNINGS tests ──────────────────────────────────────────────────
@@ -329,10 +305,11 @@ class TestInferRouterRuleFired:
         result = _infer_router_rule_fired(pack, ["credit_put_spread"], cfg)
         assert result == "RULE_EARNINGS_HIGH_IV"
 
-    def test_infers_rule1_for_upcoming_blackout(self):  # PE-19
+    def test_infers_rule8_for_empty_allowed_near_earnings(self):  # PE-19
+        # RULE1 removed: eda=1 near earnings with no qualifying route → RULE8
         pack = MockPack(earnings_days_away=1, iv_rank=50.0, iv_environment="neutral")
         result = _infer_router_rule_fired(pack, [], _cfg({"earnings_dte_blackout": 2}))
-        assert result == "RULE1"
+        assert result == "RULE8"
 
     def test_infers_rule8_when_eda_negative_low_iv(self):
         # eda < 0, iv_rank too low for POST_EARNINGS -> falls to RULE8
@@ -435,13 +412,13 @@ class TestEarningsHighIVEnabled:
                         iv_environment="very_expensive", a1_direction="bearish")
         assert _route_strategy(pack, self._cfg_enabled()) == ["credit_call_spread"]
 
-    def test_ehi04_eda_at_blackout_boundary_blocked_by_rule1(self):
-        """EHI-04: eda=2 <= blackout=2, EHI window is dte_min=7, so RULE1 smart router fires.
-        High IV + bullish → RULE1 routes to credit_put_spread (not blocked)."""
+    def test_ehi04_eda_at_blackout_boundary_routes_via_rule2_credit(self):
+        """EHI-04: eda=2, EHI window is dte_min=7 so EHI misses; RULE1 removed.
+        Very-expensive IV + bullish → RULE2_CREDIT routes to credit_put_spread."""
         pack = MockPack(earnings_days_away=2, iv_rank=95.0,
                         iv_environment="very_expensive", a1_direction="bullish")
         result = _route_strategy(pack, self._cfg_enabled())
-        # eda=2 in [0, blackout=2]: RULE1 fires; iv_rank=95 >= credit_iv_min=85 + bullish
+        # iv_environment=very_expensive → RULE2_CREDIT fires → credit_put_spread
         assert result == ["credit_put_spread"]
 
     def test_ehi05_below_iv_floor_does_not_fire(self):

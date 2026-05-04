@@ -325,63 +325,6 @@ class TestAV06MissingOverridesNonFatal(unittest.TestCase):
         self.assertEqual(result, 4)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# AV-07 — stage2 RULE1 lazy-load also respects overrides
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestAV07Stage2Rule1Override(unittest.TestCase):
-    """_get_upcoming_earnings_timing via the RULE1 lazy-load must see overrides."""
-
-    def test_stage2_lazy_load_merges_overrides(self):
-        """
-        Stage2 RULE1 lazy-loads earnings_calendar.json; the override file must
-        be merged in so that _get_upcoming_earnings_timing finds TSM's timing.
-        """
-        m = _import_stage2()
-
-        tmpdir = tempfile.mkdtemp()
-        market_dir = Path(tmpdir) / "data" / "market"
-        market_dir.mkdir(parents=True)
-        (market_dir / "earnings_calendar.json").write_text(json.dumps({"calendar": []}))
-        (market_dir / "earnings_overrides.json").write_text(json.dumps(
-            {"TSM": {"earnings_date": "2026-07-16", "timing": "post-market"}}
-        ))
-
-        # Simulate the lazy-load block in _route_strategy by calling it via
-        # _get_upcoming_earnings_timing with data the lazy-load would produce.
-        # We patch __file__ so the Path resolution lands in tmpdir.
-        fake_file = str(Path(tmpdir) / "bot_options_stage2_structures.py")
-        cal_data = {}
-        with mock.patch.object(m, "__file__", fake_file):
-            # Exercise the lazy-load by calling the inner helper directly with None.
-            # We force the block to execute by setting earnings_calendar_data=None.
-            import json as _json
-            from pathlib import Path as _Path
-            cal_path = _Path(fake_file).parent / "data" / "market" / "earnings_calendar.json"
-            ovr_path = _Path(fake_file).parent / "data" / "market" / "earnings_overrides.json"
-            cal = _json.loads(cal_path.read_text()) if cal_path.exists() else {}
-            if ovr_path.exists():
-                ovrs = _json.loads(ovr_path.read_text())
-                if isinstance(ovrs, dict) and ovrs:
-                    ovr_syms = {k.upper() for k in ovrs}
-                    merged = [e for e in cal.get("calendar", [])
-                              if (e.get("symbol") or "").upper() not in ovr_syms]
-                    for raw_sym, ovr_data in ovrs.items():
-                        merged.append({
-                            "symbol": raw_sym.upper(),
-                            "earnings_date": ovr_data.get("earnings_date", ""),
-                            "timing": ovr_data.get("timing", "unknown"),
-                            "eps_estimate": None,
-                            "source": ovr_data.get("source", "manual"),
-                        })
-                    cal = dict(cal)
-                    cal["calendar"] = merged
-            cal_data = cal
-
-        timing = m._get_upcoming_earnings_timing("TSM", cal_data)
-        self.assertEqual(timing, "post_market",
-                         "TSM timing from override must be found by stage2 helper")
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # AV-08 — stage2 post-earnings lazy-load respects overrides

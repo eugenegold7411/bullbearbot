@@ -20,7 +20,7 @@ _ET = pytz.timezone("America/New_York")
 _MARKET_OPEN = (9, 25)
 _MARKET_CLOSE = (16, 5)
 
-_DATA_DIR = Path("data")
+_DATA_DIR = Path(__file__).parent / "data"
 _RUNTIME_DIR = _DATA_DIR / "runtime"
 _STATE_FILE = _RUNTIME_DIR / "health_monitor_state.json"
 _DEDUP_WINDOW_MIN = 30

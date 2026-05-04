@@ -864,6 +864,69 @@ def process_idea(
             source_idea=idea,
         )
 
+    # ── REDUCE (compliance trim — partial sell to bring within size limit) ────
+    if act == AccountAction.SELL and idea.intent == "reduce":
+        pos_sym = alpaca_symbol(symbol)
+        pos = (
+            snapshot.position_by_symbol.get(symbol)
+            or snapshot.position_by_symbol.get(pos_sym)
+        )
+        if pos is None:
+            return f"no open position for {symbol} to reduce"
+        if pos.qty <= 0:
+            return f"position qty={pos.qty} for {symbol} — nothing to reduce"
+        if current_price is None or current_price <= 0:
+            return f"reduce {symbol}: current_price unavailable for trim calculation"
+        max_pos_pct    = float(_params(config).get("max_position_pct_capacity", 0.15))
+        total_capacity = snapshot.exposure_dollars + snapshot.buying_power
+        current_qty    = pos.qty if is_crypto(symbol) else float(int(pos.qty))
+        if total_capacity > 0:
+            target_qty = (
+                round(total_capacity * max_pos_pct / current_price, 6)
+                if is_crypto(symbol)
+                else int(total_capacity * max_pos_pct / current_price)
+            )
+        else:
+            target_qty = 0
+        trim_qty = (
+            round(current_qty - target_qty, 6)
+            if is_crypto(symbol)
+            else current_qty - target_qty
+        )
+        if trim_qty <= 0:
+            return (
+                f"reduce {symbol}: position within {max_pos_pct*100:.0f}% limit "
+                f"(target={target_qty}, held={current_qty})"
+            )
+        if trim_qty >= current_qty:
+            log.warning(
+                "[RISK] REDUCE %s: trim_qty=%.4f >= current_qty=%.4f — "
+                "capping to prevent full liquidation",
+                symbol, trim_qty, current_qty,
+            )
+            trim_qty = (
+                (current_qty - 1) if not is_crypto(symbol)
+                else round(current_qty - 0.001, 6)
+            )
+        if trim_qty <= 0:
+            return f"reduce {symbol}: trim_qty={trim_qty:.4f} too small to execute"
+        log.info(
+            "[RISK] APPROVED REDUCE %s trim_qty=%.4f current_qty=%.4f target_qty=%s "
+            "max_pos_pct=%.0f%% total_cap=$%.0f",
+            symbol, trim_qty, current_qty, target_qty, max_pos_pct * 100, total_capacity,
+        )
+        return BrokerAction(
+            symbol=symbol,
+            action=AccountAction.SELL,
+            qty=trim_qty,
+            order_type="market",
+            tier=idea.tier,
+            conviction=_float_to_conviction(idea.conviction, config),
+            catalyst=idea.catalyst or f"compliance trim {symbol}",
+            sector_signal=idea.sector_signal,
+            source_idea=idea,
+        )
+
     # ── CLOSE / SELL ──────────────────────────────────────────────────────────
     if act in (AccountAction.CLOSE, AccountAction.SELL):
         pos_sym = alpaca_symbol(symbol)   # Alpaca position key

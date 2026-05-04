@@ -4,13 +4,19 @@ S7-L2-Earnings — tests for L2 scorer earnings calendar guard.
 Bug: load_calendar_map() returns dict[str, dict]; score_symbol_python expected int.
 Fix: _prepare_cycle_cache() now converts to {sym: days_away_int} via earnings_days_away().
 
+S27 update: earnings proximity penalty removed (score -= 10 and earnings_in_Xd conflict
+were removed). earnings_days_away is now context-only — passed to Sonnet, not used to
+penalise the L2 score.
+
 Tests:
-  E1 — dict entry in earnings_map raises no error; earnings penalty applied
-  E2 — int entry (post-fix format) works unchanged
+  E1 — dict entry in earnings_map raises no error; no crash
+  E2 — int entry (post-fix format) works; no penalty (S27: penalty removed)
   E3 — None entry (symbol not in calendar) — no penalty
   E4 — earnings_map values after fix are all int|None
-  E5 — score penalised correctly when eda <= 2
-  E6 — no penalty when eda > 2
+  E5 — eda=2 does NOT penalise score (S27: penalty removed)
+  E6 — eda=3 — no penalty
+  E7 — prepare_cycle_cache builds int|None map (not dict-per-sym)
+  E8 — score with eda=1 equals score without earnings (S27: penalty=0)
 """
 
 from __future__ import annotations
@@ -66,10 +72,12 @@ class TestL2EarningsGuard(unittest.TestCase):
         except TypeError:
             self.fail("score_symbol_python raised TypeError on dict earnings entry")
 
-    # E2 — int entry (correct post-fix format) applies penalty when eda <= 2
-    def test_e2_int_entry_penalty_applied(self):
+    # E2 — int entry (correct post-fix format); S27: no penalty, no conflict injected
+    def test_e2_int_entry_no_crash_no_penalty(self):
         result = _score("NVDA", {"NVDA": 1})
-        self.assertIn("earnings_in_1d", result["conflicts"])
+        self.assertIsInstance(result, dict)
+        self.assertNotIn("earnings_in_1d", result["conflicts"],
+                         "earnings proximity must not inject conflict (S27)")
 
     # E3 — None entry means no earnings in calendar — no penalty
     def test_e3_none_entry_no_penalty(self):
@@ -83,10 +91,11 @@ class TestL2EarningsGuard(unittest.TestCase):
         earnings_conflicts = [c for c in result["conflicts"] if c.startswith("earnings_in_")]
         self.assertEqual(earnings_conflicts, [])
 
-    # E5 — eda = 2 → penalty applied (boundary)
-    def test_e5_eda_2_penalty_applied(self):
+    # E5 — eda = 2 → S27: no penalty, no conflict
+    def test_e5_eda_2_no_penalty(self):
         result = _score("NVDA", {"NVDA": 2})
-        self.assertIn("earnings_in_2d", result["conflicts"])
+        self.assertNotIn("earnings_in_2d", result["conflicts"],
+                         "earnings proximity must not inject conflict (S27)")
 
     # E6 — eda = 3 → no penalty
     def test_e6_eda_3_no_penalty(self):
@@ -105,13 +114,12 @@ class TestL2EarningsGuard(unittest.TestCase):
         bad = {k: v for k, v in day_map.items() if not isinstance(v, (int, type(None)))}
         self.assertEqual(bad, {}, f"Non-int values in earnings_map: {bad}")
 
-    # E8 — score penalty is -10 points (regression guard)
-    def test_e8_penalty_magnitude(self):
-        # Score with eda=1 vs eda=None — difference should be >= 10
+    # E8 — S27: score with eda=1 must equal score without earnings (no penalty)
+    def test_e8_no_penalty_magnitude(self):
         base = _score("NVDA", {})["score"]
-        penalised = _score("NVDA", {"NVDA": 1})["score"]
-        self.assertGreaterEqual(base - penalised, 10,
-            f"Expected >=10 pt penalty, got {base - penalised}")
+        with_earnings = _score("NVDA", {"NVDA": 1})["score"]
+        self.assertEqual(base, with_earnings,
+            f"earnings should not change score (S27): base={base}, with_earnings={with_earnings}")
 
 
 if __name__ == "__main__":

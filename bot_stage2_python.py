@@ -309,12 +309,9 @@ def score_symbol_python(sym: str, md: dict, regime: dict) -> dict:
                     signals.append("morning_brief_medium")
                 break
 
-        # --- Earnings proximity penalty --------------------------------------
+        # --- Earnings proximity (context only — no penalty) ------------------
         earnings_map = _CYCLE_CACHE.get("earnings_map") or {}
         eda = earnings_map.get(sym.upper())
-        if eda is not None and eda <= 2:
-            score -= 10
-            conflicts.append(f"earnings_in_{eda}d")
 
         # --- Insider / congressional activity --------------------------------
         insider_evt = _CYCLE_CACHE.get("insider_evt") or {}

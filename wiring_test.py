@@ -588,6 +588,59 @@ def _run_a1_pipeline() -> None:
         _record("D-11  claude_stop_reasons", "PASS",
                 f"{len(_recorded_stop_reasons)} calls, all end_turn  all: {all_reasons_str}")
 
+    # W-01: trim_never_full_exit — FAIL if reduce intent returns full position qty
+    t = time.monotonic()
+    try:
+        from risk_kernel import process_idea
+        from schemas import (
+            AccountAction,
+            BrokerAction,
+            BrokerSnapshot,
+            Direction,
+            NormalizedPosition,
+            Tier,
+            TradeIdea,
+        )
+
+        _w01_qty   = 133.0
+        _w01_price = 170.0
+        # total_capacity = 149_735  → target_qty = floor(0.15 * 149_735 / 170) = 132
+        # expected trim_qty = 133 - 132 = 1  (not 133)
+        _w01_exposure  = _w01_qty * _w01_price              # $22,625.50
+        _w01_cap       = _w01_exposure / 0.151              # ≈ $149,836 total capacity
+        _w01_bp        = _w01_cap - _w01_exposure           # buying_power portion
+
+        _w01_pos = NormalizedPosition(
+            symbol="GOOGL", alpaca_sym="GOOGL",
+            qty=_w01_qty, avg_entry_price=_w01_price,
+            current_price=_w01_price, market_value=_w01_exposure,
+            unrealized_pl=0.0, unrealized_plpc=0.0, is_crypto_pos=False,
+        )
+        _w01_snap = BrokerSnapshot(
+            positions=[_w01_pos], open_orders=[],
+            equity=_w01_cap, cash=_w01_bp, buying_power=_w01_bp,
+        )
+        _w01_idea = TradeIdea(
+            symbol="GOOGL", action=AccountAction.SELL,
+            intent="reduce", tier=Tier.CORE, conviction=0.62,
+            direction=Direction.BULLISH, catalyst="oversize trim",
+        )
+        _w01_cfg = {"parameters": {"max_position_pct_capacity": 0.15}}
+        _w01_result = process_idea(_w01_idea, _w01_snap, None, _w01_cfg, _w01_price)
+        if not isinstance(_w01_result, BrokerAction):
+            _record("W-01  trim_never_full_exit", "FAIL",
+                    f"process_idea rejected reduce: {_w01_result}", time.monotonic() - t)
+        elif _w01_result.qty >= _w01_qty:
+            _record("W-01  trim_never_full_exit", "FAIL",
+                    f"trim_qty={_w01_result.qty} >= full_position={_w01_qty} — "
+                    "reduce would liquidate entire position", time.monotonic() - t)
+        else:
+            _record("W-01  trim_never_full_exit", "PASS",
+                    f"trim_qty={_w01_result.qty} < full_position={_w01_qty}",
+                    time.monotonic() - t)
+    except Exception:
+        _record("W-01  trim_never_full_exit", "FAIL", traceback.format_exc(limit=3))
+
 
 # ---------------------------------------------------------------------------
 # A2 pipeline

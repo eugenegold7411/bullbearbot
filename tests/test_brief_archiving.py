@@ -122,18 +122,22 @@ def test_br04_save_calls_append(tmp_path):
 # ── BR-05: files older than 14 days are pruned ───────────────────────────────
 
 def test_br05_old_files_pruned(tmp_path):
+    from zoneinfo import ZoneInfo
+
     import morning_brief as mb
 
     briefs_dir = tmp_path / "briefs"
     briefs_dir.mkdir()
 
-    # Create a 15-day-old file
-    old_date = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
+    et = ZoneInfo("America/New_York")
+
+    # Create a 15-day-old file (use ET to match production pruning logic)
+    old_date = (datetime.now(et) - timedelta(days=15)).strftime("%Y%m%d")
     old_file = briefs_dir / f"morning_brief_{old_date}.json"
     old_file.write_text(json.dumps({"date": old_date, "updates": []}))
 
     # Create a 1-day-old file (should be kept)
-    recent_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    recent_date = (datetime.now(et) - timedelta(days=1)).strftime("%Y%m%d")
     recent_file = briefs_dir / f"morning_brief_{recent_date}.json"
     recent_file.write_text(json.dumps({"date": recent_date, "updates": []}))
 

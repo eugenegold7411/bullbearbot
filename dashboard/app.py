@@ -3545,7 +3545,14 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
         'padding:2px 7px;border-radius:var(--bbb-r-1)">' + lifecycle + '</span>'
     )
 
-    dp = (dec.get("debate_parsed") or {}) if dec else {}
+    # Prefer debate data persisted directly on the structure (Fix 1); fall back to
+    # the decision-file lookup for any structure created before the persistence fix.
+    _struct_debate = struct.get("debate") or {}
+    _debate_backfill = bool(_struct_debate.get("backfill_note"))
+    if _struct_debate and not _debate_backfill:
+        dp = _struct_debate
+    else:
+        dp = (dec.get("debate_parsed") or {}) if dec else {}
     if not isinstance(dp, dict):
         dp = {}
     conf = dp.get("confidence")
@@ -3605,8 +3612,26 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
         chips_parts.append('<span style="' + chip_sty + '">' + str(a1_conv) + '</span>')
     chips_html = " ".join(chips_parts)
 
-    raw_debate = (dec.get("debate_output_raw") or "") if dec else ""
-    sections = _a2_parse_debate(raw_debate)
+    # Build per-agent text from structured debate data.
+    # Bounded debate is a single synthesis — map reasons→DIRECTIONAL ADVOCATE
+    # and key_risks→RISK OFFICER; other agents show "—" (no per-role text available).
+    _reasons_snip = _a2_snip(str(reasons), 2) if reasons else ""
+    _risks_snip = " · ".join(str(r) for r in key_risks[:2]) if key_risks else ""
+    if _debate_backfill:
+        _reasons_snip = "debate data not available — predates persistence fix"
+    _structured_sections = {
+        "DIRECTIONAL ADVOCATE": _reasons_snip,
+        "VOL ANALYST":          "",
+        "TAPE SKEPTIC":         "",
+        "RISK OFFICER":         _risks_snip,
+    }
+    # Fall back to raw-text parse for legacy decision-file path (pre-fix structures)
+    if not _struct_debate or _debate_backfill:
+        raw_debate = (dec.get("debate_output_raw") or "") if dec else ""
+        _parsed_sections = _a2_parse_debate(raw_debate)
+        for _ak in ("DIRECTIONAL ADVOCATE", "VOL ANALYST", "TAPE SKEPTIC", "RISK OFFICER"):
+            if _parsed_sections.get(_ak):
+                _structured_sections[_ak] = _parsed_sections[_ak]
 
     _agent_cfgs = [
         ("DIRECTIONAL ADVOCATE", "#378ADD", "#185FA5"),
@@ -3617,7 +3642,7 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
     per_agent = vote["per_agent"]
     debate_cards_html = ""
     for agent_key, border_col, name_col in _agent_cfgs:
-        agent_text = sections.get(agent_key, "")
+        agent_text = _structured_sections.get(agent_key, "")
         snip = _a2_snip(agent_text, 2) if agent_text else "—"
         av = per_agent.get(agent_key, "FLAG")
         if av == "PROCEED":
@@ -3688,6 +3713,14 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
         if occ in occ_pnl:
             net_pnl += occ_pnl[occ]
             matched = True
+
+    # Fall back to persisted pnl_unrealized snapshot when live Alpaca match fails.
+    if not matched and struct.get("pnl_unrealized") is not None:
+        try:
+            net_pnl = float(struct["pnl_unrealized"])
+            matched = True
+        except (TypeError, ValueError):
+            pass
 
     breakeven = sc.get("breakeven")
     payoff_html = _a2_payoff_bar_html(max_loss, max_profit, breakeven)

@@ -1,7 +1,7 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-04 (end-of-session health check + weekly review)
+Last updated: 2026-05-04 (S24: blocked_symbols guard)
 
 ---
 
@@ -117,9 +117,8 @@ Agent 6 parameter changes already applied to strategy_config.json on VPS:
 - max_weekly_drawdown_pct: 0.035, max_daily_drawdown_pct: 0.025
 - max_positions: 30, margin_sizing_multiplier: 4.0
 
-IMPORTANT: blocked_symbols ['QCOM'] must persist through weekly review config writes.
-Agent 6's final write removed it on 2026-05-04. Must add guard in weekly_review.py
-to preserve blocked_symbols on each config update.
+RESOLVED: blocked_symbols guard added (S24 c45da26). QCOM restored to server config.
+_merge_blocked_symbols() now enforces append-only semantics at both write paths.
 
 ---
 
@@ -148,6 +147,7 @@ in the GitHub step summary without needing log downloads.
 
 | Commit  | What |
 |---------|------|
+| c45da26 | S24: blocked_symbols append-only guard in weekly_review.py — _merge_blocked_symbols() helper; Phase 1 + Phase 3b guards; 6 new tests; QCOM restored to server config |
 | 09a9592 | S23: Wiring test schema validation — 23-check suite (17→23); D-04b/D-05b/D-06b/D-09b/D-11/E-07b; WARN status; 32 unit tests |
 | 41f5bdc | S22: Wiring test lane: python wiring_test.py / scheduler --dry-run-wiring; 17/17 PASS |
 | e966edd | fix(lint): remove unused imports in test_signal_quality_fixes.py — unblocks CI lint step |

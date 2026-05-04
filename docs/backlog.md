@@ -205,6 +205,7 @@ in the GitHub step summary without needing log downloads.
 
 | Commit  | What |
 |---------|------|
+| ab75de3 | S25: MEDIUM/LOW silent failure remediation #18–#29 — _fire_safety_alert() in 5 modules; 9 MEDIUM upgrades (log.error + WhatsApp); 2 LOW upgrades (log.error only); bars_save was debug level; 29 new tests; 3033 passing |
 | c45da26 | S24: blocked_symbols append-only guard in weekly_review.py — _merge_blocked_symbols() helper; Phase 1 + Phase 3b guards; 6 new tests; QCOM restored to server config |
 | 09a9592 | S23: Wiring test schema validation — 23-check suite (17→23); D-04b/D-05b/D-06b/D-09b/D-11/E-07b; WARN status; 32 unit tests |
 | 41f5bdc | S22: Wiring test lane: python wiring_test.py / scheduler --dry-run-wiring; 17/17 PASS |

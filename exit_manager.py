@@ -289,6 +289,7 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
         target_price      = None
         target_oid        = None
         any_sell_oid      = None  # fallback for long positions: any sell order counts as protection
+        has_oco_tp        = False  # True when an OCO limit-sell guarantees a stop leg exists
 
         # Protective orders are buy-side for shorts, sell-side for longs.
         protective_side = "buy" if is_short else "sell"
@@ -312,6 +313,7 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
                     stop_oid          = str(o.id)
                     stop_order_status = o_status
             elif o_type == "limit" and not is_short:
+                o_class = str(getattr(o, "order_class", "")).lower().split(".")[-1]
                 lp = getattr(o, "limit_price", None)
                 if lp:
                     lp_f = float(lp)
@@ -319,6 +321,16 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
                     if lp_f > cur_price * 0.99:
                         target_price = float(lp)
                         target_oid   = str(o.id)
+                        if o_class == "oco":
+                            has_oco_tp = True
+                            # OCO stop leg may be in o.legs — extract if available
+                            for _leg in (getattr(o, "legs", None) or []):
+                                _leg_sp = getattr(_leg, "stop_price", None)
+                                if _leg_sp and stop_price is None:
+                                    stop_price        = float(_leg_sp)
+                                    stop_oid          = str(getattr(_leg, "id", o.id))
+                                    stop_order_status = str(getattr(_leg, "status", "")).lower().split(".")[-1]
+                                    break
                     elif stop_price is None:
                         # Below-market sell limit (bracket stop-limit leg) — treat as stop
                         stop_price = lp_f
@@ -332,17 +344,28 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
         elif stop_price:
             status = "partial"
         elif target_price and not stop_price:
-            # BUG-009: take-profit limit is visible but no stop found in open-order
-            # queries. Alpaca bracket stop-loss children use a non-"open" OCA status
-            # (held/accepted) and are invisible to status=OPEN queries. Flag as
-            # "tp_only" so refresh_exits_for_position() cancels the TP and places a
-            # SIMPLE stop instead.
-            log.warning(
-                "[EXIT_MGR] %s: take-profit order %s visible but no stop in "
-                "open orders — status=tp_only (will cancel TP and place SIMPLE stop)",
-                sym, target_oid,
-            )
-            status = "tp_only"
+            if has_oco_tp:
+                # OCO limit-sell guarantees a stop leg exists in the same OCA group.
+                # Stop may not be individually visible yet (Alpaca indexing lag) — treat
+                # as protected so repairs don't fire and cancel the valid OCO order.
+                log.info(
+                    "[EXIT_MGR] %s: OCO order %s — stop leg not yet individually visible"
+                    ", treating as protected",
+                    sym, target_oid,
+                )
+                status = "protected"
+            else:
+                # BUG-009: take-profit limit is visible but no stop found in open-order
+                # queries. Alpaca bracket stop-loss children use a non-"open" OCA status
+                # (held/accepted) and are invisible to status=OPEN queries. Flag as
+                # "tp_only" so refresh_exits_for_position() cancels the TP and places a
+                # SIMPLE stop instead.
+                log.warning(
+                    "[EXIT_MGR] %s: take-profit order %s visible but no stop in "
+                    "open orders — status=tp_only (will cancel TP and place SIMPLE stop)",
+                    sym, target_oid,
+                )
+                status = "tp_only"
         elif any_sell_oid:
             # Found a sell order we couldn't classify (e.g., bracket leg with
             # unexpected type) — still counts as protection; skip refresh.

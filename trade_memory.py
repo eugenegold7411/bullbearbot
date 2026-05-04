@@ -815,6 +815,24 @@ def get_collection_stats() -> dict:
                 "scr_total": 0, "path": _DB_PATH}
 
 
+def delete_by_vector_id(vector_id: str) -> None:
+    """
+    Delete a record from all three tiers by its vector ID.
+    Used by the wiring test to clean up synthetic records after verification.
+    Non-fatal — logs warning on failure but never raises.
+    """
+    if not vector_id:
+        return
+    short, medium, long_ = _get_collections()
+    for coll in (short, medium, long_):
+        if coll is None:
+            continue
+        try:
+            coll.delete(ids=[vector_id])
+        except Exception as exc:
+            log.warning("trade_memory: delete_by_vector_id failed for %s: %s", vector_id, exc)
+
+
 # ===========================================================================
 # Scratchpad cold storage — three-tier ChromaDB (scratchpad_scenarios_*)
 #

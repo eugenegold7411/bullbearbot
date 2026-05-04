@@ -2578,11 +2578,20 @@ def _maybe_run_readiness_check(dry_run: bool = False) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="24/7 trading bot scheduler")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--dry-run-wiring",
+        action="store_true",
+        help="Run full A1/A2 pipeline with synthetic data; no real orders; cleanup after",
+    )
     args = parser.parse_args()
 
-    try:
-        run(dry_run=args.dry_run)
-    except KeyboardInterrupt:
-        log.info("Scheduler stopped by user")
-        print("\n[scheduler] Stopped.")
+    if args.dry_run_wiring:
+        from wiring_test import run_wiring_test
+        run_wiring_test()
+    else:
+        try:
+            run(dry_run=args.dry_run)
+        except KeyboardInterrupt:
+            log.info("Scheduler stopped by user")
+            print("\n[scheduler] Stopped.")
 

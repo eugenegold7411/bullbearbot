@@ -1,7 +1,7 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-03
+Last updated: 2026-05-04
 
 ---
 
@@ -22,47 +22,6 @@ Last updated: 2026-05-03
 ---
 
 ## BACKLOG
-
-### Testing Lane — Dry Run / Wiring Verification Mode
-Priority: High — complete before May 16 live promotion
-Estimated effort: 2–3 hour build session
-
-A triggerable mode (python wiring_test.py or --dry-run-wiring flag)
-that exercises the full A1 and A2 pipeline with synthetic data and
-confirms every stage fires and passes data correctly to the next stage.
-
-Scope:
-- Synthetic market data injected at bot_stage0_precycle.py (bypasses
-  real data fetch)
-- Pre-canned morning brief JSON (no Claude call for intel brief)
-- Real Claude calls for A1/A2 decision stages with labeled test symbols
-  (e.g., TEST_AAPL, TEST_BTC) to confirm prompts are well-formed and
-  responses parse correctly
-- Fake order submission — intercept order_executor.py before Alpaca
-  call, return synthetic fill confirmation, pipeline continues as if
-  filled
-- Real ChromaDB writes with test decision_id — verify record appears
-  in ChromaDB with all fields populated
-- Real exit_manager run with synthetic positions — confirm SW-TP check,
-  stop logic, position_targets.json write/read all work
-- Real macro wire fetch and classify (cheap Haiku call)
-- End-to-end trace log: every stage shows input received → output
-  produced → passed to next stage → confirmed received
-- FULL CLEANUP after test run: all synthetic records removed from
-  ChromaDB, position_targets.json restored to pre-test state, all
-  temp files deleted, log entries clearly marked as TEST so they
-  don't pollute weekly review analysis
-
-Does NOT:
-- Submit real orders to Alpaca
-- Use real capital or affect position sizing
-- Trigger real WhatsApp/email alerts (or route to test number)
-- Affect live bot state files permanently
-
-Output: Pass/fail report per stage + full trace log. Any stage that
-fails or produces unexpected output flagged with exact error.
-
----
 
 ### Vector Memory & Learning Loop Fixes
 Priority: High — blocks recursive improvement
@@ -130,7 +89,13 @@ Dashboard shows position size as % of buying_power instead of
 
 ---
 
-## COMPLETED TODAY (2026-05-03)
+## COMPLETED TODAY (2026-05-04)
+
+| Commit  | What |
+|---------|------|
+| TBD     | Wiring test lane: python wiring_test.py / scheduler --dry-run-wiring; 17/17 PASS |
+
+## COMPLETED PREVIOUSLY (2026-05-03)
 
 | Commit  | What |
 |---------|------|

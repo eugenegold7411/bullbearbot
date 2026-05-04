@@ -441,6 +441,7 @@ def eligibility_check(
     Hard gates — returns rejection reason string, or None if eligible.
 
     Checks (in order):
+     -2. Wiring test guard — rejects any symbol starting with TEST_
      -1. Blocked symbols (BUY only) — config.parameters.blocked_symbols
       0. Time-bound action block (same-day mandatory exits)
       1. VIX halt (> 35)
@@ -453,6 +454,10 @@ def eligibility_check(
     act    = idea.action
     symbol = normalize_symbol(idea.symbol)
     crypto = is_crypto(symbol)
+
+    # ── -2. Wiring test synthetic symbols ─────────────────────────────────────
+    if symbol.startswith("TEST_"):
+        return f"wiring_test_symbol: {symbol} is a synthetic test symbol"
 
     # ── -1. Blocked symbols (BUY only) ────────────────────────────────────────
     if act == AccountAction.BUY:

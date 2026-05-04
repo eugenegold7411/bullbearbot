@@ -696,11 +696,11 @@ def run_allocator_shadow(
     try:
         now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-        # 1. Build held-symbol set
+        # 1. Build held-symbol set (exclude both longs and shorts from candidate pool)
         held_symbols: set[str] = set()
         for pos in positions:
             try:
-                if float(pos.qty) > 0:
+                if float(pos.qty) != 0:
                     held_symbols.add(pos.symbol)
             except Exception:
                 pass

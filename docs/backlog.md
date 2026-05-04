@@ -133,6 +133,8 @@ COMPLETED — commit 408e7f6
 
 | Commit  | What |
 |---------|------|
+| —       | Killed /tmp/alpaca_watcher2.py (PID 42920) — manual debug script from May 1, was polling A2 account with output going nowhere. Removed both v1 and v2 from /tmp. |
+| ec7e5f9 | fix(market-data): add missing pandas_ta import — restores RSI and MACD for all signals (crypto + equity); wiring test D-04c hard FAIL on RSI=?; 8 new CS tests; 2996 passing; 24/24 wiring PASS |
 | 408e7f6 | feat(weekly-review): Agent 6 config write guards A–I — _PARAM_READONLY frozenset (6 booleans + 4 arch fields); 9 unguarded numerics + max_day_trades added to _NUMERIC_PARAM_FIELDS/_PARAM_RANGES; nested-dict/list/enum guards in extractor; _validate_signal_source_weights(); active_strategy + director_notes.priority enum guards at both Phase 1 + Phase 3b write sites; 15 new tests; 3048 passing |
 | b00b0df | fix(test): ET timezone in test_br05_old_files_pruned — fixes Ubuntu CI failure (naive datetime.now() produced UTC date, off by 1 day vs ET pruning cutoff) |
 | ab75de3 | S25: MEDIUM/LOW silent failure remediation #18–#29 — _fire_safety_alert() in 5 modules; 9 MEDIUM upgrades (log.error + WhatsApp); 2 LOW upgrades (log.error only); bars_save was debug level; 29 new tests; 3033 passing |

@@ -5521,6 +5521,7 @@ class TestSuite24DivergenceC7(unittest.TestCase):
                 # Seed _fill_seen with expired timestamp so grace window is already elapsed.
                 import time as _time
                 _div_mod._fill_seen["GLD"] = _time.time() - 200
+                _div_mod._protection_miss_cycles["GLD"] = 1  # simulate first post-grace miss already logged
                 events = _div_mod.detect_protection_divergence(
                     account="A1_E2E_TEST",
                     positions=[MockPosition("GLD", 800)],

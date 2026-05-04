@@ -137,6 +137,7 @@ class TestProtectionDivergenceGraceWindow(unittest.TestCase):
         # Reset module-level grace-window state before each test so tests
         # don't bleed into each other.
         divergence._fill_seen.clear()
+        divergence._protection_miss_cycles.clear()
 
     def _call(self, positions, open_orders, grace_seconds=120.0):
         import divergence
@@ -165,16 +166,19 @@ class TestProtectionDivergenceGraceWindow(unittest.TestCase):
         self.assertEqual(events, [])
 
     def test_grace_expired_fires_event(self):
-        """Grace window expired → protection_missing event fires."""
+        """Grace expired + 2nd consecutive post-grace cycle → protection_missing fires."""
         import divergence
         divergence._fill_seen["AAPL"] = time.time() - 200  # 200s > 120s grace
+        divergence._protection_miss_cycles["AAPL"] = 1  # simulate first post-grace miss already logged
         events = self._call([_make_position("AAPL")], open_orders=[],
                             grace_seconds=120.0)
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].event_type, "protection_missing")
 
     def test_zero_grace_fires_immediately(self):
-        """grace_seconds=0 → first cycle with no stop fires immediately."""
+        """grace_seconds=0 → fires on 2nd consecutive cycle (no time gate, but miss threshold still applies)."""
+        import divergence
+        divergence._protection_miss_cycles["AAPL"] = 1  # simulate first miss already logged
         events = self._call([_make_position("AAPL")], open_orders=[],
                             grace_seconds=0.0)
         self.assertEqual(len(events), 1)
@@ -212,9 +216,10 @@ class TestProtectionDivergenceGraceWindow(unittest.TestCase):
         """PENDING_REPLACE stop is excluded from stop_map — existing behaviour unchanged."""
         import divergence
         pending_order = _make_stop_order("AAPL", status="pending_replace")
-        # With grace_seconds=0 and PENDING_REPLACE filtered out → event fires
-        # (no actual stop visible)
+        # With grace elapsed and miss counter at 1 → event fires on 2nd miss
+        # (no actual stop visible after PENDING_REPLACE is filtered)
         divergence._fill_seen["AAPL"] = time.time() - 200
+        divergence._protection_miss_cycles["AAPL"] = 1  # simulate first post-grace miss already logged
         events = self._call([_make_position("AAPL")], open_orders=[pending_order],
                             grace_seconds=0.0)
         self.assertEqual(len(events), 1)

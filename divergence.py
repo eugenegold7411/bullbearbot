@@ -116,6 +116,7 @@ EVENT_TYPES = [
 # protection_missing HALT event. _fill_seen tracks when each symbol was first
 # observed without a stop so we can skip the event during the propagation window.
 _fill_seen: dict[str, float] = {}   # symbol → epoch of first no-stop detection
+_protection_miss_cycles: dict[str, int] = {}  # symbol → consecutive unprotected cycles past grace
 
 # ---------------------------------------------------------------------------
 # Section 2 — Event log
@@ -747,6 +748,9 @@ def detect_protection_divergence(
         for sym in list(_fill_seen.keys()):
             if sym not in current_syms:
                 del _fill_seen[sym]
+        for sym in list(_protection_miss_cycles.keys()):
+            if sym not in current_syms:
+                del _protection_miss_cycles[sym]
 
         # Build stop order map
         stop_map: dict[str, list] = {}
@@ -788,6 +792,17 @@ def detect_protection_divergence(
                     )
                     continue   # within grace; don't fire yet
 
+                # Require 2 consecutive post-grace cycles before firing.
+                # Gives the OCA retry one full cycle to cancel + re-close
+                # without triggering a spurious HALT.
+                _protection_miss_cycles[sym] = _protection_miss_cycles.get(sym, 0) + 1
+                if _protection_miss_cycles[sym] < 2:
+                    log.warning(
+                        "[DIV] %s: no stop (miss %d/2) — deferring HALT one cycle for OCA retry",
+                        sym, _protection_miss_cycles[sym],
+                    )
+                    continue
+
                 # Grace expired (or grace_seconds=0) — fire the event
                 event_type = (
                     "protection_missing" if size_usd > 2000
@@ -821,6 +836,7 @@ def detect_protection_divergence(
                 # Stop exists — clear any grace tracking so that if this position
                 # ever loses its stop in a future cycle we detect it promptly.
                 _fill_seen.pop(sym, None)
+                _protection_miss_cycles.pop(sym, None)
 
                 if len(pos_stops) > 1:
                     # Multiple stops — only flag as duplicate if total stop qty

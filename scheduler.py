@@ -1748,6 +1748,7 @@ def run(dry_run: bool = False) -> None:
     _ensure_account_modes_initialized()
     try:
         import health_monitor as _hm  # noqa: PLC0415
+        _hm.verify_email_config()
         _hm.run_health_checks(dry_run=dry_run)
         log.info("[HEALTH] Startup health check complete")
     except Exception as _hm_exc:

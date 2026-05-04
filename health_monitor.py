@@ -103,6 +103,30 @@ def _send_whatsapp(message: str) -> None:
         log.error("[HEALTH] WhatsApp send failed: %s", exc)
 
 
+def _resolved_from_email() -> str:
+    """Return the verified from-address, checking ALERT_FROM_EMAIL then SENDGRID_FROM_EMAIL."""
+    return (
+        os.environ.get("ALERT_FROM_EMAIL")
+        or os.environ.get("SENDGRID_FROM_EMAIL")
+        or "eugene.gold@gmail.com"
+    )
+
+
+def verify_email_config() -> None:
+    """Warn at startup if email is misconfigured. Fast static check — no API call."""
+    if not os.environ.get("SENDGRID_API_KEY"):
+        log.warning("[HEALTH] SENDGRID_API_KEY not set — email alerts will be silently skipped")
+    from_addr = _resolved_from_email()
+    if from_addr == "alerts@bullbearbot.ai":
+        log.warning(
+            "[HEALTH] from-address is alerts@bullbearbot.ai which is not a verified "
+            "SendGrid Sender Identity — set ALERT_FROM_EMAIL or SENDGRID_FROM_EMAIL "
+            "to a verified address to enable email alerts"
+        )
+    else:
+        log.debug("[HEALTH] email config OK — from=%s", from_addr)
+
+
 def _send_email(subject: str, body: str) -> None:
     api_key = os.environ.get("SENDGRID_API_KEY", "")
     if not api_key:
@@ -113,7 +137,7 @@ def _send_email(subject: str, body: str) -> None:
         from sendgrid.helpers.mail import Mail
         sg = sendgrid.SendGridAPIClient(api_key=api_key)
         msg = Mail(
-            from_email=os.environ.get("ALERT_FROM_EMAIL", "alerts@bullbearbot.ai"),
+            from_email=_resolved_from_email(),
             to_emails=os.environ.get("ALERT_TO_EMAIL", "eugene.gold@gmail.com"),
             subject=subject,
             plain_text_content=body,
@@ -426,6 +450,68 @@ def _check_chromadb() -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# Check 9 — Earnings calendar staleness
+# ---------------------------------------------------------------------------
+
+def _check_earnings_calendar(now_et: datetime) -> CheckResult:
+    name = "earnings_calendar"
+    cal_path = _DATA_DIR / "market" / "earnings_calendar.json"
+    try:
+        if not cal_path.exists():
+            return CheckResult(name=name, ok=False, severity="CRITICAL",
+                               message="earnings_calendar.json missing — signal scorer has no earnings context")
+
+        mtime = cal_path.stat().st_mtime
+        age_h = (datetime.now(timezone.utc) - datetime.fromtimestamp(mtime, tz=timezone.utc)).total_seconds() / 3600
+
+        try:
+            d = json.loads(cal_path.read_text())
+            calendar = d.get("calendar", []) if isinstance(d, dict) else []
+            today_str = now_et.strftime("%Y-%m-%d")
+            today_entries = [e for e in calendar if str(e.get("earnings_date", ""))[:10] == today_str]
+            total_entries = len(calendar)
+        except Exception:
+            return CheckResult(name=name, ok=False, severity="CRITICAL",
+                               message=f"earnings_calendar.json unreadable — age {age_h:.1f}h")
+
+        if _is_market_hours(now_et):
+            stale_h, stale_sev = 6.0, "CRITICAL"
+        else:
+            stale_h, stale_sev = 18.0, "WARNING"
+
+        if age_h > stale_h:
+            return CheckResult(
+                name=name, ok=False, severity=stale_sev,
+                message=(
+                    f"[HEALTH] earnings_calendar stale: {age_h:.1f}h old, "
+                    f"{len(today_entries)} entries today. "
+                    "Signal scorer running without earnings context — entries may be missed."
+                ),
+                details={"age_h": age_h, "today_entries": len(today_entries), "total_entries": total_entries},
+            )
+
+        if total_entries == 0:
+            return CheckResult(
+                name=name, ok=False, severity="CRITICAL",
+                message=(
+                    f"[HEALTH] earnings_calendar stale: {age_h:.1f}h old, "
+                    "0 entries today. "
+                    "Signal scorer running without earnings context — entries may be missed."
+                ),
+                details={"age_h": age_h, "today_entries": 0, "total_entries": 0},
+            )
+
+        return CheckResult(
+            name=name, ok=True, severity="OK",
+            message=f"earnings_calendar OK — {age_h:.1f}h old, {len(today_entries)} entries today, {total_entries} total",
+            details={"age_h": age_h, "today_entries": len(today_entries), "total_entries": total_entries},
+        )
+    except Exception as exc:
+        return CheckResult(name=name, ok=False, severity="WARNING",
+                           message=f"error checking earnings_calendar: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -439,6 +525,7 @@ def _run_all_checks(now_et: datetime) -> list[CheckResult]:
         _check_equity_drawdown(now_et),
         _check_a2_stuck_structures(now_et),
         _check_chromadb(),
+        _check_earnings_calendar(now_et),
     ]
 
 

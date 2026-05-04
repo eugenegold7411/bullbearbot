@@ -114,6 +114,7 @@ in the GitHub step summary without needing log downloads.
 
 | Commit  | What |
 |---------|------|
+| 09a9592 | S23: Wiring test schema validation — 23-check suite (17→23); D-04b/D-05b/D-06b/D-09b/D-11/E-07b; WARN status; 32 unit tests |
 | 41f5bdc | S22: Wiring test lane: python wiring_test.py / scheduler --dry-run-wiring; 17/17 PASS |
 | e966edd | fix(lint): remove unused imports in test_signal_quality_fixes.py — unblocks CI lint step |
 

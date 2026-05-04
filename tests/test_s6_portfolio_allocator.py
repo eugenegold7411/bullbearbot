@@ -680,25 +680,27 @@ class TestArtifactStructure:
 # ---------------------------------------------------------------------------
 
 class TestShadowOnlyGuarantee:
-    """Suite 5: allocator never calls execute_all() or execute_reallocate()."""
+    """Suite 5: execute_all only reached via _execute_live_trim; shadow mode never executes."""
 
-    def test_execute_all_never_called(self):
-        """portfolio_allocator must not import order_executor or call execute_all()."""
+    def test_execute_all_only_via_live_trim(self):
+        """execute_all is only reachable through _execute_live_trim (Stage 1 live path)."""
         import ast
         import inspect
         source = inspect.getsource(pa)
-        # Docstring may mention execute_all() as documentation — that's fine.
-        # Check there's no actual call: execute_all( as a Python expression.
         tree = ast.parse(source)
+        # Collect all function defs that contain an execute_all() call
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func = node.func
-                name = (func.attr if isinstance(func, ast.Attribute)
-                        else func.id if isinstance(func, ast.Name) else "")
-                assert name != "execute_all", \
-                    "portfolio_allocator must not call execute_all() — shadow only"
-        assert "order_executor" not in source, \
-            "portfolio_allocator must not import order_executor — shadow only"
+            if isinstance(node, ast.FunctionDef):
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Call):
+                        func = child.func
+                        name = (func.attr if isinstance(func, ast.Attribute)
+                                else func.id if isinstance(func, ast.Name) else "")
+                        if name == "execute_all":
+                            assert node.name == "_execute_live_trim", (
+                                f"execute_all() called from '{node.name}' — "
+                                "only _execute_live_trim is permitted to call it"
+                            )
 
     def test_execute_reallocate_never_called(self, tmp_path):
         positions = [_make_position("XBI", 20, 150, 140)]
@@ -719,11 +721,11 @@ class TestShadowOnlyGuarantee:
 
         mock_realloc.assert_not_called()
 
-    def test_enable_live_is_always_false(self):
+    def test_enable_live_passthrough(self):
         cfg = _base_cfg()
-        cfg["portfolio_allocator"]["enable_live"] = True  # attempt to set live
+        cfg["portfolio_allocator"]["enable_live"] = True
         pa_cfg = pa._get_pa_config(cfg)
-        assert pa_cfg["enable_live"] is False
+        assert pa_cfg["enable_live"] is True
 
     def test_shadow_disabled_returns_none(self, tmp_path):
         cfg = _base_cfg()
@@ -951,9 +953,13 @@ class TestConfigAndFlags:
         # Other defaults unchanged
         assert pa_cfg["enable_live"] is False
 
-    def test_enable_live_always_false_regardless_of_config(self):
+    def test_enable_live_passthrough_from_config(self):
         cfg = {"portfolio_allocator": {"enable_live": True}}
         pa_cfg = pa._get_pa_config(cfg)
+        assert pa_cfg["enable_live"] is True
+
+    def test_enable_live_default_is_false(self):
+        pa_cfg = pa._get_pa_config({})
         assert pa_cfg["enable_live"] is False
 
     def test_shadow_disabled_skips_without_error(self):

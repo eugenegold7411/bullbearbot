@@ -492,8 +492,9 @@ def run_precycle(
     except Exception as _em_exc:
         log.debug("Exit manager failed (non-fatal): %s", _em_exc)
 
-    # 4f. Portfolio allocator shadow (S6-ALLOCATOR)
-    # Runs after pi_data is built. Shadow only — no orders, no execute_all().
+    # 4f. Portfolio allocator (S6-ALLOCATOR)
+    # Runs after pi_data is built. In shadow mode: advisory only.
+    # In live mode (enable_live=True): TRIM actions execute via risk_kernel.
     allocator_output = None
     try:
         import portfolio_allocator as _pa_mod  # noqa: PLC0415
@@ -503,9 +504,11 @@ def run_precycle(
             cfg=cfg,
             session_tier=session_tier,
             equity=equity,
+            snapshot=snapshot,
+            vix=md.get("vix"),
         )
     except Exception as _pa_exc:
-        log.debug("Portfolio allocator shadow failed (non-fatal): %s", _pa_exc)
+        log.debug("Portfolio allocator failed (non-fatal): %s", _pa_exc)
 
     # T-003 final DESYNC gate — synchronous fresh file read at the last possible
     # moment before the cycle commits to executing orders.  Catches any mode

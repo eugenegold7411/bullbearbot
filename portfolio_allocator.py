@@ -129,7 +129,6 @@ def _get_pa_config(cfg: dict) -> dict:
     for k, v in pa.items():
         if k in merged:
             merged[k] = v
-    merged["enable_live"] = False   # hard-override: live disabled this sprint
     return merged
 
 
@@ -663,6 +662,83 @@ def _decide_actions(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Live TRIM execution
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _execute_live_trim(
+    symbol:       str,
+    positions:    list,
+    snapshot,
+    cfg:          dict,
+    session_tier: str,
+    reason:       str,
+    vix:          Optional[float] = None,
+) -> str:
+    """
+    Execute a single TRIM via risk_kernel REDUCE path + execute_all().
+    Returns "ok:{qty}" on success, rejection/error reason string otherwise.
+    Non-fatal — caller logs and continues regardless of return value.
+
+    The REDUCE path trims to max_position_pct_capacity × total_capacity (15%
+    by default). Thesis TRIMs on positions already within that limit are
+    rejected by the kernel and returned as a non-ok reason string; only SIZE
+    TRIMs on genuinely overweight positions will execute in Stage 1.
+    """
+    try:
+        from order_executor import execute_all  # noqa: PLC0415
+        from risk_kernel import process_idea  # noqa: PLC0415
+        from schemas import (  # noqa: PLC0415
+            AccountAction,
+            Direction,
+            Tier,
+            TradeIdea,
+        )
+    except ImportError as exc:
+        return f"import error: {exc}"
+
+    price: Optional[float] = None
+    for pos in positions:
+        try:
+            if pos.symbol == symbol and float(pos.qty) > 0:
+                price = float(pos.current_price)
+                break
+        except Exception:
+            pass
+
+    if price is None or price <= 0:
+        return f"no current_price for {symbol}"
+
+    idea = TradeIdea(
+        symbol=symbol,
+        action=AccountAction.SELL,
+        tier=Tier.CORE,
+        conviction=0.5,
+        direction=Direction.NEUTRAL,
+        catalyst=reason[:120],
+        intent="reduce",
+    )
+
+    result = process_idea(
+        idea=idea,
+        snapshot=snapshot,
+        signal=None,
+        config=cfg,
+        current_price=price,
+        session_tier=session_tier,
+        vix=vix,
+    )
+
+    if isinstance(result, str):
+        return result
+
+    try:
+        execute_all([result])
+        return f"ok:{result.qty}"
+    except Exception as exc:
+        return f"execute_all error: {exc}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -672,16 +748,19 @@ def run_allocator_shadow(
     cfg:          dict,
     session_tier: str = "market",
     equity:       float = 0.0,
+    snapshot=None,
+    vix:          Optional[float] = None,
 ) -> Optional[dict]:
     """
-    Run the portfolio allocator in shadow mode.
+    Run the portfolio allocator (shadow or live Stage 1).
+
+    Shadow mode (enable_live=False): zero execution side effects.
+    Live mode (enable_live=True): TRIM actions execute via risk_kernel REDUCE
+      path. ADD and REPLACE remain advisory (Stage 1). Requires snapshot param.
 
     Consumes pi_data (from build_portfolio_intelligence) + held positions +
     top candidates from signal_scores.json. Writes one JSONL artifact per call.
     Returns the artifact dict, or None if shadow is disabled / fatal error.
-
-    Authority: SHADOW — zero execution side effects. Does not call execute_all().
-    Does not call execute_reallocate(). Output is advisory only.
     """
     pa_cfg = _get_pa_config(cfg)
 
@@ -689,9 +768,11 @@ def run_allocator_shadow(
         log.debug("[ALLOC] enable_shadow=false — shadow allocator skipped")
         return None
 
-    # Hard-wired safety: live mode is never enabled this sprint
     if pa_cfg["enable_live"]:
-        log.warning("[ALLOC] enable_live=True ignored — live allocator disabled this sprint")
+        if snapshot is None:
+            log.warning("[ALLOC] enable_live=True but snapshot=None — falling back to shadow")
+        else:
+            log.info("[ALLOC] live mode active — TRIM actions will execute via risk_kernel")
 
     try:
         now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -725,6 +806,28 @@ def run_allocator_shadow(
             incumbents, candidates, pi_data, cfg, pa_cfg, sizes, eq_val
         )
 
+        # 4a. Live TRIM execution — Stage 1: TRIM only, ADD/REPLACE remain advisory
+        live_trim_results: dict[str, str] = {}
+        if pa_cfg["enable_live"] and snapshot is not None:
+            for act in proposed:
+                if act["action"] != "TRIM":
+                    continue
+                sym = act["symbol"]
+                try:
+                    res = _execute_live_trim(
+                        sym, positions, snapshot, cfg, session_tier,
+                        act.get("reason", f"allocator trim {sym}"),
+                        vix=vix,
+                    )
+                except Exception as _trim_exc:
+                    res = f"error: {_trim_exc}"
+                    log.warning("[ALLOC] LIVE: trim error %s — %s", sym, _trim_exc)
+                live_trim_results[sym] = res
+                if res.startswith("ok:"):
+                    log.info("[ALLOC] LIVE: trimmed %s — %s", sym, res)
+                else:
+                    log.warning("[ALLOC] LIVE: trim rejected %s — %s", sym, res)
+
         # 5. Identify weakest/strongest for summary
         weakest   = incumbents[0]  if incumbents  else None
         strongest = candidates[0]  if candidates  else None
@@ -754,6 +857,7 @@ def run_allocator_shadow(
         # 8. Build artifact
         artifact: dict = {
             "schema_version":        SCHEMA_VERSION,
+            "mode":                  "live" if pa_cfg["enable_live"] else "shadow",
             "timestamp":             now_ts,
             "session_tier":          session_tier,
             "current_holdings_snapshot": [
@@ -776,6 +880,7 @@ def run_allocator_shadow(
             "suppressed_actions":   suppressed,
             "friction_blockers":    [s["suppression_reason"] for s in suppressed],
             "summary":              summary,
+            "live_trim_results":     live_trim_results,
             "config_snapshot": {
                 "replace_score_gap":         pa_cfg["replace_score_gap"],
                 "trim_score_drop":           pa_cfg["trim_score_drop"],
@@ -807,8 +912,9 @@ def run_allocator_shadow(
         _update_shadow_registry(now_ts)
 
         log.info(
-            "[ALLOC] shadow cycle complete — incumbents=%d candidates=%d "
+            "[ALLOC] %s cycle complete — incumbents=%d candidates=%d "
             "hold=%d trim=%d add=%d replace=%d suppressed=%d",
+            "LIVE" if pa_cfg["enable_live"] else "shadow",
             len(incumbents), len(candidates),
             n_hold, n_trim, n_add, n_replace, len(suppressed),
         )
@@ -896,7 +1002,9 @@ def format_allocator_section(output: Optional[dict]) -> str:
             "  (allocator not available this cycle)"
         )
 
-    lines = ["=== PORTFOLIO ALLOCATOR SHADOW (advisory only) ==="]
+    mode  = output.get("mode", "shadow")
+    label = "LIVE" if mode == "live" else "SHADOW"
+    lines = [f"=== PORTFOLIO ALLOCATOR {label} (advisory only) ==="]
 
     weakest  = output.get("weakest_incumbent")
     strongest = output.get("strongest_candidate")
@@ -917,14 +1025,17 @@ def format_allocator_section(output: Optional[dict]) -> str:
     # Show non-HOLD proposed actions
     actions = [p for p in output.get("proposed_actions", []) if p.get("action") != "HOLD"]
     if actions:
-        lines.append("Shadow recommendations (advisory):")
+        lines.append("Allocator recommendations (advisory):")
         for act in actions[:3]:
-            gap_str = f"  gap={act['score_gap']:.0f}" if act.get("score_gap") is not None else ""
+            gap_str  = f"  gap={act['score_gap']:.0f}" if act.get("score_gap") is not None else ""
             exit_str = f"  exit={act['exit_symbol']}" if act.get("exit_symbol") else ""
             lines.append(f"  {act['action']} {act['symbol']}{exit_str}{gap_str}")
     elif output.get("suppressed_actions"):
         blocker = output["suppressed_actions"][0].get("suppression_reason", "")[:100]
-        lines.append(f"No shadow action: {blocker}")
+        lines.append(f"No allocator action: {blocker}")
 
-    lines.append("[SHADOW MODE — do not treat as live order mandate]")
+    if mode == "live":
+        lines.append("[LIVE — TRIM active; ADD/REPLACE advisory only]")
+    else:
+        lines.append("[SHADOW MODE — do not treat as live order mandate]")
     return "\n".join(lines)

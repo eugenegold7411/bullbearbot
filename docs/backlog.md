@@ -1,7 +1,7 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-04
+Last updated: 2026-05-04 (end-of-session health check)
 
 ---
 
@@ -89,11 +89,33 @@ Dashboard shows position size as % of buying_power instead of
 
 ---
 
+### CI Ubuntu Test Failure — Diagnostic Required
+Priority: HIGH — CI was green before S21; now fails at Test step on Ubuntu
+Estimated effort: 30 min–1 hour
+Dependencies: GitHub token (to read CI logs directly)
+
+Tests pass from clean clone on Python 3.12 macOS (2875/0 failures).
+CI fails at Test step on Ubuntu GitHub Actions runner. Not reproducible
+locally. Possible causes:
+- Package binary difference on Ubuntu (protobuf, pandas, chromadb)
+- Ubuntu-specific os/subprocess behavior in a test
+- Flaky test sensitive to timing or ordering on Linux
+
+Investigation steps:
+1. Add GitHub token to enable log download via API
+2. Or: add `pytest -v` flag to CI to expose which test fails in summary
+3. Or: add `--tb=long` to capture full traceback in step summary
+Quick fix option: in workflow, add `--tb=long -r f` to surface failures
+in the GitHub step summary without needing log downloads.
+
+---
+
 ## COMPLETED TODAY (2026-05-04)
 
 | Commit  | What |
 |---------|------|
-| 41f5bdc | Wiring test lane: python wiring_test.py / scheduler --dry-run-wiring; 17/17 PASS |
+| 41f5bdc | S22: Wiring test lane: python wiring_test.py / scheduler --dry-run-wiring; 17/17 PASS |
+| e966edd | fix(lint): remove unused imports in test_signal_quality_fixes.py — unblocks CI lint step |
 
 ## COMPLETED PREVIOUSLY (2026-05-03)
 
@@ -122,3 +144,4 @@ Dashboard shows position size as % of buying_power instead of
 | BUG-015 | OCO on existing positions requires cancel+resubmit with unprotected window | Low |
 | — | Dashboard OVERSIZE display bug (display only) | Low |
 | — | test_scratchpad_memory / test_sprint2_5 ChromaDB failures | Pre-existing |
+| — | CI Ubuntu test failure — passes locally on py3.12 clean clone but fails on Ubuntu runner | Medium |

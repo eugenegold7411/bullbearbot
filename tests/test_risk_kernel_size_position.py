@@ -166,10 +166,10 @@ class TestVIXScaling:
 
 class TestExposureHeadroom:
     def test_headroom_caps_position_below_tier_budget(self, kernel_config):
-        # MEDIUM conviction (0.60): effective cap ≈ equity (min of 1.5x equity, bp)
-        # With equity=100K and existing exposure=90K → headroom=10K
-        # CORE budget=15K → capped to 10K → 100 shares at $100
-        snap = _snapshot(equity=100_000.0, extra_exposure=90_000.0)
+        # MEDIUM conviction (0.60): effective cap = equity × (mult/2) = 100K × 1.5 = 150K
+        # With existing exposure=140K → headroom=10K < CORE budget=15K
+        # → capped to 10K → 100 shares at $100
+        snap = _snapshot(equity=100_000.0, extra_exposure=140_000.0)
         result = size_position(
             _idea(conviction=0.60), snap, kernel_config, current_price=100.0,
         )

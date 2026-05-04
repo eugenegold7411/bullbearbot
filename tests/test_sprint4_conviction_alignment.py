@@ -251,12 +251,14 @@ class TestHighCoreTierBump:
 class TestEffectiveExposureCap:
     def test_reads_config_high_threshold_for_0_68(self, cfg_65):
         """
-        conviction=0.68 >= config.high=0.65 → HIGH path → mult × equity.
-        At current paper account (BP=$116K binds), result = $116K.
+        conviction=0.68 >= config.high=0.65 → HIGH path → equity × mult.
+        bp is no longer a ceiling in _effective_exposure_cap (removed to allow
+        margin accounts to add positions when already leveraged).
+        Result = equity × mult = $102K × 4.0 = $408K.
         """
         snap = _snap()
         cap = _effective_exposure_cap(snap, conviction=0.68, config=cfg_65)
-        assert abs(cap - 116_000.0) < 500, f"Expected $116K (BP bound), got ${cap:,.0f}"
+        assert abs(cap - 408_000.0) < 500, f"Expected $408K (HIGH 4x, no bp ceiling), got ${cap:,.0f}"
 
     def test_medium_conviction_uses_half_mult(self, cfg_65):
         """MEDIUM conviction uses mult/2.0 = 2.0× exposure cap."""

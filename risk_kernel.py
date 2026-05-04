@@ -68,7 +68,7 @@ log = logging.getLogger(__name__)
 
 PDT_FLOOR         = 26_000.0   # never trade below this equity
 MIN_RR_RATIO      = 2.0        # minimum reward/risk
-MAX_OPTIONS_USD   = 5_000.0    # max cost per options trade
+MAX_OPTIONS_USD   = 8_000.0    # max cost per options trade
 
 # VIX band thresholds — overridable via strategy_config.json parameters section.
 # Defaults here match the config values so the kernel is safe with a bare config dict.
@@ -279,14 +279,19 @@ def _effective_exposure_cap(
       >= high_thresh   → mult × equity (full margin)
       >= medium_thresh → (mult / 2.0) × equity (partial margin)
       < medium_thresh  → 1.0× equity (no margin)
-    Hard ceiling: never exceed mult × equity or buying_power.
 
     Defaults (when config absent): high=0.75, medium=0.50, mult=3.0
     — preserving the original hardcoded behavior.
+
+    Note: buying_power is intentionally NOT used as a ceiling here.
+    This cap defines the theoretical portfolio exposure limit by conviction
+    tier; individual trade sizing is bounded by _compute_sizing_basis()
+    which correctly uses buying_power. Capping here at bp collapsed the
+    multiplier to equity whenever the account carried margin, blocking all
+    new entries even when real buying power remained available.
     """
     cfg  = config or {}
     equity = snapshot.equity
-    bp     = max(snapshot.buying_power, equity)  # safety floor
 
     thresholds = _params(cfg).get("margin_sizing_conviction_thresholds", {})
     high_t = float(thresholds.get("high", 0.75))
@@ -304,7 +309,7 @@ def _effective_exposure_cap(
     else:
         cap = equity * 1.0
 
-    return min(cap, equity * mult, bp)
+    return min(cap, equity * mult)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

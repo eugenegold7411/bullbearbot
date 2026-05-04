@@ -1106,7 +1106,8 @@ def validate_claude_decision(data: dict) -> "ClaudeDecision":
     # ── regime_view normalisation ──────────────────────────────────────────────
     regime_raw = str(data.get("regime_view", data.get("regime", "caution"))).lower()
     # Map old regime values to new
-    _regime_map = {"normal": "risk_on", "risk_on": "risk_on", "risk_off": "risk_off",
+    _regime_map = {"normal": "neutral", "neutral": "neutral",
+                   "risk_on": "risk_on", "risk_off": "risk_off",
                    "caution": "caution", "halt": "halt"}
     regime_view = _regime_map.get(regime_raw, "caution")
 

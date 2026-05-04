@@ -643,6 +643,40 @@ def _refresh_exits_locked(
     plan = generate_exit_plan(position, price, strategy_config, conviction, is_short=is_short)
     _protective_side = OrderSide.BUY if is_short else OrderSide.SELL
 
+    # For non-crypto long positions that need both stop AND TP, submit as OCO so
+    # both legs share one OCA group — prevents 40310000 when TP follows standalone stop.
+    # Skip when _skip_tp_resubmit=True (tp_only path already cancelled TP; BUG-009b
+    # OCO repair will upgrade standalone stop → OCO on the next cycle).
+    if not is_short and not _is_crypto(sym) and not _skip_tp_resubmit:
+        try:
+            oco_req = LimitOrderRequest(
+                symbol=sym, qty=qty, side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC,
+                order_class=OrderClass.OCO,
+                take_profit=TakeProfitRequest(limit_price=round(plan["take_profit"], 2)),
+                stop_loss=StopLossRequest(stop_price=round(plan["stop_loss"], 2)),
+            )
+            oco_ord = alpaca_client.submit_order(oco_req)
+            log.info(
+                "[EXIT_MGR] %s: OCO exit submitted — stop=$%.2f  TP=$%.2f  order_id=%s",
+                sym, plan["stop_loss"], plan["take_profit"], oco_ord.id,
+            )
+            log_trade({
+                "event":      "exit_refresh_oco",
+                "symbol":     sym,
+                "reason":     reason,
+                "stop_price": plan["stop_loss"],
+                "target":     plan["take_profit"],
+                "order_id":   str(oco_ord.id),
+            })
+            return True
+        except Exception as _oco_exc:
+            log.warning(
+                "[EXIT_MGR] %s: OCO exit failed (%s) — falling back to standalone stop"
+                " (BUG-009b will upgrade to OCO next cycle)",
+                sym, _oco_exc,
+            )
+
     _last_stop_exc = None
     for _attempt in range(1, 4):
         log.info("[EXIT_MGR] BUG-009 repair: stop placement attempt %d/3 for %s", _attempt, sym)

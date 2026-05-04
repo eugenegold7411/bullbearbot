@@ -249,9 +249,22 @@ class TestSF12TpSubmission(unittest.TestCase):
         Drive _refresh_exits_locked to the TP submission block with a stop that
         succeeds and a TP that raises the given message.  Returns the bool result.
         """
+        # Ensure OrderClass.OCO is defined on whatever stub is in sys.modules so
+        # the OCO fast path is taken consistently across isolated and full-suite runs.
+        _enums = sys.modules.get("alpaca.trading.enums")
+        if _enums and hasattr(_enums, "OrderClass"):
+            if not hasattr(_enums.OrderClass, "OCO"):
+                setattr(_enums.OrderClass, "OCO", "oco")
+
         mock_client = MagicMock()
         stop_order  = MagicMock(id="stop-001")
-        mock_client.submit_order.side_effect = [stop_order, Exception(tp_exc_msg)]
+        # _refresh_exits_locked now tries OCO first (submit_order call #1), falls
+        # back on failure, then places standalone stop (#2) and standalone TP (#3).
+        mock_client.submit_order.side_effect = [
+            Exception("OCO rejected in test"),  # OCO fast path fails → fallback
+            stop_order,                          # standalone stop succeeds
+            Exception(tp_exc_msg),               # standalone TP raises
+        ]
 
         ei     = {"status": "unprotected", "stop_price": None}
         em_cfg = {"refresh_if_stop_stale_pct": 0.05}

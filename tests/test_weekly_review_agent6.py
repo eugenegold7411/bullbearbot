@@ -319,5 +319,52 @@ class TestWhitelistGate(unittest.TestCase):
         self.assertEqual(adj["max_positions"], 15)
 
 
+_merge_blocked_symbols = getattr(_wr_mod, "_merge_blocked_symbols", None)
+_MERGE_AVAILABLE = _merge_blocked_symbols is not None
+
+
+# ── Suite: blocked_symbols guard ──────────────────────────────────────────────
+
+@unittest.skipUnless(_MERGE_AVAILABLE, "weekly_review._merge_blocked_symbols not importable")
+class TestBlockedSymbolsGuard(unittest.TestCase):
+
+    def test_identical_proposed_no_removal(self):
+        merged, removed = _merge_blocked_symbols(["QCOM"], ["QCOM"])
+        self.assertEqual(merged, ["QCOM"])
+        self.assertEqual(removed, [])
+
+    def test_empty_proposed_preserves_existing(self):
+        """Agent 6 sets blocked_symbols: [] → QCOM must survive."""
+        merged, removed = _merge_blocked_symbols(["QCOM"], [])
+        self.assertEqual(merged, ["QCOM"])
+        self.assertEqual(removed, ["QCOM"])
+
+    def test_partial_removal_preserves_all_existing(self):
+        """Agent 6 omits AAPL → both AAPL and QCOM survive."""
+        merged, removed = _merge_blocked_symbols(["QCOM", "AAPL"], ["QCOM"])
+        self.assertIn("QCOM", merged)
+        self.assertIn("AAPL", merged)
+        self.assertEqual(removed, ["AAPL"])
+
+    def test_append_new_symbol_allowed(self):
+        """Agent 6 adds MSFT → QCOM + MSFT both present; no removal."""
+        merged, removed = _merge_blocked_symbols(["QCOM"], ["QCOM", "MSFT"])
+        self.assertIn("QCOM", merged)
+        self.assertIn("MSFT", merged)
+        self.assertEqual(removed, [])
+
+    def test_non_list_proposed_treated_as_empty(self):
+        """Agent 6 returns None or a non-list → existing symbols preserved."""
+        merged, removed = _merge_blocked_symbols(["QCOM"], None)
+        self.assertEqual(merged, ["QCOM"])
+        self.assertEqual(removed, ["QCOM"])
+
+    def test_non_list_existing_treated_as_empty(self):
+        """Corrupt existing value → proposed symbols adopted without crash."""
+        merged, removed = _merge_blocked_symbols(None, ["QCOM"])
+        self.assertIn("QCOM", merged)
+        self.assertEqual(removed, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -210,6 +210,25 @@ def _save_strategy_config(config: dict) -> None:
         log.error("[REVIEW] strategy_config save failed: %s", exc)
 
 
+def _merge_blocked_symbols(current: list, proposed: list) -> tuple[list, list]:
+    """Append-only merge for blocked_symbols.
+
+    Returns (merged, removed) where merged preserves all current symbols plus
+    any new ones in proposed, and removed lists symbols that proposed would have
+    dropped. A non-empty removed list means the caller should log a warning.
+    """
+    if not isinstance(current, list):
+        current = []
+    if not isinstance(proposed, list):
+        proposed = []
+    removed = [s for s in current if s not in proposed]
+    merged = list(current)
+    for sym in proposed:
+        if sym not in merged:
+            merged.append(sym)
+    return merged, removed
+
+
 def _load_global_indices_history(days: int = 7) -> str:
     """
     Load last `days` days of archived global_indices.json snapshots and
@@ -3213,7 +3232,17 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
         _unknown = []
         for key, value in param_adjustments.items():
             if key in _known_keys:
-                config["parameters"][key] = value
+                if key == "blocked_symbols":
+                    _existing = config["parameters"].get("blocked_symbols", [])
+                    _merged, _removed = _merge_blocked_symbols(_existing, value)
+                    if _removed:
+                        log.warning(
+                            "[WEEKLY] Agent 6 attempted to modify blocked_symbols — "
+                            "preserved existing value: %s", _existing,
+                        )
+                    config["parameters"]["blocked_symbols"] = _merged
+                else:
+                    config["parameters"][key] = value
             else:
                 _unknown.append(key)
         if _unknown:
@@ -3348,7 +3377,17 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
             _unknown_final = []
             for _k, _v in final_params.get("parameter_adjustments", {}).items():
                 if _k in _known_keys_final:
-                    config["parameters"][_k] = _v
+                    if _k == "blocked_symbols":
+                        _existing_f = config["parameters"].get("blocked_symbols", [])
+                        _merged_f, _removed_f = _merge_blocked_symbols(_existing_f, _v)
+                        if _removed_f:
+                            log.warning(
+                                "[WEEKLY] Agent 6 attempted to modify blocked_symbols — "
+                                "preserved existing value: %s", _existing_f,
+                            )
+                        config["parameters"]["blocked_symbols"] = _merged_f
+                    else:
+                        config["parameters"][_k] = _v
                 else:
                     _unknown_final.append(_k)
             if _unknown_final:

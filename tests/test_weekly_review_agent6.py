@@ -319,8 +319,16 @@ class TestWhitelistGate(unittest.TestCase):
         self.assertEqual(adj["max_positions"], 15)
 
 
-_merge_blocked_symbols = getattr(_wr_mod, "_merge_blocked_symbols", None)
+_merge_blocked_symbols          = getattr(_wr_mod, "_merge_blocked_symbols", None)
+_validate_signal_source_weights = getattr(_wr_mod, "_validate_signal_source_weights", None)
+_PARAM_READONLY                 = getattr(_wr_mod, "_PARAM_READONLY", frozenset())
+_NESTED_DICT_PARAM_FIELDS       = getattr(_wr_mod, "_NESTED_DICT_PARAM_FIELDS", frozenset())
+_LIST_PARAM_FIELDS              = getattr(_wr_mod, "_LIST_PARAM_FIELDS", frozenset())
+_STRING_ENUM_PARAM_FIELDS       = getattr(_wr_mod, "_STRING_ENUM_PARAM_FIELDS", {})
+_VALID_ACTIVE_STRATEGIES        = getattr(_wr_mod, "_VALID_ACTIVE_STRATEGIES", frozenset())
+_VALID_DIRECTOR_PRIORITY        = getattr(_wr_mod, "_VALID_DIRECTOR_PRIORITY", frozenset())
 _MERGE_AVAILABLE = _merge_blocked_symbols is not None
+_GUARDS_AVAILABLE = _validate_signal_source_weights is not None
 
 
 # ── Suite: blocked_symbols guard ──────────────────────────────────────────────
@@ -364,6 +372,142 @@ class TestBlockedSymbolsGuard(unittest.TestCase):
         merged, removed = _merge_blocked_symbols(None, ["QCOM"])
         self.assertIn("QCOM", merged)
         self.assertEqual(removed, [])
+
+
+# ── Suite: config write guards ────────────────────────────────────────────────
+
+def _make_payload(**param_adjustments) -> str:
+    payload = {
+        "active_strategy": "hybrid",
+        "parameter_adjustments": param_adjustments,
+    }
+    return f"Memo\n\n```json\n{json.dumps(payload)}\n```"
+
+
+@unittest.skipUnless(FUNCTIONS_AVAILABLE and _GUARDS_AVAILABLE, "weekly_review guards not importable")
+class TestConfigWriteGuards(unittest.TestCase):
+
+    # Guard A — boolean read-only
+    def test_boolean_param_session_gate_enforce_dropped(self):
+        """session_gate_enforce must be blocked — safety-critical boolean."""
+        text = _make_payload(session_gate_enforce=False, stop_loss_pct_core=0.03)
+        result = _extract_and_validate_agent6_json(text, "test-bool-gate")
+        self.assertIsNotNone(result)
+        adj = result["parameter_adjustments"]
+        self.assertNotIn("session_gate_enforce", adj)
+        self.assertIn("stop_loss_pct_core", adj)
+
+    def test_boolean_param_margin_authorized_dropped(self):
+        """margin_authorized must be blocked — controls margin usage."""
+        text = _make_payload(margin_authorized=False, max_positions=20)
+        result = _extract_and_validate_agent6_json(text, "test-margin-auth")
+        self.assertIsNotNone(result)
+        adj = result["parameter_adjustments"]
+        self.assertNotIn("margin_authorized", adj)
+        self.assertIn("max_positions", adj)
+
+    def test_boolean_param_catalyst_tag_required_dropped(self):
+        """catalyst_tag_required_for_entry must be blocked."""
+        text = _make_payload(catalyst_tag_required_for_entry=False)
+        result = _extract_and_validate_agent6_json(text, "test-catalyst-gate")
+        self.assertIsNotNone(result)
+        self.assertNotIn("catalyst_tag_required_for_entry", result["parameter_adjustments"])
+
+    # Guard B — underscore note fields
+    def test_underscore_note_field_dropped(self):
+        """Note fields starting with _ must be blocked."""
+        text = _make_payload(**{"_add_conviction_gate_note": "hacked", "max_positions": 20})
+        result = _extract_and_validate_agent6_json(text, "test-note-field")
+        self.assertIsNotNone(result)
+        adj = result["parameter_adjustments"]
+        self.assertNotIn("_add_conviction_gate_note", adj)
+        self.assertIn("max_positions", adj)
+
+    # Guard C — unguarded numerics now in _PARAM_RANGES
+    def test_vix_calm_threshold_out_of_range_dropped(self):
+        """vix_calm_threshold: 999 should be rejected by range check."""
+        text = _make_payload(vix_calm_threshold=999, vix_elevated_threshold=25.0)
+        result = _extract_and_validate_agent6_json(text, "test-vix-range")
+        self.assertIsNotNone(result)
+        adj = result["parameter_adjustments"]
+        self.assertNotIn("vix_calm_threshold", adj)
+        self.assertIn("vix_elevated_threshold", adj)
+
+    def test_add_conviction_gate_range_enforced(self):
+        """add_conviction_gate must be in (0.3, 0.9); 0.0 and 1.0 are outside bounds."""
+        for bad_val in (0.0, 0.1, 0.95, 1.0):
+            text = _make_payload(add_conviction_gate=bad_val)
+            result = _extract_and_validate_agent6_json(text, f"test-acg-{bad_val}")
+            self.assertIsNotNone(result)
+            self.assertNotIn("add_conviction_gate", result["parameter_adjustments"],
+                             f"add_conviction_gate={bad_val} should be rejected")
+
+    def test_max_day_trades_in_range_accepted(self):
+        """max_day_trades_rolling_5day: 3 is in (0, 999) — must be accepted."""
+        text = _make_payload(max_day_trades_rolling_5day=3)
+        result = _extract_and_validate_agent6_json(text, "test-dtrades")
+        self.assertIsNotNone(result)
+        self.assertIn("max_day_trades_rolling_5day", result["parameter_adjustments"])
+
+    # Guard E — nested dict type guard
+    def test_nested_dict_wrong_type_dropped(self):
+        """margin_sizing_multiplier_tiers must be a dict — string value is rejected."""
+        text = _make_payload(margin_sizing_multiplier_tiers="override", max_positions=20)
+        result = _extract_and_validate_agent6_json(text, "test-nested-dict")
+        self.assertIsNotNone(result)
+        adj = result["parameter_adjustments"]
+        self.assertNotIn("margin_sizing_multiplier_tiers", adj)
+        self.assertIn("max_positions", adj)
+
+    # Guard F — list field type guard
+    def test_list_field_wrong_type_dropped(self):
+        """preferred_sessions must be a list — string value is rejected."""
+        text = _make_payload(preferred_sessions="all", max_positions=20)
+        result = _extract_and_validate_agent6_json(text, "test-list-field")
+        self.assertIsNotNone(result)
+        adj = result["parameter_adjustments"]
+        self.assertNotIn("preferred_sessions", adj)
+        self.assertIn("max_positions", adj)
+
+    # Guard G — string enum validation
+    def test_string_enum_invalid_value_dropped(self):
+        """sector_rotation_bias: 'turbo_aggressive' is not in valid set — dropped."""
+        text = _make_payload(sector_rotation_bias="turbo_aggressive", max_positions=20)
+        result = _extract_and_validate_agent6_json(text, "test-enum-invalid")
+        self.assertIsNotNone(result)
+        adj = result["parameter_adjustments"]
+        self.assertNotIn("sector_rotation_bias", adj)
+        self.assertIn("max_positions", adj)
+
+    def test_string_enum_valid_value_accepted(self):
+        """sector_rotation_bias: 'defensive' is in valid set — accepted."""
+        text = _make_payload(sector_rotation_bias="defensive")
+        result = _extract_and_validate_agent6_json(text, "test-enum-valid")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["parameter_adjustments"].get("sector_rotation_bias"), "defensive")
+
+    # Guard H — signal_source_weights validation
+    def test_signal_source_weights_invalid_value_rejected(self):
+        """Numeric value for congressional must be rejected."""
+        clean = _validate_signal_source_weights({"congressional": 999, "macro_wire": "high"}, "test")
+        self.assertNotIn("congressional", clean)
+        self.assertIn("macro_wire", clean)
+
+    def test_signal_source_weights_unknown_key_rejected(self):
+        """Unknown source key must be rejected."""
+        clean = _validate_signal_source_weights({"evil_source": "high", "macro_wire": "low"}, "test")
+        self.assertNotIn("evil_source", clean)
+        self.assertIn("macro_wire", clean)
+
+    # Guard I — active_strategy enum (constant validation)
+    def test_valid_active_strategies_contains_hybrid(self):
+        """'hybrid' is confirmed production default — must be in valid set."""
+        self.assertIn("hybrid", _VALID_ACTIVE_STRATEGIES)
+
+    def test_valid_director_priority_set(self):
+        """'normal', 'elevated', 'critical' must all be in valid priority set."""
+        for p in ("normal", "elevated", "critical"):
+            self.assertIn(p, _VALID_DIRECTOR_PRIORITY)
 
 
 if __name__ == "__main__":

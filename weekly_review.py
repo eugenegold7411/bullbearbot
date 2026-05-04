@@ -528,6 +528,10 @@ _NUMERIC_PARAM_FIELDS: frozenset = frozenset({
     "max_positions", "max_day_trades_rolling_5day",
     "data_outage_escalation_cycles", "data_outage_hard_disable_cycles",
     "momentum_weight", "mean_reversion_weight", "news_sentiment_weight", "cross_sector_weight",
+    "vix_calm_threshold", "vix_elevated_threshold", "vix_cautious_threshold",
+    "vix_stressed_threshold", "vix_stressed_conviction_floor",
+    "margin_sizing_multiplier", "max_crypto_margin_multiplier",
+    "add_conviction_gate", "max_deploy_pct_of_bp",
 })
 
 # Safe operational bounds for each numeric parameter (inclusive).
@@ -555,7 +559,71 @@ _PARAM_RANGES: dict[str, tuple[float, float]] = {
     "mean_reversion_weight":                       (0.0,   1.0),
     "news_sentiment_weight":                       (0.0,   1.0),
     "cross_sector_weight":                         (0.0,   1.0),
+    "max_day_trades_rolling_5day":                 (0,     999),
+    "vix_calm_threshold":                          (10.0,  40.0),
+    "vix_elevated_threshold":                      (15.0,  50.0),
+    "vix_cautious_threshold":                      (15.0,  60.0),
+    "vix_stressed_threshold":                      (20.0,  80.0),
+    "vix_stressed_conviction_floor":               (0.5,   1.0),
+    "margin_sizing_multiplier":                    (1.0,   10.0),
+    "max_crypto_margin_multiplier":                (1.0,   5.0),
+    "add_conviction_gate":                         (0.3,   0.9),
+    "max_deploy_pct_of_bp":                        (0.1,   1.0),
 }
+
+# Parameters that must never be written by Agent 6.
+# Safety-critical booleans, architectural config, and complex nested data
+# must be changed via SSH/manual edit, not by LLM output.
+_PARAM_READONLY: frozenset = frozenset({
+    "session_gate_enforce",
+    "overnight_order_evaluation",
+    "session_unknown_hard_block",
+    "session_tag_assert_non_unknown_before_route",
+    "margin_authorized",
+    "catalyst_tag_required_for_entry",
+    "session_tag_capture_point",
+    "vector_memory_status",
+    "research_pipeline_candidates",
+    "_max_position_pct_capacity_note",
+    "_add_conviction_gate_note",
+    "_max_deploy_pct_of_bp_note",
+})
+
+# Nested dict fields — value must be a dict or it is rejected.
+_NESTED_DICT_PARAM_FIELDS: frozenset = frozenset({
+    "margin_sizing_multiplier_tiers",
+    "margin_sizing_conviction_thresholds",
+})
+
+# List fields — value must be a list or it is rejected.
+_LIST_PARAM_FIELDS: frozenset = frozenset({
+    "preferred_sessions",
+    "preferred_tiers",
+    "catalyst_tag_disallowed_values",
+})
+
+# String enum fields — value must be one of the listed valid strings.
+_STRING_ENUM_PARAM_FIELDS: dict[str, frozenset] = {
+    "min_confidence_threshold": frozenset({"low", "medium", "high", "very_high"}),
+    "sector_rotation_bias":     frozenset({"neutral", "offensive", "defensive",
+                                           "risk_on", "risk_off", "cautious"}),
+}
+
+# signal_source_weights top-level write guards.
+_SIGNAL_SOURCE_WEIGHT_KEYS: frozenset = frozenset({
+    "congressional", "form4_insider", "reddit_sentiment",
+    "orb_breakout", "macro_wire", "earnings_intel",
+})
+_VALID_SIGNAL_SOURCE_WEIGHT_VALUES: frozenset = frozenset({"low", "medium", "high"})
+
+# active_strategy top-level write guard.
+_VALID_ACTIVE_STRATEGIES: frozenset = frozenset({
+    "hybrid", "momentum", "mean_reversion",
+    "defensive", "aggressive", "balanced", "cautious",
+})
+
+# director_notes.priority write guard.
+_VALID_DIRECTOR_PRIORITY: frozenset = frozenset({"normal", "elevated", "critical"})
 
 
 def _compute_config_diff(old_params: dict, new_params: dict) -> dict:
@@ -725,6 +793,54 @@ def _extract_and_validate_agent6_json(text: str, caller: str = "Agent6") -> dict
                 caller, range_rejected,
             )
 
+        # Guard: read-only parameters (booleans, architectural config, note fields)
+        readonly_blocked: list[str] = []
+        for k in list(param_adj.keys()):
+            if k in _PARAM_READONLY or k.startswith("_"):
+                readonly_blocked.append(k)
+                del param_adj[k]
+        if readonly_blocked:
+            log.warning(
+                "[REVIEW] %s blocked write to read-only parameter key(s): %s",
+                caller, readonly_blocked,
+            )
+
+        # Guard: nested dict fields — value must be a dict
+        struct_rejected: list[str] = []
+        for k in list(param_adj.keys()):
+            if k in _NESTED_DICT_PARAM_FIELDS and not isinstance(param_adj[k], dict):
+                struct_rejected.append(k)
+                del param_adj[k]
+        if struct_rejected:
+            log.warning(
+                "[REVIEW] %s rejected nested-dict fields (wrong type, not merged): %s",
+                caller, struct_rejected,
+            )
+
+        # Guard: list fields — value must be a list
+        list_rejected: list[str] = []
+        for k in list(param_adj.keys()):
+            if k in _LIST_PARAM_FIELDS and not isinstance(param_adj[k], list):
+                list_rejected.append(k)
+                del param_adj[k]
+        if list_rejected:
+            log.warning(
+                "[REVIEW] %s rejected list fields (wrong type, not merged): %s",
+                caller, list_rejected,
+            )
+
+        # Guard: string enum fields — value must be in the known-good set
+        enum_rejected: list[str] = []
+        for k in list(param_adj.keys()):
+            if k in _STRING_ENUM_PARAM_FIELDS and param_adj[k] not in _STRING_ENUM_PARAM_FIELDS[k]:
+                enum_rejected.append(k)
+                del param_adj[k]
+        if enum_rejected:
+            log.warning(
+                "[REVIEW] %s rejected string enum fields (invalid value, not merged): %s",
+                caller, enum_rejected,
+            )
+
         if accepted:
             log.info("[REVIEW] %s accepted parameter_adjustments keys: %s", caller, accepted)
         if type_rejected:
@@ -735,6 +851,25 @@ def _extract_and_validate_agent6_json(text: str, caller: str = "Agent6") -> dict
         parsed["parameter_adjustments"] = param_adj
 
     return parsed
+
+
+def _validate_signal_source_weights(weights: dict, caller: str) -> dict:
+    """
+    Validate signal_source_weights before writing to config top level.
+    Drops unknown keys and invalid label values. Returns clean dict (may be empty).
+    """
+    clean: dict = {}
+    rejected: list[str] = []
+    for k, v in weights.items():
+        if k not in _SIGNAL_SOURCE_WEIGHT_KEYS:
+            rejected.append(f"{k}(unknown-key)")
+        elif v not in _VALID_SIGNAL_SOURCE_WEIGHT_VALUES:
+            rejected.append(f"{k}={repr(v)}")
+        else:
+            clean[k] = v
+    if rejected:
+        log.warning("[REVIEW] %s rejected signal_source_weights entries: %s", caller, rejected)
+    return clean
 
 
 # ── Agent system prompts ──────────────────────────────────────────────────────
@@ -3215,9 +3350,22 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
         config["generated_at"]  = datetime.now().isoformat()
         config["generated_by"]  = "weekly_review"
         if active_strategy:
-            config["active_strategy"] = active_strategy
+            if active_strategy in _VALID_ACTIVE_STRATEGIES:
+                config["active_strategy"] = active_strategy
+            else:
+                log.warning(
+                    "[REVIEW] Agent 6 draft proposed unknown active_strategy %r — not written",
+                    active_strategy,
+                )
         if director_notes:
             if isinstance(director_notes, dict) and "active_context" in director_notes:
+                _dn_priority = director_notes.get("priority")
+                if _dn_priority not in _VALID_DIRECTOR_PRIORITY:
+                    log.warning(
+                        "[REVIEW] Agent 6 draft director_notes.priority %r invalid — coerced to 'normal'",
+                        _dn_priority,
+                    )
+                    director_notes["priority"] = "normal"
                 config["director_notes"] = director_notes
             elif isinstance(director_notes, str):
                 config["director_notes"] = {
@@ -3256,7 +3404,9 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
         # Save signal source weights if provided (categorical: congressional, form4_insider, etc.)
         signal_weights = params_update.get("signal_weights_recommended", {})
         if signal_weights:
-            config["signal_source_weights"] = signal_weights
+            signal_weights = _validate_signal_source_weights(signal_weights, "Agent6-draft")
+            if signal_weights:
+                config["signal_source_weights"] = signal_weights
 
         # Phase 3a draft — intentionally NOT written to disk here.
         # The single authoritative write happens after Phase 3b succeeds.
@@ -3358,11 +3508,25 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
             config["generated_at"] = datetime.now().isoformat()
             config["generated_by"] = "weekly_review_final"
             if final_params.get("active_strategy"):
-                config["active_strategy"] = final_params["active_strategy"]
-                active_strategy = final_params["active_strategy"]
+                _as_final = final_params["active_strategy"]
+                if _as_final in _VALID_ACTIVE_STRATEGIES:
+                    config["active_strategy"] = _as_final
+                    active_strategy = _as_final
+                else:
+                    log.warning(
+                        "[REVIEW] Agent 6 final proposed unknown active_strategy %r — not written",
+                        _as_final,
+                    )
             _dn_final = final_params.get("director_notes")
             if _dn_final:
                 if isinstance(_dn_final, dict) and "active_context" in _dn_final:
+                    _dn_final_priority = _dn_final.get("priority")
+                    if _dn_final_priority not in _VALID_DIRECTOR_PRIORITY:
+                        log.warning(
+                            "[REVIEW] Agent 6 final director_notes.priority %r invalid — coerced to 'normal'",
+                            _dn_final_priority,
+                        )
+                        _dn_final["priority"] = "normal"
                     config["director_notes"] = _dn_final
                 elif isinstance(_dn_final, str):
                     # Agent returned old-format string — migrate to structured form
@@ -3397,7 +3561,9 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
                 )
             _sw_final = final_params.get("signal_weights_recommended", {})
             if _sw_final:
-                config["signal_source_weights"] = _sw_final
+                _sw_final = _validate_signal_source_weights(_sw_final, "Agent6-final")
+                if _sw_final:
+                    config["signal_source_weights"] = _sw_final
             _save_strategy_config(config)
             log.info("Strategy config updated from Agent 6 final synthesis")
         else:

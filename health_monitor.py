@@ -470,24 +470,28 @@ def _check_earnings_calendar(now_et: datetime) -> CheckResult:
             today_str = now_et.strftime("%Y-%m-%d")
             today_entries = [e for e in calendar if str(e.get("earnings_date", ""))[:10] == today_str]
             total_entries = len(calendar)
+            # last_daily_refresh_at is stamped by the scheduler each morning; fall back to fetched_at
+            refresh_ts = d.get("last_daily_refresh_at") or d.get("fetched_at", "")
+            refresh_date = str(refresh_ts)[:10] if refresh_ts else ""
         except Exception:
             return CheckResult(name=name, ok=False, severity="CRITICAL",
                                message=f"earnings_calendar.json unreadable — age {age_h:.1f}h")
 
-        if _is_market_hours(now_et):
-            stale_h, stale_sev = 6.0, "CRITICAL"
-        else:
-            stale_h, stale_sev = 18.0, "WARNING"
-
-        if age_h > stale_h:
+        # Primary check: was the calendar refreshed today?
+        # The daily refresh runs at 4:05 AM ET so by market open the file is ~5-6h old by design.
+        # A file-age threshold of 6h would always fire during market hours — use date instead.
+        refreshed_today = refresh_date == today_str
+        if not refreshed_today:
+            sev = "CRITICAL" if _is_market_hours(now_et) else "WARNING"
             return CheckResult(
-                name=name, ok=False, severity=stale_sev,
+                name=name, ok=False, severity=sev,
                 message=(
                     f"[HEALTH] earnings_calendar stale: {age_h:.1f}h old, "
-                    f"{len(today_entries)} entries today. "
+                    f"last refresh {refresh_date or 'unknown'}, {len(today_entries)} entries today. "
                     "Signal scorer running without earnings context — entries may be missed."
                 ),
-                details={"age_h": age_h, "today_entries": len(today_entries), "total_entries": total_entries},
+                details={"age_h": age_h, "refresh_date": refresh_date,
+                         "today_entries": len(today_entries), "total_entries": total_entries},
             )
 
         if total_entries == 0:
@@ -498,13 +502,15 @@ def _check_earnings_calendar(now_et: datetime) -> CheckResult:
                     "0 entries today. "
                     "Signal scorer running without earnings context — entries may be missed."
                 ),
-                details={"age_h": age_h, "today_entries": 0, "total_entries": 0},
+                details={"age_h": age_h, "refresh_date": refresh_date,
+                         "today_entries": 0, "total_entries": 0},
             )
 
         return CheckResult(
             name=name, ok=True, severity="OK",
-            message=f"earnings_calendar OK — {age_h:.1f}h old, {len(today_entries)} entries today, {total_entries} total",
-            details={"age_h": age_h, "today_entries": len(today_entries), "total_entries": total_entries},
+            message=f"earnings_calendar OK — refreshed today, {len(today_entries)} entries today, {total_entries} total",
+            details={"age_h": age_h, "refresh_date": refresh_date,
+                     "today_entries": len(today_entries), "total_entries": total_entries},
         )
     except Exception as exc:
         return CheckResult(name=name, ok=False, severity="WARNING",

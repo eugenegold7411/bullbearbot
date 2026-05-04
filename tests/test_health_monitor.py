@@ -448,12 +448,17 @@ class TestRunHealthChecks(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 def _make_calendar_str(n_entries: int = 5, today_entries: int = 1,
-                       date: str = "2026-05-05") -> str:
+                       date: str = "2026-05-05",
+                       refresh_date: str = "2026-05-05") -> str:
     entries = [{"symbol": f"SYM{i}", "earnings_date": date, "timing": "post-market"}
                for i in range(today_entries)]
     entries += [{"symbol": f"FUT{i}", "earnings_date": "2026-12-31", "timing": "unknown"}
                 for i in range(n_entries - today_entries)]
-    return json.dumps({"fetched_at": "2026-05-04T08:15:00+00:00", "calendar": entries})
+    return json.dumps({
+        "fetched_at": f"{refresh_date}T08:15:00+00:00",
+        "last_daily_refresh_at": f"{refresh_date}T08:15:00+00:00",
+        "calendar": entries,
+    })
 
 
 def _mock_cal_dir(content: str | None = None, exists: bool = True, age_h: float = 1.0) -> MagicMock:
@@ -488,14 +493,18 @@ class TestEarningsCalendar(unittest.TestCase):
 
     def test_stale_during_market_hours_is_critical(self):
         now = _market_time(hour=11)
-        with patch("health_monitor._DATA_DIR", _mock_cal_dir(_make_calendar_str(5, 1), age_h=8.0)):
+        # refresh_date = yesterday → not refreshed today → CRITICAL during market hours
+        with patch("health_monitor._DATA_DIR",
+                   _mock_cal_dir(_make_calendar_str(5, 0, refresh_date="2026-05-04"), age_h=32.0)):
             r = _check_earnings_calendar(now)
         self.assertFalse(r.ok)
         self.assertEqual(r.severity, "CRITICAL")
 
     def test_stale_overnight_is_warning_not_critical(self):
         now = _outside_time()
-        with patch("health_monitor._DATA_DIR", _mock_cal_dir(_make_calendar_str(5, 0), age_h=20.0)):
+        # refresh_date = yesterday, outside market hours → WARNING
+        with patch("health_monitor._DATA_DIR",
+                   _mock_cal_dir(_make_calendar_str(5, 0, refresh_date="2026-05-04"), age_h=20.0)):
             r = _check_earnings_calendar(now)
         self.assertFalse(r.ok)
         self.assertEqual(r.severity, "WARNING")
@@ -515,8 +524,10 @@ class TestEarningsCalendar(unittest.TestCase):
         self.assertIn("age_h", r.details)
         self.assertIn("today_entries", r.details)
         self.assertIn("total_entries", r.details)
+        self.assertIn("refresh_date", r.details)
         self.assertEqual(r.details["today_entries"], 3)
         self.assertEqual(r.details["total_entries"], 10)
+        self.assertEqual(r.details["refresh_date"], "2026-05-05")
 
 
 if __name__ == "__main__":

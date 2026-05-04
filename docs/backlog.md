@@ -1,7 +1,7 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-04 (S24: blocked_symbols guard)
+Last updated: 2026-05-03 (Agent 6 config write safety audit)
 
 ---
 
@@ -119,6 +119,64 @@ Agent 6 parameter changes already applied to strategy_config.json on VPS:
 
 RESOLVED: blocked_symbols guard added (S24 c45da26). QCOM restored to server config.
 _merge_blocked_symbols() now enforces append-only semantics at both write paths.
+
+---
+
+### Agent 6 Config Write Guards
+Priority: HIGH — before May 16 live promotion
+Estimated effort: 2 hour build session
+File: weekly_review.py
+
+Audit identified the following unguarded write paths:
+
+CRITICAL (boolean safety gates — make write-protected):
+- session_gate_enforce
+- margin_authorized
+- session_unknown_hard_block
+- session_tag_assert_non_unknown_before_route
+
+HIGH (numeric fields missing from _PARAM_RANGES):
+- margin_sizing_multiplier: (1.0, 5.0)
+- max_crypto_margin_multiplier: (1.0, 4.0)
+- vix_calm_threshold, vix_elevated_threshold,
+  vix_cautious_threshold, vix_stressed_threshold
+  — must also validate as ordered sequence
+- vix_stressed_conviction_floor: (0.5, 1.0)
+- add_conviction_gate: (0.4, 0.9)
+
+HIGH (boolean feature toggles — make write-protected):
+- overnight_order_evaluation
+- catalyst_tag_required_for_entry
+
+HIGH (nested dicts — add cross-value invariant validation):
+- margin_sizing_multiplier_tiers
+- margin_sizing_conviction_thresholds
+
+MEDIUM (list fields — add membership validation):
+- preferred_sessions: non-empty subset of valid sessions
+- preferred_tiers: non-empty subset of valid tiers
+- catalyst_tag_disallowed_values: minimum required set
+
+MEDIUM (string enum validation):
+- min_confidence_threshold: {"low","medium","high"}
+- sector_rotation_bias: valid regime values
+
+MEDIUM (signal_source_weights):
+- Validate all values against {"low","medium","high"}
+- Validate all expected keys present after write
+
+Implementation approach:
+- CRITICAL/HIGH boolean gates: add to a
+  _READONLY_PARAM_KEYS set; reject any Agent 6 write
+  attempt with WARNING log
+- Numeric range additions: add to _PARAM_RANGES
+- VIX ordering: add _validate_vix_sequence() check
+- Nested dicts: add _validate_nested_param() helper
+- List/string fields: add to validation loop
+
+Also investigate: max_overnight_position_pct_equity
+re-asserted at 0.04 for 3 consecutive cycles without
+taking effect — possible server/deploy config divergence.
 
 ---
 

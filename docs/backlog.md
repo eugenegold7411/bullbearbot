@@ -1,7 +1,7 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-04 (end-of-session health check)
+Last updated: 2026-05-04 (end-of-session health check + weekly review)
 
 ---
 
@@ -86,6 +86,40 @@ Estimated effort: 15 minutes
 
 Dashboard shows position size as % of buying_power instead of
 % of total_capacity. Fix display calculation only.
+
+---
+
+### Weekly Review — Critical Structural Fixes (from 2026-05-04 review)
+Priority: CRITICAL — win rate 26.3%, stock_buy 13.2%, Tech sector 0-for-24
+Estimated effort: 2–4 session sprint
+
+Findings from Agent 1 (Quant), Agent 2 (Risk), Agent 6 (Strategy Director):
+1. **Bracket-order deadlock** (8 symbols can't exit at take-profit) — held_for_orders
+   == existing_qty across CAT, GOOGL, MSFT, etc. Recurring 3-week carry. This is
+   exit infrastructure failure, not a market regime problem.
+2. **414 missing stop-losses** — divergence module KeyError leaves 89% of divergence
+   events unpatched. Stock_buy entering without exit protection.
+3. **Signal scorer 0W/25L on QCOM+MSFT** — top-ranked symbols 0% win rate. Either
+   inputs are stale or scoring function has confirmation bias.
+4. **Catalyst taxonomy 248/248 unknown** — outcome attribution completely broken;
+   no learning signal from any closed trade. Long-tier ChromaDB at zero.
+5. **Regime oscillation** — unstable in 21:30–22:30 ET window; cycling normal→caution
+   5 times in 40 minutes. Suppressing trade generation with no external trigger.
+6. **Bearish template lock** — "Iran war, inflation, Fed" recycled verbatim in 7/20
+   decisions; macro reasoning not refreshing per cycle.
+7. **Pending trade accounting problem** — MA/TSM/STNG/AMZN/BTC show zero closed
+   trades despite high fill counts; 26.3% win rate may understate actual losses.
+
+Agent 6 parameter changes already applied to strategy_config.json on VPS:
+- min_confidence_threshold: medium (was unknown)
+- stop_loss_pct_core: 0.03
+- take_profit_multiple: 2.5
+- max_weekly_drawdown_pct: 0.035, max_daily_drawdown_pct: 0.025
+- max_positions: 30, margin_sizing_multiplier: 4.0
+
+IMPORTANT: blocked_symbols ['QCOM'] must persist through weekly review config writes.
+Agent 6's final write removed it on 2026-05-04. Must add guard in weekly_review.py
+to preserve blocked_symbols on each config update.
 
 ---
 

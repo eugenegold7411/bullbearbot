@@ -1,7 +1,7 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-04 (Agent 6 config write guards — 408e7f6)
+Last updated: 2026-05-04 (CI skip guards — 33a27f6)
 
 ---
 
@@ -133,6 +133,7 @@ COMPLETED — commit 408e7f6
 
 | Commit  | What |
 |---------|------|
+| 33a27f6 | test(ci): strategy_config.json skip guards — 17 tests now skip gracefully when file absent on CI clean clone |
 | —       | Killed /tmp/alpaca_watcher2.py (PID 42920) — manual debug script from May 1, was polling A2 account with output going nowhere. Removed both v1 and v2 from /tmp. |
 | ec7e5f9 | fix(market-data): add missing pandas_ta import — restores RSI and MACD for all signals (crypto + equity); wiring test D-04c hard FAIL on RSI=?; 8 new CS tests; 2996 passing; 24/24 wiring PASS |
 | 408e7f6 | feat(weekly-review): Agent 6 config write guards A–I — _PARAM_READONLY frozenset (6 booleans + 4 arch fields); 9 unguarded numerics + max_day_trades added to _NUMERIC_PARAM_FIELDS/_PARAM_RANGES; nested-dict/list/enum guards in extractor; _validate_signal_source_weights(); active_strategy + director_notes.priority enum guards at both Phase 1 + Phase 3b write sites; 15 new tests; 3048 passing |

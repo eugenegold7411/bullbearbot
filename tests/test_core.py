@@ -4427,8 +4427,10 @@ class TestSuite22PhaseA(unittest.TestCase):
         account = SimpleNamespace(equity="100000", buying_power="200000")
 
         with self.assertLogs("order_executor", level="WARNING") as cm:
-            # Patch validate_action to raise so execution stops before Alpaca calls
-            with mock.patch.object(oe, "validate_action",
+            # Patch validate_action to raise so execution stops before Alpaca calls.
+            # log_trade mocked to prevent writes to the live trades.jsonl on disk.
+            with mock.patch.object(oe, "log_trade"), \
+                 mock.patch.object(oe, "validate_action",
                                    side_effect=ValueError("test-reject")):
                 oe.execute_all([raw], account, [], "open", 30)
 
@@ -4462,7 +4464,9 @@ class TestSuite22PhaseA(unittest.TestCase):
             captured.append(action)
             raise ValueError("test-reject")  # stop before Alpaca submission
 
-        with mock.patch.object(oe, "validate_action", side_effect=_capture):
+        # log_trade mocked to prevent writes to the live trades.jsonl on disk.
+        with mock.patch.object(oe, "log_trade"), \
+             mock.patch.object(oe, "validate_action", side_effect=_capture):
             oe.execute_all([ba], account, [], "open", 30, session_tier="market")
 
         self.assertEqual(len(captured), 1,

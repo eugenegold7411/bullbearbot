@@ -153,6 +153,8 @@ class AccountAction(str, Enum):
     HOLD               = "hold"
     CLOSE              = "close"
     REALLOCATE         = "reallocate"
+    SHORT_SELL         = "short_sell"   # open a short position (sell borrowed shares)
+    COVER              = "cover"        # close a short position (buy to cover)
     # Options-specific actions (Account 2)
     BUY_OPTION         = "buy_option"
     SELL_OPTION_SPREAD = "sell_option_spread"
@@ -616,6 +618,16 @@ class BrokerSnapshot:
         return sum(p.market_value for p in self.positions)
 
     @property
+    def long_exposure_dollars(self) -> float:
+        """Total market value of open long positions."""
+        return sum(p.market_value for p in self.positions if p.qty >= 0)
+
+    @property
+    def short_exposure_dollars(self) -> float:
+        """Total notional value of open short positions (positive number)."""
+        return sum(abs(p.market_value) for p in self.positions if p.qty < 0)
+
+    @property
     def exposure_pct(self) -> float:
         """Total exposure as a fraction of equity (e.g. 0.18 = 18%)."""
         return (self.exposure_dollars / self.equity) if self.equity > 0 else 0.0
@@ -1041,11 +1053,12 @@ def validate_claude_decision(data: dict) -> "ClaudeDecision":
     # ── Intent → AccountAction map ─────────────────────────────────────────────
     _intent_map: dict[str, AccountAction] = {
         "enter_long":  AccountAction.BUY,
-        "enter_short": AccountAction.SELL,
+        "enter_short": AccountAction.SHORT_SELL,
         "close":       AccountAction.CLOSE,
         "reduce":      AccountAction.SELL,
         "hold":        AccountAction.HOLD,
         "monitor":     AccountAction.HOLD,
+        "cover":       AccountAction.COVER,
     }
     _tier_map: dict[str, Tier] = {
         "core":     Tier.CORE,
@@ -1206,6 +1219,23 @@ def validate_broker_action(action: BrokerAction) -> tuple[bool, str]:
             return False, "reallocate requires exit_symbol"
         if not action.entry_symbol:
             return False, "reallocate requires entry_symbol"
+    if action.action == AccountAction.SHORT_SELL:
+        if action.qty is None or action.qty <= 0:
+            return False, f"qty={action.qty} must be > 0 for short_sell"
+        if action.stop_loss is None:
+            return False, "short_sell action requires stop_loss"
+        if action.take_profit is None:
+            return False, "short_sell action requires take_profit"
+        # For shorts: stop is above entry (buy-to-cover if price rises),
+        # target is below entry (buy-to-cover if price falls profitably).
+        if action.stop_loss <= action.take_profit:
+            return False, (
+                f"short_sell: stop_loss={action.stop_loss} must be > "
+                f"take_profit={action.take_profit}"
+            )
+    if action.action == AccountAction.COVER:
+        if action.qty is None or action.qty <= 0:
+            return False, f"qty={action.qty} must be > 0 for cover"
     return True, "ok"
 
 
@@ -1247,6 +1277,13 @@ REQUIRED_FIELDS_BY_ACTION: dict[str, list[str]] = {
     ],
     "close_option": [
         "symbol",
+    ],
+    "short_sell": [
+        "symbol", "qty", "stop_loss", "take_profit",
+        "tier", "confidence", "catalyst",
+    ],
+    "cover": [
+        "symbol", "qty",
     ],
 }
 

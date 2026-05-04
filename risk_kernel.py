@@ -459,8 +459,8 @@ def eligibility_check(
     if symbol.startswith("TEST_"):
         return f"wiring_test_symbol: {symbol} is a synthetic test symbol"
 
-    # ── -1. Blocked symbols (BUY only) ────────────────────────────────────────
-    if act == AccountAction.BUY:
+    # ── -1. Blocked symbols (BUY / SHORT_SELL) ───────────────────────────────
+    if act in (AccountAction.BUY, AccountAction.SHORT_SELL):
         _blocked = config.get("parameters", {}).get("blocked_symbols", [])
         if symbol in _blocked:
             return f"blocked_symbol: {symbol} is on the blocked_symbols list"
@@ -521,9 +521,9 @@ def eligibility_check(
         )
 
     # ── 3. Session gate (stocks/ETFs only) ────────────────────────────────────
-    if act == AccountAction.BUY and not crypto and session_tier != "market":
+    if act in (AccountAction.BUY, AccountAction.SHORT_SELL) and not crypto and session_tier != "market":
         return (
-            f"session={session_tier} — stock/ETF buys require market session"
+            f"session={session_tier} — stock/ETF {act.value} requires market session"
         )
 
     # ── 4. Intraday tier gate ─────────────────────────────────────────────────
@@ -531,9 +531,9 @@ def eligibility_check(
         return "intraday tier requires market session"
 
     # ── 4.5. Near-close gate ──────────────────────────────────────────────────
-    # Block DYNAMIC/INTRADAY buys after 15:55 ET; CORE exempt until 16:00.
+    # Block DYNAMIC/INTRADAY entries after 15:55 ET; CORE exempt until 16:00.
     # Exits and stops are never blocked. Non-fatal: allows trade if clock fails.
-    if act == AccountAction.BUY and session_tier == "market":
+    if act in (AccountAction.BUY, AccountAction.SHORT_SELL) and session_tier == "market":
         try:
             _et = _get_et_now()
             if _et.hour == 15 and _et.minute >= 55:
@@ -574,6 +574,25 @@ def eligibility_check(
                 f"(got {idea.conviction:.2f})"
             )
 
+    # ── 8. Short selling gates ────────────────────────────────────────────────
+    if act == AccountAction.SHORT_SELL:
+        _max_short_pct = float(_params(config).get("max_short_exposure_pct", 0.00))
+        if _max_short_pct == 0.00:
+            return "short_selling_disabled: max_short_exposure_pct=0 in config"
+        _short_cap = snapshot.equity * _max_short_pct
+        if snapshot.short_exposure_dollars >= _short_cap:
+            return (
+                f"short exposure cap reached: "
+                f"${snapshot.short_exposure_dollars:,.0f} >= "
+                f"${_short_cap:,.0f} ({_max_short_pct:.0%} of equity)"
+            )
+        cat = (idea.catalyst or "").strip().lower()
+        _blocked_cats = _params(config).get(
+            "catalyst_tag_disallowed_values", ["", "none", "null", "no"]
+        )
+        if cat in _blocked_cats:
+            return "short_sell requires a named catalyst"
+
     return None  # all checks passed
 
 
@@ -587,9 +606,10 @@ def size_position(
     config: dict,
     current_price: float,
     vix: float = 20.0,
+    side: str = "long",
 ) -> Union[tuple[float, float], str]:
     """
-    Compute (qty, position_value) for a BUY idea.
+    Compute (qty, position_value) for a BUY or SHORT_SELL idea.
 
     Returns rejection reason str if sizing is impossible
     (no headroom, price zero, etc.).
@@ -598,7 +618,7 @@ def size_position(
       1. tier_pct from config (core=15%, dynamic=8%, intraday=5%)
       2. +bump to 20% for HIGH conviction CORE (matches executor)
       3. VIX scaling: 50% reduction when VIX >= VIX_CAUTION (25)
-      4. Cap to available exposure headroom
+      4. Cap to available exposure headroom (long) or short cap (short)
       5. Integer qty for stocks; up-to-6-decimal for crypto
     """
     if current_price is None or current_price <= 0:
@@ -610,9 +630,9 @@ def size_position(
     crypto       = is_crypto(idea.symbol)
 
     log.info(
-        "[RISK] size_position %s: conviction=%.2f sizing_basis=$%.0f "
+        "[RISK] size_position %s side=%s: conviction=%.2f sizing_basis=$%.0f "
         "equity=$%.0f bp=$%.0f margin_ok=%s",
-        idea.symbol, idea.conviction, sizing_basis, equity,
+        idea.symbol, side, idea.conviction, sizing_basis, equity,
         max(snapshot.buying_power, equity),
         bool(config.get("parameters", {}).get("margin_authorized", False)),
     )
@@ -634,14 +654,26 @@ def size_position(
     max_dollars = sizing_basis * tier_pct * size_mult
 
     # ── Exposure headroom ─────────────────────────────────────────────────────
-    eff_cap  = _effective_exposure_cap(snapshot, idea.conviction, config)
-    headroom = eff_cap - snapshot.exposure_dollars
-    if headroom <= 0:
-        return (
-            f"no exposure headroom: current ${snapshot.exposure_dollars:,.0f} "
-            f"vs cap ${eff_cap:,.0f} ({idea.conviction:.2f} conviction)"
-        )
-    max_dollars = min(max_dollars, headroom)
+    if side == "short":
+        _max_short_pct = float(_params(config).get("max_short_exposure_pct", 0.00))
+        _short_cap = equity * _max_short_pct
+        headroom = _short_cap - snapshot.short_exposure_dollars
+        if headroom <= 0:
+            return (
+                f"no short exposure headroom: "
+                f"current ${snapshot.short_exposure_dollars:,.0f} "
+                f">= cap ${_short_cap:,.0f}"
+            )
+        max_dollars = min(max_dollars, headroom)
+    else:
+        eff_cap  = _effective_exposure_cap(snapshot, idea.conviction, config)
+        headroom = eff_cap - snapshot.exposure_dollars
+        if headroom <= 0:
+            return (
+                f"no exposure headroom: current ${snapshot.exposure_dollars:,.0f} "
+                f"vs cap ${eff_cap:,.0f} ({idea.conviction:.2f} conviction)"
+            )
+        max_dollars = min(max_dollars, headroom)
 
     if max_dollars < current_price:
         return (
@@ -704,14 +736,17 @@ def place_stops(
     idea: TradeIdea,
     current_price: float,
     config: dict,
+    side: str = "long",
 ) -> Union[tuple[float, float], str]:
     """
-    Compute (stop_loss, take_profit) prices for a BUY entry.
+    Compute (stop_loss, take_profit) prices for a BUY or SHORT_SELL entry.
+
+    side="long"  — stop below entry, target above (default, backward-compat)
+    side="short" — stop above entry (buy-to-cover if price rises), target below
 
     Stop logic:
       1. Use idea.advisory_stop_pct if provided; else config default
       2. Cap at hard ceiling (_MAX_STOP_PCT by tier + asset_class)
-      3. Intraday hard ceiling: 2%
 
     Target logic:
       1. Use idea.advisory_target_r if provided; else config take_profit_multiple
@@ -752,17 +787,25 @@ def place_stops(
     target_r = max(target_r, MIN_RR_RATIO)
 
     # ── Price levels ─────────────────────────────────────────────────────────
-    stop_dist   = current_price * stop_pct
-    stop_loss   = round(current_price - stop_dist, 2)
-    take_profit = round(current_price + stop_dist * target_r, 2)
+    stop_dist = current_price * stop_pct
 
-    # Sanity: stop must be below entry, target above
-    if stop_loss >= current_price:
-        return f"stop_loss ${stop_loss:.2f} >= current_price ${current_price:.2f}"
-    if take_profit <= current_price:
-        return f"take_profit ${take_profit:.2f} <= current_price ${current_price:.2f}"
+    if side == "short":
+        stop_loss   = round(current_price + stop_dist, 2)          # above entry
+        take_profit = round(current_price - stop_dist * target_r, 2)  # below entry
+        if stop_loss <= current_price:
+            return f"short stop_loss ${stop_loss:.2f} <= entry ${current_price:.2f}"
+        if take_profit >= current_price:
+            return f"short take_profit ${take_profit:.2f} >= entry ${current_price:.2f}"
+        actual_rr = (current_price - take_profit) / (stop_loss - current_price)
+    else:
+        stop_loss   = round(current_price - stop_dist, 2)
+        take_profit = round(current_price + stop_dist * target_r, 2)
+        if stop_loss >= current_price:
+            return f"stop_loss ${stop_loss:.2f} >= current_price ${current_price:.2f}"
+        if take_profit <= current_price:
+            return f"take_profit ${take_profit:.2f} <= current_price ${current_price:.2f}"
+        actual_rr = (take_profit - current_price) / (current_price - stop_loss)
 
-    actual_rr = (take_profit - current_price) / (current_price - stop_loss)
     if actual_rr < MIN_RR_RATIO:
         return (
             f"R/R {actual_rr:.2f}x below minimum {MIN_RR_RATIO}x "
@@ -770,8 +813,8 @@ def place_stops(
         )
 
     log.debug(
-        "[RISK] place_stops %s: stop_pct=%.1f%% stop=$%.2f target=$%.2f R/R=%.2fx",
-        idea.symbol, stop_pct * 100, stop_loss, take_profit, actual_rr,
+        "[RISK] place_stops %s side=%s: stop_pct=%.1f%% stop=$%.2f target=$%.2f R/R=%.2fx",
+        idea.symbol, side, stop_pct * 100, stop_loss, take_profit, actual_rr,
     )
 
     return (stop_loss, take_profit)
@@ -845,6 +888,8 @@ def process_idea(
       HOLD       → passthrough (qty=0, no stops — exit_manager handles stops)
       CLOSE/SELL → look up position qty in snapshot
       BUY        → eligibility + sizing + stops
+      SHORT_SELL → eligibility (incl. max_short_exposure_pct) + sizing + inverted stops
+      COVER      → look up short position in snapshot
       REALLOCATE → size entry side; include exit info for executor
     """
     act    = idea.action
@@ -1000,6 +1045,86 @@ def process_idea(
             stop_loss=stop_loss,
             take_profit=take_profit,
             limit_price=limit_price,
+            sector_signal=idea.sector_signal,
+            source_idea=idea,
+        )
+
+    # ── SHORT_SELL ────────────────────────────────────────────────────────────
+    if act == AccountAction.SHORT_SELL:
+        _utc = current_time_utc or datetime.now(timezone.utc).isoformat()
+        rejection = eligibility_check(
+            idea, snapshot, config, session_tier, vix, _utc
+        )
+        if rejection:
+            log.debug("[RISK] REJECTED %s %s — %s", act.value, symbol, rejection)
+            return rejection
+
+        if current_price is None or current_price <= 0:
+            return f"current_price unavailable for {symbol}"
+        size_result = size_position(idea, snapshot, config, current_price, vix, side="short")
+        if isinstance(size_result, str):
+            log.debug("[RISK] REJECTED %s %s — size: %s", act.value, symbol, size_result)
+            return size_result
+        qty, position_value = size_result
+
+        stops_result = place_stops(idea, current_price, config, side="short")
+        if isinstance(stops_result, str):
+            log.debug("[RISK] REJECTED %s %s — stops: %s", act.value, symbol, stops_result)
+            return stops_result
+        stop_loss, take_profit = stops_result
+
+        order_type  = idea.order_type or "market"
+        limit_price = idea.limit_price if order_type == "limit" else None
+
+        log.info(
+            "[RISK] APPROVED SHORT_SELL %s qty=%s @ $%.2f  stop=$%.2f  target=$%.2f  "
+            "tier=%s  conviction=%.2f  vix=%.1f",
+            symbol, qty, current_price, stop_loss, take_profit,
+            idea.tier.value, idea.conviction, vix,
+        )
+
+        return BrokerAction(
+            symbol=symbol,
+            action=AccountAction.SHORT_SELL,
+            qty=qty,
+            order_type=order_type,
+            tier=idea.tier,
+            conviction=_float_to_conviction(idea.conviction, config),
+            catalyst=idea.catalyst,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            limit_price=limit_price,
+            sector_signal=idea.sector_signal,
+            source_idea=idea,
+        )
+
+    # ── COVER ─────────────────────────────────────────────────────────────────
+    if act == AccountAction.COVER:
+        pos_sym = alpaca_symbol(symbol)
+        pos = (
+            snapshot.position_by_symbol.get(symbol)
+            or snapshot.position_by_symbol.get(pos_sym)
+        )
+        if pos is None:
+            return f"no open position for {symbol} to cover"
+        if pos.qty >= 0:
+            return (
+                f"position is long (qty={pos.qty}) — "
+                f"use CLOSE not COVER for {symbol}"
+            )
+        qty = (
+            abs(pos.qty) if is_crypto(symbol)
+            else float(int(abs(pos.qty)))
+        )
+        log.info("[RISK] APPROVED COVER %s qty=%s", symbol, qty)
+        return BrokerAction(
+            symbol=symbol,
+            action=AccountAction.COVER,
+            qty=qty,
+            order_type="market",
+            tier=idea.tier,
+            conviction=_float_to_conviction(idea.conviction, config),
+            catalyst=idea.catalyst or f"cover {symbol}",
             sector_signal=idea.sector_signal,
             source_idea=idea,
         )

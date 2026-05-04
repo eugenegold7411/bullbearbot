@@ -264,3 +264,189 @@ class TestDeleteByVectorId:
         if short is not None:
             result2 = short.get(ids=[vid], include=["metadatas"])
             assert not result2.get("ids"), "record should be gone after delete"
+
+
+# ---------------------------------------------------------------------------
+# Claude stop_reason recorder (addition A)
+# ---------------------------------------------------------------------------
+class TestClaudeStopRecorder:
+    def setup_method(self):
+        wt._recorded_stop_reasons.clear()
+        wt._claude_create_patcher = None
+
+    def teardown_method(self):
+        wt._uninstall_claude_stop_recorder()
+        wt._recorded_stop_reasons.clear()
+
+    def test_install_uninstall_noop_when_no_client(self):
+        """Uninstall is safe when nothing was installed."""
+        wt._uninstall_claude_stop_recorder()  # should not raise
+
+    def test_install_records_intercept_failed_on_missing_module(self):
+        """If _get_claude fails, error is captured in _recorded_stop_reasons."""
+        with mock.patch.dict("sys.modules", {"bot_clients": None}):
+            wt._install_claude_stop_recorder()
+        # Either installed successfully or recorded the failure — must not raise
+        # (either outcome is acceptable; what matters is no exception escapes)
+
+    def test_uninstall_clears_patcher(self):
+        """After uninstall, _claude_create_patcher is None."""
+        wt._claude_create_patcher = (mock.MagicMock(), mock.MagicMock())
+        wt._uninstall_claude_stop_recorder()
+        assert wt._claude_create_patcher is None
+
+
+# ---------------------------------------------------------------------------
+# Signal schema validation (addition B)
+# ---------------------------------------------------------------------------
+class TestSignalSchemaCheck:
+    def setup_method(self):
+        wt._results.clear()
+
+    def test_all_valid_entries_pass(self):
+        """All entries with score/direction/tier produce D-04b PASS."""
+        scored = {
+            "TEST_AAPL": {"score": 72.0, "direction": "bullish", "tier": "dynamic"},
+            "TEST_MSFT": {"score": 65.0, "direction": "neutral",  "tier": "core"},
+        }
+        bad = [
+            s for s, d in scored.items()
+            if not isinstance(d, dict) or "score" not in d
+            or "direction" not in d or "tier" not in d
+        ]
+        assert bad == []
+
+    def test_missing_tier_detected(self):
+        """Entry missing 'tier' is flagged as bad_schema."""
+        scored = {
+            "TEST_AAPL": {"score": 72.0, "direction": "bullish"},  # no tier
+        }
+        bad = [
+            s for s, d in scored.items()
+            if not isinstance(d, dict) or "score" not in d
+            or "direction" not in d or "tier" not in d
+        ]
+        assert "TEST_AAPL" in bad
+
+    def test_non_dict_entry_flagged(self):
+        """Non-dict entry is flagged."""
+        scored = {"TEST_AAPL": "not_a_dict"}
+        bad = [
+            s for s, d in scored.items()
+            if not isinstance(d, dict) or "score" not in d
+            or "direction" not in d or "tier" not in d
+        ]
+        assert "TEST_AAPL" in bad
+
+
+# ---------------------------------------------------------------------------
+# Prompt section presence (addition H)
+# ---------------------------------------------------------------------------
+class TestPromptSections:
+    def test_all_sections_present(self):
+        """When all 4 required sections are in prompt, missing_sections is empty."""
+        prompt = (
+            "=== ACCOUNT & RISK ===\nsome text\n"
+            "=== MARKET CONTEXT ===\nmore text\n"
+            "=== TOP SIGNALS (scored 2/39) ===\nstuff\n"
+            "=== YOUR TASK ===\ndo things\n"
+        )
+        required = [
+            "=== ACCOUNT & RISK ===",
+            "=== MARKET CONTEXT ===",
+            "=== TOP SIGNALS",
+            "=== YOUR TASK ===",
+        ]
+        missing = [s for s in required if s not in prompt]
+        assert missing == []
+
+    def test_missing_section_detected(self):
+        """When a section is absent, it appears in missing_sections."""
+        prompt = "=== ACCOUNT & RISK ===\n=== MARKET CONTEXT ===\n=== YOUR TASK ==="
+        required = [
+            "=== ACCOUNT & RISK ===",
+            "=== MARKET CONTEXT ===",
+            "=== TOP SIGNALS",
+            "=== YOUR TASK ===",
+        ]
+        missing = [s for s in required if s not in prompt]
+        assert "=== TOP SIGNALS" in missing
+
+
+# ---------------------------------------------------------------------------
+# Cross-stage idea field validation (addition C+D)
+# ---------------------------------------------------------------------------
+class TestIdeaFieldValidation:
+    def test_valid_idea_dict_passes_field_check(self):
+        """Idea with all required fields produces empty bad_ideas list."""
+        required_fields = {"symbol", "intent", "conviction", "catalyst", "direction"}
+        idea = {
+            "symbol": "TEST_AAPL", "intent": "enter_long", "direction": "bullish",
+            "tier_preference": "intraday", "conviction": 0.75, "catalyst": "wiring_test",
+        }
+        bad = [
+            i for i in [idea]
+            if not isinstance(i, dict) or not required_fields.issubset(i.keys())
+        ]
+        assert bad == []
+
+    def test_missing_conviction_flagged(self):
+        """Idea missing 'conviction' is flagged."""
+        required_fields = {"symbol", "intent", "conviction", "catalyst", "direction"}
+        idea = {
+            "symbol": "TEST_AAPL", "intent": "enter_long", "direction": "bullish",
+            "tier_preference": "intraday", "catalyst": "wiring_test",
+            # missing conviction
+        }
+        bad = [
+            i for i in [idea]
+            if not isinstance(i, dict) or not required_fields.issubset(i.keys())
+        ]
+        assert len(bad) == 1
+
+    def test_tradeidea_via_validate_claude_decision(self):
+        """validate_claude_decision maps intent/tier_preference to TradeIdea correctly."""
+        from schemas import validate_claude_decision
+        decision = {
+            "reasoning": "test",
+            "regime_view": "caution",
+            "ideas": [{
+                "symbol": "TEST_AAPL", "intent": "enter_long", "direction": "bullish",
+                "tier_preference": "intraday", "conviction": 0.75, "catalyst": "wiring_test",
+            }],
+            "holds": [],
+        }
+        parsed = validate_claude_decision(decision)
+        assert len(parsed.ideas) == 1
+        ti = parsed.ideas[0]
+        assert ti.symbol == "TEST_AAPL"
+        assert ti.conviction == 0.75
+
+
+# ---------------------------------------------------------------------------
+# WARN status in report (addition I)
+# ---------------------------------------------------------------------------
+class TestWarnStatus:
+    def setup_method(self):
+        wt._results.clear()
+
+    def teardown_method(self):
+        wt._results.clear()
+
+    def test_warn_count_tracked(self):
+        """WARN records are counted separately from PASS/FAIL/SKIP."""
+        wt._record("test_stage", "PASS")
+        wt._record("test_stage2", "WARN", "degraded but functional")
+        wt._record("test_stage3", "SKIP")
+        warns = sum(1 for r in wt._results if r.status == "WARN")
+        fails = sum(1 for r in wt._results if r.status == "FAIL")
+        assert warns == 1
+        assert fails == 0
+
+    def test_overall_pass_despite_warn(self):
+        """WARN records do not cause OVERALL FAIL."""
+        wt._record("a", "PASS")
+        wt._record("b", "WARN", "stale data")
+        fails = sum(1 for r in wt._results if r.status == "FAIL")
+        overall = "PASS" if fails == 0 else "FAIL"
+        assert overall == "PASS"

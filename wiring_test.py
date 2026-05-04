@@ -7,7 +7,7 @@ Run via:
 
 Makes real Haiku calls for A1 signal scoring, A1 decision, and A2 debate.
 No real orders submitted to Alpaca. Writes real ChromaDB records (cleaned up
-after). Prints a per-stage PASS/FAIL report and exits non-zero on any failure.
+after). Prints a per-stage PASS/FAIL/WARN report and exits non-zero on any failure.
 """
 
 from __future__ import annotations
@@ -41,6 +41,8 @@ _WIRING_A1_VECTOR_ID: str = ""          # ChromaDB doc id — captured after wri
 _intercepted_orders: list[dict] = []    # every submit_order call recorded here
 _a2_files_before: set[str] = set()      # A2 decision files that existed pre-cycle
 _original_log_trade = None              # saved for restore
+_recorded_stop_reasons: list[str] = []  # stop_reason per Claude API call during test
+_claude_create_patcher: tuple | None = None  # (messages_obj, original_create)
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +160,7 @@ def _build_synthetic_precycle_state():
 @dataclass
 class StageResult:
     name:    str
-    status:  str        # "PASS" | "FAIL" | "SKIP"
+    status:  str        # "PASS" | "FAIL" | "SKIP" | "WARN"
     detail:  str  = ""
     elapsed: float = 0.0
 
@@ -236,6 +238,42 @@ def _uninstall_trade_log_intercept() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Claude API stop_reason recorder (addition A)
+# ---------------------------------------------------------------------------
+def _install_claude_stop_recorder() -> None:
+    global _claude_create_patcher
+    try:
+        from bot_clients import _get_claude
+        client = _get_claude()
+        orig = client.messages.create
+
+        def _recording_create(*args, **kwargs):
+            resp = orig(*args, **kwargs)
+            _recorded_stop_reasons.append(resp.stop_reason or "unknown")
+            return resp
+
+        client.messages.create = _recording_create
+        _claude_create_patcher = (client.messages, orig)
+    except Exception as exc:
+        _recorded_stop_reasons.append(f"intercept_failed:{exc}")
+
+
+def _uninstall_claude_stop_recorder() -> None:
+    global _claude_create_patcher
+    if _claude_create_patcher is None:
+        return
+    obj, orig = _claude_create_patcher
+    try:
+        del obj.__dict__["create"]
+    except (KeyError, AttributeError):
+        try:
+            obj.create = orig
+        except Exception:
+            pass
+    _claude_create_patcher = None
+
+
+# ---------------------------------------------------------------------------
 # A1 pipeline
 # ---------------------------------------------------------------------------
 def _run_a1_pipeline() -> None:
@@ -277,6 +315,18 @@ def _run_a1_pipeline() -> None:
         scored  = signals.get("scored_symbols", signals) if isinstance(signals, dict) else {}
         _record("D-04  score_signals", "PASS",
                 f"symbols_scored={len(scored)}", time.monotonic() - t)
+        # B. Signal schema validation
+        bad_schema = [
+            s for s, d in scored.items()
+            if not isinstance(d, dict) or "score" not in d
+            or "direction" not in d or "tier" not in d
+        ]
+        if bad_schema:
+            _record("D-04b signal_schema", "WARN",
+                    f"{len(bad_schema)} entries missing score/direction/tier: {bad_schema[:3]}")
+        else:
+            _record("D-04b signal_schema", "PASS",
+                    f"all {len(scored)} entries valid")
     except Exception:
         _record("D-04  score_signals", "FAIL", traceback.format_exc(limit=3))
 
@@ -302,6 +352,20 @@ def _run_a1_pipeline() -> None:
         else:
             _record("D-05  build_compact_prompt", "PASS",
                     f"len={len(prompt)}", time.monotonic() - t)
+            # H. Prompt section presence check
+            required_sections = [
+                "=== ACCOUNT & RISK ===",
+                "=== MARKET CONTEXT ===",
+                "=== TOP SIGNALS",
+                "=== YOUR TASK ===",
+            ]
+            missing_sections = [s for s in required_sections if s not in prompt]
+            if missing_sections:
+                _record("D-05b prompt_sections", "FAIL",
+                        f"missing: {missing_sections}")
+            else:
+                _record("D-05b prompt_sections", "PASS",
+                        f"all {len(required_sections)} sections present")
     except Exception:
         _record("D-05  build_compact_prompt", "FAIL", traceback.format_exc(limit=3))
 
@@ -323,9 +387,41 @@ def _run_a1_pipeline() -> None:
                         time.monotonic() - t)
             else:
                 ideas = decision.get("ideas", [])
-                _record("D-06  a1_decision_call", "PASS",
+                # C. WARN when no trade ideas returned (valid HOLD cycle but worth flagging)
+                status_d06 = "WARN" if not ideas else "PASS"
+                _record("D-06  a1_decision_call", status_d06,
                         f"ideas={len(ideas)}  regime_view={decision.get('regime_view', '?')}",
                         time.monotonic() - t)
+                # C. Idea field validation — Claude returns intent/tier_preference (not action/tier)
+                required_fields = {"symbol", "intent", "conviction", "catalyst", "direction"}
+                bad_ideas = [
+                    i for i in ideas
+                    if not isinstance(i, dict) or not required_fields.issubset(i.keys())
+                ]
+                if bad_ideas:
+                    _record("D-06b idea_fields", "FAIL",
+                            f"{len(bad_ideas)}/{len(ideas)} ideas missing required fields "
+                            f"({required_fields})")
+                elif ideas:
+                    # D. Cross-stage continuity: parse via validate_claude_decision, verify TEST_ filter
+                    try:
+                        from risk_kernel import eligibility_check as _ec
+                        from schemas import validate_claude_decision
+                        parsed = validate_claude_decision(decision)
+                        if parsed.ideas:
+                            _rej = _ec(parsed.ideas[0], None, {})
+                            sym = parsed.ideas[0].symbol
+                            if _rej and "wiring_test_symbol" in _rej:
+                                _record("D-06b idea_fields", "PASS",
+                                        f"TradeIdea parsed + TEST_ filter fired  sym={sym}")
+                            else:
+                                _record("D-06b idea_fields", "WARN",
+                                        f"eligibility_check returned: {_rej}")
+                        else:
+                            _record("D-06b idea_fields", "WARN",
+                                    "validate_claude_decision returned 0 TradeIdea objects")
+                    except Exception:
+                        _record("D-06b idea_fields", "FAIL", traceback.format_exc(limit=3))
         except Exception:
             _record("D-06  a1_decision_call", "FAIL", traceback.format_exc(limit=3))
 
@@ -407,6 +503,21 @@ def _run_a1_pipeline() -> None:
             _WIRING_A1_VECTOR_ID = vector_id
             _record("D-09  chromadb_write", "PASS",
                     f"vector_id={vector_id}", time.monotonic() - t)
+            # E. Query ChromaDB to verify record is actually retrievable
+            try:
+                short, _, _ = trade_memory._get_collections()
+                if short is not None:
+                    result = short.get(ids=[vector_id], include=["metadatas"])
+                    if result and result.get("ids"):
+                        _record("D-09b chromadb_verify", "PASS",
+                                f"record confirmed in collection  id={vector_id}")
+                    else:
+                        _record("D-09b chromadb_verify", "FAIL",
+                                f"record not found after write  id={vector_id}")
+                else:
+                    _record("D-09b chromadb_verify", "SKIP", "collection unavailable")
+            except Exception:
+                _record("D-09b chromadb_verify", "FAIL", traceback.format_exc(limit=3))
         else:
             _record("D-09  chromadb_write", "FAIL",
                     "save_trade_memory returned empty string", time.monotonic() - t)
@@ -430,6 +541,22 @@ def _run_a1_pipeline() -> None:
                     f"expected list, got {type(exits)}", time.monotonic() - t)
     except Exception:
         _record("D-10  exit_manager", "FAIL", traceback.format_exc(limit=3))
+
+    # D-11: Claude stop_reason — FAIL if any call hit max_tokens (A)
+    max_tokens_hits = [r for r in _recorded_stop_reasons if r == "max_tokens"]
+    unexpected      = [r for r in _recorded_stop_reasons
+                       if r not in ("end_turn", "tool_use", "max_tokens")]
+    all_reasons_str = ", ".join(_recorded_stop_reasons) if _recorded_stop_reasons else "none"
+    if max_tokens_hits:
+        _record("D-11  claude_stop_reasons", "FAIL",
+                f"max_tokens hit {len(max_tokens_hits)}x — JSON may be truncated; "
+                f"all: {all_reasons_str}")
+    elif unexpected:
+        _record("D-11  claude_stop_reasons", "WARN",
+                f"unexpected stop reasons: {unexpected}  all: {all_reasons_str}")
+    else:
+        _record("D-11  claude_stop_reasons", "PASS",
+                f"{len(_recorded_stop_reasons)} calls, all end_turn  all: {all_reasons_str}")
 
 
 # ---------------------------------------------------------------------------
@@ -555,9 +682,35 @@ def _run_a2_pipeline() -> None:
                         f"intercepted_total={len(_intercepted_orders)}; alpaca=mock")
                 _record("E-07  persist_decision_record", "PASS",
                         f"files={new_files}")
+                # G. A2 decision file schema validation
+                try:
+                    dec_path = _A2_DECISIONS_DIR / new_files[0]
+                    dec_data = json.loads(dec_path.read_text())
+                    required_top = {"decision_id", "session_tier", "execution_result", "built_at"}
+                    missing_top  = required_top - set(dec_data.keys())
+                    if missing_top:
+                        _record("E-07b a2_decision_schema", "FAIL",
+                                f"missing top-level keys: {sorted(missing_top)}")
+                    else:
+                        dp = dec_data.get("debate_parsed")
+                        if dp is not None and isinstance(dp, dict):
+                            required_dp = {"selected_candidate_id", "confidence", "reject"}
+                            missing_dp  = required_dp - set(dp.keys())
+                            if missing_dp:
+                                _record("E-07b a2_decision_schema", "FAIL",
+                                        f"debate_parsed missing keys: {sorted(missing_dp)}")
+                            else:
+                                _record("E-07b a2_decision_schema", "PASS",
+                                        "top-level + debate_parsed keys valid")
+                        else:
+                            _record("E-07b a2_decision_schema", "PASS",
+                                    "top-level keys valid; debate_parsed=None (no-trade path)")
+                except Exception:
+                    _record("E-07b a2_decision_schema", "FAIL", traceback.format_exc(limit=3))
             else:
-                _record("E-05  a2_debate_or_early_exit", "PASS",
-                        "cycle returned (early exit path — no candidates for SPY in obs mode)")
+                # I. WARN on early exit — pipeline ran but produced no decision file
+                _record("E-05  a2_debate_or_early_exit", "WARN",
+                        "early exit — no candidates reached debate stage")
                 _record("E-06  a2_execution_intercepted", "SKIP",
                         "no execution path reached")
                 _record("E-07  persist_decision_record", "FAIL",
@@ -586,6 +739,17 @@ def _cleanup_wiring_test() -> list[str]:
             import trade_memory
             trade_memory.delete_by_vector_id(_WIRING_A1_VECTOR_ID)
             actions.append(f"ChromaDB: deleted vector_id={_WIRING_A1_VECTOR_ID}")
+            # F. Verify the record is actually gone
+            try:
+                short, _, _ = trade_memory._get_collections()
+                if short is not None:
+                    gone_check = short.get(ids=[_WIRING_A1_VECTOR_ID], include=["metadatas"])
+                    if gone_check and gone_check.get("ids"):
+                        actions.append("ChromaDB: WARNING — record still present after delete!")
+                    else:
+                        actions.append("ChromaDB: verified gone")
+            except Exception as _vex:
+                actions.append(f"ChromaDB: verify-gone query failed: {_vex}")
         except Exception as exc:
             actions.append(f"ChromaDB cleanup FAILED: {exc}")
     else:
@@ -683,12 +847,13 @@ def _print_report(cleanup_actions: list[str], total_elapsed: float) -> int:
     fails  = sum(1 for r in _results if r.status == "FAIL")
     passes = sum(1 for r in _results if r.status == "PASS")
     skips  = sum(1 for r in _results if r.status == "SKIP")
+    warns  = sum(1 for r in _results if r.status == "WARN")
     total  = len(_results)
     overall = "PASS" if fails == 0 else "FAIL"
 
     print(bar)
     print(f"  OVERALL: {overall}  "
-          f"({passes} passed, {fails} failed, {skips} skipped / {total} checks)")
+          f"({passes} passed, {fails} failed, {warns} warned, {skips} skipped / {total} checks)")
     print(f"  Duration: {total_elapsed:.1f}s")
     print(bar)
     print()
@@ -718,11 +883,13 @@ def run_wiring_test() -> None:
     _record("D-01  concurrency_guard", "PASS",
             f"no live scheduler at {_PID_FILE}")
 
+    _install_claude_stop_recorder()
     _install_trade_log_intercept()
     try:
         _run_a1_pipeline()
         _run_a2_pipeline()
     finally:
+        _uninstall_claude_stop_recorder()
         _uninstall_trade_log_intercept()
         cleanup_actions = _cleanup_wiring_test()
 

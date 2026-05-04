@@ -208,7 +208,12 @@ class TestStage4ConfidenceGate(unittest.TestCase):
             }
         }
 
-        with patch("bot_options_stage4_execution._load_strategy_config", return_value=cfg):
+        base_url = (
+            "https://api.alpaca.markets" if pf_allow_live_orders
+            else "https://paper-api.alpaca.markets"
+        )
+        with patch("bot_options_stage4_execution._load_strategy_config", return_value=cfg), \
+             patch.dict("os.environ", {"ALPACA_BASE_URL": base_url}, clear=False):
             result = submit_selected_candidate(
                 decision_record=record,
                 alpaca_client=MagicMock(),

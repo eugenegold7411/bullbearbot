@@ -214,101 +214,110 @@ def submit_selected_candidate(
             decision_record.no_trade_reason = "debate_low_confidence"
             return "no_trade"
 
-        selected_cand = next(
+        # Debate winner first; remaining candidates in original order as fallback.
+        _winner = next(
             (c for c in candidate_structures if c.get("candidate_id") == _sel_id), None
         )
-        if selected_cand is None:
+        if _winner is None:
             log.warning("[OPTS] Bounded debate selected_candidate_id=%s not found — holding", _sel_id)
             decision_record.execution_result = "no_trade"
             decision_record.no_trade_reason = "debate_rejected_all"
             return "no_trade"
 
-        sym = selected_cand["symbol"]
-        log.info("[OPTS] Bounded selection: %s  %s  conf=%.2f  size_mod=%.1f",
-                 sym, selected_cand.get("structure_type", "?"), _conf, _size_mod)
+        _fallback_pool = [_winner] + [
+            c for c in candidate_structures if c.get("candidate_id") != _sel_id
+        ]
+        _MAX_BUILD_ATTEMPTS = 3
 
         if pf_allow_new_entries:
-            # Mode gate
-            if a2_mode is not None:
+            for _attempt, _cand in enumerate(_fallback_pool[:_MAX_BUILD_ATTEMPTS], 1):
+                sym = _cand["symbol"]
+                if _attempt == 1:
+                    log.info("[OPTS] Bounded selection: %s  %s  conf=%.2f  size_mod=%.1f",
+                             sym, _cand.get("structure_type", "?"), _conf, _size_mod)
+                else:
+                    log.info("[OPTS] Build fallback attempt %d/%d: %s  %s",
+                             _attempt, _MAX_BUILD_ATTEMPTS, sym, _cand.get("structure_type", "?"))
+
+                # Mode gate — hard stop (not candidate-specific)
+                if a2_mode is not None:
+                    try:
+                        from divergence import is_action_allowed  # noqa: PLC0415
+                        _a2_allowed, _a2_reason = is_action_allowed(a2_mode, "enter_long", sym)
+                        if not _a2_allowed:
+                            log.warning("[DIV] A2 BLOCKED %s — %s", sym, _a2_reason)
+                            decision_record.execution_result = "no_trade"
+                            decision_record.no_trade_reason = "execution_rejected"
+                            return "no_trade"
+                    except Exception as _dge:
+                        log.debug("[DIV] A2 mode gate failed (non-fatal): %s", _dge)
+
+                strategy_enum = strategy_map.get(_cand.get("structure_type", ""))
+                if strategy_enum is None:
+                    log.warning("[OPTS] Unknown structure_type=%s — skipping %s",
+                                _cand.get("structure_type"), sym)
+                    continue
+
+                proposal = next((c for c in candidates if c.symbol == sym), None)
+                direction_val = proposal.direction if proposal else _cand.get("a1_direction", "bullish")
+                if proposal is not None:
+                    iv_rank_val = proposal.iv_rank
+                else:
+                    _iv = iv_summaries.get(sym, {}).get("iv_rank")
+                    if _iv is None:
+                        log.warning("[OPTS] %s: iv_rank absent — skipping", sym)
+                        continue
+                    iv_rank_val = float(_iv)
+                max_loss_usd = _cand.get("max_loss", equity * 0.03) * _size_mod
+
                 try:
-                    from divergence import is_action_allowed  # noqa: PLC0415
-                    _a2_allowed, _a2_reason = is_action_allowed(a2_mode, "enter_long", sym)
-                    if not _a2_allowed:
-                        log.warning("[DIV] A2 BLOCKED %s — %s", sym, _a2_reason)
-                        decision_record.execution_result = "no_trade"
-                        decision_record.no_trade_reason = "execution_rejected"
-                        return "no_trade"
-                except Exception as _dge:
-                    log.debug("[DIV] A2 mode gate failed (non-fatal): %s", _dge)
+                    _chain = options_data.fetch_options_chain(sym)
+                    structure, build_err = options_builder.build_structure(
+                        symbol=sym,
+                        strategy=strategy_enum,
+                        direction=direction_val,
+                        conviction=_conf,
+                        iv_rank=iv_rank_val,
+                        max_cost_usd=max_loss_usd,
+                        chain=_chain,
+                        equity=equity,
+                        config=_a2_cfg,
+                    )
+                except Exception as _be:
+                    log.error("[OPTS] %s: chain/build failed: %s", sym, _be)
+                    continue
 
-            strategy_enum = strategy_map.get(selected_cand.get("structure_type", ""))
-            if strategy_enum is None:
-                log.warning("[OPTS] Unknown structure_type=%s — holding",
-                            selected_cand.get("structure_type"))
-                decision_record.execution_result = "no_trade"
-                decision_record.no_trade_reason = "execution_rejected"
-                return "no_trade"
+                if structure is None:
+                    log.warning("[OPTS] %s: build_structure rejected (attempt %d/%d) — %s",
+                                sym, _attempt, _MAX_BUILD_ATTEMPTS, build_err)
+                    continue
 
-            proposal = next((c for c in candidates if c.symbol == sym), None)
-            direction_val = proposal.direction if proposal else selected_cand.get("a1_direction", "bullish")
-            if proposal is not None:
-                iv_rank_val = proposal.iv_rank
-            else:
-                _iv = iv_summaries.get(sym, {}).get("iv_rank")
-                if _iv is None:
-                    log.warning("[OPTS] %s: iv_rank absent, no proposal â skipping", sym)
+                # Per-symbol submission lock — block duplicates (T2-1)
+                if _is_duplicate_submission(sym, structure.legs):
                     decision_record.execution_result = "no_trade"
-                    decision_record.no_trade_reason = "iv_rank_absent"
+                    decision_record.no_trade_reason = "duplicate_submission_blocked"
                     return "no_trade"
-                iv_rank_val = float(_iv)
-            max_loss_usd  = selected_cand.get("max_loss", equity * 0.03) * _size_mod
 
-            try:
-                _chain = options_data.fetch_options_chain(sym)
-                structure, build_err = options_builder.build_structure(
-                    symbol=sym,
-                    strategy=strategy_enum,
-                    direction=direction_val,
-                    conviction=_conf,
-                    iv_rank=iv_rank_val,
-                    max_cost_usd=max_loss_usd,
-                    chain=_chain,
-                    equity=equity,
-                    config=_a2_cfg,
-                )
-            except Exception as _be:
-                log.error("[OPTS] %s: chain/build failed: %s", sym, _be)
-                decision_record.execution_result = "error"
-                decision_record.no_trade_reason = "execution_error"
-                return "error"
+                structure.debate = _build_debate_snapshot(debate_result, decision_record.decision_id)
+                options_state.save_structure(structure)
+                _effective_obs = obs_mode or (not pf_allow_live_orders)
+                if not pf_allow_live_orders:
+                    log.warning("[PREFLIGHT] shadow_only — suppressing live A2 submission for %s", sym)
+                result = oe_opts.submit_options_order(structure, equity, _effective_obs)
+                execution_results.append(result.to_dict())
+                log.info("[OPTS] %s %s  status=%s%s",
+                         sym, structure.strategy.value, result.status,
+                         f"  structure_id={result.structure_id}" if result.structure_id else "")
 
-            if structure is None:
-                log.warning("[OPTS] %s: build_structure rejected — %s", sym, build_err)
-                decision_record.execution_result = "rejected"
-                decision_record.no_trade_reason = "execution_rejected"
-                return "rejected"
+                exec_status = result.status if result.status else "submitted"
+                decision_record.execution_result = exec_status
+                _log_attribution(decision_record, execution_results)
+                return exec_status
 
-            # Per-symbol submission lock — block duplicates (T2-1)
-            if _is_duplicate_submission(sym, structure.legs):
-                decision_record.execution_result = "no_trade"
-                decision_record.no_trade_reason = "duplicate_submission_blocked"
-                return "no_trade"
-
-            structure.debate = _build_debate_snapshot(debate_result, decision_record.decision_id)
-            options_state.save_structure(structure)
-            _effective_obs = obs_mode or (not pf_allow_live_orders)
-            if not pf_allow_live_orders:
-                log.warning("[PREFLIGHT] shadow_only — suppressing live A2 submission for %s", sym)
-            result = oe_opts.submit_options_order(structure, equity, _effective_obs)
-            execution_results.append(result.to_dict())
-            log.info("[OPTS] %s %s  status=%s%s",
-                     sym, structure.strategy.value, result.status,
-                     f"  structure_id={result.structure_id}" if result.structure_id else "")
-
-            exec_status = result.status if result.status else "submitted"
-            decision_record.execution_result = exec_status
-            _log_attribution(decision_record, execution_results)
-            return exec_status
+            log.warning("[OPTS] All %d build attempts exhausted — holding", _MAX_BUILD_ATTEMPTS)
+            decision_record.execution_result = "rejected"
+            decision_record.no_trade_reason = "execution_rejected"
+            return "rejected"
 
         decision_record.execution_result = "no_trade"
         decision_record.no_trade_reason = "execution_rejected"

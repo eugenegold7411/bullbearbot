@@ -62,12 +62,14 @@ def _make_mock_structure():
 def test_dtbp_zero_guard_skips_submission(tmp_path, monkeypatch):
     """When DTBP=0 and options_buying_power>0, submission proceeds (falls through)."""
     import options_executor
+    import options_state as _os_mod
     import order_executor_options as oe
 
     # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
     monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
-    # Isolate structures.json — submit_options_order lazily imports options_state
-    monkeypatch.setitem(sys.modules, "options_state", MagicMock())
+    # Redirect structures.json writes to tmp_path — prevents MagicMock leak to the
+    # production file when save_structure() is called with a mocked submit result.
+    monkeypatch.setattr(_os_mod, "_STRUCTURES_PATH", tmp_path / "structures.json")
 
     structure = _make_mock_structure()
 
@@ -103,12 +105,14 @@ def test_dtbp_zero_guard_skips_submission(tmp_path, monkeypatch):
 def test_dtbp_nonzero_proceeds_normally(tmp_path, monkeypatch):
     """When DTBP>0, submission proceeds past the DTBP guard."""
     import options_executor
+    import options_state as _os_mod
     import order_executor_options as oe
 
     # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
     monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
-    # Isolate structures.json — submit_options_order lazily imports options_state
-    monkeypatch.setitem(sys.modules, "options_state", MagicMock())
+    # Redirect structures.json writes to tmp_path — prevents MagicMock leak to the
+    # production file when save_structure() is called with a mocked submit result.
+    monkeypatch.setattr(_os_mod, "_STRUCTURES_PATH", tmp_path / "structures.json")
 
     structure = _make_mock_structure()
 
@@ -138,12 +142,14 @@ def test_dtbp_nonzero_proceeds_normally(tmp_path, monkeypatch):
 def test_dtbp_check_failure_fails_open(tmp_path, monkeypatch):
     """If DTBP account fetch raises, submission proceeds normally (fail open)."""
     import options_executor
+    import options_state as _os_mod
     import order_executor_options as oe
 
     # Redirect log to tmp_path so no test artifacts reach production options_log.jsonl
     monkeypatch.setattr(oe, "_LOG_PATH", tmp_path / "options_log.jsonl")
-    # Isolate structures.json — submit_options_order lazily imports options_state
-    monkeypatch.setitem(sys.modules, "options_state", MagicMock())
+    # Redirect structures.json writes to tmp_path — prevents MagicMock leak to the
+    # production file when save_structure() is called with a mocked submit result.
+    monkeypatch.setattr(_os_mod, "_STRUCTURES_PATH", tmp_path / "structures.json")
 
     structure = _make_mock_structure()
 

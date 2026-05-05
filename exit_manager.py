@@ -201,6 +201,8 @@ _DEFAULT_CFG = {
     "trail_to_breakeven_plus_pct":  0.005,  # trail stop to entry + 0.5%
     "refresh_if_stop_stale_pct":    0.15,   # refresh if stop >15% below current price
     "backstop_days":                7,      # new-entry backstop horizon (calendar days)
+    "max_stop_refreshes_per_cycle": 3,      # max non-urgent refreshes per cycle (cancel-storm guard)
+    "stop_refresh_delay_seconds":   0.5,    # sleep between cancel+resubmit pairs
 }
 
 _TARGETS_PATH = Path("data/runtime/position_targets.json")
@@ -1063,6 +1065,11 @@ def run_exit_manager(
 
     _targets = _load_position_targets()
 
+    em_cfg       = _em_config(strategy_config)
+    max_refreshes = int(em_cfg.get("max_stop_refreshes_per_cycle", 3))
+    refresh_delay = float(em_cfg.get("stop_refresh_delay_seconds", 0.5))
+    refresh_count = 0  # Alpaca cancel+resubmit pairs submitted this cycle
+
     for pos in positions:
         if float(pos.qty) == 0:
             continue
@@ -1088,19 +1095,25 @@ def run_exit_manager(
 
         # SW-TP: software-level take-profit check.  Fires when the Alpaca broker-side
         # TP leg was silently voided (OCA collision) but the intended target price is
-        # stored in position_targets.json, written at bracket submission time.
-        if not is_short and sym in _targets:
+        # stored in position_targets.json, written at bracket/OCO submission time.
+        # For longs: fires when price rises to target. For shorts: when price falls to target.
+        if sym in _targets:
             _tgt = _targets[sym]
             _target_price = float(_tgt.get("take_profit", 0))
             try:
                 _current_price = float(pos.current_price or 0)
             except Exception:
                 _current_price = 0.0
-            if _target_price > 0 and _current_price >= _target_price * 0.999:
+            _swtp_hit = (
+                _current_price <= _target_price * 1.001  # short: price dropped to target
+                if is_short else
+                _current_price >= _target_price * 0.999  # long: price rose to target
+            )
+            if _target_price > 0 and _swtp_hit:
                 log.info(
-                    "[EXIT_MGR] %s: SW-TP triggered — current=%.2f >= target=%.2f"
+                    "[EXIT_MGR] %s: SW-TP triggered — current=%.2f %s target=%.2f"
                     " (0.1%% buffer). Submitting market close.",
-                    sym, _current_price, _target_price,
+                    sym, _current_price, "<=" if is_short else ">=", _target_price,
                 )
                 try:
                     from alpaca.trading.enums import (  # noqa: PLC0415
@@ -1113,7 +1126,7 @@ def run_exit_manager(
                     _close_req = MarketOrderRequest(
                         symbol=sym,
                         qty=abs(float(pos.qty)),
-                        side=OrderSide.SELL,
+                        side=OrderSide.BUY if is_short else OrderSide.SELL,
                         time_in_force=TimeInForce.GTC if _is_crypto(sym) else TimeInForce.DAY,
                     )
                     alpaca_client.submit_order(_close_req)
@@ -1126,18 +1139,53 @@ def run_exit_manager(
                 except Exception as exc:
                     log.error("[EXIT_MGR] %s: SW-TP market close failed: %s", sym, exc)
 
-        # Refresh if UNPROTECTED / tp_only / stale
-        try:
-            refreshed = refresh_exits_for_position(
-                pos, alpaca_client, strategy_config, exit_info=ei
+        # Refresh if UNPROTECTED / tp_only / stale.
+        # Urgent (unprotected/tp_only): always fires, bypasses the cycle cap.
+        # Non-urgent (stale stop / tp_missing BUG-009b): capped at
+        # max_stop_refreshes_per_cycle per cycle; remaining positions are
+        # deferred to the next cycle where staleness check will re-trigger.
+        # Inter-order delay fires between every cancel+resubmit pair to
+        # prevent simultaneous burst submissions to Alpaca.
+        _ei_status = ei.get("status", "unknown")
+        _stop_price = ei.get("stop_price")
+        _cur_price  = float(getattr(pos, "current_price", 0) or 0)
+        _is_short_pos = float(pos.qty) < 0
+        _stale_threshold = em_cfg.get("refresh_if_stop_stale_pct", 0.15)
+        _is_stale = (
+            _stop_price is not None and _cur_price > 0 and (
+                (_stop_price - _cur_price) / _cur_price > _stale_threshold
+                if _is_short_pos
+                else (_cur_price - _stop_price) / _cur_price > _stale_threshold
             )
-            if refreshed:
-                actions_taken.append({
-                    "symbol": sym, "action": "refresh_exits",
-                    "detail": f"was {ei.get('status','?')}",
-                })
-        except Exception as exc:
-            log.debug("[EXIT_MGR] refresh_exits failed %s: %s", sym, exc)
+        )
+        _is_urgent   = _ei_status in ("unprotected", "unknown", "tp_only")
+        _needs_refresh = _is_urgent or _is_stale or _ei_status == "partial"
+
+        if _needs_refresh:
+            if not _is_urgent and refresh_count >= max_refreshes:
+                log.info(
+                    "[EXIT_MGR] deferring stop refresh for %s — cycle cap reached (%d/%d)",
+                    sym, refresh_count, max_refreshes,
+                )
+            else:
+                if refresh_count > 0:
+                    log.debug(
+                        "[EXIT_MGR] inter-refresh delay %.1fs before %s",
+                        refresh_delay, sym,
+                    )
+                    time.sleep(refresh_delay)
+                try:
+                    refreshed = refresh_exits_for_position(
+                        pos, alpaca_client, strategy_config, exit_info=ei
+                    )
+                    if refreshed:
+                        refresh_count += 1
+                        actions_taken.append({
+                            "symbol": sym, "action": "refresh_exits",
+                            "detail": f"was {_ei_status}",
+                        })
+                except Exception as exc:
+                    log.debug("[EXIT_MGR] refresh_exits failed %s: %s", sym, exc)
 
         # Trail if sufficiently profitable
         try:

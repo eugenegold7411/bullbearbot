@@ -2,7 +2,10 @@
 tests/test_short_selling_execution.py — Session 2 of 3: short selling execution wiring.
 
 Covers:
-  - _submit_short(): market SELL entry + protective BUY stop
+  - _submit_short(): market SELL entry + OCO (stop+TP) when take_profit provided
+  - _submit_short(): standalone BUY stop when take_profit absent
+  - _submit_short(): OCO fallback to standalone stop on broker failure
+  - _submit_short(): position_targets.json written for short positions
   - _submit_cover(): market BUY to close short
   - execute_all() dispatch for short_sell and cover actions
 """
@@ -33,6 +36,7 @@ def _ensure_stubs():
         "TimeInForce":      {"DAY": "day",  "GTC":  "gtc"},
         "OrderClass":       {"BRACKET": "bracket", "OCO": "oco"},
         "QueryOrderStatus": {"OPEN": "open", "ALL": "all"},
+        "PositionIntent":   {"BUY_TO_CLOSE": "buy_to_close", "SELL_TO_CLOSE": "sell_to_close"},
     }.items():
         if not hasattr(enums, enum_name):
             cls = type(enum_name, (), {})
@@ -79,8 +83,11 @@ def _filled_order(order_id="short-order-id", fill_price=100.0, fill_qty=10):
     return o
 
 
-def _short_action(symbol="NVDA", qty=10, stop_loss=103.50):
-    return {"symbol": symbol, "qty": qty, "stop_loss": stop_loss, "action": "short_sell"}
+def _short_action(symbol="NVDA", qty=10, stop_loss=103.50, take_profit=None):
+    a = {"symbol": symbol, "qty": qty, "stop_loss": stop_loss, "action": "short_sell"}
+    if take_profit is not None:
+        a["take_profit"] = take_profit
+    return a
 
 
 def _cover_action(symbol="NVDA", qty=10):
@@ -267,3 +274,159 @@ def test_execute_all_routes_cover():
     assert OrderSide.BUY in submitted_sides, (
         f"Expected a BUY order in submitted calls, got sides: {submitted_sides}"
     )
+
+
+# ── Test 6: _submit_short places OCO when take_profit provided ────────────────
+
+def test_submit_short_places_oco_with_take_profit(tmp_path, monkeypatch):
+    """_submit_short() with take_profit in action → OCO (not standalone stop) is placed."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "runtime").mkdir(parents=True)
+
+    _ensure_stubs()
+    from alpaca.trading.enums import OrderClass, OrderSide
+
+    import order_executor as oe
+
+    fill     = _filled_order(fill_price=100.0, fill_qty=10)
+    oco_ord  = MagicMock(id="oco-order-id")
+    client   = _make_client([fill, oco_ord])
+
+    with patch("order_executor._get_alpaca", return_value=client), \
+         patch("order_executor.log_trade"), \
+         patch("time.sleep"):
+        oe._submit_short(_short_action(stop_loss=103.50, take_profit=93.50))
+
+    assert client.submit_order.call_count == 2, (
+        f"Expected 2 calls (entry + OCO), got {client.submit_order.call_count}"
+    )
+    second_req = client.submit_order.call_args_list[1].args[0]
+    assert getattr(second_req, "side", None) == OrderSide.BUY
+    assert getattr(second_req, "order_class", None) == OrderClass.OCO
+
+
+# ── Test 7: _submit_short OCO fallback to standalone stop on failure ──────────
+
+def test_submit_short_oco_fallback_on_failure(tmp_path, monkeypatch):
+    """When OCO submission fails, _submit_short falls back to standalone protective stop."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "runtime").mkdir(parents=True)
+
+    _ensure_stubs()
+    from alpaca.trading.enums import OrderSide
+
+    import order_executor as oe
+
+    fill     = _filled_order(fill_price=100.0, fill_qty=10)
+    stop_ord = MagicMock(id="stop-fallback-id")
+
+    def _side_effect(req):
+        if getattr(req, "order_class", None) is not None:
+            raise RuntimeError("OCO not supported")
+        return stop_ord if hasattr(req, "stop_price") else fill
+
+    client = MagicMock()
+    client.submit_order.side_effect = [fill, RuntimeError("OCO not supported"), stop_ord]
+    client.get_orders.return_value = []
+
+    with patch("order_executor._get_alpaca", return_value=client), \
+         patch("order_executor.log_trade"), \
+         patch("time.sleep"):
+        oe._submit_short(_short_action(stop_loss=103.50, take_profit=93.50))
+
+    assert client.submit_order.call_count == 3, (
+        f"Expected 3 calls (entry + OCO fail + standalone stop), got {client.submit_order.call_count}"
+    )
+    stop_req = client.submit_order.call_args_list[2].args[0]
+    assert getattr(stop_req, "side", None) == OrderSide.BUY
+    placed_price = getattr(stop_req, "stop_price", None)
+    assert placed_price is not None and abs(placed_price - 103.50) < 0.01
+
+
+# ── Test 8: TP limit price is below entry price ───────────────────────────────
+
+def test_submit_short_tp_price_below_entry(tmp_path, monkeypatch):
+    """The TP limit price placed in the OCO must be below the fill price (profit target for short)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "runtime").mkdir(parents=True)
+
+    _ensure_stubs()
+
+    import order_executor as oe
+
+    fill_price = 100.0
+    fill    = _filled_order(fill_price=fill_price, fill_qty=10)
+    oco_ord = MagicMock(id="oco-id")
+    client  = _make_client([fill, oco_ord])
+
+    with patch("order_executor._get_alpaca", return_value=client), \
+         patch("order_executor.log_trade"), \
+         patch("time.sleep"):
+        oe._submit_short(_short_action(stop_loss=103.50, take_profit=93.50))
+
+    oco_req  = client.submit_order.call_args_list[1].args[0]
+    tp_req   = getattr(oco_req, "take_profit", None)
+    tp_price = getattr(tp_req, "limit_price", None) if tp_req else None
+    assert tp_price is not None and tp_price < fill_price, (
+        f"Expected TP limit price < entry {fill_price}, got {tp_price}"
+    )
+
+
+# ── Test 9: position_targets.json written for short entry ────────────────────
+
+def test_submit_short_writes_position_targets(tmp_path, monkeypatch):
+    """_submit_short() with take_profit writes position_targets.json with side='short'."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "runtime").mkdir(parents=True)
+
+    _ensure_stubs()
+
+    import json
+
+    import order_executor as oe
+
+    fill    = _filled_order(fill_price=100.0, fill_qty=10)
+    oco_ord = MagicMock(id="oco-id")
+    client  = _make_client([fill, oco_ord])
+
+    with patch("order_executor._get_alpaca", return_value=client), \
+         patch("order_executor.log_trade"), \
+         patch("time.sleep"):
+        oe._submit_short(_short_action(symbol="NVDA", stop_loss=103.50, take_profit=93.50))
+
+    targets_file = tmp_path / "data" / "runtime" / "position_targets.json"
+    assert targets_file.exists(), "position_targets.json was not written"
+    data = json.loads(targets_file.read_text())
+    assert "NVDA" in data
+    entry = data["NVDA"]
+    assert entry["side"] == "short"
+    assert abs(entry["take_profit"] - 93.50) < 0.01
+    assert abs(entry["stop_loss"] - 103.50) < 0.01
+    assert entry["take_profit"] < entry["stop_loss"], (
+        "Short TP must be below stop_loss"
+    )
+
+
+# ── Test 10: _submit_short without take_profit → stop-only (no OCO) ──────────
+
+def test_submit_short_stop_only_when_no_take_profit():
+    """_submit_short() without take_profit in action → standalone stop, no OCO, call_count=2."""
+    _ensure_stubs()
+    from alpaca.trading.enums import OrderSide
+
+    import order_executor as oe
+
+    fill     = _filled_order(fill_price=100.0, fill_qty=10)
+    stop_ord = MagicMock(id="stop-only-id")
+    client   = _make_client([fill, stop_ord])
+
+    with patch("order_executor._get_alpaca", return_value=client), \
+         patch("time.sleep"):
+        oe._submit_short(_short_action(stop_loss=103.50))  # no take_profit
+
+    assert client.submit_order.call_count == 2, (
+        f"Expected 2 calls (entry + stop), got {client.submit_order.call_count}"
+    )
+    stop_req = client.submit_order.call_args_list[1].args[0]
+    assert getattr(stop_req, "side", None) == OrderSide.BUY
+    assert getattr(stop_req, "stop_price", None) is not None

@@ -24,6 +24,7 @@ from alpaca.trading.enums import (
     ContractType,
     OrderClass,
     OrderSide,
+    PositionIntent,
     TimeInForce,
 )
 from alpaca.trading.requests import (
@@ -795,18 +796,81 @@ def _submit_short(action: dict) -> tuple:
     fp, fq, ft = _extract_fill(order)
 
     if fp and fq and int(float(fq)) > 0:
-        try:
-            stop_req = StopOrderRequest(
-                symbol=symbol, qty=int(float(fq)), side=OrderSide.BUY,
-                time_in_force=TimeInForce.GTC, stop_price=round(stop_loss, 2),
-            )
-            stop_ord = _get_alpaca().submit_order(stop_req)
-            log.info(
-                "[EXECUTOR] %s: short protective stop placed  stop=$%.2f  order_id=%s",
-                symbol, stop_loss, stop_ord.id,
-            )
-        except Exception as exc:
-            log.error("[EXECUTOR] %s: short protective stop failed: %s", symbol, exc)
+        _filled_qty  = int(float(fq))
+        _take_profit = action.get("take_profit")
+        _oco_placed  = False
+
+        if _take_profit is not None and float(_take_profit) > 0:
+            try:
+                _oco_req = LimitOrderRequest(
+                    symbol=symbol, qty=_filled_qty, side=OrderSide.BUY,
+                    time_in_force=TimeInForce.GTC,
+                    order_class=OrderClass.OCO,
+                    take_profit=TakeProfitRequest(limit_price=round(float(_take_profit), 2)),
+                    stop_loss=StopLossRequest(stop_price=round(stop_loss, 2)),
+                    position_intent=PositionIntent.BUY_TO_CLOSE,
+                )
+                _oco_ord = _get_alpaca().submit_order(_oco_req)
+                log.info(
+                    "[EXECUTOR] %s: short OCO placed — stop=$%.2f  TP=$%.2f  order_id=%s",
+                    symbol, stop_loss, float(_take_profit), _oco_ord.id,
+                )
+                log_trade({
+                    "event":        "short_exit_oco_entry",
+                    "symbol":       symbol,
+                    "stop_price":   round(stop_loss, 2),
+                    "target_price": round(float(_take_profit), 2),
+                    "order_id":     str(_oco_ord.id),
+                })
+                _oco_placed = True
+            except Exception as exc:
+                log.warning(
+                    "[EXECUTOR] %s: short OCO failed, falling back to standalone stop: %s",
+                    symbol, exc,
+                )
+
+        if not _oco_placed:
+            if _take_profit is None:
+                log.warning(
+                    "[EXECUTOR] %s: short entry has no take_profit — stop-only protection",
+                    symbol,
+                )
+            try:
+                stop_req = StopOrderRequest(
+                    symbol=symbol, qty=_filled_qty, side=OrderSide.BUY,
+                    time_in_force=TimeInForce.GTC, stop_price=round(stop_loss, 2),
+                )
+                stop_ord = _get_alpaca().submit_order(stop_req)
+                log.info(
+                    "[EXECUTOR] %s: short protective stop placed  stop=$%.2f  order_id=%s",
+                    symbol, stop_loss, stop_ord.id,
+                )
+            except Exception as exc:
+                log.error("[EXECUTOR] %s: short protective stop failed: %s", symbol, exc)
+
+        if _take_profit is not None and float(_take_profit) > 0:
+            try:
+                import json as _json  # noqa: PLC0415
+                from pathlib import Path as _Path  # noqa: PLC0415
+                _tp_path = _Path("data/runtime/position_targets.json")
+                _tp_data = _json.loads(_tp_path.read_text()) if _tp_path.exists() else {}
+                _tp_data[symbol] = {
+                    "symbol":       symbol,
+                    "take_profit":  round(float(_take_profit), 2),
+                    "entry_price":  round(fp, 4) if fp else None,
+                    "qty":          float(_filled_qty),
+                    "stop_loss":    round(stop_loss, 2),
+                    "submitted_at": datetime.now(timezone.utc).isoformat(),
+                    "order_id":     str(order.id),
+                    "side":         "short",
+                }
+                _tp_path.write_text(_json.dumps(_tp_data, indent=2))
+                log.info("[EXECUTOR] %s: short target written — TP=%.2f", symbol, float(_take_profit))
+            except Exception as _tpe:
+                log.warning(
+                    "[EXECUTOR] %s: short position_targets write failed (non-fatal): %s",
+                    symbol, _tpe,
+                )
 
     return str(order.id), fp, fq, ft
 

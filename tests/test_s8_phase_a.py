@@ -327,6 +327,7 @@ def _run_decide(
     incumbents,
     pa_overrides: dict | None = None,
     bp: float = 120_000.0,
+    equity: float = 100_000.0,
 ) -> list[dict]:
     """Helper: run _decide_actions with sane defaults. Returns proposed_actions."""
     import portfolio_allocator as pa
@@ -342,7 +343,7 @@ def _run_decide(
     sizes   = _make_sizes(bp)
     pi_data: dict = {"correlation": {}}
     proposed, _ = pa._decide_actions(
-        incumbents, [], pi_data, cfg, pa_cfg, sizes, 100_000.0
+        incumbents, [], pi_data, cfg, pa_cfg, sizes, equity
     )
     return proposed
 
@@ -351,13 +352,13 @@ class TestSizeTrimGateItem3(unittest.TestCase):
     """Item 3 (S8): size-based TRIM gate fires for score≥6 + oversized positions."""
 
     def test_size_trim_fires_when_equity_pct_exceeds_tier_plus_tolerance(self):
-        """STNG (core, tier_max=20%) at 27K / total_capacity(bp=120K) = 22.5% > 22% → SIZE TRIM.
+        """STNG (core, tier_max=20%) at 27K / total_capacity(equity×4=120K) = 22.5% > 22% → SIZE TRIM.
 
-        total_capacity = current_exposure(0) + bp(120K) = 120K.
+        total_capacity = equity×4 = 30K×4 = 120K (4× leverage basis).
         cap_frac = 27K/120K = 22.5% > tier_max(20%) + tol(2%) = 22% → fires.
         """
         inc = _make_incumbent("STNG", score=7, mv=27_000.0)
-        proposed = _run_decide([inc], bp=120_000.0)
+        proposed = _run_decide([inc], bp=120_000.0, equity=30_000.0)
         actions  = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(actions), 1)
         self.assertIn("SIZE TRIM", actions[0]["reason"])
@@ -382,10 +383,10 @@ class TestSizeTrimGateItem3(unittest.TestCase):
     def test_score_6_triggers_size_trim_not_thesis_trim(self):
         """score=6 is above trim_thresh (5) → size TRIM path (not thesis TRIM).
 
-        MV=27K, total_capacity=120K → cap_frac=22.5% > 22% → SIZE TRIM, not thesis TRIM.
+        MV=27K, total_capacity=equity×4=30K×4=120K → cap_frac=22.5% > 22% → SIZE TRIM.
         """
         inc = _make_incumbent("STNG", score=6, mv=27_000.0)
-        proposed = _run_decide([inc], bp=120_000.0)
+        proposed = _run_decide([inc], bp=120_000.0, equity=30_000.0)
         trim_actions = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(trim_actions), 1)
         self.assertIn("SIZE TRIM", trim_actions[0]["reason"])

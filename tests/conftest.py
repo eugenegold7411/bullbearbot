@@ -140,7 +140,7 @@ def _stub_alpaca_tree() -> None:
     for _name in (
         "AssetClass", "AssetStatus", "ContractType", "ExerciseStyle",
         "OrderClass", "OrderType",
-        "PositionSide",
+        "PositionIntent", "PositionSide",
     ):
         setattr(_en_mod, _name, _cls(_name))
     # OrderStatus: proper StrEnum matching alpaca-py 0.43.x so attribute access
@@ -383,6 +383,162 @@ except Exception:
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
+# Minimal strategy_config for CI (server has the real file; CI and local dev do not).
+# Values match what the config-assertion tests expect. Written once per session,
+# cleaned up afterward. Never overwrites an existing file.
+_CI_STRATEGY_CONFIG: dict = {
+    "version": 2,
+    "active_strategy": "momentum",
+    "parameters": {
+        "max_positions": 30,
+        "max_position_pct_capacity": 0.15,
+        "_max_position_pct_capacity_note": (
+            "Enforced by risk_kernel.size_position() as single-name cap upper bound. "
+            "Changed from max_position_pct_equity in Sprint 10 aggressiveness pass."
+        ),
+        "margin_sizing_multiplier": 4.0,
+        "margin_sizing_conviction_thresholds": {"high": 0.65, "medium": 0.5},
+        "margin_sizing_multiplier_tiers": {
+            "medium":      {"min": 0.5,   "max": 0.6499, "multiplier": 1.0},
+            "high":        {"min": 0.65,  "max": 0.7249, "multiplier": 2.0},
+            "strong_high": {"min": 0.725, "max": 0.7999, "multiplier": 3.0},
+            "very_high":   {"min": 0.8,   "max": 1.0,    "multiplier": 4.0},
+        },
+        "max_crypto_margin_multiplier": 2.0,
+        "stop_loss_pct_core": 0.03,
+        "stop_loss_pct_intraday": 0.018,
+        "take_profit_multiple": 2.5,
+        "catalyst_tag_required_for_entry": True,
+        "catalyst_tag_disallowed_values": ["no", "none", "null", ""],
+        "session_gate_enforce": True,
+        "vix_threshold_caution": 25,
+        "max_daily_drawdown_pct": 0.025,
+        "margin_authorized": True,
+        "add_conviction_gate": 0.6,
+        "max_short_exposure_pct": 1.0,
+        "max_short_position_pct": 0.05,
+        "max_day_trades_rolling_5day": 999,
+    },
+    "position_sizing": {
+        "core_tier_pct": 0.20,
+        "dynamic_tier_pct": 0.15,
+        "intraday_tier_pct": 0.05,
+        "cash_reserve_pct": 0.05,
+        "max_total_exposure_pct": 0.95,
+    },
+    "account2": {
+        "enabled": True,
+        "paper_confidence_floor": 0.70,
+        "live_confidence_floor": 0.85,
+        "liquidity_gates": {
+            "min_open_interest": 50,
+            "pre_debate_oi_floor": 40,
+            "min_volume": 20,
+            "max_spread_pct": 0.18,
+        },
+        "iron_condor_short_delta_target": 0.175,
+        "iron_condor_spread_width": 5.0,
+        "iron_condor_min_credit_usd": 50,
+        "iron_butterfly_wing_width": 10.0,
+        "iron_butterfly_min_credit_usd": 100,
+        "max_open_positions": 20,
+        "capital_utilization_target": 0.9,
+        "short_put_delta_target": 0.275,
+        "short_put_delta_tolerance": 0.05,
+        "short_put_min_premium_usd": 50,
+        "short_put_stop_loss_multiple": 2.0,
+    },
+    "a2_veto_thresholds": {
+        "max_bid_ask_spread_pct": 0.18,
+        "min_open_interest": 100,
+        "max_theta_decay_pct": 0.05,
+        "min_dte": 5,
+        "min_expected_value": 0.0,
+        "_tuned": "CI fixture — matches production veto threshold values.",
+    },
+    "a2_rollback": {
+        "disable_candidate_generation": False,
+        "disable_bounded_debate": False,
+        "force_no_trade": False,
+    },
+    "a2_router": {
+        "earnings_dte_blackout": 2,
+        "min_liquidity_score": 0.25,
+        "macro_iv_gate_rank": 70,
+        "iv_env_blackout": [],
+        "iron_iv_rank_min": 50,
+        "short_put_iv_rank_min": 50,
+        "post_earnings_window_premarket": 2,
+        "post_earnings_window_postmarket": 1,
+        "post_earnings_window_unknown": 1,
+        "post_earnings_iv_rank_min": 75,
+        "post_earnings_iv_already_crushed_threshold": 15,
+        "pre_earnings_credit_spread_enabled": True,
+        "pre_earnings_iv_rank_min": 85,
+        "pre_earnings_dte_min": 7,
+        "pre_earnings_dte_max": 14,
+    },
+    "portfolio_allocator": {
+        "trim_score_threshold": 5,
+        "size_trim_enabled": True,
+        "size_trim_tolerance_pct": 2.0,
+        "trim_severity": [
+            {"score_max": 2, "trim_pct": 0.75},
+            {"score_max": 4, "trim_pct": 0.50},
+            {"score_max": 5, "trim_pct": 0.25},
+        ],
+        "enable_shadow": True,
+        "enable_live": False,
+        "replace_score_gap": 15,
+        "weight_deadband": 0.02,
+        "min_rebalance_notional": 500,
+    },
+    "signal_weights": {
+        "momentum_weight": 0.35,
+        "mean_reversion_weight": 0.2,
+        "news_sentiment_weight": 0.3,
+        "cross_sector_weight": 0.15,
+    },
+    "signal_source_weights": {
+        "congressional": "medium",
+        "form4_insider": "medium",
+        "earnings": "high",
+        "macro": "medium",
+    },
+    "director_notes": {
+        "active_context": "CI fixture — no active director override.",
+        "expiry": "2099-12-31",
+        "priority": "normal",
+    },
+    "time_bound_actions": [],
+}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _strategy_config_ci():
+    """Write a minimal strategy_config.json at the project root for CI.
+
+    Only creates the file when it is absent — the server has the real one.
+    Cleaned up at session teardown so it does not linger between runs.
+    """
+    import json as _json
+
+    _cfg_path = _Path(__file__).parent.parent / "strategy_config.json"
+    _created = False
+
+    if not _cfg_path.exists():
+        _cfg_path.write_text(_json.dumps(_CI_STRATEGY_CONFIG, indent=2))
+        _created = True
+
+    yield
+
+    if _created:
+        try:
+            _cfg_path.unlink()
+        except Exception:
+            pass
+
 
 @pytest.fixture(scope="session")
 def kernel_config() -> dict:

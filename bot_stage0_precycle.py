@@ -556,6 +556,9 @@ def run_precycle(
             equity=equity,
             snapshot=snapshot,
             vix=md.get("vix"),
+            account=account,
+            market_status=md.get("market_status", "open"),
+            minutes_since_open=md.get("minutes_since_open", 0),
         )
     except Exception as _pa_exc:
         log.debug("Portfolio allocator failed (non-fatal): %s", _pa_exc)

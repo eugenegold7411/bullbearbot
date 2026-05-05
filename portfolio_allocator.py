@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -52,6 +53,9 @@ _WL_INTRA_PATH       = _ROOT / "watchlist_intraday.json"
 _COOLDOWN_PATH       = _ROOT / "data" / "runtime" / "allocator_cooldown.json"
 
 SCHEMA_VERSION = 1
+
+# Re-entrancy guard — prevents concurrent allocator cycles from racing.
+_ALLOC_LOCK = threading.Lock()
 
 
 def _build_watchlist_tier_map() -> dict[str, str]:
@@ -119,6 +123,8 @@ _PA_DEFAULTS: dict = {
     "same_day_replace_block_hours":    6.0,
     "size_trim_enabled":               True,    # S8: size-based TRIM gate (fires for score ≥ 6 positions over tier max)
     "size_trim_tolerance_pct":         2.0,     # S8: pp over tier max before size TRIM fires
+    "enable_live_add":                 False,   # Stage 2: ADD actions execute via risk_kernel BUY path (off by default)
+    "enable_live_replace":             False,   # Stage 2: REPLACE actions execute two-phase close+buy (off by default)
 }
 
 
@@ -337,13 +343,13 @@ def _add_to_cooldown(symbol: str, action: str, cooldown: dict) -> dict:
     return updated
 
 
-def _check_cooldown(symbol: str, pa_cfg: dict) -> tuple[bool, str]:
+def _check_cooldown(symbol: str, pa_cfg: dict, action: str = "REPLACE") -> tuple[bool, str]:
     """Returns (passes, reason). passes=True means no cooldown block."""
     if not pa_cfg["same_symbol_daily_cooldown_enabled"]:
         return True, ""
     cooldown = _load_cooldown()
-    if _is_on_cooldown(symbol, "REPLACE", cooldown):
-        return False, f"{symbol} already received a recommendation today (daily cooldown)"
+    if _is_on_cooldown(symbol, action, cooldown):
+        return False, f"{symbol} already received a {action} recommendation today (daily cooldown)"
     return True, ""
 
 
@@ -463,11 +469,8 @@ def _decide_actions(
     size_trim_enabled   = bool(pa_cfg.get("size_trim_enabled", True))
     size_trim_tol       = float(pa_cfg.get("size_trim_tolerance_pct", 2.0)) / 100.0
     available_for_new    = float(sizes.get("available_for_new", 0) or 0)
-    bp                   = float(sizes.get("buying_power", 0) or 0)
-    current_exposure     = float(sizes.get("current_exposure", 0) or 0)
-    total_capacity       = current_exposure + bp
+    total_capacity       = equity * 4   # 4× leverage basis (2× margin × 2 sides)
     # Single-name cap from risk_kernel — ADD and SIZE TRIM must respect this ceiling.
-    # Denominator is total_capacity (exposure + buying_power), matching risk_kernel.size_position().
     max_pos_pct_capacity = float(cfg.get("parameters", {}).get("max_position_pct_capacity", 0.15))
     max_pos_cap_dollars  = max_pos_pct_capacity * total_capacity if total_capacity > 0 else float("inf")
 
@@ -508,8 +511,6 @@ def _decide_actions(
         # SIZE TRIM: strong thesis but position exceeds tier max by more than tolerance.
         # Fires independently of thesis-score TRIM (exclusive paths: score ≤ trim_thresh
         # goes to thesis TRIM above; score > trim_thresh falls through to here).
-        # Denominator is total_capacity (exposure + buying_power) — same basis as
-        # risk_kernel.size_position() max_position_pct_capacity enforcement.
         if size_trim_enabled and score >= 6 and total_capacity > 0 and mv > min_notional:
             cap_frac = mv / total_capacity
             if cap_frac > tier_max + size_trim_tol:
@@ -532,29 +533,35 @@ def _decide_actions(
                     continue
 
         # ADD: thesis strong AND room to grow below tier ceiling AND below kernel cap.
-        # max_pos_cap_dollars = max_position_pct_capacity × (exposure + buying_power) — same
-        # basis as risk_kernel.size_position() — prevents ADD recs the kernel would reject.
         # threshold: thesis_score >= 7 (normalized >= 70)
         if (score >= 7
                 and available_for_new > min_notional
                 and acct_pct < tier_max - weight_deadband
                 and mv < max_pos_cap_dollars):
-            _cat = (inc.get("signal_catalyst") or "")[:80]
-            proposed.append({
-                "action":           "ADD",
-                "symbol":           sym,
-                "reason":           (
-                    f"thesis_score={score}/10 (conviction={norm/100:.2f}) — strong; room to add "
-                    f"(acct_pct={acct_pct:.1%} < tier_max={tier_max:.0%}), "
-                    f"available_for_new=${available_for_new:,.0f}"
-                    + (f"; catalyst: {_cat}" if _cat else "")
-                ),
-                "catalyst":         inc.get("signal_catalyst", ""),
-                "signals":          inc.get("signal_signals", []),
-                "score_gap":        None,
-                "target_weight_pct": tier_max,
-                "exit_symbol":      None,
-            })
+            ok_add_cool, reason_add_cool = _check_cooldown(sym, pa_cfg, action="ADD")
+            if not ok_add_cool:
+                suppressed.append({
+                    "proposed_action":   "ADD",
+                    "symbol":            sym,
+                    "suppression_reason": reason_add_cool,
+                })
+            else:
+                _cat = (inc.get("signal_catalyst") or "")[:80]
+                proposed.append({
+                    "action":           "ADD",
+                    "symbol":           sym,
+                    "reason":           (
+                        f"thesis_score={score}/10 (conviction={norm/100:.2f}) — strong; room to add "
+                        f"(acct_pct={acct_pct:.1%} < tier_max={tier_max:.0%}), "
+                        f"available_for_new=${available_for_new:,.0f}"
+                        + (f"; catalyst: {_cat}" if _cat else "")
+                    ),
+                    "catalyst":         inc.get("signal_catalyst", ""),
+                    "signals":          inc.get("signal_signals", []),
+                    "score_gap":        None,
+                    "target_weight_pct": tier_max,
+                    "exit_symbol":      None,
+                })
             continue
 
         # HOLD default
@@ -666,13 +673,16 @@ def _decide_actions(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _execute_live_trim(
-    symbol:       str,
-    positions:    list,
+    symbol:             str,
+    positions:          list,
     snapshot,
-    cfg:          dict,
-    session_tier: str,
-    reason:       str,
-    vix:          Optional[float] = None,
+    cfg:                dict,
+    session_tier:       str,
+    reason:             str,
+    vix:                Optional[float] = None,
+    account=None,
+    market_status:      str = "open",
+    minutes_since_open: int = 0,
 ) -> str:
     """
     Execute a single TRIM via risk_kernel REDUCE path + execute_all().
@@ -695,6 +705,9 @@ def _execute_live_trim(
         )
     except ImportError as exc:
         return f"import error: {exc}"
+
+    if account is None:
+        return f"account not provided for live TRIM of {symbol}"
 
     price: Optional[float] = None
     for pos in positions:
@@ -731,11 +744,214 @@ def _execute_live_trim(
     if isinstance(result, str):
         return result
 
+    exec_positions = snapshot.positions if snapshot is not None else positions
     try:
-        execute_all([result])
+        execute_all(
+            [result], account, exec_positions, market_status, minutes_since_open,
+            session_tier=session_tier,
+        )
         return f"ok:{result.qty}"
     except Exception as exc:
         return f"execute_all error: {exc}"
+
+
+def _execute_live_add(
+    symbol:             str,
+    positions:          list,
+    snapshot,
+    cfg:                dict,
+    session_tier:       str,
+    reason:             str,
+    vix:                Optional[float] = None,
+    account=None,
+    market_status:      str = "open",
+    minutes_since_open: int = 0,
+) -> str:
+    """
+    Execute a single ADD via risk_kernel BUY path + execute_all().
+    Returns "ok:{qty}" on success, rejection/error reason string otherwise.
+    Non-fatal — caller logs and continues regardless of return value.
+    """
+    try:
+        from order_executor import execute_all  # noqa: PLC0415
+        from risk_kernel import process_idea  # noqa: PLC0415
+        from schemas import (  # noqa: PLC0415
+            AccountAction,
+            Direction,
+            Tier,
+            TradeIdea,
+        )
+    except ImportError as exc:
+        return f"import error: {exc}"
+
+    if account is None:
+        return f"account not provided for live ADD of {symbol}"
+
+    price: Optional[float] = None
+    for pos in positions:
+        try:
+            if pos.symbol == symbol and float(pos.qty) > 0:
+                price = float(pos.current_price)
+                break
+        except Exception:
+            pass
+
+    if price is None or price <= 0:
+        return f"no current_price for {symbol}"
+
+    idea = TradeIdea(
+        symbol=symbol,
+        action=AccountAction.BUY,
+        tier=Tier.DYNAMIC,
+        conviction=0.6,
+        direction=Direction.BULLISH,
+        catalyst=reason[:120],
+        intent="enter_long",
+    )
+
+    result = process_idea(
+        idea=idea,
+        snapshot=snapshot,
+        signal=None,
+        config=cfg,
+        current_price=price,
+        session_tier=session_tier,
+        vix=vix,
+    )
+
+    if isinstance(result, str):
+        return result
+
+    exec_positions = snapshot.positions if snapshot is not None else positions
+    try:
+        execute_all(
+            [result], account, exec_positions, market_status, minutes_since_open,
+            session_tier=session_tier,
+        )
+        return f"ok:{result.qty}"
+    except Exception as exc:
+        return f"execute_all error: {exc}"
+
+
+def _execute_live_replace(
+    exit_symbol:        str,
+    enter_symbol:       str,
+    positions:          list,
+    snapshot,
+    cfg:                dict,
+    session_tier:       str,
+    reason:             str,
+    enter_price:        Optional[float] = None,
+    vix:                Optional[float] = None,
+    account=None,
+    market_status:      str = "open",
+    minutes_since_open: int = 0,
+) -> str:
+    """
+    Execute a REPLACE: Phase A closes exit_symbol; Phase B enters enter_symbol.
+    Phase B only proceeds if Phase A submission succeeds.
+    Returns "ok:close={exit}+enter={enter}:{qty}" on full success.
+    Non-fatal — caller logs and continues regardless of return value.
+
+    Note: snapshot passed to Phase B is pre-close (stale). The kernel may
+    compute slightly larger Phase B sizing because the exit_symbol value is
+    still counted in snapshot.exposure_dollars. Acceptable for Stage 1.
+    """
+    try:
+        from order_executor import execute_all  # noqa: PLC0415
+        from risk_kernel import process_idea  # noqa: PLC0415
+        from schemas import (  # noqa: PLC0415
+            AccountAction,
+            Direction,
+            Tier,
+            TradeIdea,
+        )
+    except ImportError as exc:
+        return f"import error: {exc}"
+
+    if account is None:
+        return f"account not provided for live REPLACE of {exit_symbol}→{enter_symbol}"
+
+    # ── Phase A: close exit_symbol ────────────────────────────────────────────
+    exit_price: Optional[float] = None
+    for pos in positions:
+        try:
+            if pos.symbol == exit_symbol and float(pos.qty) > 0:
+                exit_price = float(pos.current_price)
+                break
+        except Exception:
+            pass
+
+    if exit_price is None or exit_price <= 0:
+        return f"no current_price for exit symbol {exit_symbol}"
+
+    close_idea = TradeIdea(
+        symbol=exit_symbol,
+        action=AccountAction.CLOSE,
+        tier=Tier.CORE,
+        conviction=1.0,
+        direction=Direction.NEUTRAL,
+        catalyst=f"REPLACE: exit {exit_symbol} for {enter_symbol}",
+        intent="close",
+    )
+
+    close_result = process_idea(
+        idea=close_idea,
+        snapshot=snapshot,
+        signal=None,
+        config=cfg,
+        current_price=exit_price,
+        session_tier=session_tier,
+        vix=vix,
+    )
+
+    if isinstance(close_result, str):
+        return f"phase_a_rejected: {close_result}"
+
+    exec_positions = snapshot.positions if snapshot is not None else positions
+    try:
+        execute_all(
+            [close_result], account, exec_positions, market_status, minutes_since_open,
+            session_tier=session_tier,
+        )
+    except Exception as exc:
+        return f"phase_a_execute_error: {exc}"
+
+    # ── Phase B: enter enter_symbol (only after Phase A submitted ok) ─────────
+    if enter_price is None or enter_price <= 0:
+        return f"ok:close={exit_symbol};phase_b_no_price:{enter_symbol}"
+
+    enter_idea = TradeIdea(
+        symbol=enter_symbol,
+        action=AccountAction.BUY,
+        tier=Tier.DYNAMIC,
+        conviction=0.6,
+        direction=Direction.BULLISH,
+        catalyst=reason[:120],
+        intent="enter_long",
+    )
+
+    enter_result = process_idea(
+        idea=enter_idea,
+        snapshot=snapshot,
+        signal=None,
+        config=cfg,
+        current_price=enter_price,
+        session_tier=session_tier,
+        vix=vix,
+    )
+
+    if isinstance(enter_result, str):
+        return f"ok:close={exit_symbol};phase_b_rejected:{enter_result}"
+
+    try:
+        execute_all(
+            [enter_result], account, exec_positions, market_status, minutes_since_open,
+            session_tier=session_tier,
+        )
+        return f"ok:close={exit_symbol}+enter={enter_symbol}:{enter_result.qty}"
+    except Exception as exc:
+        return f"ok:close={exit_symbol};phase_b_execute_error:{exc}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -743,24 +959,30 @@ def _execute_live_trim(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_allocator_shadow(
-    pi_data:      dict,
-    positions:    list,
-    cfg:          dict,
-    session_tier: str = "market",
-    equity:       float = 0.0,
+    pi_data:            dict,
+    positions:          list,
+    cfg:                dict,
+    session_tier:       str = "market",
+    equity:             float = 0.0,
     snapshot=None,
-    vix:          Optional[float] = None,
+    vix:                Optional[float] = None,
+    account=None,
+    market_status:      str = "open",
+    minutes_since_open: int = 0,
 ) -> Optional[dict]:
     """
-    Run the portfolio allocator (shadow or live Stage 1).
+    Run the portfolio allocator (shadow or live).
 
     Shadow mode (enable_live=False): zero execution side effects.
     Live mode (enable_live=True): TRIM actions execute via risk_kernel REDUCE
-      path. ADD and REPLACE remain advisory (Stage 1). Requires snapshot param.
+      path. Requires snapshot + account params.
+    Live ADD (enable_live_add=True): ADD actions execute via BUY path.
+    Live REPLACE (enable_live_replace=True): REPLACE executes two-phase close+buy.
 
     Consumes pi_data (from build_portfolio_intelligence) + held positions +
     top candidates from signal_scores.json. Writes one JSONL artifact per call.
-    Returns the artifact dict, or None if shadow is disabled / fatal error.
+    Returns the artifact dict, or None if shadow is disabled / concurrent cycle
+    already running / fatal error.
     """
     pa_cfg = _get_pa_config(cfg)
 
@@ -768,9 +990,46 @@ def run_allocator_shadow(
         log.debug("[ALLOC] enable_shadow=false — shadow allocator skipped")
         return None
 
+    # Re-entrancy guard: skip if another cycle is already running.
+    if not _ALLOC_LOCK.acquire(blocking=False):
+        log.warning("[ALLOC] concurrency guard: another cycle in progress — skipping")
+        return None
+
+    try:
+        return _run_allocator_shadow_inner(
+            pa_cfg=pa_cfg,
+            pi_data=pi_data,
+            positions=positions,
+            cfg=cfg,
+            session_tier=session_tier,
+            equity=equity,
+            snapshot=snapshot,
+            vix=vix,
+            account=account,
+            market_status=market_status,
+            minutes_since_open=minutes_since_open,
+        )
+    finally:
+        _ALLOC_LOCK.release()
+
+
+def _run_allocator_shadow_inner(
+    pa_cfg:             dict,
+    pi_data:            dict,
+    positions:          list,
+    cfg:                dict,
+    session_tier:       str,
+    equity:             float,
+    snapshot,
+    vix:                Optional[float],
+    account,
+    market_status:      str,
+    minutes_since_open: int,
+) -> Optional[dict]:
+    """Inner implementation of run_allocator_shadow (called after lock acquired)."""
     if pa_cfg["enable_live"]:
-        if snapshot is None:
-            log.warning("[ALLOC] enable_live=True but snapshot=None — falling back to shadow")
+        if snapshot is None or account is None:
+            log.warning("[ALLOC] enable_live=True but snapshot/account missing — shadow only")
         else:
             log.info("[ALLOC] live mode active — TRIM actions will execute via risk_kernel")
 
@@ -788,9 +1047,7 @@ def run_allocator_shadow(
 
         sizes    = pi_data.get("sizes", {})
         eq_val   = equity or (float(sizes.get("max_exposure", 0) or 0) / 0.30)
-        bp_cap   = float(sizes.get("buying_power", 0) or 0)
-        exp_cap  = float(sizes.get("current_exposure", 0) or 0)
-        cap_val  = exp_cap + bp_cap   # total_capacity: matches risk_kernel denominator
+        cap_val  = eq_val * 4   # 4× leverage basis (2× margin × 2 sides)
 
         # 2. Rank incumbents using total_capacity so account_pct matches kernel basis
         incumbents = _rank_incumbents(pi_data, positions, equity=eq_val, total_capacity=cap_val)
@@ -806,9 +1063,9 @@ def run_allocator_shadow(
             incumbents, candidates, pi_data, cfg, pa_cfg, sizes, eq_val
         )
 
-        # 4a. Live TRIM execution — Stage 1: TRIM only, ADD/REPLACE remain advisory
+        # 4a. Live TRIM execution
         live_trim_results: dict[str, str] = {}
-        if pa_cfg["enable_live"] and snapshot is not None:
+        if pa_cfg["enable_live"] and snapshot is not None and account is not None:
             for act in proposed:
                 if act["action"] != "TRIM":
                     continue
@@ -818,6 +1075,9 @@ def run_allocator_shadow(
                         sym, positions, snapshot, cfg, session_tier,
                         act.get("reason", f"allocator trim {sym}"),
                         vix=vix,
+                        account=account,
+                        market_status=market_status,
+                        minutes_since_open=minutes_since_open,
                     )
                 except Exception as _trim_exc:
                     res = f"error: {_trim_exc}"
@@ -827,6 +1087,65 @@ def run_allocator_shadow(
                     log.info("[ALLOC] LIVE: trimmed %s — %s", sym, res)
                 else:
                     log.warning("[ALLOC] LIVE: trim rejected %s — %s", sym, res)
+
+        # 4b. Live ADD execution (Stage 2 — disabled by default)
+        live_add_results: dict[str, str] = {}
+        if pa_cfg.get("enable_live_add") and snapshot is not None and account is not None:
+            for act in proposed:
+                if act["action"] != "ADD":
+                    continue
+                sym = act["symbol"]
+                try:
+                    res = _execute_live_add(
+                        sym, positions, snapshot, cfg, session_tier,
+                        act.get("reason", f"allocator add {sym}"),
+                        vix=vix,
+                        account=account,
+                        market_status=market_status,
+                        minutes_since_open=minutes_since_open,
+                    )
+                except Exception as _add_exc:
+                    res = f"error: {_add_exc}"
+                    log.warning("[ALLOC] LIVE: add error %s — %s", sym, _add_exc)
+                live_add_results[sym] = res
+                if res.startswith("ok:"):
+                    log.info("[ALLOC] LIVE: added %s — %s", sym, res)
+                else:
+                    log.warning("[ALLOC] LIVE: add rejected %s — %s", sym, res)
+
+        # 4c. Live REPLACE execution (Stage 2 — disabled by default)
+        live_replace_results: dict[str, str] = {}
+        if pa_cfg.get("enable_live_replace") and snapshot is not None and account is not None:
+            for act in proposed:
+                if act["action"] != "REPLACE":
+                    continue
+                enter_sym = act["symbol"]
+                exit_sym  = act.get("exit_symbol", "")
+                if not exit_sym:
+                    continue
+                enter_price = next(
+                    (c["price"] for c in candidates if c["symbol"] == enter_sym),
+                    None,
+                )
+                key = f"{exit_sym}→{enter_sym}"
+                try:
+                    res = _execute_live_replace(
+                        exit_sym, enter_sym, positions, snapshot, cfg, session_tier,
+                        act.get("reason", f"allocator replace {exit_sym}→{enter_sym}"),
+                        enter_price=enter_price,
+                        vix=vix,
+                        account=account,
+                        market_status=market_status,
+                        minutes_since_open=minutes_since_open,
+                    )
+                except Exception as _repl_exc:
+                    res = f"error: {_repl_exc}"
+                    log.warning("[ALLOC] LIVE: replace error %s — %s", key, _repl_exc)
+                live_replace_results[key] = res
+                if res.startswith("ok:"):
+                    log.info("[ALLOC] LIVE: replaced %s — %s", key, res)
+                else:
+                    log.warning("[ALLOC] LIVE: replace rejected %s — %s", key, res)
 
         # 5. Identify weakest/strongest for summary
         weakest   = incumbents[0]  if incumbents  else None
@@ -880,7 +1199,9 @@ def run_allocator_shadow(
             "suppressed_actions":   suppressed,
             "friction_blockers":    [s["suppression_reason"] for s in suppressed],
             "summary":              summary,
-            "live_trim_results":     live_trim_results,
+            "live_trim_results":    live_trim_results,
+            "live_add_results":     live_add_results,
+            "live_replace_results": live_replace_results,
             "config_snapshot": {
                 "replace_score_gap":         pa_cfg["replace_score_gap"],
                 "trim_score_drop":           pa_cfg["trim_score_drop"],
@@ -1035,7 +1356,13 @@ def format_allocator_section(output: Optional[dict]) -> str:
         lines.append(f"No allocator action: {blocker}")
 
     if mode == "live":
-        lines.append("[LIVE — TRIM active; ADD/REPLACE advisory only]")
+        live_parts = ["TRIM"]
+        if output.get("live_add_results") is not None:
+            live_parts.append("ADD")
+        if output.get("live_replace_results") is not None:
+            live_parts.append("REPLACE")
+        active = "+".join(live_parts) if len(live_parts) > 1 else live_parts[0]
+        lines.append(f"[LIVE — {active} active]")
     else:
         lines.append("[SHADOW MODE — do not treat as live order mandate]")
     return "\n".join(lines)

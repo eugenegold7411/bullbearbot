@@ -683,12 +683,12 @@ class TestShadowOnlyGuarantee:
     """Suite 5: execute_all only reached via _execute_live_trim; shadow mode never executes."""
 
     def test_execute_all_only_via_live_trim(self):
-        """execute_all is only reachable through _execute_live_trim (Stage 1 live path)."""
+        """execute_all is only reachable through live execution helpers."""
         import ast
         import inspect
         source = inspect.getsource(pa)
         tree = ast.parse(source)
-        # Collect all function defs that contain an execute_all() call
+        _PERMITTED_CALLERS = {"_execute_live_trim", "_execute_live_add", "_execute_live_replace"}
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef):
                 for child in ast.walk(node):
@@ -697,9 +697,9 @@ class TestShadowOnlyGuarantee:
                         name = (func.attr if isinstance(func, ast.Attribute)
                                 else func.id if isinstance(func, ast.Name) else "")
                         if name == "execute_all":
-                            assert node.name == "_execute_live_trim", (
+                            assert node.name in _PERMITTED_CALLERS, (
                                 f"execute_all() called from '{node.name}' — "
-                                "only _execute_live_trim is permitted to call it"
+                                "only live execution helpers are permitted to call it"
                             )
 
     def test_execute_reallocate_never_called(self, tmp_path):
@@ -1159,6 +1159,9 @@ class TestDenominatorFix:
     _BP           = 214_000.0
     _MAX_POS_PCT  = 0.15   # max_position_pct_capacity (capacity-denominated)
 
+    def setup_method(self, method):
+        pa._save_cooldown({})
+
     def _cfg(self) -> dict:
         cfg = _base_cfg()
         cfg["parameters"] = {"max_positions": 14, "max_position_pct_capacity": self._MAX_POS_PCT}
@@ -1262,19 +1265,17 @@ class TestDenominatorFix:
     def test_size_trim_target_kernel_consistent(self):
         """V at 25% of total_capacity → SIZE TRIM target = min(tier_max×total_cap, cap×total_cap).
 
-        tier_max=0.20 (core), total_capacity=exposure+BP=$289,930, cap=0.15 → $43,490.
-        min(0.20×$289,930, 0.15×$289,930) = min($57,986, $43,490) = $43,490.
-        Trigger: cap_frac (25%) > tier_max(20%) + tol(2%) = 22% → fires.
-        trim_notional = $72,483 - $43,490 = $28,993 ≥ $500 min_notional → TRIM emitted.
+        total_capacity = equity × 4 = $433,888.
+        V MV = 25% × $433,888 = $108,472 (= equity).
+        cap_frac = 25% > tier_max(20%) + tol(2%) = 22% → fires.
+        expected_target = min(0.20 × $433,888, 0.15 × $433,888) = min($86,778, $65,083) = $65,083.
         """
-        equity = self._EQUITY   # $108,472
-        bp     = self._BP       # $214,000
-        current_exposure = equity * 0.70   # from _sizes()
-        total_cap = current_exposure + bp   # $289,930
-        # tier_max for V (core) = 0.20; cap_dollars = 0.15 × total_cap
+        equity    = self._EQUITY   # $108,472
+        total_cap = equity * 4     # $433,888 — new denominator
+        # tier_max for V (core size) = 0.20; cap_dollars = 0.15 × total_cap
         expected_target = min(0.20 * total_cap, self._MAX_POS_PCT * total_cap)
 
-        mv = total_cap * 0.25   # 25% of total_capacity = $72,483 — exceeds 22% trigger
+        mv = total_cap * 0.25   # 25% of total_capacity = $108,472 — exceeds 22% trigger
         inc = {
             "symbol":                  "V",
             "market_value":            mv,
@@ -1286,7 +1287,7 @@ class TestDenominatorFix:
             "override_flag":           None,
             "weakest_factor":          "",
         }
-        sizes = self._sizes(buying_power=bp)
+        sizes = self._sizes(buying_power=self._BP)
         sizes["available_for_new"] = 10_000.0
         pi    = _make_pi_data([], equity=equity)
         pi["sizes"] = sizes
@@ -1295,7 +1296,9 @@ class TestDenominatorFix:
         pa_cfg = pa._get_pa_config(cfg)
         proposed, _ = pa._decide_actions([inc], [], pi, cfg, pa_cfg, sizes, equity)
         v_trim = next((p for p in proposed if p["symbol"] == "V" and p["action"] == "TRIM"), None)
-        assert v_trim is not None, "V at 25% of total_capacity should trigger SIZE TRIM"
+        assert v_trim is not None, (
+            f"V at 25% of total_capacity (equity×4=${total_cap:,.0f}) should trigger SIZE TRIM"
+        )
         # Extract target from reason string: "to target $XX,XXX"
         import re
         match = re.search(r"to target \$([0-9,]+)", v_trim["reason"])
@@ -1309,23 +1312,17 @@ class TestDenominatorFix:
     # 5. SIZE TRIM trigger uses total_capacity denominator ────────────────────
 
     def test_size_trim_uses_capacity_denominator(self):
-        """AMZN (core) at 25% of total_capacity (> 22% threshold) fires SIZE TRIM;
-        reason says 'total capacity'.
+        """AMZN at 25% of equity×4 (> 22% threshold) fires SIZE TRIM; reason says 'total capacity'.
 
-        total_capacity = exposure($75,930) + BP($214K) = $289,930.
-        AMZN MV = 25% × $289,930 = $72,483.
-        cap_frac = $72,483 / $289,930 = 25% > tier_max(20%) + tol(2%) = 22% → fires.
-        Old equity-only: $72,483/$108,472 = 66.8% > 22% → also fires but wrong denominator.
-        Old BP-only: $72,483/$214K = 33.9% > 22% → also fires but wrong denominator.
-        New total_capacity: 25% > 22% → fires with correct basis matching risk_kernel.
+        total_capacity = equity × 4 = $433,888.
+        AMZN MV = 25% × $433,888 = $108,472 (= equity).
+        cap_frac = 25% > tier_max(20%) + tol(2%) = 22% → fires.
         """
-        equity = self._EQUITY   # $108,472
-        bp     = self._BP       # $214,000
-        current_exposure = equity * 0.70   # from _sizes()
-        total_cap = current_exposure + bp  # $289,930
-        mv = total_cap * 0.25   # 25% of total_capacity — above 22% trigger
+        equity    = self._EQUITY   # $108,472
+        total_cap = equity * 4     # $433,888
+        mv = total_cap * 0.25      # 25% of total_capacity — above 22% trigger
         inc = {
-            "symbol":                  "AMZN",   # core watchlist → tier_max = 0.20
+            "symbol":                  "AMZN",
             "market_value":            mv,
             "account_pct":             round(mv / total_cap * 100, 2),
             "thesis_score":            7,         # >= 6 → SIZE TRIM path
@@ -1335,7 +1332,7 @@ class TestDenominatorFix:
             "override_flag":           None,
             "weakest_factor":          "",
         }
-        sizes = self._sizes(buying_power=bp)
+        sizes = self._sizes(buying_power=self._BP)
         pi    = _make_pi_data([], equity=equity)
         pi["sizes"] = sizes
 
@@ -1344,11 +1341,10 @@ class TestDenominatorFix:
         proposed, _ = pa._decide_actions([inc], [], pi, cfg, pa_cfg, sizes, equity)
         trim = next((p for p in proposed if p["symbol"] == "AMZN" and p["action"] == "TRIM"), None)
         assert trim is not None, (
-            f"SIZE TRIM must fire for AMZN at {mv/total_cap*100:.1f}% of total capacity "
-            f"(> tier_max+tol=22%)"
+            f"SIZE TRIM must fire for AMZN at 25% of equity×4 (${total_cap:,.0f})"
         )
         assert "total capacity" in trim["reason"], (
-            "SIZE TRIM reason must reference 'total capacity', not 'equity' or 'BP'"
+            "SIZE TRIM reason must reference 'total capacity'"
         )
 
     # 6. GOOGL at 25.9% equity → ADD blocked (was incorrectly allowed before fix) ──
@@ -1619,3 +1615,337 @@ class TestCatalystThreading:
         assert replace["catalyst"] == "product launch catalyst"
         assert replace["signals"] == ["gap up", "news volume"]
         assert "product launch catalyst" in replace["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Suite 12 — Fixes: denominator, execute_all args, concurrency, ADD/REPLACE live
+# ---------------------------------------------------------------------------
+
+class TestAllocatorFixes:
+    """Suite 12: four-fix regression suite."""
+
+    def setup_method(self, method):
+        pa._save_cooldown({})
+
+    # 1. Denominator is equity × 4 ──────────────────────────────────────────
+
+    def test_denominator_is_equity_times_4(self, tmp_path):
+        """account_pct in the artifact uses equity×4 as denominator."""
+        equity = 100_000.0
+        # Position worth $10K; account_pct should be 10K / (100K × 4) × 100 = 2.5%
+        positions = [_make_position("SPY", 20, 500.0, 500.0)]
+        mv        = 20 * 500.0   # $10,000
+        pi_data   = _make_pi_data(positions, equity)
+        pi_data["thesis_scores"][0]["thesis_score"] = 6   # HOLD
+        signal_file   = tmp_path / "signal_scores.json"
+        signal_file.write_text('{"scored_symbols":{}}')
+        artifact_file = tmp_path / "alloc.jsonl"
+
+        with patch.object(pa, "_SIGNAL_SCORES_PATH", signal_file), \
+             patch.object(pa, "_ARTIFACT_PATH", artifact_file), \
+             patch.object(pa, "_REGISTRY_JSON_PATH", tmp_path / "reg.json"), \
+             patch.object(pa, "_symbol_sector", return_value=""):
+            output = pa.run_allocator_shadow(
+                pi_data, positions, _base_cfg(), "market", equity
+            )
+
+        assert output is not None
+        inc = next(i for i in output["ranked_incumbents"] if i["symbol"] == "SPY")
+        expected_pct = round(mv / (equity * 4) * 100, 2)
+        assert inc["account_pct"] == pytest.approx(expected_pct, abs=0.1), (
+            f"account_pct={inc['account_pct']:.2f}% should be {expected_pct:.2f}% "
+            f"(mv={mv}, denominator=equity×4={equity*4})"
+        )
+
+    # 2. execute_all receives all 5 required args ────────────────────────────
+
+    def test_execute_all_receives_five_args(self):
+        """_execute_live_trim passes account, positions, market_status, minutes_since_open to execute_all."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        mock_broker_action = MagicMock()
+        mock_broker_action.qty = 5
+        mock_execute_all  = MagicMock()
+        mock_process_idea = MagicMock(return_value=mock_broker_action)
+        mock_account      = MagicMock()
+        mock_snapshot     = MagicMock()
+        mock_snapshot.positions = []
+
+        pos = SimpleNamespace(
+            symbol="AAPL", qty="50", market_value="5000", current_price="100.0"
+        )
+
+        with patch("risk_kernel.process_idea",   mock_process_idea), \
+             patch("order_executor.execute_all", mock_execute_all):
+            result = pa._execute_live_trim(
+                symbol="AAPL",
+                positions=[pos],
+                snapshot=mock_snapshot,
+                cfg={},
+                session_tier="market",
+                reason="test trim",
+                vix=18.0,
+                account=mock_account,
+                market_status="open",
+                minutes_since_open=60,
+            )
+
+        assert result.startswith("ok:")
+        mock_execute_all.assert_called_once()
+        call_args = mock_execute_all.call_args[0]   # positional args tuple
+        assert call_args[1] is mock_account,          "2nd arg must be account"
+        assert call_args[3] == "open",                "4th arg must be market_status"
+        assert call_args[4] == 60,                    "5th arg must be minutes_since_open"
+
+    # 3. Concurrency guard returns None when lock is held ────────────────────
+
+    def test_concurrency_guard_skips_when_locked(self, tmp_path):
+        """run_allocator_shadow returns None immediately when _ALLOC_LOCK is already held."""
+        acquired = pa._ALLOC_LOCK.acquire(blocking=False)
+        assert acquired, "Lock should not already be held at test start"
+
+        try:
+            result = pa.run_allocator_shadow(
+                pi_data={}, positions=[], cfg=_base_cfg(),
+                session_tier="market", equity=100_000.0,
+            )
+        finally:
+            pa._ALLOC_LOCK.release()
+
+        assert result is None
+
+    # 4. ADD executes live when enable_live_add=True ─────────────────────────
+
+    def test_add_executes_in_live_mode(self, tmp_path, monkeypatch):
+        """enable_live_add=True + ADD recommendation → _execute_live_add called."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data" / "analytics").mkdir(parents=True)
+        (tmp_path / "data" / "runtime").mkdir(parents=True)
+        (tmp_path / "data" / "reports").mkdir(parents=True)
+        (tmp_path / "data" / "market").mkdir(parents=True)
+        (tmp_path / "data" / "market" / "signal_scores.json").write_text(
+            '{"scored_symbols":{}}'
+        )
+
+        cfg = _base_cfg()
+        cfg["portfolio_allocator"]["enable_live"]     = True
+        cfg["portfolio_allocator"]["enable_live_add"] = True
+
+        from unittest.mock import MagicMock
+        mock_account  = MagicMock()
+        mock_snapshot = MagicMock()
+        mock_snapshot.positions = []
+
+        # Position with high thesis score (9) and room to add
+        from types import SimpleNamespace
+        pos = SimpleNamespace(
+            symbol="GLD", qty="10", market_value=1000.0,
+            current_price="100", unrealized_pl="0", unrealized_plpc="0",
+        )
+        pi_data = _make_pi_data([pos], equity=100_000.0)
+        pi_data["thesis_scores"][0]["thesis_score"] = 9
+        pi_data["sizes"]["available_for_new"] = 10_000.0
+
+        executed: list[str] = []
+
+        def mock_add(symbol, *args, **kwargs) -> str:
+            executed.append(symbol)
+            return "ok:5"
+
+        signal_path = tmp_path / "data" / "market" / "signal_scores.json"
+        monkeypatch.setattr(pa, "_SIGNAL_SCORES_PATH", signal_path)
+
+        with patch.object(pa, "_execute_live_add", side_effect=mock_add):
+            artifact = pa.run_allocator_shadow(
+                pi_data=pi_data,
+                positions=[pos],
+                cfg=cfg,
+                session_tier="market",
+                equity=100_000.0,
+                snapshot=mock_snapshot,
+                vix=18.0,
+                account=mock_account,
+                market_status="open",
+                minutes_since_open=60,
+            )
+
+        add_actions = [p for p in (artifact or {}).get("proposed_actions", [])
+                       if p["action"] == "ADD"]
+        assert len(add_actions) >= 1, "ADD must fire for score=9 incumbent with room"
+        assert "GLD" in executed, "_execute_live_add must be called for GLD"
+        assert artifact["live_add_results"].get("GLD") == "ok:5"
+
+    # 5. REPLACE executes live when enable_live_replace=True ─────────────────
+
+    def test_replace_executes_in_live_mode(self, tmp_path, monkeypatch):
+        """enable_live_replace=True + REPLACE recommendation → _execute_live_replace called."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data" / "analytics").mkdir(parents=True)
+        (tmp_path / "data" / "runtime").mkdir(parents=True)
+        (tmp_path / "data" / "reports").mkdir(parents=True)
+        (tmp_path / "data" / "market").mkdir(parents=True)
+        # Candidate with high score → REPLACE fires
+        (tmp_path / "data" / "market" / "signal_scores.json").write_text(
+            '{"scored_symbols":{"NVDA":{"score":90,"direction":"bullish",'
+            '"primary_catalyst":"momentum","signals":[],"price":500.0}}}'
+        )
+
+        cfg = _base_cfg()
+        cfg["portfolio_allocator"]["enable_live"]        = True
+        cfg["portfolio_allocator"]["enable_live_replace"] = True
+
+        from unittest.mock import MagicMock
+        mock_account  = MagicMock()
+        mock_snapshot = MagicMock()
+        mock_snapshot.positions = []
+
+        from types import SimpleNamespace
+        pos = SimpleNamespace(
+            symbol="XBI", qty="100", market_value=8000.0,
+            current_price="80", unrealized_pl="0", unrealized_plpc="0",
+        )
+        pi_data = _make_pi_data([pos], equity=100_000.0)
+        pi_data["thesis_scores"][0]["thesis_score"] = 3   # weak → REPLACE target
+
+        executed: list[str] = []
+
+        def mock_replace(exit_sym, enter_sym, *args, **kwargs) -> str:
+            executed.append(f"{exit_sym}→{enter_sym}")
+            return f"ok:close={exit_sym}+enter={enter_sym}:10"
+
+        signal_path = tmp_path / "data" / "market" / "signal_scores.json"
+        monkeypatch.setattr(pa, "_SIGNAL_SCORES_PATH", signal_path)
+
+        with patch.object(pa, "_execute_live_replace", side_effect=mock_replace), \
+             patch.object(pa, "_execute_live_trim", return_value="skipped"), \
+             patch.object(pa, "_symbol_sector", return_value=""):
+            artifact = pa.run_allocator_shadow(
+                pi_data=pi_data,
+                positions=[pos],
+                cfg=cfg,
+                session_tier="market",
+                equity=100_000.0,
+                snapshot=mock_snapshot,
+                vix=18.0,
+                account=mock_account,
+                market_status="open",
+                minutes_since_open=60,
+            )
+
+        replace_actions = [p for p in (artifact or {}).get("proposed_actions", [])
+                           if p["action"] == "REPLACE"]
+        assert len(replace_actions) >= 1, "REPLACE must fire (score gap 90-30=60 > threshold 15)"
+        assert any("XBI→NVDA" in k for k in executed), "_execute_live_replace must be called"
+        assert artifact["live_replace_results"]
+
+    # 6. ADD cooldown blocks ADD but not REPLACE ─────────────────────────────
+
+    def test_add_cooldown_gates_add_not_replace(self):
+        """ADD cooldown for symbol X blocks ADD for X but does not affect REPLACE for X."""
+        pa._save_cooldown(pa._add_to_cooldown("GLD", "ADD", {}))
+
+        try:
+            inc = {
+                "symbol":                  "GLD",
+                "market_value":            5_000.0,
+                "account_pct":             5.0,
+                "thesis_score":            9,
+                "thesis_score_normalized": 90,
+                "health":                  "HEALTHY",
+                "recommended_pi_action":   "hold",
+                "override_flag":           None,
+                "weakest_factor":          "",
+            }
+            sizes = {
+                "available_for_new":  10_000.0,
+                "buying_power":        20_000.0,
+                "current_exposure":    5_000.0,
+                "core":                15_000.0,
+                "standard":            8_000.0,
+            }
+            pi      = _make_pi_data([], equity=100_000.0)
+            pi["sizes"] = sizes
+            cfg     = _base_cfg()
+            pa_cfg  = pa._get_pa_config(cfg)
+
+            proposed, suppressed = pa._decide_actions(
+                [inc], [], pi, cfg, pa_cfg, sizes, 100_000.0
+            )
+
+            add_actions = [p for p in proposed if p["action"] == "ADD"]
+            assert len(add_actions) == 0, "ADD must be blocked by ADD cooldown"
+            add_suppressed = [s for s in suppressed if s.get("proposed_action") == "ADD"
+                              and "cooldown" in s["suppression_reason"].lower()]
+            assert len(add_suppressed) >= 1, "ADD suppression must cite cooldown"
+
+            # REPLACE is not blocked by ADD cooldown (different action key)
+            inc_replace = dict(inc)
+            inc_replace["thesis_score"] = 2
+            inc_replace["thesis_score_normalized"] = 20
+            cand = [{"symbol": "NVDA", "signal_score": 80, "direction": "bullish",
+                     "catalyst": "test", "price": 100.0}]
+            with patch.object(pa, "_symbol_sector", return_value=""):
+                proposed2, _ = pa._decide_actions(
+                    [inc_replace], cand, pi, cfg, pa_cfg, sizes, 100_000.0
+                )
+            replace_actions = [p for p in proposed2 if p["action"] == "REPLACE"]
+            assert len(replace_actions) == 1, (
+                "REPLACE must not be blocked by ADD cooldown"
+            )
+        finally:
+            pa._save_cooldown({})
+
+    # 7. enable_live_add / enable_live_replace are False by default ──────────
+
+    def test_live_add_replace_disabled_by_default(self, tmp_path, monkeypatch):
+        """Default config: enable_live_add=False, enable_live_replace=False."""
+        pa_cfg = pa._get_pa_config({})
+        assert pa_cfg["enable_live_add"]     is False
+        assert pa_cfg["enable_live_replace"] is False
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data" / "analytics").mkdir(parents=True)
+        (tmp_path / "data" / "runtime").mkdir(parents=True)
+        (tmp_path / "data" / "reports").mkdir(parents=True)
+        (tmp_path / "data" / "market").mkdir(parents=True)
+        (tmp_path / "data" / "market" / "signal_scores.json").write_text(
+            '{"scored_symbols":{"NVDA":{"score":90,"direction":"bullish",'
+            '"primary_catalyst":"test","signals":[],"price":500.0}}}'
+        )
+
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        pos = SimpleNamespace(
+            symbol="XBI", qty="20", market_value=3000.0,
+            current_price="150", unrealized_pl="0", unrealized_plpc="0",
+        )
+        pi_data = _make_pi_data([pos], equity=100_000.0)
+        pi_data["thesis_scores"][0]["thesis_score"] = 3
+        mock_snapshot = MagicMock()
+        mock_snapshot.positions = []
+        mock_account = MagicMock()
+
+        cfg = _base_cfg()
+        cfg["portfolio_allocator"]["enable_live"] = True
+
+        signal_path = tmp_path / "data" / "market" / "signal_scores.json"
+        monkeypatch.setattr(pa, "_SIGNAL_SCORES_PATH", signal_path)
+
+        add_calls:     list = []
+        replace_calls: list = []
+
+        with patch.object(pa, "_execute_live_add",     side_effect=lambda *a, **k: add_calls.append(1) or "ok:0"), \
+             patch.object(pa, "_execute_live_replace", side_effect=lambda *a, **k: replace_calls.append(1) or "ok:0"), \
+             patch.object(pa, "_execute_live_trim",    return_value="skipped"), \
+             patch.object(pa, "_symbol_sector", return_value=""):
+            pa.run_allocator_shadow(
+                pi_data=pi_data, positions=[pos], cfg=cfg,
+                session_tier="market", equity=100_000.0,
+                snapshot=mock_snapshot, vix=18.0,
+                account=mock_account, market_status="open", minutes_since_open=0,
+            )
+
+        assert len(add_calls)     == 0, "_execute_live_add must not be called when enable_live_add=False"
+        assert len(replace_calls) == 0, "_execute_live_replace must not be called when enable_live_replace=False"
+

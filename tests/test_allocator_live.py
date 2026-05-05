@@ -12,12 +12,8 @@ Verifies:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
-
-import pytest
-
+from unittest.mock import MagicMock, patch
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -110,6 +106,7 @@ def test_trim_executes_in_live_mode(tmp_path, monkeypatch):
     ])
     snapshot   = _make_snapshot()
 
+    mock_account = MagicMock()
     with patch.object(pa, "_execute_live_trim", wraps=pa._execute_live_trim):
         with patch("portfolio_allocator.process_idea",
                    mock_process_idea, create=True):
@@ -125,6 +122,7 @@ def test_trim_executes_in_live_mode(tmp_path, monkeypatch):
                         equity=10_000.0,
                         snapshot=snapshot,
                         vix=18.5,
+                        account=mock_account,
                     )
 
     assert artifact is not None
@@ -226,6 +224,7 @@ def test_trim_failure_is_nonfatal(tmp_path, monkeypatch):
     ])
     snapshot  = _make_snapshot()
 
+    mock_account = MagicMock()
     with patch.object(pa, "_execute_live_trim",
                       side_effect=RuntimeError("broker timeout")):
         # run_allocator_shadow catches all exceptions in its outer try/except
@@ -237,6 +236,7 @@ def test_trim_failure_is_nonfatal(tmp_path, monkeypatch):
             equity=10_000.0,
             snapshot=snapshot,
             vix=None,
+            account=mock_account,
         )
 
     # Exception is caught per-symbol inside run_allocator_shadow — cycle completes normally
@@ -281,8 +281,9 @@ def test_live_mode_trim_only_no_replace(tmp_path, monkeypatch):
 
     def track_trim(symbol, *args, **kwargs) -> str:
         executed_symbols.append(symbol)
-        return f"ok:5"
+        return "ok:5"
 
+    mock_account = MagicMock()
     with patch.object(pa, "_execute_live_trim", side_effect=track_trim):
         artifact = pa.run_allocator_shadow(
             pi_data=pi_data,
@@ -292,6 +293,7 @@ def test_live_mode_trim_only_no_replace(tmp_path, monkeypatch):
             equity=10_000.0,
             snapshot=snapshot,
             vix=20.0,
+            account=mock_account,
         )
 
     assert artifact is not None

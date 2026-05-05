@@ -21,6 +21,7 @@ Usage:
 
 import argparse
 import atexit
+import fcntl
 import json
 import os
 import queue
@@ -120,6 +121,7 @@ _STATUS_DIR = Path("data/status")   # flag files for once-per-day jobs
 
 _PID_FILE = Path("data/runtime/scheduler.pid")
 _BRIEF_SLOTS_PATH = Path("data/runtime/brief_slots_ran.json")
+_pid_lock_fd = None   # held open for process lifetime so flock stays effective
 
 
 def _check_pid_lock(pid_path: Path = _PID_FILE) -> None:
@@ -158,21 +160,46 @@ def _check_pid_lock(pid_path: Path = _PID_FILE) -> None:
 
 
 def _acquire_pid_lock(pid_path: Path = _PID_FILE) -> None:
-    """Check for live instance, then write our PID to the lockfile.
-    Registers atexit cleanup so the lock is released on any normal exit."""
+    """Acquire an exclusive flock on the PID file and write our PID.
+    flock is held for the process lifetime (fd kept open in _pid_lock_fd).
+    LOCK_NB causes immediate failure if another live scheduler holds the lock,
+    eliminating the TOCTOU window in the old check-then-write approach."""
+    global _pid_lock_fd
     pid_path.parent.mkdir(parents=True, exist_ok=True)
-    _check_pid_lock(pid_path)
-    pid_path.write_text(str(os.getpid()))
+    fd = open(pid_path, "w")  # noqa: WPS515 — must stay open; closed by atexit
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        existing = ""
+        try:
+            existing = f" (PID {pid_path.read_text().strip()})"
+        except Exception:
+            pass
+        fd.close()
+        log.critical(
+            "[PID] CRITICAL: scheduler already running%s. "
+            "Refusing to start a second instance (lockfile: %s). "
+            "Stop the existing process or delete the file if it is stale.",
+            existing, pid_path,
+        )
+        raise SystemExit(1)
+    fd.write(str(os.getpid()))
+    fd.flush()
+    _pid_lock_fd = fd   # keep open so flock stays effective
     atexit.register(_release_pid_lock, pid_path)
-    log.info("[PID] Lockfile written: %s (PID %d)", pid_path, os.getpid())
+    log.info("[PID] Lockfile acquired: %s (PID %d)", pid_path, os.getpid())
 
 
 def _release_pid_lock(pid_path: Path = _PID_FILE) -> None:
-    """Remove the lockfile on clean shutdown — only if it belongs to this process."""
+    """Release the flock and remove the lockfile on clean shutdown."""
+    global _pid_lock_fd
     try:
-        if pid_path.exists() and int(pid_path.read_text().strip()) == os.getpid():
-            pid_path.unlink()
-            log.info("[PID] Lockfile released: %s", pid_path)
+        if _pid_lock_fd is not None:
+            fcntl.flock(_pid_lock_fd, fcntl.LOCK_UN)
+            _pid_lock_fd.close()
+            _pid_lock_fd = None
+        pid_path.unlink(missing_ok=True)
+        log.info("[PID] Lockfile released: %s", pid_path)
     except Exception as exc:
         log.warning("[PID] Could not release lockfile: %s", exc)
 

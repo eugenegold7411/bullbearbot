@@ -551,6 +551,7 @@ class NormalizedOrder:
     limit_price:   Optional[float]
     status:        str
     time_in_force: str = "day"
+    order_class:   str = ""   # "oco" | "bracket" | "" — needed by divergence scanner
 
     @classmethod
     def from_alpaca_order(cls, order) -> "NormalizedOrder":
@@ -576,6 +577,7 @@ class NormalizedOrder:
             limit_price=_maybe_float(getattr(order, "limit_price", None)),
             status=_enum_str("status"),
             time_in_force=_enum_str("time_in_force") or "day",
+            order_class=_enum_str("order_class"),
         )
 
 

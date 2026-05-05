@@ -119,7 +119,7 @@ _fill_seen: dict[str, float] = {}   # symbol → epoch of first no-stop detectio
 _protection_miss_cycles: dict[str, int] = {}  # symbol → consecutive unprotected cycles past grace
 
 _STARTUP_EPOCH: float = time.time()  # set at import; guards first scan after restart
-_STARTUP_GRACE_S: float = 90.0
+_STARTUP_GRACE_S: float = 180.0  # must exceed protection_grace_seconds (default 120)
 
 # ---------------------------------------------------------------------------
 # Section 2 — Event log

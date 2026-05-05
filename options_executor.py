@@ -505,25 +505,35 @@ def close_structure(
 
         try:
             if method == "market":
-                from alpaca.trading.enums import OrderSide, TimeInForce
+                from alpaca.trading.enums import OrderSide, PositionIntent, TimeInForce
                 from alpaca.trading.requests import MarketOrderRequest
-                close_side = OrderSide.SELL if leg.side == "buy" else OrderSide.BUY
+                close_side   = OrderSide.SELL if leg.side == "buy" else OrderSide.BUY
+                close_intent = (
+                    PositionIntent.SELL_TO_CLOSE if leg.side == "buy"
+                    else PositionIntent.BUY_TO_CLOSE
+                )
                 req = MarketOrderRequest(
                     symbol=occ_sym,
                     qty=close_qty,
                     side=close_side,
+                    position_intent=close_intent,
                     time_in_force=TimeInForce.DAY,
                 )
             else:
-                from alpaca.trading.enums import OrderSide, TimeInForce
+                from alpaca.trading.enums import OrderSide, PositionIntent, TimeInForce
                 from alpaca.trading.requests import LimitOrderRequest
-                close_side = OrderSide.SELL if leg.side == "buy" else OrderSide.BUY
+                close_side   = OrderSide.SELL if leg.side == "buy" else OrderSide.BUY
+                close_intent = (
+                    PositionIntent.SELL_TO_CLOSE if leg.side == "buy"
+                    else PositionIntent.BUY_TO_CLOSE
+                )
                 mid = _mid_for_leg(leg)
                 limit_price = _round_limit(mid) if mid and mid > 0 else 0.05
                 req = LimitOrderRequest(
                     symbol=occ_sym,
                     qty=close_qty,
                     side=close_side,
+                    position_intent=close_intent,
                     time_in_force=TimeInForce.GTC,
                     limit_price=limit_price,
                 )
@@ -589,8 +599,9 @@ def should_close_structure(
 
     Returns (False, "") if none apply.
     """
-    # Rule 1: broken structure
-    if structure.lifecycle == StructureLifecycle.CANCELLED:
+    # Rule 1: broken structure — but skip if already sent through close_structure()
+    # (closed_at set means a close attempt was made; don't re-enter the close loop)
+    if structure.lifecycle == StructureLifecycle.CANCELLED and not structure.closed_at:
         return True, "broken_structure"
 
     # Must be open to evaluate P&L / DTE

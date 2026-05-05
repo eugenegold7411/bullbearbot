@@ -235,6 +235,29 @@ class TestProtectionDivergenceGraceWindow(unittest.TestCase):
                             open_orders=[s1, s2])
         self.assertTrue(any(e.event_type == "duplicate_exit" for e in events))
 
+    def test_oco_parent_order_treated_as_protected(self):
+        """OCO parent (order_type=limit, order_class=oco) → position is protected, no event.
+
+        Regression for Bug A: NormalizedOrder was missing order_class so getattr()
+        always returned '' and OCO parents were invisible to the scanner.
+        """
+        from schemas import NormalizedOrder
+        oco_parent = NormalizedOrder(
+            order_id="test-oco-001",
+            symbol="AAPL",
+            alpaca_sym="AAPL",
+            side="sell",
+            order_type="limit",
+            qty=100.0,
+            filled_qty=0.0,
+            stop_price=None,
+            limit_price=205.0,
+            status="new",
+            order_class="oco",
+        )
+        events = self._call([_make_position("AAPL")], open_orders=[oco_parent])
+        self.assertEqual(events, [], "OCO parent order must count as stop protection")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Item 5 — maybe_trail_stop() PENDING_REPLACE skip + failure cap

@@ -403,6 +403,15 @@ def run_precycle(
                     _open_orders.append(NormalizedOrder.from_alpaca_order(_o))
                 except Exception:
                     pass
+                # OCO/bracket stop legs have status="held" and are NOT returned as
+                # separate top-level orders in status=open queries — only nested in
+                # o.legs.  Mirror exit_manager._open_orders_by_symbol() so the
+                # divergence scanner sees the stop leg directly.
+                for _leg in (getattr(_o, "legs", None) or []):
+                    try:
+                        _open_orders.append(NormalizedOrder.from_alpaca_order(_leg))
+                    except Exception:
+                        pass
         except Exception as _ord_exc:
             log.debug("[RECON] Could not fetch open orders: %s", _ord_exc)
 

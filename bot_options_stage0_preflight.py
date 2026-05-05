@@ -646,6 +646,42 @@ def run_a2_preflight(
     except Exception as _recon_err:
         log.warning("[OPTS_RECON] Failed (non-fatal): %s", _recon_err)
 
+    # Untracked-position gate — block new entries for underlyings that have live Alpaca
+    # positions not tracked in structures.json. Prevents 42210000 position-intent-mismatch
+    # errors (e.g. TSM) where the candidate stage doesn't know positions exist.
+    try:
+        import re as _re_utp  # noqa: PLC0415
+
+        import options_state as _oss_utp  # noqa: PLC0415
+        _live_opts = [
+            p for p in alpaca_client.get_all_positions()
+            if len(str(getattr(p, "symbol", ""))) > 10
+        ]
+        if _live_opts:
+            _tracked_occs = {
+                leg.occ_symbol
+                for s in _oss_utp.load_structures()
+                for leg in s.legs
+                if getattr(leg, "occ_symbol", None)
+            }
+            _untracked_under: set[str] = set()
+            for _pos in _live_opts:
+                _sym = str(getattr(_pos, "symbol", "") or "")
+                if _sym and _sym not in _tracked_occs:
+                    _m = _re_utp.match(r"^([A-Z]+)\d", _sym)
+                    if _m:
+                        _untracked_under.add(_m.group(1))
+            if _untracked_under:
+                result.pending_underlyings = frozenset(
+                    result.pending_underlyings | _untracked_under
+                )
+                log.info(
+                    "[PREFLIGHT] Untracked Alpaca positions — blocking new candidates for: %s",
+                    sorted(_untracked_under),
+                )
+    except Exception as _utp_err:
+        log.debug("[PREFLIGHT] untracked-position gate failed (non-fatal): %s", _utp_err)
+
     # Structure count gate — runs after reconciliation so expired/closed structures
     # are already removed from the open-structures list before counting.
     # Suppresses new entries (not the full cycle) so close-check loop still runs.

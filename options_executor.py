@@ -461,6 +461,57 @@ def _send_spread_abort_sms(structure: OptionsStructure) -> None:
 # close_structure
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _close_spread_mleg(
+    structure:      OptionsStructure,
+    trading_client,
+) -> str:
+    """
+    Close a multi-leg spread as a single atomic MLEG order.
+
+    Submits SELL_TO_CLOSE (for buy-side legs) and BUY_TO_CLOSE (for sell-side legs)
+    in one instruction so Alpaca never sees an uncovered short between two orders.
+    limit_price = net mid at current prices (falls back to filled prices); minimum $0.05.
+
+    Returns the order_id string on success. Raises on any Alpaca error so the
+    caller can fall back to per-leg submission.
+    """
+    from alpaca.trading.enums import OrderClass, PositionIntent, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest, OptionLegRequest
+
+    filled_legs = [leg for leg in structure.legs if leg.filled_price is not None]
+    leg_requests = []
+    for leg in filled_legs:
+        intent = (
+            PositionIntent.SELL_TO_CLOSE if leg.side == "buy"
+            else PositionIntent.BUY_TO_CLOSE
+        )
+        leg_requests.append(OptionLegRequest(
+            symbol=leg.occ_symbol,
+            ratio_qty=1.0,
+            position_intent=intent,
+        ))
+
+    net_mid = _compute_net_mid(structure)
+    if net_mid is None:
+        # Fall back to fill prices as a conservative estimate
+        net_mid = sum(
+            float(leg.filled_price) * (1.0 if leg.side == "buy" else -1.0)
+            for leg in filled_legs
+            if leg.filled_price is not None
+        )
+    limit_price = max(0.05, _round_limit(abs(net_mid) if net_mid else 0.05))
+
+    req = LimitOrderRequest(
+        qty=structure.contracts,
+        order_class=OrderClass.MLEG,
+        time_in_force=TimeInForce.GTC,
+        limit_price=limit_price,
+        legs=leg_requests,
+    )
+    order = trading_client.submit_order(req)
+    return str(order.id)
+
+
 def close_structure(
     structure:       OptionsStructure,
     trading_client,
@@ -474,6 +525,11 @@ def close_structure(
     For each leg with a non-None filled_price (i.e. was filled):
       - method="limit":  submit closing order at current mid price, GTC
       - method="market": submit market close, DAY
+
+    For multi-leg spreads (≥ 2 filled legs with mixed buy/sell sides) and
+    method="limit", closes atomically via a single MLEG order to prevent
+    Alpaca 40310000 (uncovered short) errors that arise from sequential
+    per-leg submission where the long is closed before the short.
 
     After submitting closes:
       - lifecycle = CLOSING
@@ -497,9 +553,42 @@ def close_structure(
         return structure
 
     structure.add_audit(f"close initiated: reason={reason} method={method}")
-    all_submitted = True
 
-    for leg in filled_legs:
+    # Atomic MLEG close for spreads: submit both legs simultaneously to avoid
+    # the uncovered-short window that triggers Alpaca 40310000 when legs are
+    # closed sequentially (long closed first → short becomes naked).
+    _is_spread = (
+        method == "limit"
+        and len(filled_legs) >= 2
+        and any(l.side == "buy" for l in filled_legs)
+        and any(l.side == "sell" for l in filled_legs)
+    )
+    if _is_spread:
+        try:
+            order_id = _close_spread_mleg(structure, trading_client)
+            structure.order_ids.append(order_id)
+            structure.add_audit(f"mleg close submitted: order_id={order_id}")
+            log.info("[EXECUTOR] %s mleg close submitted: reason=%s order=%s",
+                     structure.underlying, reason, order_id)
+            structure.closed_at = datetime.now(timezone.utc).isoformat()
+            structure = _set_lifecycle(
+                structure, StructureLifecycle.CLOSED, f"mleg close submitted: {reason}"
+            )
+            _log_structure_event(structure, "close", reason)
+            return structure
+        except Exception as _mleg_exc:
+            log.warning(
+                "[EXECUTOR] %s MLEG close failed (%s) — falling back to per-leg",
+                structure.underlying, _mleg_exc,
+            )
+            _fire_safety_alert("close_structure_mleg_failed", _mleg_exc)
+
+    # Per-leg fallback: sort sell-side (BUY_TO_CLOSE) first so the short leg is
+    # closed before the long, avoiding a naked-short window on MLEG fallback paths.
+    all_submitted = True
+    filled_legs_ordered = sorted(filled_legs, key=lambda leg: 0 if leg.side == "sell" else 1)
+
+    for leg in filled_legs_ordered:
         occ_sym   = leg.occ_symbol
         close_qty = structure.contracts
 

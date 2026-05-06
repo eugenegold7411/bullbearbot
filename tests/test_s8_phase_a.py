@@ -352,17 +352,16 @@ class TestSizeTrimGateItem3(unittest.TestCase):
     """Item 3 (S8): size-based TRIM gate fires for score≥6 + oversized positions."""
 
     def test_size_trim_fires_when_equity_pct_exceeds_tier_plus_tolerance(self):
-        """STNG (core, tier_max=20%) at 27K / total_capacity(equity×4=120K) = 22.5% > 22% → SIZE TRIM.
+        """STNG at 27K / equity(30K) = 90% > max_pos_pct_equity(15%) + tol(2%) → SIZE TRIM.
 
-        total_capacity = equity×4 = 30K×4 = 120K (4× leverage basis).
-        cap_frac = 27K/120K = 22.5% > tier_max(20%) + tol(2%) = 22% → fires.
+        equity_frac = 27K/30K = 90% > max_pos_pct_equity(15%) + tol(2%) = 17% → fires via equity check.
         """
         inc = _make_incumbent("STNG", score=7, mv=27_000.0)
         proposed = _run_decide([inc], bp=120_000.0, equity=30_000.0)
         actions  = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(actions), 1)
         self.assertIn("SIZE TRIM", actions[0]["reason"])
-        self.assertIn("total capacity", actions[0]["reason"])
+        self.assertIn("equity cap", actions[0]["reason"])
 
     def test_size_trim_does_not_fire_within_tolerance(self):
         """STNG at 16.5K/100K equity = 16.5% — within 20% + 2% = 22% → no size TRIM."""

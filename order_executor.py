@@ -48,6 +48,8 @@ log = get_logger(__name__)
 _SAFETY_DEDUP_SECS: float = 300.0
 _SAFETY_ALERT_CACHE: dict[str, float] = {}
 
+HARD_LEVERAGE_CAP: float = 2.5   # hard block: long_market_value must not exceed equity × this
+
 _STRUCTURED_TRADES_LOG: Path = Path(__file__).parent / "data" / "trades.jsonl"
 
 
@@ -352,6 +354,17 @@ def validate_action(action: dict, account, positions: list, market_status: str,
     stop_loss   = float(stop_loss)
     take_profit = float(take_profit)
 
+    # Hard leverage cap — portfolio-level safety backstop (run before price validation
+    # so the block message is clear even if price data is absent/stale).
+    _hard_equity = float(getattr(account, "equity", 0) or 0)
+    _hard_long_mv = sum(float(getattr(p, "market_value", 0) or 0) for p in positions if float(getattr(p, "qty", 0) or 0) > 0)
+    if _hard_long_mv > _hard_equity * HARD_LEVERAGE_CAP:
+        raise ValueError(
+            f"[EXECUTOR] BLOCKED — exposure cap at {HARD_LEVERAGE_CAP}x exceeded: "
+            f"current ${_hard_long_mv:,.0f} > cap ${_hard_equity * HARD_LEVERAGE_CAP:,.0f} "
+            f"(equity=${_hard_equity:,.0f})"
+        )
+
     if current_prices and symbol in current_prices:
         entry = float(current_prices[symbol])
     else:
@@ -449,7 +462,7 @@ def validate_action(action: dict, account, positions: list, market_status: str,
         "[EXEC] conviction=%s  effective_cap=$%s  buying_power=$%s  equity=$%s",
         conviction, f"{effective_cap:,.0f}", f"{_bp:,.0f}", f"{equity:,.0f}",
     )
-    current_long = sum(float(p.market_value) for p in positions if float(p.qty) > 0)
+    current_long = _hard_long_mv   # reuse value computed for hard cap above
     new_exposure = current_long + position_value
     if new_exposure > effective_cap:
         log.warning(

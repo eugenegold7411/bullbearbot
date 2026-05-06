@@ -59,6 +59,7 @@ def _cfg(enable_live: bool = False) -> dict:
         "portfolio_allocator": {
             "enable_shadow":               True,
             "enable_live":                 enable_live,
+            "enable_live_trim":            enable_live,
             "trim_score_threshold":        5,
             "replace_score_gap":           15,
             "min_rebalance_notional":      500,

@@ -1263,17 +1263,17 @@ class TestDenominatorFix:
     # 4. TRIM target = min(tier_max × total_capacity, cap × total_capacity) ─────
 
     def test_size_trim_target_kernel_consistent(self):
-        """V at 25% of total_capacity → SIZE TRIM target = min(tier_max×total_cap, cap×total_cap).
+        """V at 100% of equity → SIZE TRIM target = max_position_pct_equity × equity.
 
         total_capacity = equity × 4 = $433,888.
-        V MV = 25% × $433,888 = $108,472 (= equity).
-        cap_frac = 25% > tier_max(20%) + tol(2%) = 22% → fires.
-        expected_target = min(0.20 × $433,888, 0.15 × $433,888) = min($86,778, $65,083) = $65,083.
+        V MV = 25% × $433,888 = $108,472 (= 100% equity) → equity check fires first.
+        equity_frac = 100% > max_pos_pct_equity(15%) + tol(2%) = 17% → fires.
+        expected_target = max_pos_pct_equity × equity = 0.15 × $108,472 = $16,271.
         """
         equity    = self._EQUITY   # $108,472
-        total_cap = equity * 4     # $433,888 — new denominator
-        # tier_max for V (core size) = 0.20; cap_dollars = 0.15 × total_cap
-        expected_target = min(0.20 * total_cap, self._MAX_POS_PCT * total_cap)
+        total_cap = equity * 4     # $433,888
+        # Equity-based target is min(max_pos_pct_equity × equity, tier_max × total_cap)
+        expected_target = self._MAX_POS_PCT * equity   # $16,271
 
         mv = total_cap * 0.25   # 25% of total_capacity = $108,472 — exceeds 22% trigger
         inc = {
@@ -1306,17 +1306,17 @@ class TestDenominatorFix:
         actual_target = float(match.group(1).replace(",", ""))
         assert actual_target == pytest.approx(expected_target, abs=1.0), (
             f"TRIM target ${actual_target:,.0f} should be "
-            f"min(tier×total_capacity, cap×total_capacity) = ${expected_target:,.0f}"
+            f"max_pos_pct_equity × equity = ${expected_target:,.0f}"
         )
 
     # 5. SIZE TRIM trigger uses total_capacity denominator ────────────────────
 
     def test_size_trim_uses_capacity_denominator(self):
-        """AMZN at 25% of equity×4 (> 22% threshold) fires SIZE TRIM; reason says 'total capacity'.
+        """AMZN at 100% of equity (= 25% of equity×4) fires SIZE TRIM; reason says 'equity cap'.
 
         total_capacity = equity × 4 = $433,888.
-        AMZN MV = 25% × $433,888 = $108,472 (= equity).
-        cap_frac = 25% > tier_max(20%) + tol(2%) = 22% → fires.
+        AMZN MV = 25% × $433,888 = $108,472 (= equity, 100% equity_frac).
+        equity_frac = 100% > max_pos_pct_equity(15%) + tol(2%) = 17% → fires.
         """
         equity    = self._EQUITY   # $108,472
         total_cap = equity * 4     # $433,888
@@ -1343,8 +1343,8 @@ class TestDenominatorFix:
         assert trim is not None, (
             f"SIZE TRIM must fire for AMZN at 25% of equity×4 (${total_cap:,.0f})"
         )
-        assert "total capacity" in trim["reason"], (
-            "SIZE TRIM reason must reference 'total capacity'"
+        assert "equity cap" in trim["reason"], (
+            "SIZE TRIM reason must reference 'equity cap'"
         )
 
     # 6. GOOGL at 25.9% equity → ADD blocked (was incorrectly allowed before fix) ──

@@ -125,6 +125,8 @@ _PA_DEFAULTS: dict = {
     "size_trim_tolerance_pct":         2.0,     # S8: pp over tier max before size TRIM fires
     "enable_live_add":                 False,   # Stage 2: ADD actions execute via risk_kernel BUY path (off by default)
     "enable_live_replace":             False,   # Stage 2: REPLACE actions execute two-phase close+buy (off by default)
+    "enable_live_trim":                False,   # explicit trim gate — must be True alongside enable_live for trim to execute
+    "max_position_pct_equity":         0.15,    # equity-based single-name cap for SIZE TRIM trigger (position/equity > this fires trim)
 }
 
 
@@ -473,6 +475,8 @@ def _decide_actions(
     # Single-name cap from risk_kernel — ADD and SIZE TRIM must respect this ceiling.
     max_pos_pct_capacity = float(cfg.get("parameters", {}).get("max_position_pct_capacity", 0.15))
     max_pos_cap_dollars  = max_pos_pct_capacity * total_capacity if total_capacity > 0 else float("inf")
+    # Equity-based single-name cap for SIZE TRIM trigger (equity × pct, not capacity × pct)
+    max_pos_pct_equity   = float(pa_cfg.get("max_position_pct_equity", 0.15))
 
     target_wts = _target_weights(incumbents, sizes)
     proposed:   list[dict] = []
@@ -508,22 +512,30 @@ def _decide_actions(
                 })
                 continue   # don't double-count as HOLD
 
-        # SIZE TRIM: strong thesis but position exceeds tier max by more than tolerance.
+        # SIZE TRIM: strong thesis but position exceeds equity-based cap or tier max.
+        # Equity-based check (mv/equity > max_pos_pct_equity) fires for real oversize
+        # positions regardless of leverage ratio. Capacity-based check (mv/total_capacity
+        # > tier_max) is retained as a secondary trigger.
         # Fires independently of thesis-score TRIM (exclusive paths: score ≤ trim_thresh
         # goes to thesis TRIM above; score > trim_thresh falls through to here).
-        if size_trim_enabled and score >= 6 and total_capacity > 0 and mv > min_notional:
-            cap_frac = mv / total_capacity
-            if cap_frac > tier_max + size_trim_tol:
-                target_mv     = min(tier_max * total_capacity, max_pos_cap_dollars)
+        if size_trim_enabled and score >= 6 and total_capacity > 0 and equity > 0 and mv > min_notional:
+            cap_frac    = mv / total_capacity
+            equity_frac = mv / equity
+            if equity_frac > max_pos_pct_equity + size_trim_tol or cap_frac > tier_max + size_trim_tol:
+                target_mv     = min(
+                    max_pos_pct_equity * equity,         # equity-based target
+                    tier_max * total_capacity,           # tier-based target
+                    max_pos_cap_dollars,                 # kernel single-name cap
+                )
                 trim_notional = round(mv - target_mv, 2)
                 if trim_notional >= min_notional:
                     proposed.append({
                         "action":           "TRIM",
                         "symbol":           sym,
                         "reason":           (
-                            f"SIZE TRIM — {sym} at {cap_frac*100:.1f}% of total capacity exceeds "
-                            f"{tier_max*100:.0f}% {_SYMBOL_TIER_MAP.get(sym.upper(), 'inferred')} "
-                            f"tier max (tol={size_trim_tol*100:.1f}%) — "
+                            f"SIZE TRIM — {sym} at {equity_frac*100:.1f}% of equity exceeds "
+                            f"{max_pos_pct_equity*100:.0f}% equity cap "
+                            f"(tol={size_trim_tol*100:.1f}%) — "
                             f"trim ~${trim_notional:,.0f} to target ${target_mv:,.0f}"
                         ),
                         "score_gap":        None,
@@ -1065,7 +1077,7 @@ def _run_allocator_shadow_inner(
 
         # 4a. Live TRIM execution
         live_trim_results: dict[str, str] = {}
-        if pa_cfg["enable_live"] and snapshot is not None and account is not None:
+        if pa_cfg["enable_live"] and pa_cfg.get("enable_live_trim") and snapshot is not None and account is not None:
             for act in proposed:
                 if act["action"] != "TRIM":
                     continue

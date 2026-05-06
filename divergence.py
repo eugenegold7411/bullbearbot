@@ -991,10 +991,16 @@ def check_clean_cycle(
     Non-fatal.
     """
     try:
-        if current_mode.mode == OperatingMode.NORMAL:
-            return current_mode
-
         has_new_divergence = len(divergence_events_this_cycle) > 0
+
+        if current_mode.mode == OperatingMode.NORMAL:
+            # In NORMAL mode there is nothing to recover; still maintain the counter
+            # and last_checked_at so health monitoring shows live confirmation.
+            if not has_new_divergence:
+                current_mode.clean_cycles_since_entry += 1
+                current_mode.last_checked_at = datetime.now(timezone.utc).isoformat()
+                save_account_mode(current_mode)
+            return current_mode
 
         if not has_new_divergence:
             current_mode.clean_cycles_since_entry += 1

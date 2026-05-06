@@ -16,8 +16,8 @@ from __future__ import annotations
 import sys
 import unittest
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 
@@ -116,12 +116,6 @@ def _make_single_leg_close_struct(close_attempt_count: int = 0):
 # ── Tests 1–3: close_structure() lifecycle behaviour ─────────────────────────
 
 class TestCloseFailedLifecycle(unittest.TestCase):
-
-    def _reload_executor(self):
-        import importlib
-        import options_executor
-        importlib.reload(options_executor)
-        return options_executor
 
     def test_successful_close_marks_lifecycle_closed(self):
         """Close with all legs succeeding → lifecycle=CLOSED, closed_at set."""

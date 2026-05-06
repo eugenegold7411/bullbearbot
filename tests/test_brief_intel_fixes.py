@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+
 # ── Minimal stubs (same pattern as test_morning_brief_held_exempt.py) ─────────
 def _stub(name: str) -> types.ModuleType:
     mod = types.ModuleType(name)
@@ -236,7 +237,7 @@ class TestMacroWireSource(unittest.TestCase):
 
     def test_macro_wire_section_no_qualifying_returns_fallback(self):
         """build_macro_wire_section returns fallback string when no qualifying articles."""
-        from macro_wire import build_macro_wire_section, LIVE_CACHE
+        from macro_wire import LIVE_CACHE, build_macro_wire_section
         empty_cache = json.dumps({"articles": []})
         with patch.object(
             LIVE_CACHE.__class__, "exists", return_value=True

@@ -219,7 +219,7 @@ class TestA2TradeLogging(unittest.TestCase):
 
     def test_trade_record_3_fully_filled_writes_entry_record(self):
         """A2 structure → FULLY_FILLED triggers entry record in data/account2/trades.jsonl."""
-        from schemas import OptionStrategy, StructureLifecycle
+        from schemas import OptionStrategy
 
         written: list[dict] = []
 

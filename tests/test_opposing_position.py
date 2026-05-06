@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import sys
 import unittest
-from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, __import__("pathlib").Path(__file__).parent.parent.as_posix())
 
 # ── Minimal stubs for alpaca (risk_kernel imports from schemas, not alpaca directly) ─
 
+import risk_kernel  # noqa: E402
 from schemas import (  # noqa: E402
     AccountAction,
     BrokerSnapshot,
@@ -28,8 +28,6 @@ from schemas import (  # noqa: E402
     Tier,
     TradeIdea,
 )
-import risk_kernel  # noqa: E402
-
 
 # ── Fixture builders ───────────────────────────────────────────────────────────
 

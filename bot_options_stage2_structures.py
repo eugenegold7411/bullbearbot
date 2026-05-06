@@ -38,6 +38,22 @@ _STRATEGY_FROM_STRUCTURE: dict[str, _OS] = {
     "iron_butterfly":     _OS.IRON_BUTTERFLY,
 }
 
+# ── Direction-alignment sets ───────────────────────────────────────────────────
+# Each structure belongs to exactly one direction bucket.
+# Used by _direction_guard() and _route_guarded() as the safety net before Stage 3.
+
+_BULLISH_STRUCTURES: frozenset[str] = frozenset({
+    "long_call", "debit_call_spread", "credit_put_spread", "short_put",
+})
+_BEARISH_STRUCTURES: frozenset[str] = frozenset({
+    "long_put", "debit_put_spread", "credit_call_spread",
+})
+_NEUTRAL_STRUCTURES: frozenset[str] = frozenset({
+    "straddle", "strangle", "iron_condor", "iron_butterfly",
+    # Two-sided credit spreads are valid neutral plays (credit strangle equivalent)
+    "credit_put_spread", "credit_call_spread",
+})
+
 
 # ── Strategy routing ──────────────────────────────────────────────────────────
 
@@ -148,6 +164,83 @@ def _get_router_config(config: dict | None = None) -> dict:
         return dict(_A2_ROUTER_DEFAULTS)
     router_cfg = config.get("a2_router", {})
     return {**_A2_ROUTER_DEFAULTS, **router_cfg}
+
+
+def _direction_guard(
+    allowed: list[str],
+    direction: str,
+    sym: str,
+    rule: str = "",
+) -> list[str]:
+    """
+    Remove any structure not aligned with `direction`.
+    Applied at every non-empty _route_strategy return so wrong-direction
+    candidates never reach the Stage 3 Sonnet debate call.
+    """
+    if direction == "bullish":
+        ok = _BULLISH_STRUCTURES
+    elif direction == "bearish":
+        ok = _BEARISH_STRUCTURES
+    else:
+        ok = _NEUTRAL_STRUCTURES
+    filtered = [s for s in allowed if s in ok]
+    removed  = [s for s in allowed if s not in ok]
+    if removed:
+        log.info(
+            "[STAGE2] %s: direction guard filtered %d wrong-direction structure(s)"
+            " (direction=%s rule=%s): %s",
+            sym, len(removed), direction, rule, sorted(removed),
+        )
+    return filtered
+
+
+def _route_guarded(
+    allowed: list[str],
+    effective_dir: str,
+    sym: str,
+    rule: str,
+    options_regime,
+    caution_debit_blocked: bool,
+    iv_rank: float = 0.0,
+) -> list[str]:
+    """
+    Apply direction guard then VIX regime filter.
+    Drop-in replacement for _apply_vix_regime_filter() at every non-empty return
+    in _route_strategy(). The direction guard runs first (pre-filter), then the
+    VIX regime filter further trims the result.
+    """
+    guarded = _direction_guard(allowed, effective_dir, sym, rule)
+    result  = _apply_vix_regime_filter(guarded, options_regime, caution_debit_blocked, sym)
+    if result:
+        log.info(
+            "[STAGE2] %s: direction=%s iv_rank=%.1f → %s (rule=%s)",
+            sym, effective_dir, iv_rank, result, rule,
+        )
+    return result
+
+
+def _compute_effective_direction(pack, config: dict | None = None) -> str:
+    """
+    Compute effective direction after IV skew override — mirrors the logic
+    at the top of _route_strategy().  Called from Stage 1 candidate enrichment
+    so the a1_direction field on each candidate matches the direction used for
+    routing, keeping Stage 3's direction mandate consistent with the structure
+    that was proposed.
+    """
+    rcfg          = _get_router_config(config)
+    _skew_neutral = float(rcfg.get("iv_skew_override_neutral", 1.30))
+    _skew_bearish = float(rcfg.get("iv_skew_override_bearish", 1.50))
+    effective_dir  = str(getattr(pack, "a1_direction", "neutral")).lower()
+    if effective_dir not in ("bullish", "bearish", "neutral"):
+        effective_dir = "neutral"
+    _pack_skew_raw = getattr(pack, "skew", None)
+    _pack_skew     = float(_pack_skew_raw) if isinstance(_pack_skew_raw, (int, float)) else None
+    if _pack_skew is not None:
+        if _pack_skew >= _skew_bearish:
+            effective_dir = "bearish"
+        elif _pack_skew > _skew_neutral and effective_dir == "bullish":
+            effective_dir = "neutral"
+    return effective_dir
 
 
 def _apply_vix_regime_filter(
@@ -305,7 +398,8 @@ def _route_strategy(
                 "[OPTS] _route_strategy %s: RULE_EARNINGS_HIGH_IV eda=%s iv_rank=%.1f dir=%s -> %s",
                 sym, eda, pack.iv_rank, effective_dir, _pehi,
             )
-            return _apply_vix_regime_filter(_pehi, options_regime, _caution_debit_blocked, sym)
+            return _route_guarded(_pehi, effective_dir, sym, "RULE_EARNINGS_HIGH_IV",
+                                  options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE2: no long premium in blacklisted IV environments
     if pack.iv_environment in iv_env_blackout:
@@ -340,7 +434,8 @@ def _route_strategy(
                     "[OPTS] _route_strategy %s: RULE4 macro_event iv_rank=%.1f neutral -> %s",
                     sym, pack.iv_rank, _r4,
                 )
-                return _apply_vix_regime_filter(_r4, options_regime, _caution_debit_blocked, sym)
+                return _route_guarded(_r4, effective_dir, sym, "RULE4_CONDOR",
+                                      options_regime, _caution_debit_blocked, pack.iv_rank)
             if direction != "neutral" and pack.iv_rank >= macro_credit_iv_min:
                 # Very elevated IV + directional: sell premium with thesis
                 _r4 = ["credit_put_spread"] if direction == "bullish" else ["credit_call_spread"]
@@ -348,7 +443,8 @@ def _route_strategy(
                     "[OPTS] _route_strategy %s: RULE4 macro_event iv_rank=%.1f dir=%s -> %s",
                     sym, pack.iv_rank, direction, _r4,
                 )
-                return _apply_vix_regime_filter(_r4, options_regime, _caution_debit_blocked, sym)
+                return _route_guarded(_r4, effective_dir, sym, "RULE4_CREDIT",
+                                      options_regime, _caution_debit_blocked, pack.iv_rank)
             if direction != "neutral" and pack.iv_rank < macro_debit_iv_max:
                 # Moderate/cheap IV + directional thesis from macro event: buy premium
                 _r4 = ["debit_call_spread"] if direction == "bullish" else ["debit_put_spread"]
@@ -356,7 +452,8 @@ def _route_strategy(
                     "[OPTS] _route_strategy %s: RULE4 macro_event iv_rank=%.1f dir=%s -> %s",
                     sym, pack.iv_rank, direction, _r4,
                 )
-                return _apply_vix_regime_filter(_r4, options_regime, _caution_debit_blocked, sym)
+                return _route_guarded(_r4, effective_dir, sym, "RULE4_DEBIT",
+                                      options_regime, _caution_debit_blocked, pack.iv_rank)
             # No directional thesis and IV not elevated enough for condor, or no clear route
             log.debug(
                 "[OPTS] _route_strategy %s: RULE4 macro_event iv_rank=%.1f dir=%s -> [] "
@@ -422,7 +519,8 @@ def _route_strategy(
                 "window=%d iv_rank=%.1f dir=%s -> %s",
                 sym, eda, timing, window, pack.iv_rank, effective_dir, _pe,
             )
-            return _apply_vix_regime_filter(_pe, options_regime, _caution_debit_blocked, sym)
+            return _route_guarded(_pe, effective_dir, sym, "RULE_POST_EARNINGS",
+                                  options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE_STRADDLE_STRANGLE: cheap IV + earnings approaching in the straddle window.
     # Fires before RULE_EARNINGS so that when IV is cheap (<40) and earnings are
@@ -433,11 +531,13 @@ def _route_strategy(
     if (eda is not None
             and straddle_dte_min <= eda <= straddle_dte_max
             and eda > earnings_dte_blackout
-            and pack.iv_rank < straddle_iv_max):
+            and pack.iv_rank < straddle_iv_max
+            and effective_dir == "neutral"):
         allowed = ["straddle", "strangle"]
-        log.info("[OPTS] RULE_STRADDLE_STRANGLE %s: eda=%d iv_rank=%.1f → %s",
-                 sym, eda, pack.iv_rank, allowed)
-        return _apply_vix_regime_filter(allowed, options_regime, _caution_debit_blocked, sym)
+        log.info("[OPTS] RULE_STRADDLE_STRANGLE %s: eda=%d iv_rank=%.1f dir=%s → %s",
+                 sym, eda, pack.iv_rank, effective_dir, allowed)
+        return _route_guarded(allowed, effective_dir, sym, "RULE_STRADDLE_STRANGLE",
+                              options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE_EARNINGS: direction-split when near (but not in blackout for) earnings
     # AND iv_rank is not elevated. Elevated IV (>= gate) falls through to RULE2_CREDIT/7
@@ -446,14 +546,15 @@ def _route_strategy(
             and earnings_dte_blackout < eda <= earnings_dte_window
             and pack.iv_rank < earnings_iv_rank_gate):
         if effective_dir == "bullish":
-            allowed = ["debit_call_spread", "straddle"]
+            allowed = ["debit_call_spread"]
         elif effective_dir == "bearish":
-            allowed = ["debit_put_spread", "straddle"]
+            allowed = ["debit_put_spread"]
         else:  # neutral
             allowed = ["straddle"]
         log.debug("[OPTS] _route_strategy %s: RULE_EARNINGS dte=%s iv_rank=%.1f dir=%s -> %s",
                   sym, eda, pack.iv_rank, effective_dir, allowed)
-        return _apply_vix_regime_filter(allowed, options_regime, _caution_debit_blocked, sym)
+        return _route_guarded(allowed, effective_dir, sym, "RULE_EARNINGS",
+                              options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE2_CREDIT: very expensive IV -> route to credit structures (sell premium)
     if pack.iv_environment == "very_expensive":
@@ -465,7 +566,8 @@ def _route_strategy(
             _vexp = ["credit_put_spread", "credit_call_spread"]
         log.debug("[OPTS] _route_strategy %s: RULE2_CREDIT iv_env=very_expensive dir=%s -> %s",
                   sym, effective_dir, _vexp)
-        return _apply_vix_regime_filter(_vexp, options_regime, _caution_debit_blocked, sym)
+        return _route_guarded(_vexp, effective_dir, sym, "RULE2_CREDIT",
+                              options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE_IRON: iron condor/butterfly when IV is elevated and direction is neutral
     # or conviction is too low to justify a directional bet.
@@ -478,14 +580,9 @@ def _route_strategy(
         _a1_conv = float(getattr(pack, "a1_conviction", None) or 0.0)
         if _a1_conv == 0.0:  # fall back to signal score when dedicated field absent
             _a1_conv = float(getattr(pack, "a1_signal_score", 0) or 0) / 100.0
-        _is_neutral_or_low_conv = (
-            effective_dir == "neutral"
-            or _a1_conv < _iron_low_conv
-        )
-        if pack.iv_rank >= 85:
-            _iron = ["iron_butterfly", "iron_condor"]
-        elif _is_neutral_or_low_conv:
-            _iron = ["iron_condor"]
+        _is_neutral_or_low_conv = (effective_dir == "neutral")
+        if _is_neutral_or_low_conv:
+            _iron = ["iron_butterfly", "iron_condor"] if pack.iv_rank >= 85 else ["iron_condor"]
         else:
             _iron = None
         if _iron is not None:
@@ -493,7 +590,8 @@ def _route_strategy(
                 "[OPTS] _route_strategy %s: RULE_IRON iv_rank=%.1f dir=%s conv=%.2f -> %s",
                 sym, pack.iv_rank, effective_dir, _a1_conv, _iron,
             )
-            return _apply_vix_regime_filter(_iron, options_regime, _caution_debit_blocked, sym)
+            return _route_guarded(_iron, effective_dir, sym, "RULE_IRON",
+                                  options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE_SHORT_PUT: sell OTM put when IV is elevated and direction is bullish/neutral.
     # After RULE_IRON (very high IV handled) and before debit/mixed rules.
@@ -510,9 +608,8 @@ def _route_strategy(
                 "[OPTS] _route_strategy %s: RULE_SHORT_PUT iv_rank=%.1f iv_env=%s dir=%s -> ['short_put']",
                 sym, pack.iv_rank, pack.iv_environment, effective_dir,
             )
-            return _apply_vix_regime_filter(
-                ["short_put"], options_regime, _caution_debit_blocked, sym
-            )
+            return _route_guarded(["short_put"], effective_dir, sym, "RULE_SHORT_PUT",
+                                  options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE5: cheap IV + directional signal (direction-aware)
     if pack.iv_environment in ("very_cheap", "cheap") and effective_dir != "neutral":
@@ -524,7 +621,8 @@ def _route_strategy(
             allowed = ["long_call", "long_put", "debit_call_spread", "debit_put_spread"]
         log.debug("[OPTS] _route_strategy %s: RULE5 iv_env=%s dir=%s -> %s",
                   sym, pack.iv_environment, effective_dir, allowed)
-        return _apply_vix_regime_filter(allowed, options_regime, _caution_debit_blocked, sym)
+        return _route_guarded(allowed, effective_dir, sym, "RULE5",
+                              options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE6: neutral IV + directional signal (direction-aware)
     if pack.iv_environment == "neutral" and effective_dir != "neutral":
@@ -536,7 +634,8 @@ def _route_strategy(
             allowed = ["debit_call_spread", "debit_put_spread"]
         log.debug("[OPTS] _route_strategy %s: RULE6 iv_env=neutral dir=%s -> %s",
                   sym, effective_dir, allowed)
-        return _apply_vix_regime_filter(allowed, options_regime, _caution_debit_blocked, sym)
+        return _route_guarded(allowed, effective_dir, sym, "RULE6",
+                              options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE7: expensive IV + directional signal (direction-aware; credit preferred, debit allowed)
     if pack.iv_environment == "expensive" and effective_dir != "neutral":
@@ -548,7 +647,8 @@ def _route_strategy(
             allowed = ["credit_put_spread", "credit_call_spread", "debit_call_spread", "debit_put_spread"]
         log.debug("[OPTS] _route_strategy %s: RULE7 iv_env=expensive dir=%s -> %s",
                   sym, effective_dir, allowed)
-        return _apply_vix_regime_filter(allowed, options_regime, _caution_debit_blocked, sym)
+        return _route_guarded(allowed, effective_dir, sym, "RULE7",
+                              options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE8: default no-trade
     log.debug("[OPTS] _route_strategy %s: RULE8 default no match (iv_env=%s dir=%s) -> []",
@@ -596,10 +696,12 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
     straddle_iv_max  = float(rcfg.get("straddle_iv_rank_max", 40))
     straddle_dte_min = int(rcfg.get("straddle_dte_min", 6))
     straddle_dte_max = int(rcfg.get("straddle_dte_max", 14))
+    _infer_dir = str(getattr(pack, "a1_direction", "neutral")).lower()
     if (eda is not None
             and straddle_dte_min <= eda <= straddle_dte_max
             and eda > earnings_dte_blackout
-            and pack.iv_rank < straddle_iv_max):
+            and pack.iv_rank < straddle_iv_max
+            and _infer_dir == "neutral"):
         return "RULE_STRADDLE_STRANGLE"
     if (eda is not None
             and earnings_dte_blackout < eda <= earnings_dte_window):

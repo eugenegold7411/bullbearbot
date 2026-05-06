@@ -489,6 +489,7 @@ def run_candidate_stage(
     import options_data  # noqa: PLC0415
     import options_intelligence  # noqa: PLC0415
     from bot_options_stage2_structures import (  # noqa: PLC0415
+        _compute_effective_direction,
         _quick_liquidity_check,
         _route_strategy,
     )
@@ -609,8 +610,10 @@ def run_candidate_stage(
 
             all_candidate_structs.extend(cset.surviving_candidates)
 
-            # Enrich surviving candidates with A1 signal context for debate prompt rendering
-            _a1_dir = pack.a1_direction if pack is not None else "unknown"
+            # Enrich surviving candidates with A1 signal context for debate prompt rendering.
+            # Use effective direction (post skew-override) so the mandate in Stage 3 is
+            # consistent with the structure that was actually routed.
+            _a1_dir = _compute_effective_direction(pack, config) if pack is not None else "unknown"
             for _c in cset.surviving_candidates:
                 _c["a1_direction"]        = _a1_dir
                 _c["a1_conviction"]       = sig_data.get("conviction", "unknown")

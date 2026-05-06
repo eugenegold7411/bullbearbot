@@ -78,29 +78,32 @@ class TestRI01NeutralIron:
 # ── RI-02: iv_rank=52, bullish, low conviction → iron_condor ─────────────────
 
 class TestRI02LowConvictionDirectional:
-    """iv_rank=52, direction=bullish, conviction=0.55 → iron_condor."""
+    """RULE_IRON fires only for neutral direction; directional signals fall through to direction structures."""
 
-    def test_bullish_low_conviction_routes_to_iron_condor(self):
+    def test_bullish_low_conviction_falls_through_to_short_put(self):
+        # Low conviction bullish → RULE_IRON skips (not neutral) → RULE_SHORT_PUT fires
         result = _route_strategy(
             _pack(iv_rank=52.0, a1_direction="bullish", a1_conviction=0.55),
             config=_config(),
         )
-        assert "iron_condor" in result
+        assert "iron_condor" not in result
+        assert "short_put" in result
 
-    def test_bearish_low_conviction_routes_to_iron_condor(self):
+    def test_bearish_low_conviction_falls_through_to_debit_put_spread(self):
+        # Low conviction bearish → RULE_IRON skips (not neutral) → RULE6 fires → debit_put_spread
         result = _route_strategy(
             _pack(iv_rank=52.0, a1_direction="bearish", a1_conviction=0.50),
             config=_config(),
         )
-        assert "iron_condor" in result
+        assert "iron_condor" not in result
+        assert "debit_put_spread" in result
 
     def test_conviction_exactly_at_floor_not_routed_to_iron(self):
-        # conviction == threshold → NOT low conviction (< not <=)
+        # Directional signal → RULE_IRON never fires regardless of conviction level
         result = _route_strategy(
             _pack(iv_rank=52.0, a1_direction="bullish", a1_conviction=0.60),
             config=_config(),
         )
-        # At the boundary (0.60 == threshold), not low conviction → skip RULE_IRON
         assert "iron_condor" not in result
 
 
@@ -181,24 +184,25 @@ class TestRI05ConfigIronMin:
 class TestRI06ConfigConvictionThreshold:
     """iron_low_conviction_threshold in config controls the low-conv boundary."""
 
-    def test_custom_high_threshold_catches_more_cases(self):
-        # Raise threshold to 0.75 — conviction=0.70 should now be "low" → iron
+    def test_custom_high_threshold_directional_still_no_iron(self):
+        # RULE_IRON is neutral-only; custom threshold has no effect on directional signals
         result = _route_strategy(
             _pack(iv_rank=55.0, a1_direction="bullish", a1_conviction=0.70),
             config=_config(iron_iv_rank_min=50, iron_low_conviction_threshold=0.75),
         )
-        assert "iron_condor" in result
+        assert "iron_condor" not in result
+        assert "short_put" in result
 
     def test_custom_low_threshold_catches_fewer_cases(self):
-        # Lower threshold to 0.40 — conviction=0.55 is now NOT low → falls through
+        # Lower threshold to 0.40 — conviction=0.55 is now NOT low → falls through (still no iron: directional)
         result = _route_strategy(
             _pack(iv_rank=55.0, iv_environment="neutral", a1_direction="bullish", a1_conviction=0.55),
             config=_config(iron_iv_rank_min=50, iron_low_conviction_threshold=0.40),
         )
         assert "iron_condor" not in result
 
-    def test_missing_conviction_treated_as_low(self):
-        # Pack without a1_conviction attribute → getattr returns None → float(None or 0) = 0 → < threshold
+    def test_missing_conviction_directional_falls_through(self):
+        # Pack without a1_conviction attribute and bullish direction → RULE_IRON skips → directional structure
         pack = SimpleNamespace(
             iv_rank=55.0,
             iv_environment="neutral",
@@ -212,4 +216,5 @@ class TestRI06ConfigConvictionThreshold:
             macro_event_flag=False,
         )
         result = _route_strategy(pack, config=_config())
-        assert "iron_condor" in result
+        assert "iron_condor" not in result
+        assert "short_put" in result

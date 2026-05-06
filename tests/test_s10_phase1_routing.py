@@ -429,13 +429,17 @@ class TestEarningsHighIVEnabled:
         assert result != ["credit_put_spread"]  # EHI did NOT fire exclusively
 
     def test_ehi06_flag_false_disables_rule(self):
-        """EHI-06: pre_earnings_credit_spread_enabled=False skips EHI; subsequent rules fire."""
+        """EHI-06: pre_earnings_credit_spread_enabled=False skips EHI; subsequent rules fire.
+
+        iv_rank=87, iv_env=expensive, bullish, high-conviction (score=60 → conv=0.60 == threshold).
+        RULE_IRON requires conviction < 0.60 (strict <) so it does NOT fire for bullish at boundary.
+        RULE_SHORT_PUT fires: iv_rank=87>=50, bullish, env not cheap → short_put.
+        """
         cfg = self._cfg_enabled({"pre_earnings_credit_spread_enabled": False})
-        # iv_environment="expensive" (not very_expensive) means RULE2_CREDIT won't fire.
-        # iv_rank=87 satisfies EHI when enabled, but iv_rank >= earnings_iv_rank_gate=70
-        # so RULE_EARNINGS also misses. With EHI off, RULE_IRON fires for iv_rank >= 85.
         pack = MockPack(earnings_days_away=10, iv_rank=87.0,
                         iv_environment="expensive", a1_direction="bullish")
         result = _route_strategy(pack, cfg)
         assert result != ["credit_put_spread"]  # EHI did NOT fire
-        assert any(s in result for s in ("iron_butterfly", "iron_condor"))
+        # RULE_IRON does NOT fire for high-conviction bullish (conviction==threshold, not <).
+        # RULE_SHORT_PUT fires → short_put is the correct bullish elevated-IV structure.
+        assert "short_put" in result

@@ -358,10 +358,24 @@ class TestRuleStraddleStrangle(unittest.TestCase):
         )
         return _route_strategy(pack, config=config)
 
-    def test_st09_cheap_iv_eda_8_fires_straddle_strangle(self):
-        """ST-09: iv_rank=35, eda=8 → RULE_STRADDLE_STRANGLE → ['straddle', 'strangle']."""
-        result = self._route(iv_rank=35, eda=8)
+    def test_st09_cheap_iv_eda_8_neutral_fires_straddle_strangle(self):
+        """ST-09: iv_rank=35, eda=8, direction=neutral → RULE_STRADDLE_STRANGLE → straddle/strangle."""
+        result = self._route(iv_rank=35, eda=8, direction="neutral")
         self.assertEqual(result, ["straddle", "strangle"])
+
+    def test_st09b_cheap_iv_eda_8_bullish_routes_to_call_spread(self):
+        """ST-09b: iv_rank=35, eda=8, direction=bullish → RULE_STRADDLE_STRANGLE skipped → RULE_EARNINGS → debit_call_spread."""
+        result = self._route(iv_rank=35, eda=8, direction="bullish")
+        self.assertIn("debit_call_spread", result)
+        self.assertNotIn("straddle", result)
+        self.assertNotIn("strangle", result)
+
+    def test_st09c_cheap_iv_eda_8_bearish_routes_to_put_spread(self):
+        """ST-09c: iv_rank=35, eda=8, direction=bearish → RULE_STRADDLE_STRANGLE skipped → RULE_EARNINGS → debit_put_spread."""
+        result = self._route(iv_rank=35, eda=8, direction="bearish")
+        self.assertIn("debit_put_spread", result)
+        self.assertNotIn("straddle", result)
+        self.assertNotIn("strangle", result)
 
     def test_st10_iv_too_high_does_not_fire(self):
         """ST-10: iv_rank=45 (above 40 threshold) → RULE_STRADDLE_STRANGLE does not fire."""
@@ -398,13 +412,13 @@ class TestRuleStraddleStrangle(unittest.TestCase):
         self.assertNotEqual(result, ["straddle", "strangle"])
 
     def test_st14_eda_6_boundary_fires(self):
-        """ST-14: eda=6 (straddle_dte_min boundary) → fires."""
-        result = self._route(iv_rank=35, eda=6)
+        """ST-14: eda=6 (straddle_dte_min boundary), direction=neutral → fires straddle/strangle."""
+        result = self._route(iv_rank=35, eda=6, direction="neutral")
         self.assertEqual(result, ["straddle", "strangle"])
 
     def test_st15_eda_14_boundary_fires(self):
-        """ST-15: eda=14 (straddle_dte_max boundary) → fires."""
-        result = self._route(iv_rank=35, eda=14)
+        """ST-15: eda=14 (straddle_dte_max boundary), direction=neutral → fires straddle/strangle."""
+        result = self._route(iv_rank=35, eda=14, direction="neutral")
         self.assertEqual(result, ["straddle", "strangle"])
 
     def test_st16_eda_15_outside_boundary_does_not_fire(self):
@@ -413,7 +427,7 @@ class TestRuleStraddleStrangle(unittest.TestCase):
         self.assertNotEqual(result, ["straddle", "strangle"])
 
     def test_rule_uses_config_overrides(self):
-        """Custom config thresholds are respected (straddle_iv_rank_max=50)."""
+        """Custom config thresholds are respected: neutral + straddle_iv_rank_max=50 → fires."""
         config = {
             "a2_router": {
                 "straddle_iv_rank_max": 50,
@@ -422,7 +436,7 @@ class TestRuleStraddleStrangle(unittest.TestCase):
                 "earnings_dte_blackout": 2,
             }
         }
-        result = self._route(iv_rank=45, eda=8, config=config)
+        result = self._route(iv_rank=45, eda=8, direction="neutral", config=config)
         self.assertEqual(result, ["straddle", "strangle"])
 
 

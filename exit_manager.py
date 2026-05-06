@@ -556,6 +556,38 @@ def _refresh_exits_locked(
         stop_at      = ei.get("stop_price")
         pos_qty      = qty  # already an integer-float via _position_qty()
 
+        # Re-fetch live position qty — cached qty may be stale if position was
+        # trimmed between the pre-cycle position fetch and now.
+        try:
+            _live = alpaca_client.get_open_position(sym)
+            _live_qty = _position_qty(_live)
+            if _live_qty <= 0:
+                log.info("[EXIT_MGR] %s: position gone — skipping OCO repair", sym)
+                return True
+            if _live_qty != pos_qty:
+                log.warning(
+                    "[EXIT_MGR] %s: OCO repair using live qty=%d (cached was %d)",
+                    sym, int(_live_qty), int(pos_qty),
+                )
+                pos_qty = _live_qty
+            price = float(_live.current_price)
+        except Exception as _lp_exc:
+            log.warning(
+                "[EXIT_MGR] %s: live pos fetch failed, using cached qty=%d: %s",
+                sym, int(pos_qty), _lp_exc,
+            )
+
+        # Guard: stop at or above current price means stock fell through the stop.
+        # Adjust stop down rather than letting Alpaca reject with code 42210000.
+        if stop_at is not None and price > 0 and stop_at >= price:
+            adjusted_stop = round(price * 0.97, 2)
+            log.warning(
+                "[EXIT_MGR] %s: WARNING — stop $%.2f >= current $%.2f,"
+                " adjusting to $%.2f (97%% of current)",
+                sym, stop_at, price, adjusted_stop,
+            )
+            stop_at = adjusted_stop
+
         log.info(
             "[EXIT_MGR] %s: BUG-009b OCO repair — cancelling stop %s,"
             " resubmitting as OCO  stop=$%.2f  TP=$%.2f  qty=%d",
@@ -737,6 +769,7 @@ def _refresh_exits_locked(
             " qty=%s stop=$%.2f err=%s — manual intervention required",
             sym, qty, plan["stop_loss"], _last_stop_exc,
         )
+        _fire_safety_alert(f"stop_placement_failed_{sym}", _last_stop_exc)
         return False
 
     # Also submit a take-profit limit order (separate from the stop since the

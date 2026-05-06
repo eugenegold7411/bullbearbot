@@ -539,7 +539,10 @@ def save_significant_events(articles: list) -> None:
                     continue
                 score = a.get("impact_score", 0)
                 tier  = a.get("keyword_tier", "none")
-                if score >= 7 or tier == "critical":
+                haiku_confirmed = a.get("is_market_moving") is True
+                if score >= 7 or tier == "critical" or (
+                    score >= 5 and tier in ("critical", "high") and haiku_confirmed
+                ):
                     rec = {
                         "ts":                        datetime.now(ET).isoformat(),
                         "source":                    a.get("source", ""),
@@ -556,7 +559,11 @@ def save_significant_events(articles: list) -> None:
                         "vix_at_time":               vix_now,
                         "spx_move_next_30min":       None,
                         "trade_decisions_next_60min":[],
-                        "stored_reason":             "critical_keyword" if tier == "critical" else "high_impact_score",
+                        "stored_reason":             (
+                            "critical_keyword" if tier == "critical"
+                            else "haiku_confirmed_market_moving" if haiku_confirmed and score < 7
+                            else "high_impact_score"
+                        ),
                     }
                     f.write(json.dumps(rec) + "\n")
                     existing_headlines.add(headline)
@@ -931,6 +938,78 @@ def build_macro_wire_section() -> str:
     return "\n".join(lines)
 
 
+# ── Commodity price monitor ───────────────────────────────────────────────────
+
+# ETFs used as commodity/macro proxies — fast intraday move detection
+_COMMODITY_TICKERS: dict = {
+    "USO": ("energy",      "WTI crude proxy"),
+    "XLE": ("energy",      "energy sector ETF"),
+    "GLD": ("commodities", "gold ETF"),
+    "TLT": ("rates",       "long-duration treasury ETF"),
+    "DXY": ("fx",          "US dollar index"),
+}
+
+
+def run_commodity_price_monitor() -> list:
+    """
+    Fetch intraday % moves for key commodity/macro ETFs via yfinance.
+    Creates synthetic macro events for any move >= 3% from open.
+    Returns a list of synthetic article dicts (same schema as RSS articles).
+    Non-fatal — returns [] on any exception.
+    """
+    synthetic: list = []
+    try:
+        import yfinance as yf  # noqa: PLC0415
+        for ticker, (sector, label) in _COMMODITY_TICKERS.items():
+            try:
+                hist = yf.Ticker(ticker).history(period="1d", interval="1m")
+                if hist.empty or len(hist) < 2:
+                    continue
+                open_price = float(hist["Open"].iloc[0])
+                last_price = float(hist["Close"].iloc[-1])
+                if open_price <= 0:
+                    continue
+                pct = (last_price - open_price) / open_price * 100
+                abs_pct = abs(pct)
+                if abs_pct < 3.0:
+                    continue
+                direction = "bearish" if pct < 0 else "bullish"
+                # Score scaled by move size; already above Haiku threshold (>=5)
+                if abs_pct >= 8.0:
+                    score = 9.0
+                elif abs_pct >= 5.0:
+                    score = 7.0
+                else:
+                    score = 5.0
+                headline = (
+                    f"{ticker} ({label}) moved {pct:+.1f}% today"
+                    f" — {direction} intraday move in {sector}"
+                )
+                synthetic.append({
+                    "source":           "price_monitor",
+                    "headline":         headline,
+                    "summary":          headline,
+                    "impact_score":     score,
+                    "keyword_tier":     "critical" if score >= 9 else "high",
+                    "keywords_matched": [ticker, label, sector],
+                    "direction":        direction,
+                    "affected_sectors": [sector],
+                    "affected_symbols": [ticker],
+                    "urgency":          "today",
+                    "one_line_summary": headline[:80],
+                    "is_market_moving": True,
+                })
+                log.info(
+                    "[MACRO_WIRE] price_monitor: %s %+.1f%% → synthetic event score=%.0f",
+                    ticker, pct, score,
+                )
+            except Exception as _te:
+                log.debug("[MACRO_WIRE] price_monitor %s failed (non-fatal): %s", ticker, _te)
+    except Exception as exc:
+        log.debug("[MACRO_WIRE] run_commodity_price_monitor failed (non-fatal): %s", exc)
+    return synthetic
+
+
 # ── Full refresh ──────────────────────────────────────────────────────────────
 
 def refresh_macro_wire() -> None:
@@ -966,5 +1045,10 @@ def refresh_macro_wire() -> None:
                     len(high_scoring) - len(articles_to_classify))
         save_live_cache(articles)
         save_significant_events(articles)
+        # Independent commodity price monitor — detects large intraday ETF moves
+        # that may not yet appear in RSS headlines.
+        commodity_events = run_commodity_price_monitor()
+        if commodity_events:
+            save_significant_events(commodity_events)
     except Exception as exc:
         log.warning("refresh_macro_wire failed (non-fatal): %s", exc)

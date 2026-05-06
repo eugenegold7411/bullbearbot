@@ -223,6 +223,7 @@ class StructureLifecycle(str, Enum):
     REJECTED         = "rejected"          # broker rejected one or more legs
     EXPIRED          = "expired"           # option expired without exercise
     CANCELLED        = "cancelled"         # manually cancelled before fill
+    ORPHAN_TRACKED   = "orphan_tracked"    # live Alpaca position with no matched structure; monitoring only
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -745,10 +746,11 @@ class OptionsStructure:
         )
 
     def is_open(self) -> bool:
-        """True if structure is actively live (fully or partially filled)."""
+        """True if structure is actively live (fully or partially filled, or orphan being monitored)."""
         return self.lifecycle in (
             StructureLifecycle.FULLY_FILLED,
             StructureLifecycle.PARTIALLY_FILLED,
+            StructureLifecycle.ORPHAN_TRACKED,
         )
 
     def net_debit_per_contract(self) -> Optional[float]:

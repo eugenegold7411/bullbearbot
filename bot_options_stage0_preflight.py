@@ -255,6 +255,147 @@ def _cancel_and_clear_unfilled_orders(
     return cancelled, frozenset(cancelled_underlyings)
 
 
+def _reconcile_orphan_positions(
+    live_opts: list,
+    tracked_occs: set,
+    existing_structures: list,
+) -> set[str]:
+    """
+    Create orphan_tracked structures for live Alpaca option positions that have
+    no matching leg in structures.json.
+
+    Idempotent: skips any underlying that already has an orphan_tracked structure.
+    Fires a log.error (+ optional WhatsApp) when unrealized loss > 50% of cost basis.
+
+    Returns the set of underlyings for which a new orphan_tracked structure was created.
+    Non-fatal per underlying.
+    """
+    import re as _re  # noqa: PLC0415
+
+    import options_state as _os  # noqa: PLC0415
+    from schemas import (  # noqa: PLC0415
+        OptionsLeg,
+        OptionsStructure,
+        OptionStrategy,
+        StructureLifecycle,
+        Tier,
+    )
+
+    _existing_orphan_unders = {
+        s.underlying
+        for s in existing_structures
+        if (
+            s.lifecycle.value
+            if hasattr(s.lifecycle, "value")
+            else str(s.lifecycle)
+        ) == "orphan_tracked"
+    }
+
+    # Group untracked positions by underlying
+    _orphan_by_under: dict[str, list] = {}
+    for _p in live_opts:
+        _sym = str(getattr(_p, "symbol", "") or "")
+        if _sym and _sym not in tracked_occs:
+            _m = _re.match(r"^([A-Z]+)\d", _sym)
+            if _m:
+                _orphan_by_under.setdefault(_m.group(1), []).append(_p)
+
+    created: set[str] = set()
+    for _under, _oplist in _orphan_by_under.items():
+        if _under in _existing_orphan_unders:
+            continue
+
+        try:
+            _total_pnl = sum(
+                float(getattr(_p, "unrealized_pl", 0) or 0) for _p in _oplist
+            )
+            _total_cost = sum(
+                abs(float(getattr(_p, "qty", 0) or 0))
+                * float(getattr(_p, "avg_entry_price", 0) or 0)
+                * 100
+                for _p in _oplist
+            )
+
+            _legs: list = []
+            for _p in _oplist:
+                _osym = str(getattr(_p, "symbol", "") or "")
+                _qty_raw = float(getattr(_p, "qty", 0) or 0)
+                _oleg_m = _re.match(
+                    r"^([A-Z/]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$", _osym
+                )
+                if _oleg_m:
+                    _oexp = f"20{_oleg_m.group(2)}-{_oleg_m.group(3)}-{_oleg_m.group(4)}"
+                    _otype = "call" if _oleg_m.group(5) == "C" else "put"
+                    _ostrike = int(_oleg_m.group(6)) / 1000.0
+                else:
+                    _oexp = ""; _otype = "call"; _ostrike = 0.0
+                _legs.append(OptionsLeg(
+                    occ_symbol=_osym,
+                    underlying=_under,
+                    side="buy" if _qty_raw > 0 else "sell",
+                    qty=abs(int(_qty_raw)),
+                    option_type=_otype,
+                    strike=_ostrike,
+                    expiration=_oexp,
+                    filled_price=float(getattr(_p, "avg_entry_price", 0) or 0),
+                ))
+
+            _struct = OptionsStructure(
+                structure_id=(
+                    f"orphan_{_under}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+                ),
+                underlying=_under,
+                strategy=OptionStrategy.SINGLE_CALL,
+                lifecycle=StructureLifecycle.ORPHAN_TRACKED,
+                legs=_legs,
+                contracts=sum(
+                    abs(int(float(getattr(_p, "qty", 0) or 0))) for _p in _oplist
+                ),
+                max_cost_usd=_total_cost,
+                opened_at=datetime.now(timezone.utc).isoformat(),
+                catalyst="orphan_recovered",
+                tier=Tier.CORE,
+                notes=(
+                    "Recovered orphan — original structure was cancelled "
+                    "but position remains live in Alpaca"
+                ),
+                close_reason_code="orphan_recovered",
+            )
+            _struct.pnl_unrealized = _total_pnl
+            _os.save_structure(_struct)
+            log.warning(
+                "[PREFLIGHT] Orphan recovered: %s — %d position(s), pnl=$%.0f"
+                " — now tracked as orphan_tracked",
+                _under, len(_oplist), _total_pnl,
+            )
+            created.add(_under)
+
+            # Safety alert: fire when unrealized loss > 50% of cost basis
+            if _total_cost > 0 and _total_pnl < -(_total_cost * 0.5):
+                log.error(
+                    "[PREFLIGHT] ORPHAN ALERT: %s at $%.0f loss (%.0f%% of cost"
+                    " $%.0f) — manual close needed",
+                    _under, abs(_total_pnl),
+                    abs(_total_pnl) / _total_cost * 100, _total_cost,
+                )
+                try:
+                    from alerts import send_whatsapp_direct  # noqa: PLC0415
+                    send_whatsapp_direct(
+                        f"[ORPHAN ALERT] {_under}: orphan at "
+                        f"${abs(_total_pnl):,.0f} loss "
+                        f"({abs(_total_pnl)/_total_cost*100:.0f}% of cost "
+                        f"${_total_cost:,.0f}) — manual close needed",
+                        dedup_key=f"orphan_alert_{_under}",
+                        dedup_minutes=60,
+                    )
+                except Exception:
+                    pass
+        except Exception as _e:
+            log.debug("[PREFLIGHT] Orphan reconciler skip %s (non-fatal): %s", _under, _e)
+
+    return created
+
+
 def _is_duplicate_submission(
     symbol: str,
     structures: list,
@@ -729,6 +870,18 @@ def run_a2_preflight(
                     "[PREFLIGHT] Untracked Alpaca positions — blocking new candidates for: %s",
                     sorted(_untracked_under),
                 )
+
+            # Orphan reconciler — create monitoring structures for untracked live positions.
+            # Runs after the gate so pending_underlyings is always set even if reconciler fails.
+            try:
+                _reconcile_orphan_positions(
+                    live_opts=_live_opts,
+                    tracked_occs=_tracked_occs,
+                    existing_structures=_oss_utp.load_structures(),
+                )
+            except Exception as _orp_err:
+                log.debug("[PREFLIGHT] Orphan reconciler failed (non-fatal): %s", _orp_err)
+
     except Exception as _utp_err:
         log.debug("[PREFLIGHT] untracked-position gate failed (non-fatal): %s", _utp_err)
 

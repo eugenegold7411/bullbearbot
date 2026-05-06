@@ -529,7 +529,7 @@ def run_candidate_stage(
     # Prevents a 2-minute Claude debate on symbols Stage 4 will block as DUPLICATE_SUBMIT.
     try:
         import options_state as _os  # noqa: PLC0415
-        _ACTIVE_LC = {"submitted", "partially_filled", "fully_filled"}
+        _ACTIVE_LC = {"submitted", "partially_filled", "fully_filled", "orphan_tracked"}
         _active_structure_syms = {
             s.underlying
             for s in _os.load_structures()

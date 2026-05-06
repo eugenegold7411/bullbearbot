@@ -577,7 +577,7 @@ def _a2_structures() -> list:
     try:
         raw = json.loads((BOT_DIR / "data/account2/positions/structures.json").read_text())
         structs = [s for s in raw if isinstance(s, dict)]
-        active_lc = {"fully_filled", "open", "submitted", "proposed"}
+        active_lc = {"fully_filled", "open", "submitted", "proposed", "orphan_tracked"}
         return [s for s in structs if s.get("lifecycle") in active_lc]
     except Exception:
         return []
@@ -3837,10 +3837,27 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
     _risks_snip = " · ".join(str(r) for r in key_risks[:2]) if key_risks else ""
     if _debate_backfill:
         _reasons_snip = "debate data not available — predates persistence fix"
+    # VOL ANALYST slot: IV environment + size modifier override + first reason sentence
+    _size_mod = dp.get("recommended_size_modifier")
+    _vol_parts = []
+    if iv_rank is not None:
+        _vol_parts.append(f"IV {iv_rank:.0f} — {iv_env}")
+    if _size_mod is not None and abs(float(_size_mod) - 1.0) > 0.01:
+        _vol_parts.append(f"size ×{float(_size_mod):.1f} (IV mandate)")
+    if reasons and not _debate_backfill:
+        _first_reason = reasons[0] if isinstance(reasons, list) else str(reasons)
+        _first_snip = _a2_snip(_first_reason, 1)
+        if _first_snip:
+            _vol_parts.append(_first_snip)
+    _vol_analyst_text = " · ".join(p for p in _vol_parts if p) or "—"
+    # TAPE SKEPTIC slot: all key_risks as a single-line list, fallback when empty
+    _tape_skeptic_text = (
+        " · ".join(str(r) for r in key_risks) if key_risks else "No material risks flagged"
+    )
     _structured_sections = {
         "DIRECTIONAL ADVOCATE": _reasons_snip,
-        "VOL ANALYST":          "",
-        "TAPE SKEPTIC":         "",
+        "VOL ANALYST":          _vol_analyst_text,
+        "TAPE SKEPTIC":         _tape_skeptic_text,
         "RISK OFFICER":         _risks_snip,
     }
     # Fall back to raw-text parse for legacy decision-file path (pre-fix structures)

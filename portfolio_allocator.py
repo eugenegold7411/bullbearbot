@@ -695,37 +695,39 @@ def _execute_live_trim(
     account=None,
     market_status:      str = "open",
     minutes_since_open: int = 0,
+    equity:             float = 0.0,
+    max_pos_pct_equity: float = 0.15,
 ) -> str:
     """
-    Execute a single TRIM via risk_kernel REDUCE path + execute_all().
+    Execute a single SIZE TRIM directly — bypasses risk_kernel.
+    Uses equity-based target matching the SIZE TRIM trigger:
+        target_mv = max_pos_pct_equity × equity
     Returns "ok:{qty}" on success, rejection/error reason string otherwise.
     Non-fatal — caller logs and continues regardless of return value.
-
-    The REDUCE path trims to max_position_pct_capacity × total_capacity (15%
-    by default). Thesis TRIMs on positions already within that limit are
-    rejected by the kernel and returned as a non-ok reason string; only SIZE
-    TRIMs on genuinely overweight positions will execute in Stage 1.
     """
     try:
         from order_executor import execute_all  # noqa: PLC0415
-        from risk_kernel import process_idea  # noqa: PLC0415
         from schemas import (  # noqa: PLC0415
             AccountAction,
-            Direction,
+            BrokerAction,
+            Conviction,
             Tier,
-            TradeIdea,
         )
     except ImportError as exc:
         return f"import error: {exc}"
 
     if account is None:
         return f"account not provided for live TRIM of {symbol}"
+    if equity <= 0:
+        return f"equity not provided for live TRIM of {symbol}"
 
     price: Optional[float] = None
+    current_qty: int = 0
     for pos in positions:
         try:
             if pos.symbol == symbol and float(pos.qty) > 0:
                 price = float(pos.current_price)
+                current_qty = int(float(pos.qty))
                 break
         except Exception:
             pass
@@ -733,36 +735,40 @@ def _execute_live_trim(
     if price is None or price <= 0:
         return f"no current_price for {symbol}"
 
-    idea = TradeIdea(
+    target_mv      = max_pos_pct_equity * equity
+    target_qty     = int(target_mv / price)
+    shares_to_sell = current_qty - target_qty
+
+    if shares_to_sell <= 0:
+        return (
+            f"reduce {symbol}: position within {max_pos_pct_equity*100:.0f}% "
+            f"equity limit — no trim needed"
+        )
+
+    log.info(
+        "[ALLOC] TRIM %s: selling %d shares (held=%d → target=%d, %.1f%% equity → %.1f%%)",
+        symbol, shares_to_sell, current_qty, target_qty,
+        current_qty * price / equity * 100,
+        max_pos_pct_equity * 100,
+    )
+
+    action = BrokerAction(
         symbol=symbol,
         action=AccountAction.SELL,
+        qty=float(shares_to_sell),
+        order_type="market",
         tier=Tier.CORE,
-        conviction=0.5,
-        direction=Direction.NEUTRAL,
+        conviction=Conviction.MEDIUM,
         catalyst=reason[:120],
-        intent="reduce",
     )
-
-    result = process_idea(
-        idea=idea,
-        snapshot=snapshot,
-        signal=None,
-        config=cfg,
-        current_price=price,
-        session_tier=session_tier,
-        vix=vix,
-    )
-
-    if isinstance(result, str):
-        return result
 
     exec_positions = snapshot.positions if snapshot is not None else positions
     try:
         execute_all(
-            [result], account, exec_positions, market_status, minutes_since_open,
+            [action], account, exec_positions, market_status, minutes_since_open,
             session_tier=session_tier,
         )
-        return f"ok:{result.qty}"
+        return f"ok:{shares_to_sell}"
     except Exception as exc:
         return f"execute_all error: {exc}"
 
@@ -1043,7 +1049,7 @@ def _run_allocator_shadow_inner(
         if snapshot is None or account is None:
             log.warning("[ALLOC] enable_live=True but snapshot/account missing — shadow only")
         else:
-            log.info("[ALLOC] live mode active — TRIM actions will execute via risk_kernel")
+            log.info("[ALLOC] live mode active — TRIM actions will execute directly (equity-based)")
 
     try:
         now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -1090,6 +1096,8 @@ def _run_allocator_shadow_inner(
                         account=account,
                         market_status=market_status,
                         minutes_since_open=minutes_since_open,
+                        equity=eq_val,
+                        max_pos_pct_equity=float(pa_cfg.get("max_position_pct_equity", 0.15)),
                     )
                 except Exception as _trim_exc:
                     res = f"error: {_trim_exc}"

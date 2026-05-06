@@ -1660,24 +1660,21 @@ class TestAllocatorFixes:
     # 2. execute_all receives all 5 required args ────────────────────────────
 
     def test_execute_all_receives_five_args(self):
-        """_execute_live_trim passes account, positions, market_status, minutes_since_open to execute_all."""
+        """_execute_live_trim computes trim directly from equity and passes correct args to execute_all."""
         from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
 
-        mock_broker_action = MagicMock()
-        mock_broker_action.qty = 5
-        mock_execute_all  = MagicMock()
-        mock_process_idea = MagicMock(return_value=mock_broker_action)
-        mock_account      = MagicMock()
-        mock_snapshot     = MagicMock()
+        mock_execute_all = MagicMock()
+        mock_account     = MagicMock()
+        mock_snapshot    = MagicMock()
         mock_snapshot.positions = []
 
+        # qty=50, price=$100 → MV=$5000; equity=$10000 → target_mv=$1500, target_qty=15, trim=35
         pos = SimpleNamespace(
             symbol="AAPL", qty="50", market_value="5000", current_price="100.0"
         )
 
-        with patch("risk_kernel.process_idea",   mock_process_idea), \
-             patch("order_executor.execute_all", mock_execute_all):
+        with patch("order_executor.execute_all", mock_execute_all):
             result = pa._execute_live_trim(
                 symbol="AAPL",
                 positions=[pos],
@@ -1689,9 +1686,11 @@ class TestAllocatorFixes:
                 account=mock_account,
                 market_status="open",
                 minutes_since_open=60,
+                equity=10_000.0,
+                max_pos_pct_equity=0.15,
             )
 
-        assert result.startswith("ok:")
+        assert result == "ok:35", f"Expected ok:35 (50-15 shares), got {result}"
         mock_execute_all.assert_called_once()
         call_args = mock_execute_all.call_args[0]   # positional args tuple
         assert call_args[1] is mock_account,          "2nd arg must be account"

@@ -78,16 +78,17 @@ class TestCancelUnfilledOrders:
             patch("options_state.load_structures", return_value=all_structs),
             patch("options_state.save_structure", side_effect=_save),
         ):
-            n = _cancel_and_clear_unfilled_orders(alpaca, cfg)
+            n, cancelled_under = _cancel_and_clear_unfilled_orders(alpaca, cfg)
 
-        return n, saved
+        return n, saved, cancelled_under
 
-    # UC-01: SUBMITTED, no fill → cancelled
+    # UC-01: SUBMITTED, no fill → cancelled; underlying in returned set
     def test_uc01_submitted_unfilled_cancelled(self):
         from schemas import StructureLifecycle
         s = _make_structure("submitted", order_ids=["ord-001"])
-        n, saved = self._run([s], {"ord-001": 0})
+        n, saved, under = self._run([s], {"ord-001": 0})
         assert n == 1
+        assert "AAPL" in under
         assert "submitted_AAPL" in saved
         assert saved["submitted_AAPL"].lifecycle == StructureLifecycle.CANCELLED
         audit_log = saved["submitted_AAPL"].audit_log or []
@@ -99,22 +100,25 @@ class TestCancelUnfilledOrders:
     # UC-02: SUBMITTED, partial fill (filled_qty > 0) → NOT cancelled
     def test_uc02_submitted_partial_fill_not_cancelled(self):
         s = _make_structure("submitted", order_ids=["ord-002"])
-        n, saved = self._run([s], {"ord-002": 3.0})  # 3 contracts filled
+        n, saved, under = self._run([s], {"ord-002": 3.0})  # 3 contracts filled
         assert n == 0
+        assert "AAPL" not in under
         assert "submitted_AAPL" not in saved
 
     # UC-03: FULLY_FILLED → not touched
     def test_uc03_fully_filled_not_touched(self):
         s = _make_structure("fully_filled", order_ids=["ord-003"])
-        n, saved = self._run([s], {"ord-003": 0})
+        n, saved, under = self._run([s], {"ord-003": 0})
         assert n == 0
+        assert not under
         assert "fully_filled_AAPL" not in saved
 
     # UC-04: PROPOSED → not touched
     def test_uc04_proposed_not_touched(self):
         s = _make_structure("proposed", order_ids=[])
-        n, saved = self._run([s], {})
+        n, saved, under = self._run([s], {})
         assert n == 0
+        assert not under
         assert "proposed_AAPL" not in saved
 
     # UC-05: Cancel API raises → non-fatal, lifecycle still set to CANCELLED
@@ -133,10 +137,11 @@ class TestCancelUnfilledOrders:
             patch("options_state.load_structures", return_value=[s]),
             patch("options_state.save_structure", side_effect=lambda x: saved.update({x.structure_id: x})),
         ):
-            n = _cancel_and_clear_unfilled_orders(alpaca, {"account2": {"auto_cancel_unfilled_orders": True}})
+            n, under = _cancel_and_clear_unfilled_orders(alpaca, {"account2": {"auto_cancel_unfilled_orders": True}})
 
         # Cancel API failure is non-fatal — lifecycle still updated and structure saved
         assert n == 1
+        assert "AAPL" in under
         assert saved["submitted_AAPL"].lifecycle == StructureLifecycle.CANCELLED
 
     # UC-06: Multiple structures — only unfilled SUBMITTED are cancelled
@@ -147,11 +152,13 @@ class TestCancelUnfilledOrders:
         s_cancelled           = _make_structure("cancelled", [], "GLD")
         s_fully_filled        = _make_structure("fully_filled", ["ord-c"], "AMZN")
 
-        n, saved = self._run(
+        n, saved, under = self._run(
             [s_submitted_unfilled, s_submitted_filled, s_cancelled, s_fully_filled],
             {"ord-a": 0, "ord-b": 5, "ord-c": 10},
         )
         assert n == 1
+        assert "NVDA" in under
+        assert "TSLA" not in under
         assert "submitted_NVDA" in saved
         assert saved["submitted_NVDA"].lifecycle == StructureLifecycle.CANCELLED
         assert "submitted_TSLA" not in saved  # had a fill
@@ -161,15 +168,17 @@ class TestCancelUnfilledOrders:
     # UC-07: auto_cancel_unfilled_orders=False → no-op
     def test_uc07_disabled_by_config(self):
         s = _make_structure("submitted", order_ids=["ord-007"])
-        n, saved = self._run([s], {"ord-007": 0},
+        n, saved, under = self._run([s], {"ord-007": 0},
                              config={"account2": {"auto_cancel_unfilled_orders": False}})
         assert n == 0
+        assert not under
 
     # UC-08: SUBMITTED with no order_ids → skipped (nothing to cancel)
     def test_uc08_submitted_no_order_ids(self):
         s = _make_structure("submitted", order_ids=[])
-        n, saved = self._run([s], {})
+        n, saved, under = self._run([s], {})
         assert n == 0
+        assert not under
 
 
 # ── Suite DG: _is_duplicate_submission ───────────────────────────────────────

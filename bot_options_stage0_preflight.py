@@ -189,7 +189,7 @@ def _any_leg_has_fill(structure, alpaca_client) -> bool:
 def _cancel_and_clear_unfilled_orders(
     alpaca_client,
     config: dict,
-) -> int:
+) -> tuple[int, frozenset]:
     """
     For every SUBMITTED structure with zero filled qty:
       1. Cancel all Alpaca orders for that structure
@@ -200,16 +200,19 @@ def _cancel_and_clear_unfilled_orders(
     waiting for DAY spread orders to expire silently at close.
 
     Gated by account2.auto_cancel_unfilled_orders (default True).
-    Returns count of structures cancelled. Non-fatal per structure.
+    Returns (count, frozenset[underlying]) — the set is used by the pending
+    guard to skip cooldown for structures cancelled in this same cycle.
+    Non-fatal per structure.
     """
     if not config.get("account2", {}).get("auto_cancel_unfilled_orders", True):
-        return 0
+        return 0, frozenset()
 
     import options_state as _os  # noqa: PLC0415
     from schemas import StructureLifecycle  # noqa: PLC0415
 
     all_structs = _os.load_structures()
     cancelled = 0
+    cancelled_underlyings: set[str] = set()
 
     for s in all_structs:
         try:
@@ -239,6 +242,7 @@ def _cancel_and_clear_unfilled_orders(
                 "auto-cancelled: unfilled order — resubmitting with fresh pricing next cycle"
             )
             _os.save_structure(s)
+            cancelled_underlyings.add(s.underlying)
             cancelled += 1
         except Exception as _e:
             log.debug("[PREFLIGHT] _cancel_and_clear_unfilled_orders skip (non-fatal): %s", _e)
@@ -248,7 +252,7 @@ def _cancel_and_clear_unfilled_orders(
             "[PREFLIGHT] Cancelled %d unfilled order(s) — symbols re-enter candidate pool",
             cancelled,
         )
-    return cancelled
+    return cancelled, frozenset(cancelled_underlyings)
 
 
 def _is_duplicate_submission(
@@ -553,8 +557,9 @@ def run_a2_preflight(
 
     # Cancel unfilled SUBMITTED orders and reset lifecycle so symbols re-enter pool.
     # Runs before reconciliation so the pending_underlyings guard sees fresh state.
+    _just_cancelled_under: frozenset = frozenset()
     try:
-        _n_cancelled = _cancel_and_clear_unfilled_orders(alpaca_client, _s_cfg)
+        _n_cancelled, _just_cancelled_under = _cancel_and_clear_unfilled_orders(alpaca_client, _s_cfg)
     except Exception as _cancel_err:
         log.debug("[PREFLIGHT] _cancel_and_clear_unfilled_orders failed (non-fatal): %s", _cancel_err)
 
@@ -616,18 +621,63 @@ def run_a2_preflight(
         # cycle. Block re-submission for those underlyings to avoid double-positioning.
         # Uses load_structures() (all lifecycle states) — get_open_structures() returns
         # only FULLY_FILLED/PARTIALLY_FILLED and would never see SUBMITTED.
+        #
+        # Key invariant: structures cancelled by _cancel_and_clear_unfilled_orders
+        # in THIS cycle (_just_cancelled_under) are immediately eligible for
+        # re-submission — they must NOT be subject to cooldown. Without this guard,
+        # the CANCELLED cooldown blocks re-entry for the full cooldown period even
+        # though the order was just cancelled moments ago.
         try:
             from schemas import StructureLifecycle  # noqa: PLC0415
             _all_for_guard = options_state.load_structures()
             _cooldown_hours = float(
                 _s_cfg.get("account2", {}).get("cancel_cooldown_hours", 1.0)
             )
+            _ttl_secs = float(
+                _s_cfg.get("account2", {}).get("submitted_ttl_minutes", 15.0)
+            ) * 60.0
             _now = datetime.now(timezone.utc)
             _blocked: list[str] = []
             for _gs in _all_for_guard:
                 if _gs.lifecycle == StructureLifecycle.SUBMITTED:
-                    _blocked.append(_gs.underlying)
+                    # TTL safety: SUBMITTED order with no fill for >ttl_secs → force-cancel.
+                    # Guards against Alpaca cancel failures or bot restarts leaving stale state.
+                    _sub_ts = getattr(_gs, "opened_at", None)
+                    _stale = False
+                    if _sub_ts:
+                        try:
+                            _stale = (_now - datetime.fromisoformat(_sub_ts)).total_seconds() > _ttl_secs
+                        except (ValueError, TypeError):
+                            pass
+                    if _stale:
+                        for _oid in _gs.order_ids:
+                            try:
+                                alpaca_client.cancel_order_by_id(_oid)
+                            except Exception:
+                                pass
+                        _gs.lifecycle = StructureLifecycle.CANCELLED
+                        _gs.last_cancelled_at = _now.isoformat()
+                        _gs.add_audit(
+                            f"TTL safety: force-cleared SUBMITTED order after >{_ttl_secs/60:.0f} min with no fill"
+                        )
+                        options_state.save_structure(_gs)
+                        log.warning(
+                            "[PREFLIGHT] %s: TTL safety — force-cleared stale SUBMITTED order "
+                            "(>%.0f min no fill) — re-entering pool",
+                            _gs.underlying, _ttl_secs / 60,
+                        )
+                        # Treat as just-cancelled: immediately eligible for re-submission
+                        _just_cancelled_under = frozenset(_just_cancelled_under | {_gs.underlying})
+                    else:
+                        _blocked.append(_gs.underlying)
                 elif _gs.lifecycle == StructureLifecycle.CANCELLED:
+                    # Structures cancelled in THIS cycle are immediately eligible — no cooldown.
+                    if _gs.underlying in _just_cancelled_under:
+                        log.info(
+                            "[PREFLIGHT] %s: pending state cleared — re-entering pool",
+                            _gs.underlying,
+                        )
+                        continue
                     _ts = getattr(_gs, "last_cancelled_at", None)
                     if _ts is not None:
                         try:

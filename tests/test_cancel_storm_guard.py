@@ -13,10 +13,7 @@ from __future__ import annotations
 
 import sys
 import types
-from unittest.mock import MagicMock, call, patch
-
-import pytest
-
+from unittest.mock import MagicMock, patch
 
 # ── stubs ─────────────────────────────────────────────────────────────────────
 
@@ -273,7 +270,7 @@ def test_protected_positions_skip_refresh():
          patch.object(em, "refresh_exits_for_position", side_effect=fake_refresh), \
          patch("time.sleep"):
 
-        actions = em.run_exit_manager(positions, MagicMock(), _cfg(max_refreshes=3))
+        em.run_exit_manager(positions, MagicMock(), _cfg(max_refreshes=3))
 
     assert set(refresh_calls) == set(stale_syms), (
         f"Only stale positions should refresh — got: {refresh_calls}"
@@ -312,7 +309,7 @@ def test_unprotected_bypasses_cap():
          patch.object(em, "refresh_exits_for_position", side_effect=fake_refresh), \
          patch("time.sleep"):
 
-        actions = em.run_exit_manager(positions, MagicMock(), _cfg(max_refreshes=2))
+        em.run_exit_manager(positions, MagicMock(), _cfg(max_refreshes=2))
 
     assert "U1" in refresh_calls, "Unprotected position must always refresh regardless of cap"
     assert len(refresh_calls) == 3, (

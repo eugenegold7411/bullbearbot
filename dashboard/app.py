@@ -1070,11 +1070,155 @@ def _morning_brief_mtime_float() -> float:
         return 0.0
 
 
-def _intelligence_brief_full() -> dict:
+def _load_macro_events() -> list:
+    """Load recent significant macro events from significant_events.jsonl.
+
+    Filters: last 24 h, impact_score >= 3.0. Returns top 15 by score descending.
+    Maps JSONL fields to the template's expected dict shape.
+    """
+    import datetime as _dt
     try:
-        return json.loads((BOT_DIR / "data/market/morning_brief_full.json").read_text())
-    except Exception:
+        events_path = BOT_DIR / "data/macro_wire/significant_events.jsonl"
+        if not events_path.exists():
+            app.logger.warning("[DASHBOARD] significant_events.jsonl not found — no macro alerts")
+            return []
+        cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=24)
+        events: list = []
+        with events_path.open(encoding="utf-8") as _fh:
+            for _line in _fh:
+                _line = _line.strip()
+                if not _line:
+                    continue
+                try:
+                    e = json.loads(_line)
+                    score = float(e.get("impact_score") or 0)
+                    if score < 3.0:
+                        continue
+                    ts_str = e.get("ts", "")
+                    if ts_str:
+                        _ts = _dt.datetime.fromisoformat(ts_str)
+                        if _ts.tzinfo is None:
+                            _ts = _ts.replace(tzinfo=_dt.timezone.utc)
+                        if _ts < cutoff:
+                            continue
+                    events.append({
+                        "tier":             e.get("keyword_tier", "medium"),
+                        "score":            score,
+                        "headline":         e.get("headline", ""),
+                        "impact":           (e.get("one_line_summary") or e.get("summary", ""))[:120],
+                        "affected_sectors": e.get("affected_sectors", []),
+                    })
+                except Exception:
+                    continue
+        events.sort(key=lambda x: x["score"], reverse=True)
+        return events[:15]
+    except Exception as exc:
+        app.logger.warning("[DASHBOARD] _load_macro_events failed: %s", exc)
+        return []
+
+
+def _intelligence_brief_full() -> dict:
+    """Load intelligence brief with fallback chain; always inject live macro events.
+
+    Fallback chain (first valid wins):
+      1. data/market/morning_brief_full.json
+      2. Today's dated file  data/market/briefs/morning_brief_YYYYMMDD.json
+      3. Most recent file in data/market/briefs/
+      4. Minimal stub ("Brief unavailable — check API credits")
+
+    "Valid" = market_regime.tone does not contain "failed"/"Error code",
+    and at least one of high_conviction_longs, watch_list, sector_snapshot is non-empty.
+
+    macro_wire_alerts is ALWAYS injected from significant_events.jsonl
+    regardless of brief validity, overwriting any stale/empty list in the file.
+    """
+    def _is_valid(b: dict) -> bool:
+        tone = (b.get("market_regime") or {}).get("tone", "")
+        if "failed" in tone or "Error code" in tone:
+            return False
+        return bool(
+            b.get("high_conviction_longs")
+            or b.get("watch_list")
+            or b.get("sector_snapshot")
+        )
+
+    def _best_update(loaded: dict) -> dict:
+        """Return the most-recent valid update from a loaded brief dict (or the dict itself)."""
+        updates = loaded.get("updates")
+        if updates is None:
+            # morning_brief_full.json format — the file IS the brief
+            return loaded if _is_valid(loaded) else {}
+        for upd in reversed(updates):
+            if isinstance(upd, dict) and _is_valid(upd):
+                return upd
         return {}
+
+    brief: dict = {}
+
+    # 1. morning_brief_full.json
+    if not brief:
+        try:
+            _raw = json.loads((BOT_DIR / "data/market/morning_brief_full.json").read_text(encoding="utf-8"))
+            brief = _best_update(_raw)
+        except Exception:
+            pass
+
+    # 2. Today's dated file
+    if not brief:
+        try:
+            _today = datetime.now(ET).strftime("%Y%m%d")
+            _raw = json.loads(
+                (BOT_DIR / "data/market/briefs" / f"morning_brief_{_today}.json")
+                .read_text(encoding="utf-8")
+            )
+            brief = _best_update(_raw)
+        except Exception:
+            pass
+
+    # 3. Most recent file in briefs/
+    if not brief:
+        try:
+            _briefs_dir = BOT_DIR / "data/market/briefs"
+            for _f in sorted(_briefs_dir.glob("morning_brief_*.json"), reverse=True):
+                try:
+                    _raw = json.loads(_f.read_text(encoding="utf-8"))
+                    brief = _best_update(_raw)
+                    if brief:
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # 4. Minimal stub — shown when all brief files are error stubs or missing
+    if not brief:
+        brief = {
+            "market_regime": {
+                "tone":          "Brief unavailable — check API credits",
+                "regime":        "unknown",
+                "score":         0,
+                "confidence":    "low",
+                "vix":           None,
+                "key_drivers":   [],
+                "todays_events": [],
+            },
+            "macro_wire_alerts":      [],
+            "sector_snapshot":        [],
+            "high_conviction_longs":  [],
+            "high_conviction_bearish": [],
+            "watch_list":             [],
+            "earnings_pipeline":      [],
+            "avoid_list":             [],
+            "insider_activity": {
+                "high_conviction": [], "congressional": [], "form4_purchases": [],
+            },
+            "brief_type":    "unavailable",
+            "generated_at":  datetime.now(timezone.utc).isoformat(),
+        }
+
+    # Always inject live macro events — overrides stale/empty list in any brief file
+    brief["macro_wire_alerts"] = _load_macro_events()
+    return brief
 
 
 def _brief_staleness_html(mtime_float: float) -> str:
@@ -2933,6 +3077,51 @@ def _page_overview(status: dict, now_et: str) -> str:
 
 
 # ── A1 detail page ────────────────────────────────────────────────────────────
+def _pos_compact_bar_spark(bars: list, height: int = 14) -> str:
+    """10-bar mini chart for position cards. Bar height = price level; color = direction vs prev bar."""
+    b = [float(x) for x in (bars or []) if x is not None][-10:]
+    if len(b) < 2:
+        return ""
+    mn, mx = min(b), max(b)
+    rng = mx - mn or (mx * 0.01) or 0.01
+    n = len(b)
+    bar_slot = 100.0 / n
+    bar_w = bar_slot * 0.75
+    parts = []
+    for i, p in enumerate(b):
+        prev = b[i - 1] if i > 0 else p
+        color = "#34D399" if p >= prev else "#F87171"
+        bar_h = max(2.0, (p - mn) / rng * (height - 2) + 1)
+        x = i * bar_slot + (bar_slot - bar_w) / 2
+        y = height - bar_h
+        parts.append(f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_w:.2f}" height="{bar_h:.2f}" fill="{color}" rx="0.5"/>')
+    return (
+        f'<svg viewBox="0 0 100 {height}" width="100%" height="{height}" '
+        f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" style="display:block;margin:2px 0">'
+        + "".join(parts) + "</svg>"
+    )
+
+
+def _a2_pipeline_funnel_today(a2_decs: list) -> dict:
+    """Aggregate today's A2 decisions into pipeline funnel counts."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    scored = vetted = debated = approved = 0
+    for d in a2_decs:
+        ts = d.get("built_at", "")
+        if not ts.startswith(today):
+            continue
+        csets = d.get("candidate_sets") or []
+        if any(cs.get("generated_candidates") for cs in csets if isinstance(cs, dict)):
+            scored += 1
+        if any(cs.get("surviving_candidates") for cs in csets if isinstance(cs, dict)):
+            vetted += 1
+        if d.get("selected_candidate"):
+            debated += 1
+        if d.get("execution_result") == "submitted":
+            approved += 1
+    return {"scored": scored, "vetted": vetted, "debated": debated, "approved": approved}
+
+
 def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
     a1d = status["a1"]
     a1_acc = a1d.get("account")
@@ -2948,185 +3137,47 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
 
     if a1_acc:
         a1_equity = float(a1_acc.equity or 0)
-        a1_cash = float(a1_acc.cash or 0)
         a1_bp = float(a1_acc.buying_power or 0)
         a1_pos_count = len(status["positions"])
         a1_unreal = sum(p["unreal_pl"] for p in status["positions"])
         a1_unreal_c = "#3fb950" if a1_unreal >= 0 else "#f85149"
         a1_unreal_s = "+" if a1_unreal >= 0 else ""
-        a1_invested = sum(p["market_val"] for p in status["positions"])
         _lmv = float(a1_acc.long_market_value or 0)
         _dtbp = float(a1_acc.daytrading_buying_power or 0)
         _regt = float(a1_acc.regt_buying_power or 0)
         _tcap = _lmv + _dtbp + _regt
         a1_util = (_lmv / _tcap * 100) if _tcap else 0.0
-        a1_leverage = (_lmv / a1_equity) if a1_equity else 0.0
         a1_util_c = "#f85149" if a1_util > 70 else ("#d29922" if a1_util > 50 else "#3fb950")
     else:
-        a1_equity = a1_cash = a1_bp = a1_invested = a1_util = a1_leverage = 0.0
+        a1_equity = a1_bp = a1_util = 0.0
         a1_pos_count = 0
         a1_unreal = 0.0; a1_unreal_c = "#8b949e"; a1_unreal_s = ""
         a1_util_c = "#8b949e"
 
+    # Since-inception return
+    _A1_INITIAL = 100_000.0
+    since_pct = (a1_equity - _A1_INITIAL) / _A1_INITIAL * 100 if _A1_INITIAL else 0.0
+    since_c = "#3fb950" if since_pct >= 0 else "#f85149"
+    since_s = "+" if since_pct >= 0 else ""
+
     # A1 equity sparkline
     _sp_a1_eq = status.get("spark_a1_eq") or []
-    a1_eq_spark = _bbb_sparkline_svg(_sp_a1_eq, _spark_color(_sp_a1_eq), width=80)
-
-    # Morning brief
-    brief = status.get("morning_brief", {})
-    brief_time_str = status.get("morning_brief_time", "?")
-    if brief:
-        tone = brief.get("market_tone", "?").upper()
-        picks = brief.get("conviction_picks", [])
-        avoid_syms = brief.get("avoid_today", [])
-        tl = tone.lower()
-        tone_color = "#3fb950" if "bull" in tl else ("#f85149" if "bear" in tl else "#d29922")
-        picks_html = ""
-        long_picks = [p for p in picks if p.get("direction", "long") == "long"]
-        short_picks = [p for p in picks if p.get("direction", "long") == "short"]
-        for pick in (long_picks + short_picks)[:8]:
-            sym = pick.get("symbol", "")
-            direction = pick.get("direction", "long")
-            cat_raw = pick.get("catalyst", {})
-            cat_text = cat_raw.get("short_text", "") if isinstance(cat_raw, dict) else str(cat_raw or "")
-            conviction = pick.get("conviction", "")
-            dir_icon = "&#x2191;" if direction == "long" else "&#x2193;"
-            dir_color = "#3fb950" if direction == "long" else "#f85149"
-            conv_badge = ""
-            if conviction == "high":
-                conv_badge = ' <span style="font-size:10px;background:#0d2018;color:#3fb950;padding:1px 4px;border-radius:3px">HIGH</span>'
-            elif conviction == "medium":
-                conv_badge = ' <span style="font-size:10px;background:#2d2208;color:#d29922;padding:1px 4px;border-radius:3px">MED</span>'
-            picks_html += (
-                f'<div style="padding:5px 0;border-bottom:1px solid #21262d;font-size:13px">'
-                f'<b style="color:{dir_color}">{dir_icon} {sym}</b>{conv_badge}'
-                f' <span style="color:#8b949e">— {cat_text[:90]}</span></div>'
-            )
-        if avoid_syms:
-            avoid_chips = " ".join(
-                f'<span style="font-size:11px;background:#1a1208;color:#8b949e;padding:2px 6px;border-radius:3px;border:1px solid #2d2208">{s}</span>'
-                for s in avoid_syms[:8]
-            )
-            picks_html += (
-                f'<div style="padding:6px 0 2px;font-size:11px;color:#4a5080">'
-                f'<span style="text-transform:uppercase;letter-spacing:0.06em;margin-right:6px">Avoid today</span>'
-                f'{avoid_chips}</div>'
-            )
-        stale_html = _brief_staleness_html(status.get("morning_brief_mtime", 0))
-        brief_html = (
-            f'<div style="font-size:12px;color:#8b949e;margin-bottom:8px">'
-            f'Tone: <b style="color:{tone_color}">{tone}</b> &nbsp;|&nbsp; {len(long_picks)}↑ {len(short_picks)}↓'
-            f' &nbsp;|&nbsp; {brief_time_str}{stale_html}</div>{picks_html}'
-        )
-    else:
-        brief_html = '<div style="color:#8b949e;font-size:13px">Morning brief not yet generated.</div>'
-
-    # Active theses from recent non-HOLD decisions (needs wide lookback — decisions run ~5/min so 50 spans several hours)
-    a1_theses = status.get("a1_theses", [])
-    if a1_theses:
-        theses_html = ""
-        for th in a1_theses:
-            intent_color = "#3fb950" if th["intent"] in ("BUY", "ADD") else (
-                "#f85149" if th["intent"] in ("SELL", "EXIT", "TRIM") else "#d29922")
-            tags_html = " ".join(
-                f'<span style="font-size:10px;background:#21262d;color:#8b949e;padding:1px 5px;border-radius:3px">{t}</span>'
-                for t in th["tags"]
-            )
-            cat_dot = ' <span style="color:#d29922;font-size:10px">&#x25CF; catalyst active</span>' if th["catalyst_active"] else ""
-            theses_html += (
-                f'<div class="thesis-card">'
-                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
-                f'<b style="color:#58a6ff;font-size:15px">{th["symbol"]}</b>'
-                f'<span style="font-size:11px;font-weight:700;color:{intent_color}">{th["intent"]}</span>'
-                f'{cat_dot}'
-                f'<span style="margin-left:auto;font-size:11px;color:#8b949e">{_to_et(th["ts"])}</span>'
-                f'</div>'
-                f'<div style="font-size:13px;color:#c9d1d9;margin-bottom:6px">{th["narrative"] or "Signal active — no catalyst narrative recorded."}</div>'
-                f'<div style="display:flex;gap:4px;flex-wrap:wrap">{tags_html}</div>'
-                f'</div>'
-            )
-    else:
-        theses_html = (
-            '<div style="color:#8b949e;font-size:12px">No active theses found in recent decisions.</div>'
-            '<div style="color:#4a5080;font-size:11px;margin-top:6px">Populated from non-HOLD Sonnet decisions · '
-            'source: <code>memory/decisions.json</code></div>'
-        )
-
-    # Compact decisions summary
-    a1_comp = _a1_decisions_compact_html(status.get("a1_decisions", []))
-
-    # Expanded last-5 decisions — dim HOLD cycles off-hours (no signal value after close)
-    a1_decs = status.get("a1_decisions", [])
-    is_mkt = _is_market_hours()
-    a1_decs_html = ""
-    for d in a1_decs[:5]:
-        ts = _to_et(d.get("ts", ""))
-        regime = d.get("regime", d.get("regime_view", "?"))
-        score = d.get("regime_score")
-        score_disp = f"({score})" if score not in (None, "", "?") else ""
-        actions = d.get("actions", d.get("ideas", []))
-        r_raw = d.get("reasoning", "")
-        r_short = r_raw[:140] + ("…" if len(r_raw) > 140 else "")
-        act_strs = [f"{a.get('symbol','')} {(a.get('action') or a.get('intent') or '').upper()}"
-                    for a in actions[:4] if a.get("symbol")]
-        is_hold = not act_strs
-        acts_label = "—" if is_hold else ", ".join(act_strs)
-        signal_color = "#3fb950" if not is_hold else "#8b949e"
-        dim_style = "opacity:0.45;" if (is_hold and not is_mkt) else ""
-        regime_color = "#3fb950" if "risk_on" in regime or "bullish" in regime else (
-            "#f85149" if "risk_off" in regime or "bearish" in regime else "#d29922")
-        a1_decs_html += (
-            f'<div style="padding:8px 0;border-bottom:1px solid #21262d;{dim_style}">'
-            f'<div style="font-size:12px"><span style="color:#8b949e">[{ts}]</span> '
-            f'<span style="color:{regime_color};font-weight:600">{regime}</span> '
-            f'<span style="color:#8b949e">{score_disp}</span></div>'
-            f'<div style="font-size:12px;color:#c9d1d9;margin:2px 0;font-style:italic">{r_short}</div>'
-            f'<div style="font-size:12px;color:{signal_color}">Signals: {acts_label}</div>'
-            f'</div>'
-        )
-    if not a1_decs_html:
-        a1_decs_html = '<div style="color:#8b949e;font-size:13px">No decisions yet.</div>'
-
-    # Positions — card design
-    positions = status["positions"]
-    pos_sorted = sorted(positions, key=lambda x: -abs(x.get("unreal_pl", 0)))
-    pos_display = pos_sorted[:10]
-    pos_extra = max(0, len(positions) - 10)
-    _a1_intraday = status.get("intraday_bars", {"bars": {}, "label": "today"})
-    _a1_bars = _a1_intraday.get("bars", {})
-    _a1_bar_label = _a1_intraday.get("label", "today")
-    positions_html = ""
-    for p in pos_display:
-        positions_html += _pos_card_html(p, _a1_bars.get(p.get("symbol", ""), []), _a1_bar_label)
-    if not positions_html:
-        positions_html = '<div style="color:#8b949e;font-size:11px;padding:10px">No open positions.</div>'
-    pos_extra_note = (f'<div style="font-size:12px;color:#8b949e;padding:6px 10px">+{pos_extra} more not shown</div>'
-                      if pos_extra else "")
+    a1_eq_spark = _bbb_sparkline_svg(_sp_a1_eq, _spark_color(_sp_a1_eq), width=60, height=18)
 
     # Today's activity
     gate = status["gate"]
     costs = status["costs"]
     trades = status["trades"]
     decision = status["decision"]
-    shadow = status["shadow"]
-    sonnet_calls = gate.get("total_calls_today", "—")
-    sonnet_skips = gate.get("total_skips_today", "—")
-    last_sonnet_ts = _to_et(gate.get("last_sonnet_call_utc", ""))
-    last_regime = gate.get("last_regime", "—")
-    daily_cost = float(costs.get("daily_cost", 0) or 0)
-    proj_monthly_a1 = daily_cost * 22
-    if proj_monthly_a1 > 400:
-        proj_color = "#f85149"
-    elif proj_monthly_a1 > 250:
-        proj_color = "#d29922"
-    else:
-        proj_color = "#3fb950"
+    sonnet_calls = gate.get("total_calls_today", 0) or 0
+    sonnet_skips = gate.get("total_skips_today", 0) or 0
     buys_today = status["buys_today"]
     sells_today = status["sells_today"]
-    rejected = [t for t in trades if t.get("status") == "rejected"]
-    trail_stops = [t for t in trades if t.get("event") == "trail_stop"]
+    daily_cost = float(costs.get("daily_cost", 0) or 0)
+    proj_monthly = daily_cost * 22
+    proj_color = "#f85149" if proj_monthly > 400 else ("#d29922" if proj_monthly > 250 else "#3fb950")
 
-    # VIX from preflight log
+    # VIX
     last_vix_pf = "—"
     pf_entries = _jsonl_last(BOT_DIR / "data/status/preflight_log.jsonl", n=1)
     if pf_entries:
@@ -3134,43 +3185,204 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
             if chk.get("name") == "vix_gate" and "VIX=" in chk.get("message", ""):
                 last_vix_pf = chk["message"].split("VIX=")[1].split()[0]
 
+    regime_raw = decision.get("regime", decision.get("regime_view", "—"))
     regime_score = decision.get("regime_score") or "—"
-    dec_session = decision.get("session", "—")
+    regime_color = "#3fb950" if "risk_on" in regime_raw or "bullish" in regime_raw else (
+        "#f85149" if "risk_off" in regime_raw or "bearish" in regime_raw else "#d29922")
+
+    # Alerts for row 2
+    positions = status["positions"]
+    oversize_count = sum(1 for p in positions if p.get("oversize") and p["oversize"] != False)
+    no_tp_count = sum(1 for p in positions if not p.get("tp"))
+    brief_ok = bool(status.get("morning_brief"))
+    warning_count = len(status.get("warnings", []))
+
+    def _alert_badge(count, label, color, bg):
+        if not count:
+            return ""
+        return (f'<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;'
+                f'background:{bg};color:{color};padding:2px 6px;border-radius:3px;margin:2px">'
+                f'<b>{count}</b> {label}</span>')
+
+    alerts_html = (
+        _alert_badge(oversize_count, "oversize", "#f85149", "#3d0c0c") +
+        _alert_badge(no_tp_count, "no TP", "#d29922", "#2d2208") +
+        (_alert_badge(1, "brief stale", "#d29922", "#2d2208") if not brief_ok else "") +
+        _alert_badge(warning_count, "warning" + ("s" if warning_count != 1 else ""), "#f85149", "#2d0c0c")
+    ) or '<span style="font-size:11px;color:#3fb950">✓ all clear</span>'
+
+    # Build thesis lookup by symbol (for inline on position cards)
+    a1_theses = status.get("a1_theses", [])
+    thesis_by_sym = {th["symbol"]: th for th in a1_theses}
+
+    # Position cards — compact 2-column grid
+    _a1_intraday = status.get("intraday_bars", {"bars": {}, "label": "today"})
+    _a1_bars = _a1_intraday.get("bars", {})
+
+    def _pos_card_compact(p: dict) -> str:
+        sym = p.get("symbol", "")
+        _raw_qty = int(p.get("qty", 0))
+        qty = abs(_raw_qty)
+        is_short = _raw_qty < 0
+        entry = float(p.get("entry") or 0)
+        current = float(p.get("current") or 0)
+        pl = float(p.get("unreal_pl") or 0)
+        plpc = float(p.get("unreal_plpc") or 0)
+        stop = p.get("stop")
+        tp_val = p.get("tp")
+        pct_cap = float(p.get("pct_capacity") or 0)
+        oversize = p.get("oversize", False)
+        earnings_flag = p.get("earnings", "")
+        th = thesis_by_sym.get(sym)
+
+        pl_c = "#34D399" if pl >= 0 else "#F87171"
+        pl_s = "+" if pl >= 0 else ""
+        border = "border-left:2px solid #60A5FA;" if is_short else ""
+        trail_badge = _trail_status_badge(entry, stop or 0)
+        trail_c = "#34D399" if "PROFIT" in trail_badge else "#FBBF24"
+
+        badges = ""
+        if trail_badge:
+            badges += (f' <span style="font-size:9px;background:#0d2018;color:{trail_c};'
+                       f'padding:1px 4px;border-radius:3px">{trail_badge}</span>')
+        if is_short:
+            badges += (' <span style="font-size:9px;background:#1e3a5f;color:#60A5FA;'
+                       'padding:1px 4px;border-radius:3px">SHORT</span>')
+        if oversize == "critical":
+            badges += (' <span style="font-size:9px;background:#3d0c0c;color:#F87171;'
+                       'padding:1px 4px;border-radius:3px">OVERSIZE!</span>')
+        elif oversize in ("core", "dynamic"):
+            badges += (' <span style="font-size:9px;background:#2d2208;color:#FBBF24;'
+                       'padding:1px 4px;border-radius:3px">OVERSIZE</span>')
+        if not tp_val:
+            badges += (' <span style="font-size:9px;background:#2d2208;color:#FBBF24;'
+                       'padding:1px 4px;border-radius:3px">no TP</span>')
+        if th and th.get("catalyst_active"):
+            badges += (' <span style="font-size:9px;background:#2d1a00;color:#FBBF24;'
+                       'padding:1px 4px;border-radius:3px">catalyst</span>')
+        if earnings_flag:
+            badges += (f' <span style="font-size:9px;background:#2d2208;color:#d29922;'
+                       f'padding:1px 4px;border-radius:3px">{earnings_flag}</span>')
+
+        stop_arrow = "↑" if is_short else "↓"
+        stop_str = f"{stop_arrow} {_fm(stop)}" if stop else "no stop"
+
+        spark = _pos_compact_bar_spark(_a1_bars.get(sym, []))
+
+        # Thesis row
+        if th:
+            intent = th.get("intent", "")
+            narrative = (th.get("narrative") or "")[:100]
+            tags = th.get("tags", [])
+            i_color = "#3fb950" if intent in ("BUY", "ADD") else ("#f85149" if intent in ("SELL", "EXIT", "TRIM") else "#60A5FA")
+            tags_html = " ".join(
+                f'<span style="font-size:9px;background:#21262d;color:#8b949e;padding:1px 4px;border-radius:3px">{t}</span>'
+                for t in tags[:3]
+            )
+            thesis_row = (
+                f'<div style="border-top:1px solid #21262d;margin-top:4px;padding-top:4px;'
+                f'display:flex;gap:5px;align-items:flex-start;flex-wrap:wrap">'
+                f'<span style="font-size:9px;font-weight:600;color:{i_color};background:#0d0e1f;'
+                f'padding:1px 4px;border-radius:3px;flex-shrink:0">{intent}</span>'
+                f'<span style="font-size:11px;color:#c9d1d9;flex:1;min-width:0;line-height:1.3">{narrative}</span>'
+                f'<div style="display:flex;gap:2px;flex-wrap:wrap">{tags_html}</div>'
+                f'</div>'
+            )
+        else:
+            thesis_row = ""
+
+        return (
+            f'<div style="padding:8px 10px;border:1px solid #21262d;border-radius:4px;{border}">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px">'
+            f'<div style="display:flex;align-items:center;flex-wrap:wrap;gap:3px">'
+            f'<span style="color:var(--accent-blue);font-weight:600;font-size:13px">{sym}</span>'
+            f'<span style="font-size:10px;color:#8b949e">{"SHORT" if is_short else "LONG"} {qty}</span>'
+            f'{badges}</div>'
+            f'<span style="font-family:monospace;font-size:11px;color:{pl_c}">'
+            f'{pl_s}{_fm(pl)} ({pl_s}{plpc:.1f}%)</span>'
+            f'</div>'
+            f'<div style="font-family:monospace;font-size:10px;color:#8b949e;margin-bottom:3px">'
+            f'{_fm(entry)} → {_fm(current)} · {pct_cap:.1f}% cap · '
+            f'<span style="color:#F87171">{stop_str}</span>'
+            f'</div>'
+            + (f'<div style="margin:2px 0">{spark}</div>' if spark else "") +
+            thesis_row +
+            f'</div>'
+        )
+
+    pos_sorted = sorted(positions, key=lambda x: -abs(x.get("unreal_pl", 0)))
+    pos_cards_html = ""
+    for p in pos_sorted[:12]:
+        pos_cards_html += _pos_card_compact(p)
+    if not pos_cards_html:
+        pos_cards_html = '<div style="color:#8b949e;font-size:11px;padding:10px">No open positions.</div>'
+
+    # Recent decisions (last 8) + last decision reasoning block
+    a1_decs = status.get("a1_decisions", [])
+    churn_syms = _detect_churn(a1_decs)
+    is_mkt = _is_market_hours()
+    dec_rows = ""
+    for d in a1_decs[:8]:
+        ts = _to_et(d.get("ts", ""))
+        regime = d.get("regime", d.get("regime_view", "?"))
+        score = d.get("regime_score", "")
+        score_disp = f"({score})" if score not in (None, "", "?") else ""
+        actions = d.get("actions", d.get("ideas", []))
+        act_parts = []
+        for a in actions[:4]:
+            sym = a.get("symbol", "")
+            intent = (a.get("action") or a.get("intent") or "").upper()
+            if sym and intent:
+                c = "#3fb950" if intent in ("BUY", "ADD") else ("#f85149" if intent in ("SELL", "EXIT", "TRIM") else "#8b949e")
+                churn = (' <span style="font-size:9px;color:#ffaa20">↺</span>' if sym in churn_syms else "")
+                act_parts.append(f'<span style="color:{c}">{intent} {sym}{churn}</span>')
+        acts_label = " · ".join(act_parts) if act_parts else '<span style="color:#8b949e">HOLD</span>'
+        r_c = "#3fb950" if "risk_on" in regime or "bullish" in regime else (
+            "#f85149" if "risk_off" in regime or "bearish" in regime else "#d29922")
+        dim = "opacity:0.45;" if (not act_parts and not is_mkt) else ""
+        dec_rows += (
+            f'<div style="padding:5px 0;border-bottom:1px solid #21262d;{dim}">'
+            f'<div style="display:flex;gap:8px;align-items:baseline">'
+            f'<span style="font-family:monospace;font-size:10px;color:#8b949e">{ts}</span>'
+            f'<span style="font-size:11px;color:{r_c};font-weight:600">{regime}</span>'
+            f'<span style="font-size:10px;color:#8b949e">{score_disp}</span>'
+            f'</div>'
+            f'<div style="font-size:11px;margin-top:1px">{acts_label}</div>'
+            f'</div>'
+        )
+    if not dec_rows:
+        dec_rows = '<div style="color:#8b949e;font-size:12px">No decisions yet.</div>'
+
+    # Last decision full reasoning block
     reasoning_raw = decision.get("reasoning", "")
-    sentences = reasoning_raw.split(". ")
-    reasoning_2s = ". ".join(sentences[:2]) + ("." if len(sentences) > 1 else "")
-    if len(reasoning_2s) > 280:
-        reasoning_2s = reasoning_2s[:277] + "…"
     last_dec_ts = _to_et(decision.get("ts", ""))
+    reasoning_block = ""
+    if reasoning_raw:
+        reasoning_block = (
+            f'<div style="margin-top:10px;background:#0d0e1f;border:1px solid #21262d;'
+            f'border-radius:4px;padding:10px 12px">'
+            f'<div style="font-size:10px;color:#8b949e;margin-bottom:6px">Last reasoning · {last_dec_ts}</div>'
+            f'<div style="font-size:12px;color:#c9d1d9;line-height:1.5;font-style:italic">{reasoning_raw[:400]}'
+            f'{"…" if len(reasoning_raw) > 400 else ""}</div>'
+            f'</div>'
+        )
 
-    # Allocator shadow
-    alloc = shadow.get("shadow_systems", {}).get("portfolio_allocator", {})
-    alloc_st = alloc.get("status", "—")
-    alloc_last = _to_et(alloc.get("last_run_at", ""))
-
-    # Decision quality performance widget
     dec_quality_html = _perf_a1_decisions_html(status.get("perf_summary", {}))
-
-    # Recent errors
-    import html as _html
-    log_errors = status["log_errors"]
-    _err_lines = ""
-    for err in log_errors:
-        lc = "#f85149" if "  ERROR  " in err or "  CRITICAL  " in err else "#d29922"
-        _err_lines += f'<div class="log-line" style="color:{lc}">{_html.escape(err[-180:])}</div>'
-    if not _err_lines:
-        _err_lines = '<div class="log-line" style="color:#3fb950">No recent warnings or errors</div>'
-    errors_html = (
-        f'<details><summary style="font-size:11px;color:var(--text-muted);cursor:pointer;padding:4px 0">'
-        f'Recent system log &#x25BE;</summary>'
-        f'<div style="margin-top:6px">{_err_lines}</div></details>'
-    )
-
     a1_orders_html = _fmt_orders_html(a1d.get("recent_orders", []), is_options=False, limit=6)
 
     debug_section = (
         f'<div class="section-label" style="margin-top:16px">System Log</div>'
-        f'<div class="card" style="padding:10px 14px">{errors_html}</div>'
+        f'<div class="card" style="padding:10px 14px">'
+        f'<details><summary style="font-size:11px;color:var(--text-muted);cursor:pointer">Expand &#x25BE;</summary>'
+        f'<div style="margin-top:6px">'
+        + "".join(
+            f'<div class="log-line" style="color:{"#f85149" if "  ERROR  " in e or "  CRITICAL  " in e else "#d29922"}">{e[-180:]}</div>'
+            for e in status["log_errors"]
+        ) + (
+            '<div class="log-line" style="color:#3fb950">No recent warnings or errors</div>'
+            if not status["log_errors"] else ""
+        ) +
+        f'</div></details></div>'
     ) if debug else (
         '<div style="text-align:right;padding:4px 0 16px;font-size:11px;color:#4a5080">'
         '<a href="/a1?debug=1" style="color:#4a5080;text-decoration:none">dev tools →</a></div>'
@@ -3179,83 +3391,86 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
     body = f"""
 <div class="container">
 {warn_html}
-<div class="section-label">A1 Account Summary</div>
-<div class="acct-bar">
-  <div class="acct-bar-item"><div class="acct-bar-lbl">Equity</div><div class="acct-bar-val">{_fm(a1_equity)}</div>{a1_eq_spark}</div>
-  <div class="acct-bar-item"><div class="acct-bar-lbl">Cash</div><div class="acct-bar-val">{_fm(a1_cash)}</div></div>
-  <div class="acct-bar-item"><div class="acct-bar-lbl">Buying Power</div><div class="acct-bar-val">{_fm(a1_bp)}</div></div>
-  <div class="acct-bar-item"><div class="acct-bar-lbl">Positions</div><div class="acct-bar-val">{a1_pos_count}</div></div>
-  <div class="acct-bar-item"><div class="acct-bar-lbl">Today P&amp;L</div><div class="acct-bar-val" style="color:{a1_pnl_color}">{a1_pnl_sign}{_fm(a1_pnl)} ({a1_pnl_sign}{a1_pnl_pct:.2f}%)</div></div>
-  <div class="acct-bar-item"><div class="acct-bar-lbl">Unrealized P&amp;L</div><div class="acct-bar-val" style="color:{a1_unreal_c}">{a1_unreal_s}{_fm(a1_unreal)}</div></div>
-</div>
-<div style="margin-bottom:10px">
-  <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-bottom:3px">
-    <span>Capital utilization</span><span style="color:{a1_util_c}">${a1_invested/1000:.0f}K deployed · {a1_util:.0f}% utilized · {a1_leverage:.2f}x leverage</span>
+
+<div class="section-label">A1 Account</div>
+<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:10px">
+  <div class="card" style="padding:12px 14px">
+    <div class="acct-bar-lbl">Equity</div>
+    <div class="acct-bar-val">{_fm(a1_equity)}</div>
+    {a1_eq_spark}
+    <div style="font-size:10px;color:{since_c};margin-top:3px">{since_s}{since_pct:.2f}% since inception</div>
   </div>
-  <div class="progress-wrap"><div class="progress-fill" style="width:{a1_util:.0f}%;background:{a1_util_c}"></div></div>
+  <div class="card" style="padding:12px 14px">
+    <div class="acct-bar-lbl">Today P&amp;L</div>
+    <div class="acct-bar-val" style="color:{a1_pnl_color}">{a1_pnl_sign}{_fm(a1_pnl)}</div>
+    <div style="font-size:11px;color:{a1_pnl_color};margin-top:3px">{a1_pnl_sign}{a1_pnl_pct:.2f}%</div>
+  </div>
+  <div class="card" style="padding:12px 14px">
+    <div class="acct-bar-lbl">Unrealized P&amp;L</div>
+    <div class="acct-bar-val" style="color:{a1_unreal_c}">{a1_unreal_s}{_fm(a1_unreal)}</div>
+    <div style="font-size:10px;color:#8b949e;margin-top:3px">{a1_pos_count} position{"s" if a1_pos_count != 1 else ""}</div>
+  </div>
+  <div class="card" style="padding:12px 14px">
+    <div class="acct-bar-lbl">Deployed</div>
+    <div class="acct-bar-val" style="color:{a1_util_c}">{a1_util:.0f}%</div>
+    <div class="progress-wrap" style="margin:4px 0"><div class="progress-fill" style="width:{min(a1_util,100):.0f}%;background:{a1_util_c}"></div></div>
+    <div style="font-size:10px;color:#8b949e">of buying capacity</div>
+  </div>
+  <div class="card" style="padding:12px 14px">
+    <div class="acct-bar-lbl">Buying Power</div>
+    <div class="acct-bar-val">{_fm(a1_bp)}</div>
+  </div>
 </div>
 
-<div style="display:grid;grid-template-columns:3fr 2fr;gap:10px;align-items:start">
+<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
+  <div class="card" style="padding:12px 14px">
+    <div class="acct-bar-lbl">Regime &amp; VIX</div>
+    <div style="font-size:14px;font-weight:600;color:{regime_color};margin-top:3px">{regime_raw}</div>
+    <div style="font-size:11px;color:#8b949e;margin-top:2px">score {regime_score} &nbsp;·&nbsp; VIX {last_vix_pf}</div>
+  </div>
+  <div class="card" style="padding:12px 14px">
+    <div class="acct-bar-lbl">Today&apos;s Activity</div>
+    <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap">
+      <div style="text-align:center"><div style="font-size:16px;font-weight:600;color:#c9d1d9">{sonnet_calls}</div><div style="font-size:9px;color:#8b949e">calls</div></div>
+      <div style="text-align:center"><div style="font-size:16px;font-weight:600;color:#3fb950">{buys_today}</div><div style="font-size:9px;color:#8b949e">buys</div></div>
+      <div style="text-align:center"><div style="font-size:16px;font-weight:600;color:#f85149">{sells_today}</div><div style="font-size:9px;color:#8b949e">sells</div></div>
+      <div style="text-align:center"><div style="font-size:16px;font-weight:600;color:#8b949e">{sonnet_skips}</div><div style="font-size:9px;color:#8b949e">skips</div></div>
+    </div>
+  </div>
+  <div class="card" style="padding:12px 14px">
+    <div class="acct-bar-lbl">API Cost</div>
+    <div style="font-size:16px;font-weight:600;color:{proj_color};margin-top:3px">{_fm(daily_cost)}</div>
+    <div style="font-size:10px;color:#8b949e;margin-top:2px">proj {_fm(proj_monthly)}/mo</div>
+  </div>
+  <div class="card" style="padding:12px 14px">
+    <div class="acct-bar-lbl">Alerts</div>
+    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:2px">{alerts_html}</div>
+  </div>
+</div>
+
+<div class="section-label">{a1_pos_count} Open Position{"s" if a1_pos_count != 1 else ""}</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+  {pos_cards_html}
+</div>
+
+<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;align-items:start">
   <div>
-    <div class="section-label">Morning Brief</div>
-    <div class="card">{brief_html}</div>
+    <div class="section-label">Recent Decisions</div>
+    <div class="card" style="padding:10px 14px">
+      {dec_rows}
+      {reasoning_block}
+    </div>
   </div>
-  <div>
-    <div class="section-label">Active Theses</div>
-    <div class="card" style="max-height:320px;overflow-y:auto">{theses_html}</div>
-  </div>
-</div>
-
-<div class="section-label">Last 5 Decisions</div>
-<div class="card" style="padding:10px 14px">
-  <details>
-    <summary style="font-size:10px;color:var(--text-muted);cursor:pointer;margin-bottom:6px">Expand with reasoning &#x25BE;</summary>
-    <div class="dec-panel" style="margin-top:8px">{a1_decs_html}</div>
-  </details>
-  <div>{a1_comp}</div>
-</div>
-
-<div class="section-label">{a1_pos_count} open position{'s' if a1_pos_count != 1 else ''}</div>
-<div class="card" style="padding:4px 12px 4px">
-  {positions_html}
-  {pos_extra_note}
-</div>
-
-<div class="section-label">Recent Orders (last 6)</div>
-<div class="card">{a1_orders_html}</div>
-
-<div class="section-label">Today&apos;s Activity</div>
-<div class="card">
-  <div class="stat-grid" style="margin-bottom:12px">
-    <div class="stat-box"><div class="stat-label">Sonnet Calls</div><div class="stat-val">{sonnet_calls}</div></div>
-    <div class="stat-box"><div class="stat-label">Skips</div><div class="stat-val muted">{sonnet_skips}</div></div>
-    <div class="stat-box"><div class="stat-label">Buys</div><div class="stat-val green">{buys_today}</div></div>
-    <div class="stat-box"><div class="stat-label">Sells</div><div class="stat-val red">{sells_today}</div></div>
-    <div class="stat-box"><div class="stat-label">Rejected</div><div class="stat-val orange">{len(rejected)}</div></div>
-    <div class="stat-box"><div class="stat-label">Stop Trails</div><div class="stat-val">{len(trail_stops)}</div></div>
-    <div class="stat-box"><div class="stat-label">Cost Today</div><div class="stat-val" style="font-size:15px;color:{proj_color}">{_fm(daily_cost)}</div></div>
-    <div class="stat-box"><div class="stat-label">Proj/Month</div><div class="stat-val" style="font-size:15px;color:{proj_color}">{_fm(proj_monthly_a1)}</div></div>
-  </div>
-  <div class="kv"><span class="kv-label">Last Sonnet</span><span class="kv-val">{_freshness_stamp(gate.get("last_sonnet_call_utc",""), 30, 90)} {last_sonnet_ts}</span></div>
-  <div class="kv"><span class="kv-label">Regime</span><span class="kv-val">{last_regime} (score {regime_score}) &middot; {dec_session}</span></div>
-  <div class="kv"><span class="kv-label">VIX</span><span class="kv-val">{last_vix_pf}</span></div>
-  <div class="kv"><span class="kv-label">Last Decision</span><span class="kv-val muted">{_freshness_stamp(decision.get("ts",""), 30, 90)} {last_dec_ts}</span></div>
-  {f'<div class="reasoning">{reasoning_2s}</div>' if reasoning_2s else ''}
-</div>
-
-<div class="compact-grid">
   <div>
     <div class="section-label">Decision Quality (7d)</div>
     {dec_quality_html}
   </div>
   <div>
-    <div class="section-label">Allocator Shadow</div>
-    <div class="card">
-      <div class="kv"><span class="kv-label">Status</span><span class="kv-val">{alloc_st}</span></div>
-      <div class="kv"><span class="kv-label">Last Run</span><span class="kv-val muted">{alloc_last}</span></div>
-    </div>
+    <div class="section-label">Recent Orders</div>
+    <div class="card">{a1_orders_html}</div>
   </div>
 </div>
+
 {debug_section}
 </div>"""
     return _page_shell("A1 Equities", nav, body, ticker)
@@ -4044,118 +4259,240 @@ def _a2_closed_section_html(structs: list, all_decs: list) -> str:
 
 
 def _a2_hero_strip_html(status: dict) -> str:
-    """5-pane hero strip + cycle pulse strip for A2."""
+    """Redesigned A2 header: ROW 1 (5 panes) + ROW 2 (4 panes)."""
     a2d = status.get("a2") or {}
     a2_acc = a2d.get("account")
     a2_equity = float(a2_acc.equity or 0) if a2_acc else 0.0
+    a2_bp = float(a2_acc.buying_power or 0) if a2_acc else 0.0
 
     a2_pnl, a2_pnl_pct = status.get("today_pnl_a2", (0.0, 0.0))
     pnl_color = "var(--bbb-profit)" if a2_pnl >= 0 else "var(--bbb-loss)"
     pnl_sign = "+" if a2_pnl >= 0 else ""
 
-    structs_all = _a2_structures()
-    n_open = len(structs_all)
+    # Since-inception
+    _A2_INITIAL = 100_000.0
+    a2_since_pct = (a2_equity - _A2_INITIAL) / _A2_INITIAL * 100 if _A2_INITIAL else 0.0
+    a2_since_c = "var(--bbb-profit)" if a2_since_pct >= 0 else "var(--bbb-loss)"
+    a2_since_s = "+" if a2_since_pct >= 0 else ""
 
-    a2_decs = status.get("a2_decisions") or []
-    n_filled = sum(1 for d in a2_decs if d.get("execution_result") == "submitted")
-    n_total = len(a2_decs)
-    fill_rate = n_filled / n_total * 100 if n_total > 0 else 0.0
-    fill_color = "var(--bbb-profit)" if fill_rate >= 25 else "var(--bbb-warn)"
+    # Capital deployed
+    a2_live_pos = a2d.get("positions", [])
+    a2_deployed = sum(abs(float(getattr(p, "market_value", 0) or 0)) for p in a2_live_pos)
+    a2_total_cap = a2_deployed + a2_bp
+    a2_util = (a2_deployed / a2_total_cap * 100) if a2_total_cap else 0.0
+    a2_free_pct = 100 - a2_util
+    a2_util_c = "var(--bbb-loss)" if a2_util > 70 else ("var(--bbb-warn)" if a2_util > 50 else "var(--bbb-profit)")
 
-    if structs_all:
-        iv_vals = [s.get("iv_rank") for s in structs_all if s.get("iv_rank") is not None]
-        if iv_vals:
-            avg_iv = sum(float(v) for v in iv_vals) / len(iv_vals)
-            iv_env_str = _iv_env_label(avg_iv)
-            iv_num_str = f"{avg_iv:.0f}"
+    # Net unrealized P&L from live positions
+    a2_unreal = sum(float(getattr(p, "unrealized_pl", 0) or 0) for p in a2_live_pos)
+    unreal_c = "var(--bbb-profit)" if a2_unreal >= 0 else "var(--bbb-loss)"
+    unreal_s = "+" if a2_unreal >= 0 else ""
+
+    # Worst-case loss (sum max_loss across open structures)
+    structs_open = _a2_structures()
+    worst_loss = sum(float(s.get("max_loss") or 0) for s in structs_open if s.get("max_loss"))
+
+    # Sparklines
+    sp_a2_eq = status.get("spark_a2_eq") or []
+    spark_eq = _bbb_sparkline_svg(sp_a2_eq, _spark_color(sp_a2_eq), width=60, height=18)
+
+    # --- ROW 2 data ---
+
+    # Pipeline funnel (today's decisions)
+    all_decs_50 = status.get("a2_decisions") or []
+    funnel = _a2_pipeline_funnel_today(all_decs_50)
+    f_scored = funnel["scored"]
+    f_vetted = funnel["vetted"]
+    f_debated = funnel["debated"]
+    f_approved = funnel["approved"]
+    approval_rate = (f_approved / f_debated * 100) if f_debated else 0.0
+
+    # Expiring soon: 3 nearest by expiry_date
+    def _dte_sort(s):
+        e = s.get("expiry_date") or ""
+        return e if e else "9999"
+
+    expiring = sorted(
+        [s for s in structs_open if s.get("expiry_date")],
+        key=_dte_sort
+    )[:3]
+
+    def _expiry_row(s):
+        sym = s.get("underlying", "?")
+        exp = s.get("expiry_date", "—")
+        pnl = s.get("pnl_unrealized")
+        dte = _calc_dte(exp)
+        dte_str = f"{dte}d" if dte is not None else "—"
+        if pnl is not None:
+            pnl_c = "var(--bbb-profit)" if float(pnl) >= 0 else "var(--bbb-loss)"
+            pnl_str = f'<span style="color:{pnl_c}">{_fm(pnl)}</span>'
         else:
-            iv_env_str, iv_num_str = "—", "—"
-    else:
-        iv_env_str, iv_num_str = "—", "—"
-
-    last_dec = status.get("a2_decision") or {}
-    last_ts = _to_et(last_dec.get("built_at", "")) if last_dec else "—"
-    last_result = last_dec.get("execution_result", "") if last_dec else ""
-    last_sc = (last_dec.get("selected_candidate") or {}) if last_dec else {}
-    if isinstance(last_sc, dict) and last_sc.get("symbol"):
-        sym = last_sc["symbol"]
-        strat = last_sc.get("structure_type", "")
-        if last_result == "submitted":
-            last_action = "submitted " + sym + " " + strat.replace("_", " ")
-        else:
-            nr = last_dec.get("no_trade_reason") or ""
-            last_action = (last_result + " — " + nr).strip("— ") if nr else (last_result or "—")
-    else:
-        nr = last_dec.get("no_trade_reason") or "" if last_dec else ""
-        last_action = nr[:80] if nr else (last_result[:80] if last_result else "—")
-
-    cand_sets = (last_dec.get("candidate_sets") or []) if last_dec else []
-    n_syms = len(cand_sets)
-    n_gen = sum(len(cs.get("generated_candidates") or []) for cs in cand_sets if isinstance(cs, dict))
-    n_surv = sum(len(cs.get("surviving_candidates") or []) for cs in cand_sets if isinstance(cs, dict))
-    n_deb = 1 if (last_dec.get("selected_candidate") if last_dec else None) else 0
-    funnel_str = str(n_syms) + "→" + str(n_gen) + "→" + str(n_surv) + "→" + str(n_deb)
-
-    elapsed = last_dec.get("elapsed_seconds") if last_dec else None
-    elapsed_str = f"{float(elapsed):.1f}s" if elapsed else "—"
-
-    stages = ["CANDIDATES", "FILTER", "DEBATE", "APPROVAL", "FILL"]
-    stage_html = ""
-    for i, s in enumerate(stages):
-        stage_html += '<span class="bbb-stage is-done">' + s + '</span>'
-        if i < len(stages) - 1:
-            stage_html += '<span style="font-size:8px;color:var(--bbb-fg-dim)">›</span>'
-
-    dot_class = "bbb-pulse-dot is-idle" if last_result else "bbb-pulse-dot"
-
-    def _pane(label, num_html, meta_html=""):
+            pnl_str = '<span style="color:var(--bbb-fg-muted)">—</span>'
         return (
-            '<div class="bbb-hero-pane" style="padding:16px 20px">'
+            f'<div style="display:flex;justify-content:space-between;padding:3px 0;'
+            f'border-bottom:1px solid var(--bbb-border);font-size:12px">'
+            f'<span style="color:var(--bbb-fg)">{sym}</span>'
+            f'<span style="color:var(--bbb-fg-muted)">{exp} <b style="color:var(--bbb-warn)">{dte_str}</b></span>'
+            f'{pnl_str}</div>'
+        )
+
+    expiring_html = "".join(_expiry_row(s) for s in expiring) or (
+        '<div style="font-size:12px;color:var(--bbb-fg-muted)">No expiry data available.</div>'
+    )
+
+    # Structures at risk: 3 worst by pnl_unrealized
+    at_risk = sorted(
+        [s for s in structs_open if s.get("pnl_unrealized") is not None],
+        key=lambda s: float(s.get("pnl_unrealized") or 0)
+    )[:3]
+
+    def _risk_row(s):
+        sym = s.get("underlying", "?")
+        strat = (s.get("strategy") or "").replace("_", " ")
+        pnl = float(s.get("pnl_unrealized") or 0)
+        pnl_c = "var(--bbb-profit)" if pnl >= 0 else "var(--bbb-loss)"
+        return (
+            f'<div style="display:flex;justify-content:space-between;padding:3px 0;'
+            f'border-bottom:1px solid var(--bbb-border);font-size:12px">'
+            f'<span style="color:var(--bbb-fg)">{sym}</span>'
+            f'<span style="font-size:10px;color:var(--bbb-fg-muted)">{strat}</span>'
+            f'<span style="color:{pnl_c}">{_fm(pnl)}</span>'
+            f'</div>'
+        )
+
+    risk_html = "".join(_risk_row(s) for s in at_risk) or (
+        '<div style="font-size:12px;color:var(--bbb-fg-muted)">No open structures.</div>'
+    )
+
+    # Alerts pane
+    a2_alerts = []
+    # Orphan positions: live A2 positions whose underlying isn't tracked in any open structure.
+    # A2 positions use OCC symbol format (e.g. GOOGL260515C00380000); extract the leading alpha
+    # prefix as the underlying ticker.
+    import re as _re
+    open_underlyings = {s.get("underlying", "") for s in structs_open if s.get("underlying")}
+    orphan_count = 0
+    for p in a2_live_pos:
+        occ = getattr(p, "symbol", "")
+        m = _re.match(r'^([A-Z.]+)\d{6}[CP]', occ)
+        underlying_sym = m.group(1) if m else occ
+        if underlying_sym not in open_underlyings:
+            orphan_count += 1
+    if orphan_count:
+        a2_alerts.append(f'<div style="font-size:11px;color:var(--bbb-loss)">'
+                         f'&#x26A0; {orphan_count} orphan position{"s" if orphan_count != 1 else ""}</div>')
+
+    # Expiries within 7 days
+    from datetime import date as _date
+    today_d = _date.today()
+    near_expiry = [
+        s for s in structs_open
+        if s.get("expiry_date") and _calc_dte(s["expiry_date"]) is not None and _calc_dte(s["expiry_date"]) <= 7
+    ]
+    if near_expiry:
+        a2_alerts.append(f'<div style="font-size:11px;color:var(--bbb-warn)">'
+                         f'&#x23F3; {len(near_expiry)} expir{"ies" if len(near_expiry) != 1 else "y"} ≤7d</div>')
+
+    # Structures past max_loss
+    over_max = [
+        s for s in structs_open
+        if s.get("max_loss") and s.get("pnl_unrealized") is not None
+        and float(s.get("pnl_unrealized") or 0) < -abs(float(s.get("max_loss") or 0))
+    ]
+    if over_max:
+        a2_alerts.append(f'<div style="font-size:11px;color:var(--bbb-loss)">'
+                         f'&#x1F534; {len(over_max)} past max loss</div>')
+
+    # VIX + regime from last decision
+    last_dec = status.get("a2_decision") or {}
+    vix_str = "—"
+    pf_entries = _jsonl_last(BOT_DIR / "data/status/preflight_log.jsonl", n=1)
+    if pf_entries:
+        for chk in pf_entries[0].get("checks", []):
+            if chk.get("name") == "vix_gate" and "VIX=" in chk.get("message", ""):
+                vix_str = chk["message"].split("VIX=")[1].split()[0]
+    if vix_str != "—":
+        a2_alerts.append(f'<div style="font-size:11px;color:var(--bbb-fg-muted)">VIX {vix_str}</div>')
+
+    alerts_inner = "".join(a2_alerts) or '<div style="font-size:11px;color:var(--bbb-profit)">✓ no active alerts</div>'
+
+    def _pane(label, content, meta=""):
+        return (
+            '<div class="bbb-hero-pane" style="padding:14px 16px">'
             '<div class="bbb-hero-label">' + label + '</div>'
-            + num_html
-            + (meta_html if meta_html else "") +
+            + content
+            + (meta if meta else "") +
             '</div>'
         )
 
     def _num(val, color="var(--bbb-fg)"):
-        return (
-            '<span class="bbb-hero-num" style="font-size:28px;color:' + color + '">'
-            + val + '</span>'
-        )
+        return f'<span class="bbb-hero-num" style="font-size:26px;color:{color}">{val}</span>'
 
-    def _meta(text, color=""):
-        sty = (';color:' + color) if color else ""
-        return (
-            '<span class="bbb-hero-meta" style="display:block' + sty + '">' + text + '</span>'
-        )
+    def _meta(text, color="var(--bbb-fg-muted)"):
+        return f'<span style="display:block;font-size:11px;color:{color};margin-top:2px">{text}</span>'
 
-    sp_a2_eq = status.get("spark_a2_eq") or []
-    sp_a2_pnl = status.get("spark_a2_pnl") or []
-    spark_eq_svg = _bbb_sparkline_svg(sp_a2_eq, _spark_color(sp_a2_eq))
-    spark_pnl_svg = _bbb_sparkline_svg(sp_a2_pnl, _spark_color(sp_a2_pnl))
+    # ROW 1 — 5 panes
+    row1 = (
+        _pane("A2 Equity",
+              _num(_fm(a2_equity)),
+              spark_eq + _meta(f"{a2_since_s}{a2_since_pct:.2f}% since inception", a2_since_c)) +
+        _pane("Today P&amp;L",
+              _num(pnl_sign + _fm(a2_pnl), pnl_color),
+              _meta(pnl_sign + f"{a2_pnl_pct:.2f}%")) +
+        _pane("Capital Deployed",
+              _num(_fm(a2_deployed), a2_util_c),
+              f'<div style="margin:4px 0 2px;height:4px;background:var(--bbb-border);border-radius:2px">'
+              f'<div style="width:{min(a2_util,100):.0f}%;height:100%;background:{a2_util_c};border-radius:2px"></div></div>'
+              + _meta(f"{a2_free_pct:.0f}% free")) +
+        _pane("Net Unrealized",
+              _num(unreal_s + _fm(a2_unreal), unreal_c)) +
+        _pane("Worst-Case Loss",
+              _num(_fm(worst_loss) if worst_loss else "—", "var(--bbb-loss)" if worst_loss else "var(--bbb-fg-muted)"),
+              _meta("if all stops hit"))
+    )
 
-    panes_html = (
-        _pane("A2 Equity", _num(_fm(a2_equity)), spark_eq_svg) +
-        _pane("Today P&amp;L", _num(pnl_sign + _fm(a2_pnl), pnl_color), _meta(pnl_sign + f"{a2_pnl_pct:.2f}%") + spark_pnl_svg) +
-        _pane("Fill Rate", _num(f"{fill_rate:.0f}%", fill_color), _meta("fill rate · target ≥ 25%", "var(--bbb-warn)")) +
-        _pane("Open Structures", _num(str(n_open))) +
-        _pane("IV Environment", _num(iv_num_str), _meta(iv_env_str))
+    # ROW 2 — 4 panes (smaller, data-dense)
+    _pane2_style = 'style="border-top:1px solid var(--bbb-border)"'
+
+    # Pipeline funnel pane
+    funnel_html = (
+        f'<div style="display:flex;align-items:center;gap:4px;margin-top:6px;font-family:var(--bbb-font-mono);font-size:13px">'
+        f'<span style="color:var(--bbb-fg)">{f_scored}</span>'
+        f'<span style="color:var(--bbb-fg-dim)">→</span>'
+        f'<span style="color:var(--bbb-fg)">{f_vetted}</span>'
+        f'<span style="color:var(--bbb-fg-dim)">→</span>'
+        f'<span style="color:var(--bbb-fg)">{f_debated}</span>'
+        f'<span style="color:var(--bbb-fg-dim)">→</span>'
+        f'<span style="color:var(--bbb-profit)">{f_approved}</span>'
+        f'</div>'
+        f'<div style="font-size:10px;color:var(--bbb-fg-muted);margin-top:2px">'
+        f'scored · vetted · debated · <span style="color:var(--bbb-profit)">approved</span> &nbsp;·&nbsp; '
+        f'<b style="color:var(--bbb-warn)">{approval_rate:.0f}%</b> approval rate</div>'
+    )
+
+    row2 = (
+        f'<div style="display:grid;grid-template-columns:repeat(4,1fr);'
+        f'border-top:1px solid var(--bbb-border);margin-bottom:var(--bbb-s-4)">'
+        f'<div class="bbb-hero-pane" style="padding:10px 16px">'
+        f'<div class="bbb-hero-label">Pipeline Today</div>'
+        f'{funnel_html}</div>'
+        f'<div class="bbb-hero-pane" style="padding:10px 16px;border-left:1px solid var(--bbb-border)">'
+        f'<div class="bbb-hero-label">Expiring Soon</div>'
+        f'<div style="margin-top:4px">{expiring_html}</div></div>'
+        f'<div class="bbb-hero-pane" style="padding:10px 16px;border-left:1px solid var(--bbb-border)">'
+        f'<div class="bbb-hero-label">Structures at Risk</div>'
+        f'<div style="margin-top:4px">{risk_html}</div></div>'
+        f'<div class="bbb-hero-pane" style="padding:10px 16px;border-left:1px solid var(--bbb-border)">'
+        f'<div class="bbb-hero-label">Alerts</div>'
+        f'<div style="margin-top:4px">{alerts_inner}</div></div>'
+        f'</div>'
     )
 
     return (
-        '<div class="bbb-hero-strip" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px">'
-        + panes_html +
+        '<div class="bbb-hero-strip" style="grid-template-columns:repeat(5,1fr);margin-bottom:0">'
+        + row1 +
         '</div>'
-        '<div class="bbb-pulse-strip" style="margin-bottom:var(--bbb-s-4)">'
-        '<div class="' + dot_class + '"></div>'
-        '<span class="bbb-pulse-text">' + last_action + '</span>'
-        '<span class="bbb-pulse-cost">'
-        + _freshness_stamp(last_dec.get("built_at", "") if last_dec else "", 20, 60)
-        + ' · ' + elapsed_str + ' · ' + last_ts + '</span>'
-        + stage_html +
-        '<span style="font-family:var(--bbb-font-mono);font-size:10px;color:var(--bbb-fg-dim);margin-left:8px">'
-        + funnel_str + '</span>'
-        '</div>'
+        + row2
     )
 
 

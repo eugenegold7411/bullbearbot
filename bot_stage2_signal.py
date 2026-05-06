@@ -81,6 +81,11 @@ _BATCH_SIZE = 20
 # Legacy path uses a larger batch because its input is much leaner (no L1/L2).
 _LEGACY_BATCH_SIZE = 20
 
+# Merged call processes the top _MAX_MERGED symbols via a single Haiku call
+# that produces both enriched signal scores AND a pre-analysis scratchpad.
+# Remaining symbols (beyond _MAX_MERGED) receive L2-only fallback scores.
+_MAX_MERGED = 40
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # L3: Haiku synthesis layer
@@ -171,6 +176,93 @@ _L3_SYSTEM = (
     "- reasoning: exactly 2 sentences. Sentence 1: what drove the key adjustments. "
     "Sentence 2: notable batch-wide pattern (all defensive, ORB dominates, etc).\n"
     "- L1_staleness_minutes > 480: treat all L1 context as absent for this batch.\n"
+)
+
+
+# ── Merged L3+Scratchpad system prompt ──────────────────────────────────────
+# Used by _run_merged_synthesis(). Must be ≥ 1024 tokens to enable Anthropic
+# ephemeral prompt caching. Combining L3 scoring rules + scratchpad pre-analysis
+# rules into one call replaces 5 batched L3 calls + 1 standalone scratchpad call.
+_MERGED_SYSTEM = (
+    "You are a combined signal synthesis and pre-analysis layer for an autonomous trading bot. "
+    "You receive L2 (Python deterministic) scores and L1 (qualitative) context for up to 40 symbols. "
+    "Your response must produce BOTH a full signal scoring section (scored_symbols) and a "
+    "scratchpad pre-analysis section — both in one JSON object.\n\n"
+
+    "═══ PART 1 — SIGNAL SCORING ═══\n"
+    "Synthesise L1+L2 into enriched final scores per symbol.\n"
+    "• Treat L2_score as anchor. Adjust by ≤15 points only when L1 context reveals a direct "
+    "contradiction or strong corroboration. Example: L2 bullish + L1 shows active fraud "
+    "catalyst → adjust down; L2 neutral + L1 shows recent insider buy → adjust up modestly.\n"
+    "• If adjustment >5 points, cite the reason in adjustment_reason. Otherwise leave it empty.\n"
+    "• primary_catalyst: ≤12-word phrase using only L1/L2 context. Never fabricate facts.\n"
+    "• catalyst_type: use ONLY these taxonomy values — earnings_beat | earnings_miss | "
+    "guidance_raise | guidance_cut | macro_print | fed_signal | geopolitical | policy_change | "
+    "insider_buy | congressional_buy | analyst_revision | corporate_action | "
+    "technical_breakout | momentum_continuation | mean_reversion | sector_rotation | "
+    "social_sentiment | citrini_thesis | earnings_pending | unknown. "
+    "Set catalyst_type='earnings_pending' when earnings_days_away ≤ 5. "
+    "Use 'unknown' when no clear catalyst.\n"
+    "• earnings_days_away passthrough: preserve the field from L2 in your output. "
+    "Never write 'today', 'tonight', or 'this week' for earnings — write 'earnings in N days'.\n"
+    "• Never invent price levels. L2's Price field is the only valid price reference.\n"
+    "• Every symbol in the input MUST appear in scored_symbols — no omissions allowed.\n"
+    "• Symbols with no L1 context: score and direction from L2 only; "
+    "adjustment_reason=''; conflicts=[]; signals from L2 labels.\n"
+    "• L1_staleness_minutes >480: treat all L1 context as absent for this call.\n"
+    "• orb_candidate=true ONLY when L2 already flagged it. Never upgrade false→true. "
+    "Crypto (/USD suffix) and ETFs: never orb_candidate=true, always tier='core'.\n\n"
+    "Tier classification:\n"
+    "  core (max 15% portfolio): NVDA MSFT AMZN GOOGL META AAPL TSM ASML PLTR CRWV JPM GS "
+    "GLD SLV COPX XLE XOM CVX USO QQQ SPY IWM TLT VXX XBI LLY JNJ WMT XRT LMT RTX ITA "
+    "EWJ FXI EEM EWM ECH FRO STNG RKT BE XLF BTC/USD ETH/USD\n"
+    "  dynamic (max 8%): any symbol not in core. When in doubt: core.\n\n"
+    "pattern_watchlist: false by default. Set to a ≤10-word caution note only when:\n"
+    "  (a) L1 shows negative catalyst but L2 is strongly bullish >65\n"
+    "  (b) Insider or congressional SELL signal against bullish L2 score\n"
+    "  (c) Earnings ≤2 days on a non-neutral directional signal\n"
+    "  (d) Sector peers broadly down while this symbol shows bullish L2\n\n"
+    "conflicts: list contradictions between L1 narrative and L2 technicals. Max 3. "
+    "Empty [] when signals align.\n"
+    "reasoning: exactly 2 sentences — (1) key adjustments and why; (2) batch-wide pattern.\n\n"
+
+    "═══ PART 2 — SCRATCHPAD PRE-ANALYSIS ═══\n"
+    "Using the scores from Part 1, produce structured pre-analysis for Stage 3 (the main decision model).\n\n"
+    "watching (2-8 symbols): always include all held positions (from HELD POSITIONS input); "
+    "include score >65 + conviction=high; include orb_candidate=true during ORB window (9:30-9:45 ET). "
+    "Cap watching at 4 max when VIX >30. Never include conviction='avoid' unless held.\n\n"
+    "blocking (0-5 entries): market-wide blocks first, then symbol-specific. Empty [] when no blocks. "
+    "Auto-add for held positions: within 1% of stop → 'SYMBOL: within 1pct of stop — monitor'; "
+    "unrealized P&L <-3% (from HELD POSITIONS input) → 'SYMBOL: -N% unrealized — thesis review needed'.\n\n"
+    "triggers (1-8 entries, format: 'SYMBOL: specific observable condition'): "
+    "must be actionable with specific price or volume levels. Never vague. "
+    "Auto-add for held positions with unrealized P&L >+10%: 'SYMBOL: trail stop candidate at current +10%'.\n\n"
+    "conviction_ranking: every symbol in watching[], ordered high→low conviction. "
+    "notes ≤12 words citing score, catalyst, or risk. "
+    "Score mapping: 75-100=high, 50-74=medium, <50=low.\n\n"
+    "summary: 1 sentence ≤20 words — overall read: regime + top setup + key risk.\n\n"
+    "Regime-adjusted scratchpad behavior:\n"
+    "  regime_score <35: watching = held positions only; no new entry triggers\n"
+    "  regime_score 35-50: high conviction only (score ≥75); max 3 new entry triggers\n"
+    "  regime_score 50-65: standard — score ≥65 qualifies for watching\n"
+    "  regime_score >65: full operation — score ≥50 can appear in watching with strong catalyst\n\n"
+
+    "═══ OUTPUT SCHEMA (JSON only — no markdown fences, no text outside the JSON object) ═══\n"
+    '{"scored_symbols":{"SYMBOL":{"score":<0-100>,"direction":"bullish"|"bearish"|"neutral",'
+    '"conviction":"high"|"medium"|"low"|"avoid","signals":[<strings>],"conflicts":[<strings>],'
+    '"primary_catalyst":"<≤12 words>","catalyst_type":"<taxonomy value>",'
+    '"orb_candidate":true|false,"pattern_watchlist":false|"<≤10-word note>",'
+    '"tier":"core"|"dynamic","l2_score":<num>,"l3_adjustment":<num>,'
+    '"adjustment_reason":"<empty or explanation>"}},'
+    '"top_3":["SYM1","SYM2","SYM3"],'
+    '"elevated_caution":["SYM",...],'
+    '"reasoning":"<2 sentences>",'
+    '"scratchpad":{'
+    '"watching":["SYM",...],'
+    '"blocking":["reason or SYMBOL: reason",...],'
+    '"triggers":["SYMBOL: specific condition",...],'
+    '"conviction_ranking":[{"symbol":"SYM","conviction":"high|medium|low","notes":"<≤12 words>"}],'
+    '"summary":"<≤20 words>"}}'
 )
 
 
@@ -537,6 +629,254 @@ def _run_l3_synthesis(
     return result
 
 
+def _call_merged_l3_scratchpad(user_content: str) -> dict:
+    """Single merged Haiku call: signal scoring (up to 40 symbols) + scratchpad.
+
+    Returns parsed dict with scored_symbols AND scratchpad keys.
+    Raises on total failure — caller falls back to batched _run_l3_synthesis().
+    """
+    resp = _get_claude().messages.create(
+        model=MODEL_FAST,
+        max_tokens=8192,
+        system=[{
+            "type": "text",
+            "text": _MERGED_SYSTEM,
+            "cache_control": {"type": "ephemeral"},
+        }],
+        messages=[{"role": "user", "content": user_content}],
+        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+    )
+    try:
+        from cost_tracker import get_tracker  # noqa: PLC0415
+        get_tracker().record_api_call(MODEL_FAST, resp.usage, caller="merged_signal_scratchpad")
+    except Exception as _ct_exc:
+        log.debug("[MERGED] cost tracker failed: %s", _ct_exc)
+    try:
+        from cost_attribution import log_claude_call_to_spine  # noqa: PLC0415
+        log_claude_call_to_spine(
+            "signal_scorer_l3", MODEL_FAST, "merged_signal_scratchpad", resp.usage
+        )
+    except Exception:
+        pass
+
+    raw = resp.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        last_brace = raw.rfind("}")
+        if last_brace >= 0:
+            try:
+                parsed = json.loads(raw[: last_brace + 1])
+                log.debug("[MERGED] JSON repaired by truncation")
+                return parsed
+            except json.JSONDecodeError:
+                pass
+        log.debug("[MERGED] JSON truncated; retrying with completeness hint")
+        _retry_sys = _MERGED_SYSTEM + (
+            "\n\nCRITICAL: Return ONLY valid complete JSON with both scored_symbols "
+            "and scratchpad sections. Never truncate mid-object."
+        )
+        retry = _get_claude().messages.create(
+            model=MODEL_FAST, max_tokens=8192,
+            system=[{"type": "text", "text": _retry_sys,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": user_content}],
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+        )
+        retry_raw = retry.content[0].text.strip()
+        if retry_raw.startswith("```"):
+            retry_raw = retry_raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return json.loads(retry_raw)
+
+
+def _run_merged_synthesis(
+    symbols: list[str],
+    l2_scores: dict[str, dict],
+    qual_ctx: dict,
+    regime: dict,
+    positions: Optional[list],
+    md: dict,
+) -> dict:
+    """Single-call merged synthesis: L3 signal scoring (top 40) + scratchpad.
+
+    Selects the top _MAX_MERGED symbols: held positions first, then highest
+    L2-scoring remainder. Remaining symbols receive L2-only fallback scores.
+    The returned dict includes a 'scratchpad' key that run_scratchpad_stage()
+    extracts without making a second API call.
+
+    Falls back to _run_l3_synthesis() (no embedded scratchpad) on any error.
+    """
+    sym_ctx        = qual_ctx.get("symbol_context", {}) if qual_ctx else {}
+    regime_ctx_blk = qual_ctx.get("regime_context", {}) if qual_ctx else {}
+    staleness      = qual_ctx.get("_staleness_minutes", 0) if qual_ctx else 0
+
+    # Held positions are always Haiku-enriched; remainder sorted by L2 score
+    _held = {
+        getattr(p, "symbol", "")
+        for p in (positions or [])
+        if float(getattr(p, "qty", 0)) > 0
+    }
+    _priority    = [s for s in symbols if s in _held]
+    _rest_by_l2  = sorted(
+        [s for s in symbols if s not in _held],
+        key=lambda s: float(l2_scores.get(s, {}).get("score", 0)) if l2_scores.get(s) else 0,
+        reverse=True,
+    )
+    _ordered       = _priority + _rest_by_l2
+    haiku_symbols  = _ordered[:_MAX_MERGED]
+    l2_only_syms   = _ordered[_MAX_MERGED:]
+
+    # Regime / L1 regime header
+    regime_line = (
+        f"REGIME: score={regime.get('regime_score', 50)} "
+        f"bias={regime.get('bias', 'neutral')} "
+        f"theme={regime.get('session_theme', '?')}  "
+        f"constraints={regime.get('constraints', [])}"
+    )
+    l1_regime_line = ""
+    if isinstance(regime_ctx_blk, dict) and regime_ctx_blk:
+        narr = (regime_ctx_blk.get("narrative") or "")[:180]
+        ron  = ", ".join(regime_ctx_blk.get("risk_on_catalysts", [])[:4]) or "(none)"
+        roff = ", ".join(regime_ctx_blk.get("risk_off_catalysts", [])[:4]) or "(none)"
+        l1_regime_line = (
+            f"L1_regime_narrative: {narr}\n"
+            f"L1_risk_on: {ron}\n"
+            f"L1_risk_off: {roff}\n"
+            f"L1_staleness_minutes: {int(staleness)}"
+        )
+
+    # Held positions string — includes unrealized P&L for scratchpad stop-risk
+    held_lines = []
+    for p in (positions or []):
+        try:
+            qty = float(getattr(p, "qty", 0))
+            if qty > 0:
+                sym = getattr(p, "symbol", "?")
+                unr = float(getattr(p, "unrealized_plpc", 0)) * 100
+                held_lines.append(f"{sym} ({unr:+.1f}% unrealized)")
+        except Exception:
+            pass
+    held_str = ", ".join(held_lines) if held_lines else "(none)"
+
+    # Build symbol blocks
+    sym_blocks: list[str] = []
+    for sym in haiku_symbols:
+        l2 = l2_scores.get(sym)
+        if not l2:
+            continue
+        qual_entry = sym_ctx.get(sym) if isinstance(sym_ctx, dict) else None
+        sym_blocks.append(_format_l2_for_l3(sym, l2, qual_entry, l2.get("price")))
+
+    if not sym_blocks:
+        log.warning("[MERGED] No symbol blocks built — falling back to batched L3")
+        return _run_l3_synthesis(symbols, l2_scores, qual_ctx, regime, positions)
+
+    user_content = (
+        f"{regime_line}\n\n"
+        f"{l1_regime_line}\n\n"
+        f"VIX: {md.get('vix', '?')}  "
+        f"Regime label: {md.get('vix_regime', '?')}\n\n"
+        f"HELD POSITIONS: {held_str}\n\n"
+        f"=== SYMBOLS ({len(sym_blocks)} symbols to score) ===\n"
+        + "\n\n".join(sym_blocks)
+        + "\n\nProduce the JSON with both scored_symbols and scratchpad sections. "
+          "Every symbol in the input must appear in scored_symbols. "
+          "L2_score is your anchor — ≤15 point adjustment, explain >5 in adjustment_reason. "
+          "Scratchpad watching list must include all held positions."
+    )
+
+    try:
+        merged_result = _call_merged_l3_scratchpad(user_content)
+    except Exception as exc:
+        log.warning("[MERGED] merged call failed (%s) — falling back to batched L3", exc)
+        return _run_l3_synthesis(symbols, l2_scores, qual_ctx, regime, positions)
+
+    # Apply same guardrails as batched L3
+    merged_symbols: dict = {}
+    ss = merged_result.get("scored_symbols", {}) or {}
+    for sym in haiku_symbols:
+        l2  = l2_scores.get(sym, {})
+        row = ss.get(sym)
+        if isinstance(row, dict):
+            l2_score = float(l2.get("score", 50))
+            final    = float(row.get("score", l2_score))
+            adj      = final - l2_score
+            if abs(adj) > 15.0:
+                clamped = l2_score + max(-15.0, min(15.0, adj))
+                log.debug("[MERGED] %s clamped adj %.1f→%.1f", sym, adj, clamped - l2_score)
+                final = clamped
+                adj   = final - l2_score
+            row["score"]         = round(final, 1)
+            row["l2_score"]      = round(l2_score, 1)
+            row["l3_adjustment"] = round(adj, 1)
+            row.setdefault("adjustment_reason", "")
+            row.setdefault("orb_candidate", bool(l2.get("orb_candidate")))
+            row.setdefault("pattern_watchlist", l2.get("pattern_watchlist") or False)
+            if "earnings_days_away" not in row and l2.get("earnings_days_away") is not None:
+                row["earnings_days_away"] = l2["earnings_days_away"]
+            _haiku_ct = (row.get("catalyst_type") or "").strip().lower().replace("-", "_")
+            try:
+                from semantic_labels import CatalystType as _CT  # noqa: PLC0415
+                from semantic_labels import classify_catalyst as _cc
+                _known = {e.value for e in _CT}
+                if _haiku_ct and _haiku_ct in _known and _haiku_ct != "unknown":
+                    row["catalyst_type"] = _haiku_ct
+                elif row.get("primary_catalyst"):
+                    row["catalyst_type"] = _cc(row.get("primary_catalyst", "") or "").value
+                else:
+                    row["catalyst_type"] = "unknown"
+            except Exception:
+                row["catalyst_type"] = "unknown"
+            merged_symbols[sym] = row
+        else:
+            merged_symbols[sym] = _l2_to_signal_score(sym, l2)
+
+    # L2-only fallback for symbols beyond _MAX_MERGED
+    for sym in l2_only_syms:
+        merged_symbols[sym] = _l2_to_signal_score(sym, l2_scores.get(sym, {}))
+
+    if not merged_symbols:
+        log.warning("[MERGED] No symbols scored — full L2 fallback")
+        for sym, l2 in l2_scores.items():
+            merged_symbols[sym] = _l2_to_signal_score(sym, l2)
+
+    sorted_syms = sorted(
+        merged_symbols.items(),
+        key=lambda kv: float(kv[1].get("score", 0)) if isinstance(kv[1], dict) else 0,
+        reverse=True,
+    )
+    seen_c: set = set()
+    caution_raw = merged_result.get("elevated_caution") or []
+    result = {
+        "scored_symbols":     merged_symbols,
+        "top_3":              [s for s, _ in sorted_syms[:3]],
+        "elevated_caution":   [s for s in caution_raw if not (s in seen_c or seen_c.add(s))],
+        "reasoning":          merged_result.get("reasoning", ""),
+        "l1_staleness_minutes": int(staleness),
+        "l3_used":            True,
+    }
+
+    sp_raw = merged_result.get("scratchpad")
+    if isinstance(sp_raw, dict):
+        result["scratchpad"] = sp_raw
+        log.info(
+            "[MERGED] %d symbols (Haiku=%d L2=%d)  top_3=%s  watching=%s",
+            len(merged_symbols), len(haiku_symbols), len(l2_only_syms),
+            result["top_3"], sp_raw.get("watching", []),
+        )
+    else:
+        log.warning("[MERGED] scratchpad section absent — standalone scratchpad will run")
+        log.info(
+            "[MERGED] %d symbols (Haiku=%d L2=%d)  top_3=%s",
+            len(merged_symbols), len(haiku_symbols), len(l2_only_syms),
+            result["top_3"],
+        )
+
+    return result
+
+
 def _l2_to_signal_score(sym: str, l2: dict) -> dict:
     """Project a pure L2 result into the legacy SignalScore shape. Used as
     fallback when L3 is unavailable or silently drops a symbol."""
@@ -644,8 +984,8 @@ def score_signals_layered(
         # ── L1: qualitative context (read-only from disk) ────────────────────
         qual_ctx = _load_qualitative_context()
 
-        # ── L3: Haiku synthesis ──────────────────────────────────────────────
-        result = _run_l3_synthesis(scored, l2_scores, qual_ctx, regime or {}, positions)
+        # ── L3+Scratchpad: single merged Haiku call ──────────────────────────
+        result = _run_merged_synthesis(scored, l2_scores, qual_ctx, regime or {}, positions, md or {})
 
         log_trade({
             "event":             "signal_scoring",

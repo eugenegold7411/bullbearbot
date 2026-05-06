@@ -1954,7 +1954,7 @@ def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
     try:
         response = _claude.messages.create(
             model=_MODEL,
-            max_tokens=8192,
+            max_tokens=16384,
             system=[
                 {
                     "type": "text",

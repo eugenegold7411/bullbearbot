@@ -69,6 +69,24 @@ def _mock_data_dir_3(content: str | None = None, exists: bool = True) -> MagicMo
     return mock_dir
 
 
+def _mock_hm_path(content: str | None = None, exists: bool = True) -> MagicMock:
+    """Mock health_monitor.Path for the Path(__file__).parent / X / Y chain.
+
+    After Fix 1, _check_a1_cycle and _check_a1_churn construct their decisions
+    path as Path(__file__).parent / "memory" / "decisions.json" without going
+    through _DATA_DIR.  This helper patches health_monitor.Path so that the
+    constructed leaf (the final path object) has controllable exists() and
+    read_text() behaviour.
+    """
+    leaf = MagicMock()
+    leaf.exists.return_value = exists
+    if content is not None:
+        leaf.read_text.return_value = content
+    mock_cls = MagicMock()
+    mock_cls.return_value.parent.__truediv__.return_value.__truediv__.return_value = leaf
+    return mock_cls
+
+
 # ---------------------------------------------------------------------------
 # Check 1 — A1 cycle freshness
 # ---------------------------------------------------------------------------
@@ -76,14 +94,14 @@ def _mock_data_dir_3(content: str | None = None, exists: bool = True) -> MagicMo
 class TestA1Cycle(unittest.TestCase):
     def test_stale_cycle_is_critical(self):
         records = [{"ts": _ts(20), "actions": []}]
-        with patch("health_monitor._DATA_DIR", _mock_data_dir(json.dumps(records))):
+        with patch("health_monitor.Path", _mock_hm_path(json.dumps(records))):
             r = _check_a1_cycle(_market_time())
         self.assertFalse(r.ok)
         self.assertEqual(r.severity, "CRITICAL")
 
     def test_fresh_cycle_is_ok(self):
         records = [{"ts": _ts(5), "actions": []}]
-        with patch("health_monitor._DATA_DIR", _mock_data_dir(json.dumps(records))):
+        with patch("health_monitor.Path", _mock_hm_path(json.dumps(records))):
             r = _check_a1_cycle(_market_time())
         self.assertTrue(r.ok)
 
@@ -93,16 +111,23 @@ class TestA1Cycle(unittest.TestCase):
         self.assertIn("outside", r.message)
 
     def test_empty_decisions_is_critical(self):
-        with patch("health_monitor._DATA_DIR", _mock_data_dir(json.dumps([]))):
+        with patch("health_monitor.Path", _mock_hm_path(json.dumps([]))):
             r = _check_a1_cycle(_market_time())
         self.assertFalse(r.ok)
         self.assertEqual(r.severity, "CRITICAL")
 
     def test_missing_file_is_critical(self):
-        with patch("health_monitor._DATA_DIR", _mock_data_dir(exists=False)):
+        with patch("health_monitor.Path", _mock_hm_path(exists=False)):
             r = _check_a1_cycle(_market_time())
         self.assertFalse(r.ok)
         self.assertEqual(r.severity, "CRITICAL")
+
+    def test_path_not_via_data_dir(self):
+        """After Fix 1: decisions_path must not be constructed through _DATA_DIR."""
+        import inspect
+        src = inspect.getsource(_check_a1_cycle)
+        self.assertNotIn("_DATA_DIR", src,
+                         "_check_a1_cycle still uses _DATA_DIR for decisions_path")
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +213,7 @@ class TestA2FillRate(unittest.TestCase):
 
 class TestA1Churn(unittest.TestCase):
     def _run(self, records, now_et=None):
-        with patch("health_monitor._DATA_DIR", _mock_data_dir(json.dumps(records))):
+        with patch("health_monitor.Path", _mock_hm_path(json.dumps(records))):
             return _check_a1_churn(now_et or _market_time())
 
     def test_churn_detected(self):
@@ -218,6 +243,13 @@ class TestA1Churn(unittest.TestCase):
     def test_outside_market_hours_ok(self):
         r = self._run([], now_et=_outside_time())
         self.assertTrue(r.ok)
+
+    def test_path_not_via_data_dir(self):
+        """After Fix 1: decisions_path must not be constructed through _DATA_DIR."""
+        import inspect
+        src = inspect.getsource(_check_a1_churn)
+        self.assertNotIn("_DATA_DIR", src,
+                         "_check_a1_churn still uses _DATA_DIR for decisions_path")
 
 
 # ---------------------------------------------------------------------------

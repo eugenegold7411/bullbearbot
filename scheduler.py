@@ -1964,6 +1964,11 @@ def run(dry_run: bool = False) -> None:
                 )
                 for r in trigger_reasons:
                     _trigger_queue.put(r)
+                # Sleep the remaining interval so re-queued triggers don't cause an
+                # immediate burst (nested call drains queue harmlessly if found again)
+                _defer_remaining = max(0.0, sleep_for - secs_since_last)
+                if _defer_remaining > 0:
+                    _sleep_watching_triggers(int(_defer_remaining))
             else:
                 # Fire an immediate out-of-schedule cycle
                 trigger_cycle_num += 1

@@ -177,7 +177,7 @@ def _check_a1_cycle(now_et: datetime) -> CheckResult:
     if not _is_market_hours(now_et):
         return CheckResult(name=name, ok=True, severity="OK", message="outside market hours")
 
-    decisions_path = _DATA_DIR / "memory" / "decisions.json"
+    decisions_path = Path(__file__).parent / "memory" / "decisions.json"
     try:
         if not decisions_path.exists():
             return CheckResult(name=name, ok=False, severity="CRITICAL",
@@ -290,7 +290,7 @@ def _check_a1_churn(now_et: datetime) -> CheckResult:
     if not _is_market_hours(now_et):
         return CheckResult(name=name, ok=True, severity="OK", message="outside market hours")
 
-    decisions_path = _DATA_DIR / "memory" / "decisions.json"
+    decisions_path = Path(__file__).parent / "memory" / "decisions.json"
     try:
         if not decisions_path.exists():
             return CheckResult(name=name, ok=True, severity="OK",

@@ -238,7 +238,7 @@ def run_scratchpad(
 
         resp = _get_claude().messages.create(
             model=MODEL_FAST,
-            max_tokens=900,
+            max_tokens=2000,
             system=[{
                 "type": "text",
                 "text": _SCRATCHPAD_SYS,

@@ -1474,22 +1474,53 @@ def _append_to_daily_brief(brief_data: dict) -> None:
             pass
 
 
+def _is_brief_error_stub(brief: dict) -> bool:
+    """True if brief is the error stub written on generation failure."""
+    return "Intelligence brief generation failed" in (
+        brief.get("market_regime", {}).get("tone", "")
+    )
+
+
 def load_intelligence_brief() -> dict:
-    """Load the full intelligence brief. Returns {} if not yet generated."""
+    """Load the full intelligence brief.
+
+    Returns {} if not yet generated or if the file contains an error stub
+    (written when Claude API fails). Callers treat {} as "no brief available"
+    and fall back to signal-only mode — preferable to injecting stale error text.
+    """
     if not _FULL_BRIEF_FILE.exists():
         return {}
     try:
-        return json.loads(_FULL_BRIEF_FILE.read_text())
+        brief = json.loads(_FULL_BRIEF_FILE.read_text())
+        if _is_brief_error_stub(brief):
+            log.debug("[BRIEF] full brief is an error stub — treating as missing")
+            return {}
+        return brief
     except Exception:
         return {}
 
 
 def load_sonnet_brief() -> dict:
-    """Load the compressed sonnet brief. Returns {} if not yet generated."""
+    """Load the compressed sonnet brief.
+
+    Returns {} if not yet generated or if the paired full brief is an error stub.
+    An error stub sonnet brief injects wrong defaults ("A1: none | A2: none")
+    into the Sonnet prompt; returning {} lets the prompt fall back to safe blanks.
+    """
     if not _SONNET_BRIEF_FILE.exists():
         return {}
     try:
-        return json.loads(_SONNET_BRIEF_FILE.read_text())
+        brief = json.loads(_SONNET_BRIEF_FILE.read_text())
+        # Cross-check: if the full brief is an error stub, the sonnet brief is also invalid
+        if _FULL_BRIEF_FILE.exists():
+            try:
+                full = json.loads(_FULL_BRIEF_FILE.read_text())
+                if _is_brief_error_stub(full):
+                    log.debug("[BRIEF] sonnet brief paired with error stub — returning empty")
+                    return {}
+            except Exception:
+                pass
+        return brief
     except Exception:
         return {}
 
@@ -1951,6 +1982,7 @@ def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
         f"Use actual signal scores and current prices from the data above."
     )
 
+    _generation_succeeded = True
     try:
         response = _claude.messages.create(
             model=_MODEL,
@@ -1980,7 +2012,8 @@ def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
                 raise
     except Exception as exc:
         log.error("[INTELLIGENCE] Brief generation failed: %s", exc)
-        # Return minimal valid structure
+        _generation_succeeded = False
+        # Build minimal return structure — NOT written to disk (preserves last valid brief)
         full_brief = {
             "market_regime": {"regime": "caution", "score": 50, "confidence": "low", "vix": 20.0,
                               "tone": f"Intelligence brief generation failed: {exc}",
@@ -2010,7 +2043,10 @@ def generate_intelligence_brief(brief_type: str = "premarket") -> dict:
             if prev_brief else []
         )
 
-    _save_intelligence_briefs(full_brief)
+    if _generation_succeeded:
+        _save_intelligence_briefs(full_brief)
+    else:
+        log.warning("[INTELLIGENCE] Skipping file write — preserving last valid brief on disk")
 
     picks_count = len(full_brief.get("high_conviction_longs", []))
     regime = full_brief.get("market_regime", {}).get("regime", "?")

@@ -639,18 +639,60 @@ def close_structure(
             log.error("[EXECUTOR] close %s failed: %s", occ_sym, exc)
             _fire_safety_alert("close_structure_leg_failed", exc)
 
-    structure.closed_at = datetime.now(timezone.utc).isoformat()
-
-    if method == "market":
+    if all_submitted:
+        structure.closed_at = datetime.now(timezone.utc).isoformat()
+        close_label = "market" if method == "market" else "limit"
         structure = _set_lifecycle(
-            structure,
-            StructureLifecycle.CLOSED if all_submitted else StructureLifecycle.CANCELLED,
-            f"market close submitted: {reason}",
+            structure, StructureLifecycle.CLOSED,
+            f"{close_label} close submitted: {reason}",
         )
     else:
-        structure = _set_lifecycle(structure, StructureLifecycle.CLOSED
-                                   if all_submitted else StructureLifecycle.CANCELLED,
-                                   f"limit close submitted: {reason}")
+        # One or more per-leg close orders failed.
+        # Verify via Alpaca whether the positions are actually gone before marking closed.
+        # This prevents orphaning: a failed close must not be recorded as successful.
+        _leg_occs = {leg.occ_symbol for leg in structure.legs if leg.occ_symbol}
+        _still_open = True
+        try:
+            _live_syms = {str(p.symbol) for p in trading_client.get_all_positions()}
+            _still_open = bool(_leg_occs & _live_syms)
+        except Exception as _vex:
+            log.warning(
+                "[EXECUTOR] %s: position verify failed after close failure — "
+                "assuming still open: %s",
+                structure.underlying, _vex,
+            )
+
+        if not _still_open:
+            # Position gone from Alpaca — expired or closed externally.
+            structure.closed_at = datetime.now(timezone.utc).isoformat()
+            structure = _set_lifecycle(
+                structure, StructureLifecycle.CLOSED,
+                f"close verified: position absent from Alpaca: {reason}",
+            )
+            log.info(
+                "[EXECUTOR] %s: position absent from Alpaca after failed close order"
+                " — marked closed",
+                structure.underlying,
+            )
+        else:
+            # Close FAILED and position still live — do NOT mark closed or set closed_at.
+            # Lifecycle stays FULLY_FILLED so the next reconciliation cycle retries.
+            structure.close_attempt_count += 1
+            log.error(
+                "[EXECUTOR] %s (%s) close FAILED — position still live in Alpaca "
+                "after %d attempt(s). Lifecycle unchanged at %s.",
+                structure.underlying, structure.structure_id[:8],
+                structure.close_attempt_count, structure.lifecycle.value,
+            )
+            if structure.close_attempt_count >= 3:
+                _fire_safety_alert(
+                    f"close_stuck_{structure.structure_id[:8]}",
+                    Exception(
+                        f"A2 {structure.underlying} ({structure.structure_id[:8]}) "
+                        f"close STUCK after {structure.close_attempt_count} attempts"
+                        f" — positions still open: {', '.join(sorted(_leg_occs))}"
+                    ),
+                )
 
     _log_structure_event(structure, "close", reason)
     return structure

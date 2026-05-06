@@ -434,10 +434,11 @@ class TestSF15CloseStructure(unittest.TestCase):
         mock_wa.assert_called()
         assert "close_structure_leg_failed" in mock_wa.call_args[0][0]
 
-    def test_sf15_market_close_cancelled_when_partial_credit_spread(self) -> None:
+    def test_sf15_market_close_unchanged_when_partial_and_position_live(self) -> None:
         """
         Call credit spread (2 filled legs): first leg submits, second raises.
-        Market close with partial submission must yield CANCELLED, not CLOSED.
+        When Alpaca still shows the position live, lifecycle must stay FULLY_FILLED
+        (not CLOSED or CANCELLED) so the reconciler retries on the next cycle.
         """
         structure = _make_credit_spread()
         mock_client = MagicMock()
@@ -450,11 +451,19 @@ class TestSF15CloseStructure(unittest.TestCase):
             raise RuntimeError("second leg failed")
 
         mock_client.submit_order.side_effect = submit_first_only
+        # Second leg close failed — its OCC symbol is still live in Alpaca.
+        live_pos = MagicMock()
+        live_pos.symbol = "SPY230620C00410000"
+        mock_client.get_all_positions.return_value = [live_pos]
+
         with patch("notifications.send_whatsapp_direct"):
             result = options_executor.close_structure(
                 structure, mock_client, reason="eod_close", method="market"
             )
-        assert result.lifecycle == StructureLifecycle.CANCELLED
+        assert result.lifecycle == StructureLifecycle.FULLY_FILLED, (
+            f"Expected FULLY_FILLED when close fails with live position, got {result.lifecycle}"
+        )
+        assert result.closed_at is None, "closed_at must not be set when close fails"
 
     def test_sf15_market_close_closed_when_all_submitted(self) -> None:
         structure = _make_credit_spread()

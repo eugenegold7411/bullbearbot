@@ -722,6 +722,9 @@ class OptionsStructure:
     debate:          dict           = field(default_factory=dict)
     # PnL snapshot (updated each close_check_loop cycle)
     pnl_unrealized:  Optional[float] = None
+    # Incremented each time a close attempt fails with positions still live in Alpaca.
+    # Triggers a WhatsApp safety alert when it reaches 3.
+    close_attempt_count: int = 0
 
     @property
     def symbol(self) -> str:
@@ -865,6 +868,7 @@ class OptionsStructure:
             last_cancelled_at=d.get("last_cancelled_at"),
             debate=d.get("debate", {}),
             pnl_unrealized=_maybe_float(d.get("pnl_unrealized")),
+            close_attempt_count=int(d.get("close_attempt_count", 0)),
         )
 
 

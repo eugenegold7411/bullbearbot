@@ -714,9 +714,10 @@ def close_check_loop(alpaca_client) -> None:
                     else:
                         log.info("[OPTS] Closing %s (%s): %s",
                                  struct.underlying, struct.structure_id, close_reason)
-                        options_executor.close_structure(
+                        _closed = options_executor.close_structure(
                             struct, alpaca_client, reason=close_reason, method="limit"
                         )
+                        options_state.save_structure(_closed)
     except Exception as exc:
         log.warning("[OPTS] Close-check loop error: %s", exc)
 

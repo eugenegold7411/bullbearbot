@@ -188,6 +188,13 @@ _MERGED_SYSTEM = (
     "You receive L2 (Python deterministic) scores and L1 (qualitative) context for up to 40 symbols. "
     "Your response must produce BOTH a full signal scoring section (scored_symbols) and a "
     "scratchpad pre-analysis section — both in one JSON object.\n\n"
+    "COMPACT OUTPUT RULES — strictly enforce to stay within token budget:\n"
+    "• signals: max 3 short strings per symbol (omit the least important)\n"
+    "• conflicts: max 2 strings per symbol\n"
+    "• primary_catalyst: ≤6 words (cut filler — be telegraphic)\n"
+    "• adjustment_reason: empty string when adjustment ≤5pts; ≤8 words otherwise\n"
+    "• scratchpad.triggers: max 5 entries total across all symbols\n"
+    "• conviction_ranking notes: ≤8 words\n\n"
 
     "═══ PART 1 — SIGNAL SCORING ═══\n"
     "Synthesise L1+L2 into enriched final scores per symbol.\n"
@@ -195,7 +202,7 @@ _MERGED_SYSTEM = (
     "contradiction or strong corroboration. Example: L2 bullish + L1 shows active fraud "
     "catalyst → adjust down; L2 neutral + L1 shows recent insider buy → adjust up modestly.\n"
     "• If adjustment >5 points, cite the reason in adjustment_reason. Otherwise leave it empty.\n"
-    "• primary_catalyst: ≤12-word phrase using only L1/L2 context. Never fabricate facts.\n"
+    "• primary_catalyst: ≤6-word phrase using only L1/L2 context. Never fabricate facts.\n"
     "• catalyst_type: use ONLY these taxonomy values — earnings_beat | earnings_miss | "
     "guidance_raise | guidance_cut | macro_print | fed_signal | geopolitical | policy_change | "
     "insider_buy | congressional_buy | analyst_revision | corporate_action | "
@@ -222,7 +229,7 @@ _MERGED_SYSTEM = (
     "  (b) Insider or congressional SELL signal against bullish L2 score\n"
     "  (c) Earnings ≤2 days on a non-neutral directional signal\n"
     "  (d) Sector peers broadly down while this symbol shows bullish L2\n\n"
-    "conflicts: list contradictions between L1 narrative and L2 technicals. Max 3. "
+    "conflicts: list contradictions between L1 narrative and L2 technicals. Max 2. "
     "Empty [] when signals align.\n"
     "reasoning: exactly 2 sentences — (1) key adjustments and why; (2) batch-wide pattern.\n\n"
 
@@ -234,11 +241,11 @@ _MERGED_SYSTEM = (
     "blocking (0-5 entries): market-wide blocks first, then symbol-specific. Empty [] when no blocks. "
     "Auto-add for held positions: within 1% of stop → 'SYMBOL: within 1pct of stop — monitor'; "
     "unrealized P&L <-3% (from HELD POSITIONS input) → 'SYMBOL: -N% unrealized — thesis review needed'.\n\n"
-    "triggers (1-8 entries, format: 'SYMBOL: specific observable condition'): "
+    "triggers (1-5 entries, format: 'SYMBOL: specific observable condition'): "
     "must be actionable with specific price or volume levels. Never vague. "
     "Auto-add for held positions with unrealized P&L >+10%: 'SYMBOL: trail stop candidate at current +10%'.\n\n"
     "conviction_ranking: every symbol in watching[], ordered high→low conviction. "
-    "notes ≤12 words citing score, catalyst, or risk. "
+    "notes ≤8 words citing score, catalyst, or risk. "
     "Score mapping: 75-100=high, 50-74=medium, <50=low.\n\n"
     "summary: 1 sentence ≤20 words — overall read: regime + top setup + key risk.\n\n"
     "Regime-adjusted scratchpad behavior:\n"
@@ -250,7 +257,7 @@ _MERGED_SYSTEM = (
     "═══ OUTPUT SCHEMA (JSON only — no markdown fences, no text outside the JSON object) ═══\n"
     '{"scored_symbols":{"SYMBOL":{"score":<0-100>,"direction":"bullish"|"bearish"|"neutral",'
     '"conviction":"high"|"medium"|"low"|"avoid","signals":[<strings>],"conflicts":[<strings>],'
-    '"primary_catalyst":"<≤12 words>","catalyst_type":"<taxonomy value>",'
+    '"primary_catalyst":"<≤6 words>","catalyst_type":"<taxonomy value>",'
     '"orb_candidate":true|false,"pattern_watchlist":false|"<≤10-word note>",'
     '"tier":"core"|"dynamic","l2_score":<num>,"l3_adjustment":<num>,'
     '"adjustment_reason":"<empty or explanation>"}},'
@@ -261,7 +268,7 @@ _MERGED_SYSTEM = (
     '"watching":["SYM",...],'
     '"blocking":["reason or SYMBOL: reason",...],'
     '"triggers":["SYMBOL: specific condition",...],'
-    '"conviction_ranking":[{"symbol":"SYM","conviction":"high|medium|low","notes":"<≤12 words>"}],'
+    '"conviction_ranking":[{"symbol":"SYM","conviction":"high|medium|low","notes":"<≤8 words>"}],'
     '"summary":"<≤20 words>"}}'
 )
 

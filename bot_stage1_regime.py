@@ -7,10 +7,15 @@ Public API:
 """
 
 import json
+import os
 import re
+import tempfile
+from pathlib import Path
 
 from bot_clients import MODEL_FAST, _get_claude
 from log_setup import get_logger, log_trade
+
+_REGIME_CACHE_PATH = Path(__file__).parent / "data" / "market" / "regime_cache.json"
 
 log = get_logger(__name__)
 
@@ -206,6 +211,21 @@ def classify_regime(md: dict, calendar: dict) -> dict:
         log_trade({"event": "regime_classification", "regime_score": result.get("regime_score"),
                    "bias": result.get("bias"), "session_theme": result.get("session_theme"),
                    "confidence": result.get("confidence"), "constraints": result.get("constraints", [])})
+        try:
+            _cache_payload = {
+                **result,
+                "vix": vix,
+                "generated_at": md.get("time_et", ""),
+            }
+            _REGIME_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _tmp = tempfile.NamedTemporaryFile(
+                mode="w", dir=str(_REGIME_CACHE_PATH.parent), suffix=".tmp", delete=False
+            )
+            _tmp.write(json.dumps(_cache_payload))
+            _tmp.close()
+            os.replace(_tmp.name, str(_REGIME_CACHE_PATH))
+        except Exception as _wc_exc:
+            log.error("[REGIME] regime_cache.json write failed (non-fatal): %s", _wc_exc)
         return result
     except Exception as exc:
         log.warning("[REGIME] Classifier failed (non-fatal): %s", exc)

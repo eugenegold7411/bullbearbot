@@ -56,6 +56,7 @@ _TRADE_LOG      = _BASE_DIR / "logs" / "trades.jsonl"
 _DECISIONS_FILE = _BASE_DIR / "memory" / "decisions.json"
 _STRATEGY_FILE  = _BASE_DIR / "strategy_config.json"
 _REPORTS_DIR         = _BASE_DIR / "data" / "reports"
+_SIGNAL_WEIGHTS_LIVE = _BASE_DIR / "data" / "analytics" / "signal_weights_live.json"
 _ARCHIVE_DIR         = _BASE_DIR / "data" / "archive"
 _DIRECTOR_MEMO_FILE  = _BASE_DIR / "data" / "reports" / "director_memo_history.json"
 
@@ -208,6 +209,40 @@ def _save_strategy_config(config: dict) -> None:
         log.info("strategy_config.json updated")
     except Exception as exc:
         log.error("[REVIEW] strategy_config save failed: %s", exc)
+
+
+def ensure_signal_weights_live(config: "dict | None" = None) -> None:
+    """Create signal_weights_live.json from strategy_config if the file is missing.
+
+    Safe to call at bot startup: non-fatal, never raises.
+    """
+    try:
+        if _SIGNAL_WEIGHTS_LIVE.exists():
+            return
+        if config is None:
+            config = _load_strategy_config()
+        weights = config.get("signal_source_weights", {})
+        _write_signal_weights_live(weights, source="startup_default")
+        log.info("[REVIEW] signal_weights_live.json created from defaults at startup")
+    except Exception as exc:
+        log.error("[REVIEW] ensure_signal_weights_live failed (non-fatal): %s", exc)
+
+
+def _write_signal_weights_live(weights: dict, source: str = "weekly_review") -> None:
+    """Atomically write data/analytics/signal_weights_live.json. Non-fatal."""
+    try:
+        _SIGNAL_WEIGHTS_LIVE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "signal_source_weights": weights,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "source": source,
+        }
+        tmp = _SIGNAL_WEIGHTS_LIVE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, _SIGNAL_WEIGHTS_LIVE)
+        log.info("[REVIEW] signal_weights_live.json updated (source=%s)", source)
+    except Exception as exc:
+        log.error("[REVIEW] signal_weights_live.json write failed (non-fatal): %s", exc)
 
 
 def _merge_blocked_symbols(current: list, proposed: list) -> tuple[list, list]:
@@ -3565,6 +3600,7 @@ For recommendations: list up to 3 concrete, actionable recommendations with meas
                 if _sw_final:
                     config["signal_source_weights"] = _sw_final
             _save_strategy_config(config)
+            _write_signal_weights_live(config.get("signal_source_weights", {}))
             log.info("Strategy config updated from Agent 6 final synthesis")
         else:
             log.warning("[REVIEW] Agent 6 final JSON parse failed — strategy_config.json NOT updated (see excerpt above)")

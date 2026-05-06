@@ -23,25 +23,13 @@ def _stub(name: str) -> types.ModuleType:
     return mod
 
 
-for _n in [
-    "anthropic",
-    "dotenv",
-    "log_setup",
-    "bot_clients",
-    "cost_tracker",
-    "macro_wire",
-    "macro_intelligence",
-    "scheduler",
-    "watchlist_manager",
-]:
+for _n in ["log_setup", "bot_clients"]:
     _stub(_n)
 
-sys.modules["dotenv"].load_dotenv = lambda *a, **kw: None
 sys.modules["log_setup"].get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules["log_setup"].log_trade = lambda *a, **kw: None
 sys.modules["bot_clients"].MODEL_FAST = "claude-haiku-4-5-20251001"
 sys.modules["bot_clients"]._get_claude = MagicMock()
-sys.modules["cost_tracker"].get_tracker = MagicMock(return_value=MagicMock())
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

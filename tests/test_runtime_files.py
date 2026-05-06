@@ -32,9 +32,6 @@ for _n in [
     "macro_wire",
     "macro_intelligence",
     "scheduler",
-    "memory",
-    "report",
-    "trade_memory",
     "watchlist_manager",
 ]:
     _stub(_n)

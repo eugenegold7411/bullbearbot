@@ -12,10 +12,12 @@ Risk rules enforced:
   - Options: max $5,000 per trade, account must have options enabled
 """
 
+import json
 import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from alpaca.trading.client import TradingClient
@@ -45,6 +47,50 @@ log = get_logger(__name__)
 
 _SAFETY_DEDUP_SECS: float = 300.0
 _SAFETY_ALERT_CACHE: dict[str, float] = {}
+
+_STRUCTURED_TRADES_LOG: Path = Path(__file__).parent / "data" / "trades.jsonl"
+
+
+def _write_structured_trade(path: Path, record: dict) -> None:
+    """Append a structured trade record to a JSONL file with flock. Never raises."""
+    import fcntl as _fcntl  # noqa: PLC0415
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record.setdefault("written_at", datetime.now(timezone.utc).isoformat())
+        with path.open("a", encoding="utf-8") as _fh:
+            _fcntl.flock(_fh, _fcntl.LOCK_EX)
+            try:
+                _fh.write(json.dumps(record) + "\n")
+            finally:
+                _fcntl.flock(_fh, _fcntl.LOCK_UN)
+    except Exception as _exc:
+        log.warning("[EXECUTOR] _write_structured_trade failed (%s): %s", path.name, _exc)
+
+
+def _validate_trades_log(path: Path) -> None:
+    """Validate the last line of a JSONL trades log; rename file if corrupt."""
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in reversed(lines):
+            line = line.strip()
+            if line:
+                json.loads(line)  # raises if corrupt
+                return
+    except (ValueError, json.JSONDecodeError):
+        _ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        _corrupt = path.with_suffix(f".corrupt.{_ts}")
+        try:
+            path.rename(_corrupt)
+            log.warning("[EXECUTOR] trades log corrupt — renamed to %s", _corrupt.name)
+        except Exception as _re:
+            log.warning("[EXECUTOR] could not rename corrupt trades log: %s", _re)
+    except Exception as _exc:
+        log.debug("[EXECUTOR] _validate_trades_log non-fatal: %s", _exc)
+
+
+_validate_trades_log(_STRUCTURED_TRADES_LOG)
 
 
 def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
@@ -1189,6 +1235,26 @@ def _check_pending_fills() -> None:
                     "fill_qty":   fq,
                     "timestamp":  ft,
                 })
+                _write_structured_trade(_STRUCTURED_TRADES_LOG, {
+                    "event_type":        "filled",
+                    "symbol":            info["symbol"],
+                    "side":              info.get("action", ""),
+                    "qty":               fq or info.get("qty"),
+                    "fill_price":        fp,
+                    "order_id":          oid,
+                    "order_type":        info.get("order_type", "market"),
+                    "decision_id":       info.get("decision_id", ""),
+                    "regime":            info.get("regime", ""),
+                    "regime_score":      info.get("regime_score"),
+                    "action_type":       info.get("action", ""),
+                    "thesis_summary":    info.get("thesis_summary", ""),
+                    "catalyst_tags":     info.get("catalyst", ""),
+                    "stop_price":        info.get("stop_price"),
+                    "take_profit_price": info.get("take_profit"),
+                    "session":           info.get("session", ""),
+                    "account":           "a1",
+                    "fill_timestamp":    ft,
+                })
                 # Send deferred fill confirmation if the submission-time alert was suppressed
                 # (fill_price was None at submission → send_trade_alert was not fired)
                 if info.get("alert_deferred") and fp > 0:
@@ -1576,12 +1642,25 @@ def execute_all(
                 _consecutive_rejections.pop(symbol, None)
             # T-021: register non-immediate fills for confirmation polling next cycle
             if act in ("buy", "sell", "close") and oid and not oid.startswith("OPTIONS_"):
+                _req_otype_pre = action.get("order_type", "market") or "market"
                 _pending_fill_checks[oid] = {
                     "symbol":         symbol,
                     "action":         act,
                     "qty":            action.get("qty"),
                     "alert_deferred": (_fp is None),  # True when fill not confirmed at submission
                     "registered_at":  time.time(),
+                    # Rich fields for data/trades.jsonl
+                    "decision_id":    decision_id,
+                    "order_type":     _req_otype_pre,
+                    "stop_price":     action.get("stop_loss"),
+                    "take_profit":    action.get("take_profit"),
+                    "catalyst":       catalyst,
+                    "confidence":     confidence,
+                    "session":        session_tier,
+                    "tier":           tier,
+                    "regime":         action.get("regime", ""),
+                    "regime_score":   action.get("regime_score"),
+                    "thesis_summary": action.get("thesis") or action.get("thesis_summary", ""),
                 }
             _req_qty   = float(action.get("qty") or 0) or None
             _req_otype = action.get("order_type", "market") or "market"

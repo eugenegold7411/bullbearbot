@@ -579,6 +579,41 @@ def eligibility_check(
                 f"(got {idea.conviction:.2f})"
             )
 
+    # ── 7.5. Opposing position gate ──────────────────────────────────────────
+    # Block ENTER_LONG when a live short exists; block ENTER_SHORT when a live
+    # long or a pending BUY order exists — prevents opposing positions that would
+    # require two separate close orders and distort exposure accounting.
+    if act == AccountAction.BUY:
+        _has_short = any(
+            p.symbol == symbol and p.qty < 0
+            for p in snapshot.positions
+        )
+        if _has_short:
+            return (
+                f"opposing_position: short on {symbol} is open — "
+                f"close short before entering long"
+            )
+
+    if act == AccountAction.SHORT_SELL:
+        _has_long = any(
+            p.symbol == symbol and p.qty > 0
+            for p in snapshot.positions
+        )
+        if _has_long:
+            return (
+                f"opposing_position: long on {symbol} is open — "
+                f"close long before shorting"
+            )
+        _pending_buy = any(
+            o.symbol == symbol and o.side == "buy"
+            for o in snapshot.open_orders
+        )
+        if _pending_buy:
+            return (
+                f"opposing_position: pending BUY order for {symbol} — "
+                f"cancel before shorting"
+            )
+
     # ── 8. Short selling gates ────────────────────────────────────────────────
     if act == AccountAction.SHORT_SELL:
         _max_short_pct = float(_params(config).get("max_short_exposure_pct", 0.00))

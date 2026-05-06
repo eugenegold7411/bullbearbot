@@ -36,6 +36,50 @@ ET = ZoneInfo("America/New_York")
 _A2_DIR        = Path(__file__).parent / "data" / "account2"
 _DECISION_LOG  = _A2_DIR / "trade_memory" / "decisions_account2.json"
 _DECISIONS_DIR = _A2_DIR / "decisions"
+_A2_TRADES_LOG = _A2_DIR / "trades.jsonl"
+
+
+def _write_a2_trade(record: dict) -> None:
+    """Append a structured A2 trade record to data/account2/trades.jsonl. Never raises."""
+    import fcntl as _fcntl  # noqa: PLC0415
+    try:
+        _A2_TRADES_LOG.parent.mkdir(parents=True, exist_ok=True)
+        record.setdefault("written_at", datetime.now(ET).isoformat())
+        record.setdefault("account", "a2")
+        with _A2_TRADES_LOG.open("a", encoding="utf-8") as _fh:
+            _fcntl.flock(_fh, _fcntl.LOCK_EX)
+            try:
+                _fh.write(json.dumps(record) + "\n")
+            finally:
+                _fcntl.flock(_fh, _fcntl.LOCK_UN)
+    except Exception as _exc:
+        log.warning("[OPTS] _write_a2_trade failed: %s", _exc)
+
+
+def _validate_a2_trades_log() -> None:
+    """Validate last line of A2 trades log; rename if corrupt."""
+    try:
+        if not _A2_TRADES_LOG.exists() or _A2_TRADES_LOG.stat().st_size == 0:
+            return
+        lines = _A2_TRADES_LOG.read_text(encoding="utf-8").splitlines()
+        for line in reversed(lines):
+            line = line.strip()
+            if line:
+                json.loads(line)
+                return
+    except (ValueError, json.JSONDecodeError):
+        _ts = datetime.now(ET).strftime("%Y%m%d%H%M%S")
+        _corrupt = _A2_TRADES_LOG.with_suffix(f".corrupt.{_ts}")
+        try:
+            _A2_TRADES_LOG.rename(_corrupt)
+            log.warning("[OPTS] A2 trades log corrupt — renamed to %s", _corrupt.name)
+        except Exception as _re:
+            log.warning("[OPTS] could not rename corrupt A2 trades log: %s", _re)
+    except Exception as _exc:
+        log.debug("[OPTS] _validate_a2_trades_log non-fatal: %s", _exc)
+
+
+_validate_a2_trades_log()
 
 from bot_options_stage2_structures import _STRATEGY_FROM_STRUCTURE
 
@@ -534,6 +578,20 @@ def _sync_submitted_lifecycles(structures: list, trading_client) -> None:
                     "[FILL] %s (%s): order %s filled, lifecycle=fully_filled",
                     s.underlying, s.structure_id, s.order_ids[0],
                 )
+                _write_a2_trade({
+                    "event_type":   "entry_filled",
+                    "structure_id": s.structure_id,
+                    "symbol":       s.underlying,
+                    "strategy":     str(getattr(s.strategy, "value", s.strategy)),
+                    "order_id":     s.order_ids[0] if s.order_ids else "",
+                    "legs":         [
+                        {"occ_symbol": leg.occ_symbol, "side": leg.side,
+                         "filled_price": leg.filled_price}
+                        for leg in getattr(s, "legs", [])
+                    ],
+                    "contracts":    getattr(s, "contracts", None),
+                    "expiration":   getattr(s, "expiration", None),
+                })
             elif status in _PARTIAL_STATUSES:
                 s.add_audit(
                     f"order {s.order_ids[0]} partially_filled — lifecycle → partially_filled"
@@ -723,6 +781,16 @@ def close_check_loop(alpaca_client) -> None:
                             current_prices=_current_prices,
                         )
                         options_state.save_structure(_closed)
+                        _write_a2_trade({
+                            "event_type":    "close_submitted",
+                            "structure_id":  _closed.structure_id,
+                            "symbol":        _closed.underlying,
+                            "strategy":      str(getattr(_closed.strategy, "value", _closed.strategy)),
+                            "close_reason":  close_reason,
+                            "lifecycle":     str(getattr(_closed.lifecycle, "value", _closed.lifecycle)),
+                            "pnl_unrealized": getattr(_closed, "pnl_unrealized", None),
+                            "closed_at":     getattr(_closed, "closed_at", None),
+                        })
     except Exception as exc:
         log.warning("[OPTS] Close-check loop error: %s", exc)
 

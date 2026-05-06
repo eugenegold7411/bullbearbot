@@ -3167,7 +3167,6 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
     # Today's activity
     gate = status["gate"]
     costs = status["costs"]
-    trades = status["trades"]
     decision = status["decision"]
     sonnet_calls = gate.get("total_calls_today", 0) or 0
     sonnet_skips = gate.get("total_skips_today", 0) or 0
@@ -3304,10 +3303,10 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
             f'<div style="font-family:monospace;font-size:10px;color:#8b949e;margin-bottom:3px">'
             f'{_fm(entry)} → {_fm(current)} · {pct_cap:.1f}% cap · '
             f'<span style="color:#F87171">{stop_str}</span>'
-            f'</div>'
+            '</div>'
             + (f'<div style="margin:2px 0">{spark}</div>' if spark else "") +
             thesis_row +
-            f'</div>'
+            '</div>'
         )
 
     pos_sorted = sorted(positions, key=lambda x: -abs(x.get("unreal_pl", 0)))
@@ -3371,10 +3370,10 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
     a1_orders_html = _fmt_orders_html(a1d.get("recent_orders", []), is_options=False, limit=6)
 
     debug_section = (
-        f'<div class="section-label" style="margin-top:16px">System Log</div>'
-        f'<div class="card" style="padding:10px 14px">'
-        f'<details><summary style="font-size:11px;color:var(--text-muted);cursor:pointer">Expand &#x25BE;</summary>'
-        f'<div style="margin-top:6px">'
+        '<div class="section-label" style="margin-top:16px">System Log</div>'
+        '<div class="card" style="padding:10px 14px">'
+        '<details><summary style="font-size:11px;color:var(--text-muted);cursor:pointer">Expand &#x25BE;</summary>'
+        '<div style="margin-top:6px">'
         + "".join(
             f'<div class="log-line" style="color:{"#f85149" if "  ERROR  " in e or "  CRITICAL  " in e else "#d29922"}">{e[-180:]}</div>'
             for e in status["log_errors"]
@@ -3382,7 +3381,7 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
             '<div class="log-line" style="color:#3fb950">No recent warnings or errors</div>'
             if not status["log_errors"] else ""
         ) +
-        f'</div></details></div>'
+        '</div></details></div>'
     ) if debug else (
         '<div style="text-align:right;padding:4px 0 16px;font-size:11px;color:#4a5080">'
         '<a href="/a1?debug=1" style="color:#4a5080;text-decoration:none">dev tools →</a></div>'
@@ -4383,8 +4382,6 @@ def _a2_hero_strip_html(status: dict) -> str:
                          f'&#x26A0; {orphan_count} orphan position{"s" if orphan_count != 1 else ""}</div>')
 
     # Expiries within 7 days
-    from datetime import date as _date
-    today_d = _date.today()
     near_expiry = [
         s for s in structs_open
         if s.get("expiry_date") and _calc_dte(s["expiry_date"]) is not None and _calc_dte(s["expiry_date"]) <= 7
@@ -4404,7 +4401,6 @@ def _a2_hero_strip_html(status: dict) -> str:
                          f'&#x1F534; {len(over_max)} past max loss</div>')
 
     # VIX + regime from last decision
-    last_dec = status.get("a2_decision") or {}
     vix_str = "—"
     pf_entries = _jsonl_last(BOT_DIR / "data/status/preflight_log.jsonl", n=1)
     if pf_entries:

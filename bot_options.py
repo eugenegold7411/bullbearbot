@@ -201,7 +201,7 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
         candidate_structures=candidate_structures, allowed_by_sym=allowed_by_sym,
         equity=equity, vix=vix, regime=regime, account1_summary=account1_summary,
         obs_mode=obs_mode, session_tier=session_tier, iv_summaries=iv_summaries,
-        t_start=t_start, config=config,
+        t_start=t_start, config=config, alpaca_client=_get_alpaca(),
     )
 
     from bot_options_stage4_execution import (  # noqa: PLC0415

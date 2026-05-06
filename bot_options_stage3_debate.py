@@ -35,6 +35,137 @@ PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 MODEL = "claude-sonnet-4-6"
 
+# ── OCC symbol detection ──────────────────────────────────────────────────────
+
+_OCC_RE = re.compile(r'^[A-Z/]+\d{6}[CP]\d{8}$')
+
+
+def _is_options_occ_symbol(sym: str) -> bool:
+    """True if sym matches OCC option format (e.g. GOOGL260522C00390000)."""
+    return bool(_OCC_RE.match((sym or "").upper()))
+
+
+# ── Existing position context builder ─────────────────────────────────────────
+
+def _build_existing_position_context(
+    underlying: str,
+    all_structures: list,
+    alpaca_positions: list | None,
+) -> str:
+    """
+    Return a formatted string describing existing positions on `underlying`.
+
+    all_structures:   list[OptionsStructure] — full structures.json contents
+    alpaca_positions: list of alpaca Position objects (options only); None if fetch failed
+
+    Covers active tracked structures AND orphan Alpaca positions (in broker but
+    not covered by any tracked structure leg).
+    """
+    _ACTIVE_LC = {"submitted", "partially_filled", "fully_filled"}
+    underlying_upper = underlying.upper()
+
+    active_structs: list = []
+    all_tracked_occs: set[str] = set()
+    for s in all_structures:
+        if (getattr(s, "underlying", "") or "").upper() != underlying_upper:
+            continue
+        for leg in (getattr(s, "legs", None) or []):
+            occ = (getattr(leg, "occ_symbol", "") or "").upper()
+            if occ:
+                all_tracked_occs.add(occ)
+        lc_val = (
+            s.lifecycle.value
+            if hasattr(s.lifecycle, "value")
+            else str(s.lifecycle)
+        )
+        if lc_val in _ACTIVE_LC:
+            active_structs.append(s)
+
+    orphan_positions: list = []
+    if alpaca_positions is not None:
+        for pos in alpaca_positions:
+            pos_sym = (getattr(pos, "symbol", "") or "").upper()
+            if not pos_sym.startswith(underlying_upper):
+                continue
+            if pos_sym not in all_tracked_occs:
+                orphan_positions.append(pos)
+
+    if not active_structs and not orphan_positions:
+        if alpaca_positions is None:
+            return (
+                f"EXISTING POSITIONS ON {underlying}: "
+                f"Alpaca fetch failed — orphan detection unavailable. "
+                f"No tracked structures found."
+            )
+        return f"No existing positions on {underlying}."
+
+    lines = [f"EXISTING POSITIONS ON {underlying}:"]
+    total_unrealized = 0.0
+
+    for s in active_structs:
+        lc_val = (
+            s.lifecycle.value if hasattr(s.lifecycle, "value") else str(s.lifecycle)
+        )
+        strat_val = (
+            s.strategy.value if hasattr(s.strategy, "value") else str(s.strategy)
+        )
+        opened = (getattr(s, "opened_at", "") or "")[:10]
+        lines.append(
+            f"  [TRACKED] {strat_val}  lifecycle={lc_val}  opened={opened}"
+        )
+        for leg in (getattr(s, "legs", None) or []):
+            side_str = "LONG" if getattr(leg, "side", "") == "buy" else "SHORT"
+            fp = getattr(leg, "filled_price", None)
+            entry_str = f"avg_entry ${fp:.2f}" if fp is not None else "entry unknown"
+            lines.append(
+                f"    {getattr(leg, 'occ_symbol', '?')}  {side_str}  "
+                f"{getattr(leg, 'qty', '?')} contracts  {entry_str}"
+            )
+        pnl = getattr(s, "pnl_unrealized", None)
+        if pnl is not None:
+            lines.append(f"    Unrealized P&L: ${pnl:+,.2f}")
+            total_unrealized += pnl
+
+    for pos in orphan_positions:
+        pos_sym = getattr(pos, "symbol", "?")
+        try:
+            qty_raw = float(getattr(pos, "qty", 0) or 0)
+            side_str = "LONG" if qty_raw >= 0 else "SHORT"
+            qty_abs = int(abs(qty_raw))
+            avg_entry = float(getattr(pos, "avg_entry_price", 0) or 0)
+            unreal_pl = float(getattr(pos, "unrealized_pl", 0) or 0)
+            unreal_plpc = float(getattr(pos, "unrealized_plpc", 0) or 0) * 100
+            lines.append(
+                f"  [UNTRACKED] {pos_sym}  {side_str}  {qty_abs} contracts  "
+                f"avg_entry ${avg_entry:.2f}  "
+                f"P&L: ${unreal_pl:+,.2f} ({unreal_plpc:+.1f}%)"
+            )
+            total_unrealized += unreal_pl
+        except Exception:
+            lines.append(f"  [UNTRACKED] {pos_sym}  (details unavailable)")
+
+    n_tracked_legs = sum(
+        len(getattr(s, "legs", None) or []) for s in active_structs
+    )
+    n_orphan = len(orphan_positions)
+    parts: list[str] = []
+    if n_tracked_legs:
+        parts.append(f"{n_tracked_legs} tracked leg(s)")
+    if n_orphan:
+        parts.append(f"{n_orphan} untracked position(s)")
+    if alpaca_positions is None:
+        lines.append("  Note: Alpaca fetch failed — orphan detection skipped")
+    if parts:
+        lines.append(
+            f"  NET: {' + '.join(parts)}  |  "
+            f"Net unrealized: ${total_unrealized:+,.2f}"
+        )
+
+    return "\n".join(lines)
+
+
+# ── Prompt system loader ──────────────────────────────────────────────────────
+
 _OPTS_SYSTEM = None
 
 
@@ -129,6 +260,7 @@ def run_options_debate(
     allowed_structures_by_symbol: dict | None = None,
     candidate_structures: list[dict] | None = None,
     conf_floor: float = 0.75,
+    per_symbol_context: dict | None = None,
 ) -> tuple[dict, Optional[str], Optional[str]]:
     """
     A2-3b bounded adjudication debate.
@@ -214,7 +346,11 @@ def run_options_debate(
                 )
             else:
                 mandate_line = ""
+            _pos_ctx = (per_symbol_context or {}).get(
+                sym, f"No existing positions on {sym}."
+            )
             candidate_blocks.append(
+                f"{_pos_ctx}\n\n"
                 f"[Candidate {cid} — {stype} {sym} {exp} {strike_str}\n"
                 f" Debit: ${debit:.2f}/share | Max loss: ${max_loss:.0f} | "
                 f"Max gain: {gain_str} | Breakeven: {beven:.2f}\n"
@@ -440,6 +576,7 @@ def run_bounded_debate(
     iv_summaries: dict,
     t_start: float,
     config: dict | None = None,
+    alpaca_client=None,
 ) -> object:
     """
     Run the A2 four-way debate and return an A2DecisionRecord.
@@ -485,6 +622,44 @@ def run_bounded_debate(
         0.75 if _is_paper else 0.85,
     ))
 
+    # Fetch existing positions once per cycle for debate context injection.
+    # Alpaca call happens here (not per-candidate) to ensure caching.
+    _all_structures: list = []
+    _alpaca_positions: list | None = []  # empty list = fetch ok, no options positions
+    try:
+        from options_state import load_structures as _load_structures  # noqa: PLC0415
+        _all_structures = _load_structures()
+    except Exception as _ls_exc:
+        log.warning("[OPTS] Could not load structures for debate context: %s", _ls_exc)
+
+    if alpaca_client is not None:
+        try:
+            _raw = alpaca_client.get_all_positions()
+            _alpaca_positions = [
+                p for p in _raw
+                if _is_options_occ_symbol(getattr(p, "symbol", ""))
+            ]
+            log.debug(
+                "[OPTS] Fetched %d A2 option position(s) for debate context",
+                len(_alpaca_positions),
+            )
+        except Exception as _ap_exc:
+            log.warning(
+                "[OPTS] Alpaca positions fetch failed for debate context: %s", _ap_exc
+            )
+            _alpaca_positions = None
+    else:
+        _alpaca_positions = None
+
+    # Build per-symbol context once; reused for all candidates
+    _candidate_syms = {c.get("symbol", "") for c in (candidate_structures or [])}
+    _per_symbol_context: dict[str, str] = {}
+    for _sym in _candidate_syms:
+        if _sym:
+            _per_symbol_context[_sym] = _build_existing_position_context(
+                _sym, _all_structures, _alpaca_positions
+            )
+
     debate_result, prompt_used, raw_response = run_options_debate(
         candidates=candidates,
         iv_summaries=iv_summaries,
@@ -496,6 +671,7 @@ def run_bounded_debate(
         allowed_structures_by_symbol=allowed_by_sym or None,
         candidate_structures=candidate_structures or None,
         conf_floor=_conf_floor,
+        per_symbol_context=_per_symbol_context,
     )
 
     log.info("[OPTS] Debate complete: bounded=%s  selected=%s  confidence=%s  reject=%s",

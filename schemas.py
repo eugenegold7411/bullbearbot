@@ -725,6 +725,10 @@ class OptionsStructure:
     # Incremented each time a close attempt fails with positions still live in Alpaca.
     # Triggers a WhatsApp safety alert when it reaches 3.
     close_attempt_count: int = 0
+    # Net greeks at entry (copied from candidate enrichment in stage 2/4).
+    delta:          Optional[float] = None
+    theta:          Optional[float] = None
+    vega:           Optional[float] = None
 
     @property
     def symbol(self) -> str:
@@ -869,6 +873,9 @@ class OptionsStructure:
             debate=d.get("debate", {}),
             pnl_unrealized=_maybe_float(d.get("pnl_unrealized")),
             close_attempt_count=int(d.get("close_attempt_count", 0)),
+            delta=_maybe_float(d.get("delta")),
+            theta=_maybe_float(d.get("theta")),
+            vega=_maybe_float(d.get("vega")),
         )
 
 

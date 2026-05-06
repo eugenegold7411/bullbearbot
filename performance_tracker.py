@@ -347,7 +347,7 @@ def log_a2_structure_outcome(structure) -> None:
             else:
                 exit_reason = "manual"
             if realized is None:
-                outcome = "cancelled"
+                outcome = "closed_unknown" if structure.closed_at else "cancelled"
             elif realized > 0.0:
                 outcome = "win"
             elif realized < 0.0:
@@ -707,8 +707,8 @@ def _compute_performance_summary(days_back: int = 7) -> dict:
 
     a2_all       = _load_jsonl(_A2_OUTCOMES_PATH)
     a2_7d        = _records_last_n_days(a2_all, days_back, ts_key="timestamp_opened")
-    a2_submitted = [r for r in a2_7d if r.get("outcome") != "cancelled"]
-    a2_closed    = [r for r in a2_submitted if r.get("outcome") in ("win", "loss", "breakeven")]
+    a2_submitted = [r for r in a2_7d if r.get("outcome") not in ("cancelled",)]
+    a2_closed    = [r for r in a2_submitted if r.get("outcome") in ("win", "loss", "breakeven", "closed_unknown")]
     a2_wins      = [r for r in a2_closed if r.get("outcome") == "win"]
 
     def _a2_rule(rule: str) -> dict:

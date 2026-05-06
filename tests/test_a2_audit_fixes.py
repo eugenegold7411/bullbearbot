@@ -154,7 +154,7 @@ class TestCloseCheckPrices:
 
         closed_structs = []
 
-        def mock_close(s, client, reason, method):
+        def mock_close(s, client, reason, method, current_prices=None):
             closed_structs.append((s.underlying, reason))
 
         with (

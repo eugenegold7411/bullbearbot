@@ -512,12 +512,36 @@ def _close_spread_mleg(
     return str(order.id)
 
 
+def _compute_realized_pnl_estimate(
+    structure: OptionsStructure,
+    current_prices: dict | None,
+) -> "float | None":
+    """Best-effort realized P&L at close time (entry fills vs current mids)."""
+    if current_prices:
+        try:
+            total = 0.0
+            for leg in structure.legs:
+                entry   = leg.filled_price
+                current = current_prices.get(leg.occ_symbol)
+                if entry is None or current is None:
+                    return None
+                sign    = 1.0 if leg.side == "buy" else -1.0
+                total  += sign * (current - entry) * leg.qty * structure.contracts * 100
+            return round(total, 2)
+        except Exception:
+            pass
+    if structure.pnl_unrealized is not None:
+        return structure.pnl_unrealized
+    return None
+
+
 def close_structure(
     structure:       OptionsStructure,
     trading_client,
     reason:          str,
     method:          str = "limit",   # "limit" | "market"
     timeout_minutes: int = 30,
+    current_prices:  dict | None = None,
 ) -> OptionsStructure:
     """
     Close all open legs of a structure.
@@ -570,6 +594,7 @@ def close_structure(
             structure.add_audit(f"mleg close submitted: order_id={order_id}")
             log.info("[EXECUTOR] %s mleg close submitted: reason=%s order=%s",
                      structure.underlying, reason, order_id)
+            structure.realized_pnl = _compute_realized_pnl_estimate(structure, current_prices)
             structure.closed_at = datetime.now(timezone.utc).isoformat()
             structure = _set_lifecycle(
                 structure, StructureLifecycle.CLOSED, f"mleg close submitted: {reason}"
@@ -640,6 +665,7 @@ def close_structure(
             _fire_safety_alert("close_structure_leg_failed", exc)
 
     if all_submitted:
+        structure.realized_pnl = _compute_realized_pnl_estimate(structure, current_prices)
         structure.closed_at = datetime.now(timezone.utc).isoformat()
         close_label = "market" if method == "market" else "limit"
         structure = _set_lifecycle(
@@ -664,6 +690,7 @@ def close_structure(
 
         if not _still_open:
             # Position gone from Alpaca — expired or closed externally.
+            structure.realized_pnl = _compute_realized_pnl_estimate(structure, current_prices)
             structure.closed_at = datetime.now(timezone.utc).isoformat()
             structure = _set_lifecycle(
                 structure, StructureLifecycle.CLOSED,

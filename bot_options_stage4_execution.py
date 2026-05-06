@@ -299,6 +299,9 @@ def submit_selected_candidate(
                     return "no_trade"
 
                 structure.debate = _build_debate_snapshot(debate_result, decision_record.decision_id)
+                structure.delta = _cand.get("delta")
+                structure.theta = _cand.get("theta")
+                structure.vega  = _cand.get("vega")
                 options_state.save_structure(structure)
                 _effective_obs = obs_mode or (not pf_allow_live_orders)
                 if not pf_allow_live_orders:
@@ -677,6 +680,7 @@ def close_check_loop(alpaca_client) -> None:
                             "[CLOSE_CHECK] %s (%s): no Alpaca position found — lifecycle→closed",
                             struct.underlying, struct.structure_id,
                         )
+                        struct.realized_pnl = struct.pnl_unrealized
                         struct.lifecycle = StructureLifecycle.CLOSED
                         struct.closed_at = datetime.now(ET).isoformat()
                         struct.close_reason_code = "position_not_in_alpaca"
@@ -715,7 +719,8 @@ def close_check_loop(alpaca_client) -> None:
                         log.info("[OPTS] Closing %s (%s): %s",
                                  struct.underlying, struct.structure_id, close_reason)
                         _closed = options_executor.close_structure(
-                            struct, alpaca_client, reason=close_reason, method="limit"
+                            struct, alpaca_client, reason=close_reason, method="limit",
+                            current_prices=_current_prices,
                         )
                         options_state.save_structure(_closed)
     except Exception as exc:

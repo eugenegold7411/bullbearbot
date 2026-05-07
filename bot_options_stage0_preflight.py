@@ -442,6 +442,56 @@ def _reconcile_orphan_positions(
     return created
 
 
+def _sync_pnl_from_alpaca_positions(open_structs: list, alpaca_positions: list) -> int:
+    """
+    Update pnl_unrealized on open structures using Alpaca's unrealized_pl field.
+
+    Supplements the options-chain price path in close_check_loop. When the chain
+    data is unavailable (illiquid contracts, zero-bid options, market closed), the
+    stored pnl_unrealized goes stale and loss-based exits (stop_loss_hit, max_loss_exit)
+    may fail to fire even when the position is deeply underwater.
+
+    Returns count of structures updated. Non-fatal per structure.
+    """
+    import options_state as _os  # noqa: PLC0415
+
+    # Build {occ_symbol: unrealized_pl} from Alpaca — always available, direction-aware.
+    alpaca_pnl: dict[str, float] = {}
+    for p in alpaca_positions:
+        sym = str(getattr(p, "symbol", "") or "")
+        raw = getattr(p, "unrealized_pl", None)
+        if sym and raw is not None:
+            try:
+                alpaca_pnl[sym] = float(raw)
+            except (TypeError, ValueError):
+                pass
+
+    updated = 0
+    for struct in open_structs:
+        try:
+            total = 0.0
+            all_found = True
+            for leg in struct.legs:
+                occ = getattr(leg, "occ_symbol", None)
+                if not occ or occ not in alpaca_pnl:
+                    all_found = False
+                    break
+                total += alpaca_pnl[occ]
+            if not all_found:
+                continue
+            new_pnl = round(total, 2)
+            if struct.pnl_unrealized != new_pnl:
+                struct.pnl_unrealized = new_pnl
+                _os.save_structure(struct)
+                updated += 1
+        except Exception:
+            pass
+
+    if updated:
+        log.info("[PREFLIGHT] Synced pnl_unrealized from Alpaca for %d structure(s)", updated)
+    return updated
+
+
 def _is_duplicate_submission(
     symbol: str,
     structures: list,
@@ -894,12 +944,30 @@ def run_a2_preflight(
             p for p in alpaca_client.get_all_positions()
             if len(str(getattr(p, "symbol", ""))) > 10
         ]
+        # Fix B: sync pnl_unrealized from Alpaca so loss-based exits see current values
+        # even when options-chain data is unavailable (illiquid contracts, zero bid).
+        try:
+            _sync_pnl_from_alpaca_positions(
+                open_structs=_oss_utp.get_open_structures(),
+                alpaca_positions=_live_opts,
+            )
+        except Exception as _pnl_sync_err:
+            log.debug("[PREFLIGHT] pnl sync from Alpaca failed (non-fatal): %s", _pnl_sync_err)
+
         if _live_opts:
+            # Only consider OCC symbols from ACTIVE structures as "tracked".
+            # Closed/cancelled/rejected/expired structures held positions that
+            # are no longer monitored — treat those positions as orphans so the
+            # reconciler can create orphan_tracked structures and retry closing.
+            _INACTIVE_LC = frozenset({"closed", "cancelled", "rejected", "expired"})
             _tracked_occs = {
                 leg.occ_symbol
                 for s in _oss_utp.load_structures()
                 for leg in s.legs
                 if getattr(leg, "occ_symbol", None)
+                and (
+                    s.lifecycle.value if hasattr(s.lifecycle, "value") else str(s.lifecycle)
+                ) not in _INACTIVE_LC
             }
             _untracked_under: set[str] = set()
             for _pos in _live_opts:

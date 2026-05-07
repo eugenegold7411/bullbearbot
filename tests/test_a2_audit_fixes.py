@@ -13,7 +13,8 @@ from unittest.mock import MagicMock, patch
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_structure(lifecycle: str = "fully_filled", underlying: str = "AAPL",
-                    expiration: str = "2026-06-20", last_cancelled_at: str | None = None):
+                    expiration: str = "2026-06-20", last_cancelled_at: str | None = None,
+                    opened_at: str | None = None):
     from schemas import (
         OptionsLeg,
         OptionsStructure,
@@ -48,7 +49,7 @@ def _make_structure(lifecycle: str = "fully_filled", underlying: str = "AAPL",
         legs=[leg],
         contracts=1,
         max_cost_usd=110.0,
-        opened_at="2026-06-01T10:00:00+00:00",
+        opened_at=opened_at or "2026-06-01T10:00:00+00:00",
         catalyst="test",
         tier=Tier.CORE,
         debit_paid=1.10,
@@ -374,7 +375,8 @@ class TestCancelCooldown:
     def test_p2_05_last_cancelled_at_stamped_on_cancel(self):
         from bot_options_stage0_preflight import _cancel_and_clear_unfilled_orders
 
-        struct = _make_structure("submitted", "AAPL")
+        stale_opened = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        struct = _make_structure("submitted", "AAPL", opened_at=stale_opened)
         struct.order_ids = ["ord-abc"]
         assert struct.last_cancelled_at is None
 
@@ -407,7 +409,8 @@ class TestCancelCooldown:
 
         # Simulate: first cancel happened 90 minutes ago (past a 1-hour cooldown)
         old_ts = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
-        struct = _make_structure("submitted", "AAPL")
+        stale_opened = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        struct = _make_structure("submitted", "AAPL", opened_at=stale_opened)
         struct.order_ids = ["ord-xyz"]
         struct.last_cancelled_at = old_ts   # pre-set as if already cancelled once
 

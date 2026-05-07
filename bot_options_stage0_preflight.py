@@ -186,6 +186,14 @@ def _any_leg_has_fill(structure, alpaca_client) -> bool:
     return False
 
 
+_SPREAD_STRATEGIES: frozenset[str] = frozenset({
+    "call_debit_spread", "put_debit_spread",
+    "call_credit_spread", "put_credit_spread",
+    "iron_condor", "iron_butterfly",
+    "straddle", "strangle",
+})
+
+
 def _cancel_and_clear_unfilled_orders(
     alpaca_client,
     config: dict,
@@ -194,6 +202,12 @@ def _cancel_and_clear_unfilled_orders(
     For every SUBMITTED structure with zero filled qty:
       1. Cancel all Alpaca orders for that structure
       2. Set lifecycle to CANCELLED so the symbol re-enters the candidate pool
+
+    For spread (mleg) strategies using GTC: applies a max_age guard so a fresh
+    spread order is not immediately cancelled on the next cycle. Only cancels
+    mleg spreads that have been SUBMITTED for longer than mleg_max_age_minutes
+    (default 30, config key: account2.mleg_max_age_minutes). Single-leg GTC
+    orders are cancelled every cycle for re-pricing.
 
     This ensures A2 always re-prices on fresh mid values each cycle rather
     than leaving stale limit orders open indefinitely (GTC single legs) or
@@ -210,6 +224,9 @@ def _cancel_and_clear_unfilled_orders(
     import options_state as _os  # noqa: PLC0415
     from schemas import StructureLifecycle  # noqa: PLC0415
 
+    _max_age_min = float(config.get("account2", {}).get("mleg_max_age_minutes", 30.0))
+    _now = datetime.now(timezone.utc)
+
     all_structs = _os.load_structures()
     cancelled = 0
     cancelled_underlyings: set[str] = set()
@@ -222,6 +239,29 @@ def _cancel_and_clear_unfilled_orders(
                 continue
             if _any_leg_has_fill(s, alpaca_client):
                 continue  # partial or full fill — do not cancel
+
+            # Max-age guard for mleg spreads: give GTC spread orders time to fill
+            # before cancelling and re-pricing. Single-leg orders cancel every cycle.
+            _strat_val = s.strategy.value if hasattr(s.strategy, "value") else str(s.strategy)
+            if _strat_val in _SPREAD_STRATEGIES:
+                try:
+                    _opened = datetime.fromisoformat(s.opened_at.replace("Z", "+00:00"))
+                    if _opened.tzinfo is None:
+                        _opened = _opened.replace(tzinfo=timezone.utc)
+                    _age_min = (_now - _opened).total_seconds() / 60.0
+                except Exception:
+                    _age_min = _max_age_min + 1.0  # unparseable → treat as stale
+
+                if _age_min < _max_age_min:
+                    log.info(
+                        "[PREFLIGHT] GTC mleg %s (%s) age=%.0fmin < max=%.0fmin — keeping",
+                        s.underlying, _strat_val, _age_min, _max_age_min,
+                    )
+                    continue
+                log.info(
+                    "[PREFLIGHT] canceling stale GTC mleg %s (%s) age=%.0fmin > max=%.0fmin",
+                    s.underlying, _strat_val, _age_min, _max_age_min,
+                )
 
             for order_id in s.order_ids:
                 try:
@@ -236,7 +276,7 @@ def _cancel_and_clear_unfilled_orders(
                         order_id[:8], _ce,
                     )
 
-            s.last_cancelled_at = datetime.now(timezone.utc).isoformat()
+            s.last_cancelled_at = _now.isoformat()
             s.lifecycle = StructureLifecycle.CANCELLED
             s.add_audit(
                 "auto-cancelled: unfilled order — resubmitting with fresh pricing next cycle"
@@ -781,7 +821,7 @@ def run_a2_preflight(
                 _s_cfg.get("account2", {}).get("cancel_cooldown_hours", 1.0)
             )
             _ttl_secs = float(
-                _s_cfg.get("account2", {}).get("submitted_ttl_minutes", 15.0)
+                _s_cfg.get("account2", {}).get("submitted_ttl_minutes", 60.0)
             ) * 60.0
             _now = datetime.now(timezone.utc)
             _blocked: list[str] = []

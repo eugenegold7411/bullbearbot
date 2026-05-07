@@ -781,6 +781,35 @@ def _execute_live_trim(
         return f"execute_all error: {exc}"
 
 
+def _has_open_buy_order(symbol: str, _client=None) -> tuple[bool, str]:
+    """Return (True, order_id) if Alpaca has an open BUY-side order for symbol, else (False, '').
+
+    _client is injected only in tests; production always uses None (lazy _get_alpaca()).
+    Side comparison uses str-split to match the existing pattern in order_executor.py and
+    avoid enum-identity issues under various test-collection module states.
+    """
+    try:
+        from alpaca.trading.enums import QueryOrderStatus  # noqa: PLC0415
+        from alpaca.trading.requests import GetOrdersRequest  # noqa: PLC0415
+
+        if _client is None:
+            from order_executor import _get_alpaca  # noqa: PLC0415
+            _client = _get_alpaca()
+
+        orders = _client.get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, symbols=[symbol],
+        ))
+        for o in orders:
+            if str(getattr(o, "side", "")).lower().split(".")[-1] == "buy":
+                return True, str(o.id)
+        return False, ""
+    except Exception as exc:
+        log.warning(
+            "[ALLOC] _has_open_buy_order(%s): query failed (skipping guard) — %s", symbol, exc,
+        )
+        return False, ""
+
+
 def _execute_live_add(
     symbol:             str,
     positions:          list,
@@ -824,6 +853,14 @@ def _execute_live_add(
 
     if price is None or price <= 0:
         return f"no current_price for {symbol}"
+
+    pending, pending_id = _has_open_buy_order(symbol)
+    if pending:
+        log.info(
+            "[ALLOC] ADD skipped — open buy order already pending for %s (%s), avoiding stack",
+            symbol, pending_id,
+        )
+        return f"skipped: open buy order pending for {symbol}"
 
     idea = TradeIdea(
         symbol=symbol,

@@ -17,6 +17,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from datetime import date, datetime, timezone
@@ -26,6 +27,9 @@ from typing import Optional
 from log_setup import get_logger
 
 log = get_logger(__name__)
+
+_BASE = Path(__file__).parent
+_MORNING_BRIEF_SONNET_PATH = _BASE / "data" / "market" / "morning_brief_sonnet.json"
 
 
 # ── A1 signal loading ─────────────────────────────────────────────────────────
@@ -171,6 +175,58 @@ def _summarize_account1_for_prompt(decision: dict) -> str:
         lines.append(f"    Active trades: {', '.join(open_syms[:8])}")
 
     return "\n".join(lines)
+
+
+def _augment_with_avoid_context(
+    account1_summary: str,
+    signal_scores: dict,
+    iv_summaries: dict,
+) -> str:
+    """Append high-IV A1-avoided symbols as credit spread candidates to account1_summary.
+
+    Reads the avoid_line from morning_brief_sonnet.json, cross-references with
+    iv_summaries to filter iv_rank > 60, and appends a structured section so A2
+    debate can route bearish avoided symbols to credit call spreads.
+    """
+    try:
+        if not _MORNING_BRIEF_SONNET_PATH.exists():
+            return account1_summary
+        brief = json.loads(_MORNING_BRIEF_SONNET_PATH.read_text())
+        avoid_line = brief.get("avoid_line", "")
+        if not avoid_line.startswith("AVOID:"):
+            return account1_summary
+        raw_syms = avoid_line.split("AVOID:", 1)[1].split("\n")[0].split()
+        avoid_syms = [s.strip() for s in raw_syms if s.strip()]
+
+        candidates = []
+        for sym in avoid_syms:
+            iv = iv_summaries.get(sym, {})
+            iv_rank = iv.get("iv_rank")
+            if iv_rank is None or float(iv_rank) <= 60:
+                continue
+            sig = signal_scores.get(sym, {})
+            direction = sig.get("direction", "neutral") if isinstance(sig, dict) else "neutral"
+            signals = sig.get("signals", []) if isinstance(sig, dict) else []
+            reason = ",".join(str(s) for s in signals[:3]) if signals else "A1 avoid"
+            candidates.append(
+                f"  {sym}: iv_rank={iv_rank:.0f} | direction={direction} | reason: {reason}"
+            )
+
+        if not candidates:
+            return account1_summary
+
+        log.info("[A2_SIGNAL] %d avoided symbol(s) with iv_rank>60 passed to debate as credit spread candidates: %s",
+                 len(candidates), [c.split(":")[0].strip() for c in candidates])
+
+        avoid_section = (
+            "\n\n=== A1 AVOIDED SYMBOLS (CREDIT SPREAD CANDIDATES) ===\n"
+            "A1 is avoiding these high-IV symbols — credit call spreads may capture premium if bearish:\n"
+            + "\n".join(candidates)
+        )
+        return account1_summary + avoid_section
+    except Exception as exc:
+        log.debug("[A2_SIGNAL] avoid_context augment failed (non-fatal): %s", exc)
+        return account1_summary
 
 
 # ── Earnings context ──────────────────────────────────────────────────────────

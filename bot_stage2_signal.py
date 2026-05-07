@@ -37,6 +37,19 @@ _BASE = Path(__file__).parent
 _RISK_FACTORS_PATH = _BASE / "data/config/symbol_risk_factors.json"
 
 _SAFETY_DEDUP_SECS: float = 300.0
+
+# ── Avoid log / short-rule constants ─────────────────────────────────────────
+_AVOID_LOG_PATH     = _BASE / "data" / "analytics" / "avoid_log.jsonl"
+_SONNET_BRIEF_PATH  = _BASE / "data" / "market" / "morning_brief_sonnet.json"
+_AVOID_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB rotation threshold
+
+# Signal keywords that indicate bearish thesis — must match ≥2 for short rule
+_BEARISH_KEYWORDS = frozenset({
+    "negative_momentum", "bearish_catalyst", "bearish", "insider_selling",
+    "insider_sale", "analyst_downgrade", "below_200ma", "downtrend",
+    "sell_signal", "weak_fundamentals", "earnings_miss", "revenue_miss",
+    "guidance_cut", "overvalued", "short_interest", "weak_momentum",
+})
 _SAFETY_ALERT_CACHE: dict[str, float] = {}
 
 
@@ -916,6 +929,84 @@ def _l2_to_signal_score(sym: str, l2: dict) -> dict:
     }
 
 
+# ── Avoid log + short-rule helpers ───────────────────────────────────────────
+
+def _write_avoid_log(scored_symbols: dict, cycle_id: str) -> None:
+    """Append one JSONL record per conviction=avoid symbol to data/analytics/avoid_log.jsonl.
+    Rotates at _AVOID_LOG_MAX_BYTES."""
+    avoid_entries = [
+        (sym, data) for sym, data in scored_symbols.items()
+        if isinstance(data, dict) and data.get("conviction") == "avoid"
+    ]
+    if not avoid_entries:
+        return
+    try:
+        _AVOID_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if _AVOID_LOG_PATH.exists() and _AVOID_LOG_PATH.stat().st_size >= _AVOID_LOG_MAX_BYTES:
+            ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            _AVOID_LOG_PATH.rename(
+                _AVOID_LOG_PATH.parent / f"avoid_log_{ts_str}.jsonl"
+            )
+        ts = datetime.now(timezone.utc).isoformat()
+        with _AVOID_LOG_PATH.open("a") as fh:
+            for sym, data in avoid_entries:
+                signals = data.get("signals") or []
+                fh.write(json.dumps({
+                    "ts":        ts,
+                    "symbol":    sym,
+                    "conviction": "avoid",
+                    "reason":    ",".join(signals[:5]) if signals else "",
+                    "signals":   signals,
+                    "conflicts": data.get("conflicts") or [],
+                    "direction": data.get("direction", "neutral"),
+                    "score":     data.get("score", 0),
+                    "cycle_id":  cycle_id,
+                }) + "\n")
+        log.info("[SIGNALS] avoid_log: wrote %d avoid record(s) for cycle %s", len(avoid_entries), cycle_id)
+    except Exception as exc:
+        log.warning("[SIGNALS] avoid_log write failed (non-fatal): %s", exc)
+
+
+def _maybe_append_short_rule(scored_symbols: dict) -> None:
+    """If any conviction=avoid symbol has ≥2 bearish signals, append a SHORT SELLING RULE
+    instruction to morning_brief_sonnet.json avoid_line for the current cycle."""
+    try:
+        short_candidates: list[tuple[str, list[str]]] = []
+        for sym, data in scored_symbols.items():
+            if not (isinstance(data, dict) and data.get("conviction") == "avoid"):
+                continue
+            signals = [str(s).lower() for s in (data.get("signals") or [])]
+            bearish_hits = [s for s in signals if any(kw in s for kw in _BEARISH_KEYWORDS)]
+            if len(bearish_hits) >= 2:
+                short_candidates.append((sym, bearish_hits[:3]))
+
+        if not short_candidates:
+            return
+
+        if not _SONNET_BRIEF_PATH.exists():
+            return
+        brief = json.loads(_SONNET_BRIEF_PATH.read_text())
+        current_avoid = brief.get("avoid_line", "")
+        # Strip any prior short rule to avoid stacking across cycles
+        if "\nSHORT SELLING RULE:" in current_avoid:
+            current_avoid = current_avoid.split("\nSHORT SELLING RULE:")[0]
+
+        candidates_str = ", ".join(
+            f"{sym} ({','.join(hits)})" for sym, hits in short_candidates
+        )
+        short_rule = (
+            f"\nSHORT SELLING RULE: enter_short is valid for {candidates_str} "
+            "even in risk_on regime — 2+ confirmed bearish signals. "
+            "Size ≤50% of a normal long entry. Risk kernel validates stop placement."
+        )
+        brief["avoid_line"] = current_avoid + short_rule
+        _SONNET_BRIEF_PATH.write_text(json.dumps(brief))
+        log.info("[SIGNALS] short_rule appended for %d symbol(s): %s",
+                 len(short_candidates), [s for s, _ in short_candidates])
+    except Exception as exc:
+        log.warning("[SIGNALS] short_rule append failed (non-fatal): %s", exc)
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # score_signals_layered — public entry point (replaces score_signals)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1002,6 +1093,12 @@ def score_signals_layered(
             "scored_count":      len(result.get("scored_symbols", {})),
             "l1_staleness_min":  result.get("l1_staleness_minutes", 0),
         })
+
+        # Fix 24: persist avoid-conviction symbols for retrospective analysis
+        _cycle_id = datetime.now(timezone.utc).strftime("cycle_%Y%m%d_%H%M%S")
+        _write_avoid_log(result.get("scored_symbols", {}), _cycle_id)
+        # Fix 25: enrich avoid_line with SHORT SELLING RULE when signals are bearish
+        _maybe_append_short_rule(result.get("scored_symbols", {}))
 
         # Archive to daily_conviction.json (unchanged from legacy behaviour)
         try:

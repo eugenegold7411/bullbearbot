@@ -124,6 +124,7 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
             pass
 
     from bot_options_stage1_candidates import (  # noqa: PLC0415
+        _augment_with_avoid_context,
         _get_core_equity_symbols,
         _get_iv_summaries_for_symbols,
         _load_account1_last_decision,
@@ -148,6 +149,8 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
     iv_summaries = _get_iv_summaries_for_symbols(list(signal_scores.keys()))
     log.info("[OPTS] IV summaries: %d symbols, %d in obs mode", len(iv_summaries),
              sum(1 for iv in iv_summaries.values() if iv.get("observation_mode", True)))
+    # Fix 26: enrich account1_summary with high-IV avoided symbols for credit spread routing
+    account1_summary = _augment_with_avoid_context(account1_summary, signal_scores, iv_summaries)
 
     try:
         import options_universe_manager as _oum  # noqa: PLC0415

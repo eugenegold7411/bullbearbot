@@ -726,6 +726,78 @@ def close_structure(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Tiered exit system helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_dte(structure: OptionsStructure) -> Optional[int]:
+    """Days-to-expiry for the structure's expiration date. None if unparseable."""
+    if not structure.expiration:
+        return None
+    try:
+        return (date.fromisoformat(structure.expiration) - date.today()).days
+    except (ValueError, TypeError):
+        return None
+
+
+def _max_loss_usd_estimate(structure: OptionsStructure) -> Optional[float]:
+    """
+    Best-available max-loss proxy in USD for the structure.
+
+    For debit positions: sum of buy-leg fills × contracts × 100.
+    Falls back to max_cost_usd when fills are missing (e.g. orphan recovery).
+    """
+    _buy_cost = sum(
+        float(leg.filled_price) * structure.contracts * 100
+        for leg in structure.legs
+        if leg.side == "buy" and leg.filled_price is not None
+    )
+    if _buy_cost > 0:
+        return _buy_cost
+    if structure.max_cost_usd:
+        try:
+            return float(structure.max_cost_usd)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _resolve_close_targets(structure: OptionsStructure, config: dict) -> dict:
+    """
+    Effective close thresholds for this structure.
+
+    Per-structure overrides on OptionsStructure take precedence over config.
+    Used so orphan_tracked structures can carry tighter exit rules.
+    """
+    a2 = config.get("account2", {}) if isinstance(config, dict) else {}
+    return {
+        "profit_target_pct": (
+            structure.close_profit_target_pct
+            if structure.close_profit_target_pct is not None
+            else float(a2.get("profit_target_pct", 0.75))
+        ),
+        "max_loss_pct": (
+            structure.close_max_loss_pct
+            if structure.close_max_loss_pct is not None
+            else float(a2.get("max_loss_exit_pct", 0.50))
+        ),
+        "time_stop_pct_dte": (
+            structure.close_time_stop_pct_dte
+            if structure.close_time_stop_pct_dte is not None
+            else None
+        ),
+    }
+
+
+def _current_iv_rank(symbol: str) -> Optional[float]:
+    """Best-effort current IV rank for the underlying. None on any failure."""
+    try:
+        from options_data import compute_iv_rank  # noqa: PLC0415
+        return compute_iv_rank(symbol)
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # should_close_structure
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -738,24 +810,35 @@ def should_close_structure(
     """
     Determine if a structure should be closed. Returns (should_close, reason).
 
-    Rules (checked in order):
-    1.  lifecycle == CANCELLED → close broken structure (broken_structure)
-    2.  not is_open() → no-op
-    3.  force_close_structures list in config → close (manual_close)
-    4.  DTE ≤ 2 days → close (expiry_approaching)
-    4a. Time-stop (after DTE check, before P&L check):
-        single legs close at 40% elapsed DTE; debit spreads at 50%.
-        Credit spreads excluded — theta works in their favour.
-    4b. IV crush: current IV < pre-event snap × (1 − threshold) → close.
-        Only fires when account2.iv_monitoring.auto_close_on_crush is True.
-    5.  Loss ≥ 50% of max_risk → close (stop_loss_hit)
-    6.  Gain ≥ 80% of max_profit → close (target_profit_hit)
-    5c. pnl_unrealized-based stop/target (fires when current_prices unavailable
-        or net_debit is zero — closes both gaps in Rules 5 & 6).
-        Config: account2.max_loss_exit_pct (default 0.50),
-                account2.profit_target_pct (default 0.75).
+    Tiered exit system (checked in order):
 
-    Returns (False, "") if none apply.
+    Pre-checks
+        1.  lifecycle == CANCELLED → broken_structure
+        2.  not is_open() → no-op
+        3.  force_close_structures list → manual_close
+
+    Layer 3 — Time exits (highest priority; theta deadline doesn't negotiate)
+        L3a. DTE ≤ 2                          → expiry_approaching
+        L3b. DTE ≤ 4 AND pnl < 0              → loss_cut_near_expiry
+        L3c. DTE ≤ 6 AND loss ≥ 25% of max    → time_stop_loss_near_expiry
+        L3d. Existing elapsed-DTE % rule (single legs 40%, debit spreads 50%)
+
+    L4b. IV crush (config-gated)              → iv_crush_*
+
+    Layer 1 — Profit exits
+        L1d. peak ≥ 60% gain AND retraced to 30% → profit_lock_retrace
+        L1b. DTE ≤ 6 AND pnl ≥ 50% of max_profit → profit_target_50_near_expiry
+        L1c. IV up ≥ 20% from entry AND pnl ≥ 40% of max_profit → iv_expansion_take_profit
+        L1a. pnl ≥ 80% of max_profit (current_prices path) → target_profit_hit
+        L1a'. pnl_unrealized ≥ profit_target_pct of max_profit → profit_target_pct_hit
+
+    Layer 2 — Loss exits
+        L2a. Loss ≥ 50% of max_risk (current_prices path) → stop_loss_hit
+        L2c. Theta cost > $50/day AND loss ≥ 20% of max_loss → theta_burn_underwater
+        L2a'. pnl_unrealized ≤ -max_loss_pct of buy_cost → max_loss_exit
+
+    Per-structure overrides via OptionsStructure.close_profit_target_pct /
+    close_max_loss_pct apply to L1a'/L2a' (used for orphan_tracked).
     """
     # Rule 1: broken structure — but skip if already sent through close_structure()
     # (closed_at set means a close attempt was made; don't re-enter the close loop)
@@ -774,15 +857,25 @@ def should_close_structure(
             or any(structure.structure_id.startswith(fid) for fid in force_list if fid)):
         return True, "manual_close"
 
-    # Rule 4: DTE check
-    if structure.expiration:
-        try:
-            exp_date = date.fromisoformat(structure.expiration)
-            dte = (exp_date - date.today()).days
-            if dte <= 2:
-                return True, "expiry_approaching"
-        except (ValueError, TypeError):
-            pass
+    # ── Derived values reused across layers ──
+    dte         = _compute_dte(structure)
+    max_loss    = _max_loss_usd_estimate(structure)
+    max_profit  = structure.max_profit_usd
+    pnl         = structure.pnl_unrealized
+    targets     = _resolve_close_targets(structure, config)
+
+    # ── LAYER 3: TIME EXITS (highest priority) ──
+    # L3a: DTE ≤ 2 (existing rule, preserved as expiry_approaching)
+    if dte is not None and dte <= 2:
+        return True, "expiry_approaching"
+    # L3b: DTE ≤ 4 AND not profitable → close (salvage)
+    if dte is not None and dte <= 4 and pnl is not None and pnl < 0:
+        return True, "loss_cut_near_expiry"
+    # L3c: DTE ≤ 6 AND loss ≥ 25% of max_loss → close (preserve capital)
+    if (dte is not None and dte <= 6
+            and pnl is not None and max_loss
+            and pnl <= -(max_loss * 0.25)):
+        return True, "time_stop_loss_near_expiry"
 
     # Rule 4a: time-stop (after DTE check, before P&L check)
     _SINGLE_LEG_STRATEGIES = frozenset({
@@ -816,9 +909,28 @@ def should_close_structure(
     except Exception:
         pass
 
+    # ── LAYER 1: PROFIT EXITS ──
+    # L1d: profit-lock retrace — peak ≥ 60% gain that has retraced to 30% locks
+    # in partial gain rather than giving back the move.
+    if (max_profit and pnl is not None
+            and structure.peak_pnl is not None
+            and structure.peak_pnl >= max_profit * 0.60
+            and pnl <= max_profit * 0.30):
+        return True, "profit_lock_retrace"
+    # L1b: 50% profit AND DTE ≤ 6 → take it before theta accelerates
+    if (max_profit and pnl is not None and dte is not None
+            and dte <= 6 and pnl >= max_profit * 0.50):
+        return True, "profit_target_50_near_expiry"
+    # L1c: IV expansion ≥ 20% from entry AND ≥ 40% of max_profit → vega tailwind
+    # banked before mean reversion.  Skips silently if either IV reading absent.
+    if (max_profit and pnl is not None and pnl >= max_profit * 0.40
+            and structure.iv_rank is not None and structure.iv_rank > 0):
+        _cur_iv = _current_iv_rank(structure.underlying)
+        if _cur_iv is not None and _cur_iv >= structure.iv_rank * 1.20:
+            return True, "iv_expansion_take_profit"
+
     # Rules 5 & 6: P&L check using current_prices
     net_debit  = structure.net_debit_per_contract()
-    max_profit = structure.max_profit_usd
 
     if net_debit is not None and net_debit > 0:
         # Debit structure: current_value < net_debit means loss
@@ -833,10 +945,20 @@ def should_close_structure(
             if max_profit and current_pnl >= (max_profit * 0.80):
                 return True, "target_profit_hit"
 
+    # ── LAYER 2c: THETA-BURN UNDERWATER ──
+    # If theta is consuming more than $50/day AND position is ≥ 20% underwater
+    # of max_loss, the daily decay alone outweighs reasonable recovery odds.
+    if (structure.theta is not None and pnl is not None and max_loss):
+        _daily_theta_cost = abs(float(structure.theta)) * 100 * structure.contracts
+        if _daily_theta_cost > 50.0 and pnl <= -(max_loss * 0.20):
+            return True, "theta_burn_underwater"
+
     # Rule 5c: pnl_unrealized-based stop/target — fires when current_prices unavailable
     # (reconciliation always passes {}) or when net_debit is zero (equal-fill spreads).
-    _max_loss_pct = float(config.get("account2", {}).get("max_loss_exit_pct", 0.50))
-    _profit_tgt   = float(config.get("account2", {}).get("profit_target_pct", 0.75))
+    # Uses per-structure overrides via _resolve_close_targets so orphan_tracked
+    # structures can carry tighter exit thresholds.
+    _max_loss_pct = float(targets["max_loss_pct"])
+    _profit_tgt   = float(targets["profit_target_pct"])
     if structure.pnl_unrealized is not None:
         _buy_cost = sum(
             float(leg.filled_price) * structure.contracts * 100

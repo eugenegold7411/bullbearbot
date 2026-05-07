@@ -754,8 +754,21 @@ def close_check_loop(alpaca_client) -> None:
 
                 # Fix 2: update pnl_unrealized snapshot.
                 _pnl = _compute_pnl_unrealized(struct, _current_prices)
+                _save_needed = False
                 if _pnl is not None and struct.pnl_unrealized != _pnl:
                     struct.pnl_unrealized = _pnl
+                    _save_needed = True
+
+                # Tiered-exit Layer 1d: track peak P&L for profit-lock retrace.
+                # Only update on positive moves so the peak monotonically rises.
+                _eval_pnl = struct.pnl_unrealized
+                if _eval_pnl is not None and _eval_pnl > 0:
+                    if struct.peak_pnl is None or _eval_pnl > struct.peak_pnl:
+                        struct.peak_pnl = float(_eval_pnl)
+                        struct.peak_pnl_at = datetime.now(ET).isoformat()
+                        _save_needed = True
+
+                if _save_needed:
                     options_state.save_structure(struct)
 
                 should_close, close_reason = options_executor.should_close_structure(

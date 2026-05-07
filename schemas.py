@@ -730,6 +730,15 @@ class OptionsStructure:
     delta:          Optional[float] = None
     theta:          Optional[float] = None
     vega:           Optional[float] = None
+    # Tiered exit system: peak P&L tracking for profit-lock retrace (Layer 1d).
+    # Updated each close_check_loop cycle when current pnl_unrealized exceeds prior peak.
+    peak_pnl:       Optional[float] = None
+    peak_pnl_at:    Optional[str]   = None
+    # Per-structure close targets (override account2.* config defaults when set).
+    # Used primarily for orphan_tracked structures that need tighter exits.
+    close_profit_target_pct:  Optional[float] = None  # fraction (0.50 = 50%)
+    close_max_loss_pct:       Optional[float] = None
+    close_time_stop_pct_dte:  Optional[float] = None
 
     @property
     def symbol(self) -> str:
@@ -878,6 +887,11 @@ class OptionsStructure:
             delta=_maybe_float(d.get("delta")),
             theta=_maybe_float(d.get("theta")),
             vega=_maybe_float(d.get("vega")),
+            peak_pnl=_maybe_float(d.get("peak_pnl")),
+            peak_pnl_at=d.get("peak_pnl_at"),
+            close_profit_target_pct=_maybe_float(d.get("close_profit_target_pct")),
+            close_max_loss_pct=_maybe_float(d.get("close_max_loss_pct")),
+            close_time_stop_pct_dte=_maybe_float(d.get("close_time_stop_pct_dte")),
         )
 
 

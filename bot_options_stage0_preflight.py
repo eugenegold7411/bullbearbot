@@ -360,6 +360,12 @@ def _reconcile_orphan_positions(
                     "but position remains live in Alpaca"
                 ),
                 close_reason_code="orphan_recovered",
+                # Tiered-exit per-structure overrides (orphan defaults).
+                # Orphans lack original entry context, so close targets are
+                # tightened relative to fresh entries.
+                close_profit_target_pct=0.50,
+                close_max_loss_pct=0.40,
+                close_time_stop_pct_dte=0.50,
             )
             _struct.pnl_unrealized = _total_pnl
             _os.save_structure(_struct)

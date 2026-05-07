@@ -39,7 +39,7 @@ for _name in [
 sys.modules["anthropic"].Anthropic = MagicMock(return_value=MagicMock())
 
 # dotenv stub
-sys.modules["dotenv"].load_dotenv = lambda: None
+sys.modules["dotenv"].load_dotenv = lambda *a, **kw: None
 
 # log_setup: return real Python loggers so caplog works in other test files
 sys.modules["log_setup"].get_logger = lambda name: __import__("logging").getLogger(name)

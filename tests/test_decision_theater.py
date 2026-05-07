@@ -470,9 +470,9 @@ class TestDT13StageDotColors(unittest.TestCase):
     def test_stage_nodes_in_html(self, *_):
         r = _get("/theater")
         html = r.data.decode()
-        self.assertIn("stage-regime", html)
-        self.assertIn("stage-sonnet", html)
-        self.assertIn("stage-node", html)
+        self.assertIn("pipe-regime", html)
+        self.assertIn("pipe-sonnet", html)
+        self.assertIn("pipe-node", html)
 
 
 @_skip_no_flask

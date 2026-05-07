@@ -26,7 +26,7 @@ for _n in ["anthropic", "dotenv", "log_setup", "watchlist_manager",
     _stub(_n)
 
 sys.modules["anthropic"].Anthropic = MagicMock(return_value=MagicMock())
-sys.modules["dotenv"].load_dotenv = lambda: None
+sys.modules["dotenv"].load_dotenv = lambda *a, **kw: None
 sys.modules["log_setup"].get_logger = lambda name: __import__("logging").getLogger(name)
 
 sys.path.insert(0, str(Path(__file__).parent.parent))

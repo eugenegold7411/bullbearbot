@@ -211,8 +211,15 @@ def _stub_alpaca_tree() -> None:
     setattr(_de_mod, "DataFeed", types.SimpleNamespace(IEX="iex", SIP="sip"))
 
     _tf_mod = sys.modules["alpaca.data.timeframe"]
-    for _name in ("TimeFrame", "TimeFrameUnit"):
-        setattr(_tf_mod, _name, _cls(_name))
+    _TimeFrame_stub = _cls("TimeFrame")
+    # market_data.py uses TimeFrame.Day, .Hour, etc. as timeframe arguments to
+    # CryptoBarsRequest/StockBarsRequest.  Tests that mock the bar-fetch client
+    # still need these attributes to exist so the CryptoBarsRequest constructor
+    # doesn't raise AttributeError before the client mock is reached.
+    for _tf_attr in ("Day", "Hour", "Minute", "Week", "Month"):
+        setattr(_TimeFrame_stub, _tf_attr, _tf_attr)
+    setattr(_tf_mod, "TimeFrame", _TimeFrame_stub)
+    setattr(_tf_mod, "TimeFrameUnit", _cls("TimeFrameUnit"))
 
 
 if not _alpaca_compatible():
@@ -367,6 +374,18 @@ try:
 except Exception:
     pass
 
+# Pre-import chromadb so that test_cr_conviction_reconciliation.py (and similar
+# files) cannot install a MagicMock stub at collection time. Without this,
+# chromadb is absent from sys.modules when those files collect (trade_memory
+# uses lazy init), so their "if not in sys.modules" guard does not fire, and the
+# MagicMock stub poisons trade_memory._get_collections() for the duration of the
+# session — breaking test_scratchpad_memory.py even though real chromadb is
+# installed. See PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION env-var set above.
+try:
+    import chromadb as _chromadb_preload  # noqa: F401
+except Exception:
+    pass
+
 # Pre-import modules that test_morning_brief_held_exempt.py stubs at module level via
 # sys.modules.setdefault(). Without this, bare stubs (no attributes) get locked into
 # sys.modules before later tests need the real functions (e.g. get_core, save_structure).
@@ -390,6 +409,19 @@ try:
     import data_warehouse as _dw  # noqa: F401
 except Exception:
     pass
+
+
+# ── Marker-based auto-skip ───────────────────────────────────────────────────
+# requires_chromadb: skip automatically when chromadb is absent from the env.
+# requires_prompts: skip when the private prompt directory is absent.
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    if item.get_closest_marker("requires_chromadb"):
+        from unittest.mock import MagicMock as _MagicMock
+        _chromadb = sys.modules.get("chromadb")
+        # Skip when chromadb is absent or was stubbed with a MagicMock by another test file.
+        if _chromadb is None or isinstance(_chromadb, _MagicMock):
+            pytest.skip("chromadb not installed in this environment")
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

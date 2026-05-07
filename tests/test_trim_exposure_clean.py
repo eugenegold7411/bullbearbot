@@ -35,20 +35,24 @@ for _n in [
 ]:
     _stub(_n)
 
-sys.modules["dotenv"].load_dotenv = lambda: None
+sys.modules["dotenv"].load_dotenv = lambda *a, **kw: None
 sys.modules["log_setup"].get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules["log_setup"].log_trade = lambda *a, **kw: None
 
-# Alpaca enum stubs needed by order_executor
+# Alpaca enum stubs needed by order_executor — only install if the real alpaca
+# hasn't already populated these (prevents corrupting the real module in CI).
 for _enum_name in ["AssetStatus", "ContractType", "OrderClass", "OrderSide",
                    "PositionIntent", "TimeInForce"]:
-    setattr(sys.modules["alpaca.trading.enums"], _enum_name, MagicMock())
+    if not hasattr(sys.modules["alpaca.trading.enums"], _enum_name):
+        setattr(sys.modules["alpaca.trading.enums"], _enum_name, MagicMock())
 for _req_name in ["GetOptionContractsRequest", "LimitOrderRequest", "MarketOrderRequest",
                   "StopLossRequest", "StopOrderRequest", "TakeProfitRequest"]:
-    setattr(sys.modules["alpaca.trading.requests"], _req_name, MagicMock())
+    if not hasattr(sys.modules["alpaca.trading.requests"], _req_name):
+        setattr(sys.modules["alpaca.trading.requests"], _req_name, MagicMock())
 
 _stub("schemas")
-sys.modules["schemas"].alpaca_symbol = lambda s: s
+if not hasattr(sys.modules["schemas"], "alpaca_symbol"):
+    sys.modules["schemas"].alpaca_symbol = lambda s: s
 
 
 # ---------------------------------------------------------------------------

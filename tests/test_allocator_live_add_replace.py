@@ -24,8 +24,23 @@ module-level import.
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
+
+import pytest
+
+_ET = ZoneInfo("America/New_York")
+
+
+@pytest.fixture(autouse=True)
+def _freeze_market_hours():
+    """Freeze clock at 10 AM ET so the near-close gate never fires."""
+    _am = datetime(2026, 5, 7, 10, 0, 0, tzinfo=_ET)
+    with patch("risk_kernel._get_et_now", return_value=_am):
+        yield
+
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 

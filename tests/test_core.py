@@ -2668,11 +2668,12 @@ class TestSuite14OptionsBuilder(unittest.TestCase):
     # ── T1: StructureLifecycle 8-value spec ───────────────────────────────────
 
     def test_structure_lifecycle_new_values(self):
-        """T1: StructureLifecycle must expose all 8 spec-mandated values."""
+        """T1: StructureLifecycle must expose all spec-mandated values."""
         from schemas import StructureLifecycle
         expected = {
             "proposed", "submitted", "partially_filled", "fully_filled",
             "closed", "rejected", "expired", "cancelled",
+            "orphan_tracked",  # added in orphan reconciler (S25)
         }
         actual = {e.value for e in StructureLifecycle}
         self.assertEqual(

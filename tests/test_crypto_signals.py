@@ -1,10 +1,20 @@
 """
 Tests for get_crypto_signals() RSI/MACD completeness (CS-01 through CS-08).
 """
+import importlib.util
 import re
 import sys
 import types
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+try:
+    _spec = importlib.util.find_spec("pandas_ta")
+    _PANDAS_TA_AVAILABLE = _spec is not None
+except ValueError:
+    # Already in sys.modules with __spec__ = None → conftest installed a bare stub
+    _PANDAS_TA_AVAILABLE = False
 
 
 def _ensure_stubs():
@@ -61,6 +71,7 @@ def _run_get_crypto_signals(bars_by_sym: dict) -> str:
 # CS-01: RSI present with numeric value
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _PANDAS_TA_AVAILABLE, reason="pandas_ta not installed")
 def test_cs01_rsi_present_in_output():
     signal_str = _run_get_crypto_signals({
         "BTC/USD": _make_bars(40),
@@ -75,6 +86,7 @@ def test_cs01_rsi_present_in_output():
 # CS-02: MACD present with numeric value
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _PANDAS_TA_AVAILABLE, reason="pandas_ta not installed")
 def test_cs02_macd_present_in_output():
     signal_str = _run_get_crypto_signals({
         "BTC/USD": _make_bars(40),
@@ -89,6 +101,7 @@ def test_cs02_macd_present_in_output():
 # CS-03: RSI=? when fewer than 15 bars (not absent)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _PANDAS_TA_AVAILABLE, reason="pandas_ta not installed")
 def test_cs03_rsi_unavail_when_insufficient_bars():
     # _compute_indicators returns {} when len < 27, so output skips the symbol entirely.
     # With 10 bars the function will skip the symbol (ind empty → continue).
@@ -108,6 +121,7 @@ def test_cs03_rsi_unavail_when_insufficient_bars():
 # CS-04: MACD=? when fewer than 27 bars
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _PANDAS_TA_AVAILABLE, reason="pandas_ta not installed")
 def test_cs04_macd_unavail_when_insufficient_bars():
     # 20 bars: enough for RSI but not MACD (needs 26+)
     signal_str = _run_get_crypto_signals({

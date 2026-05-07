@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import sys
 import unittest
+from datetime import datetime
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 # ── Alpaca mock helpers ───────────────────────────────────────────────────────
 
@@ -378,6 +380,7 @@ class TestUntrackedPositionGate(unittest.TestCase):
 
         import bot_options_stage0_preflight as _mod
 
+        _am = datetime(2026, 5, 7, 10, 0, 0, tzinfo=ZoneInfo("America/New_York"))
         with patch.dict(sys.modules, {
             "preflight":    preflight_mock,
             "options_state": opts_state_mock,
@@ -387,7 +390,8 @@ class TestUntrackedPositionGate(unittest.TestCase):
             "alpaca.trading.requests": MagicMock(),
         }):
             importlib.reload(_mod)
-            result = _mod.run_a2_preflight("market", client)
+            with patch.object(_mod, "_get_et_now", return_value=_am):
+                result = _mod.run_a2_preflight("market", client)
 
         return result
 
@@ -439,6 +443,7 @@ class TestUntrackedPositionGate(unittest.TestCase):
 
         import bot_options_stage0_preflight as _mod
 
+        _am = datetime(2026, 5, 7, 10, 0, 0, tzinfo=ZoneInfo("America/New_York"))
         with patch.dict(sys.modules, {
             "preflight":     preflight_mock,
             "options_state": opts_state_mock,
@@ -448,7 +453,8 @@ class TestUntrackedPositionGate(unittest.TestCase):
             "alpaca.trading.requests": MagicMock(),
         }):
             importlib.reload(_mod)
-            result = _mod.run_a2_preflight("market", client)
+            with patch.object(_mod, "_get_et_now", return_value=_am):
+                result = _mod.run_a2_preflight("market", client)
 
         # The gate failure must not halt the cycle
         self.assertFalse(result.halt,

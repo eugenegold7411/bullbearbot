@@ -518,7 +518,9 @@ class TestEarningsCalendar(unittest.TestCase):
 
     def test_fresh_file_with_entries_is_ok(self):
         now = _market_time()
-        with patch("health_monitor._DATA_DIR", _mock_cal_dir(_make_calendar_str(5, 1), age_h=1.0)):
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        with patch("health_monitor._DATA_DIR",
+                   _mock_cal_dir(_make_calendar_str(5, 1, refresh_date=today), age_h=1.0)):
             r = _check_earnings_calendar(now)
         self.assertTrue(r.ok)
         self.assertEqual(r.severity, "OK")

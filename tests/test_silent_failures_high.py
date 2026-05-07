@@ -159,9 +159,10 @@ class TestSF10SaveTradeMemory(unittest.TestCase):
         _clear_all_caches()
 
     def test_sf10_normal_no_alert(self) -> None:
-        # chromadb is intentionally not stubbed — _get_collections returns (None, None, None)
-        # → early return before the exception block; no alert should fire
-        with patch("notifications.send_whatsapp_direct") as mock_wa:
+        # Simulate chromadb absent: _get_collections returns (None, None, None)
+        # → save_trade_memory returns "" early; no exception, no alert.
+        with patch("trade_memory._get_collections", return_value=(None, None, None)), \
+             patch("notifications.send_whatsapp_direct") as mock_wa:
             result = trade_memory.save_trade_memory({}, {}, "standard")
         assert result == ""
         mock_wa.assert_not_called()

@@ -11,6 +11,12 @@ VX-07: VIX=45 → exits and stops never blocked
 VX-08: Config thresholds respected (not hardcoded)
 """
 
+from datetime import datetime
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
+
+import pytest
+
 from risk_kernel import eligibility_check, get_vix_context_note
 from schemas import (
     AccountAction,
@@ -19,6 +25,17 @@ from schemas import (
     Tier,
     TradeIdea,
 )
+
+_ET = ZoneInfo("America/New_York")
+
+
+@pytest.fixture(autouse=True)
+def _freeze_market_hours():
+    """Freeze clock at 10 AM ET so the near-close gate never fires."""
+    _am = datetime(2026, 5, 7, 10, 0, 0, tzinfo=_ET)
+    with patch("risk_kernel._get_et_now", return_value=_am):
+        yield
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

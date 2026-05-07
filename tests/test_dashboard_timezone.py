@@ -64,7 +64,7 @@ class TestNowEt(unittest.TestCase):
     """TZ-01, TZ-02 — _now_et() returns correct ET wall-clock time."""
 
     def _call(self, base_utc):
-        with patch("dashboard.app.datetime") as mock_dt:
+        with patch.object(_DASH, "datetime") as mock_dt:
             mock_dt.now.side_effect = _make_fake_now(base_utc)
             mock_dt.fromisoformat = datetime.fromisoformat
             return _DASH._now_et()
@@ -85,7 +85,7 @@ class TestIsMarketHours(unittest.TestCase):
     """TZ-03, TZ-04 — _is_market_hours() returns True at 10:00 AM ET on a weekday."""
 
     def _call(self, base_utc):
-        with patch("dashboard.app.datetime") as mock_dt:
+        with patch.object(_DASH, "datetime") as mock_dt:
             mock_dt.now.side_effect = _make_fake_now(base_utc)
             mock_dt.fromisoformat = datetime.fromisoformat
             return _DASH._is_market_hours()

@@ -1,5 +1,4 @@
 """bot_options.py — Account 2 options bot (thin orchestrator). Wires stage 0-4."""
-import json
 import os
 import time
 from pathlib import Path
@@ -103,25 +102,10 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
 
     obs_state = _get_obs_mode_state()
     obs_mode  = _update_obs_mode_state(obs_state)
-    vix = 20.0; regime = "normal"  # noqa: E702
-    try:
-        import yfinance as yf  # noqa: PLC0415
-        _vh = yf.Ticker("^VIX").history(period="1d")
-        if not _vh.empty:
-            _vix_live = round(float(_vh["Close"].iloc[-1]), 2)
-            _vc = Path(__file__).parent / "data" / "market" / "vix_cache.json"
-            _vc.parent.mkdir(parents=True, exist_ok=True)
-            _vc.write_text(json.dumps({"vix": _vix_live, "fetched_at": time.time()}))
-            vix = _vix_live
-            log.info("[OPTS] VIX=%.2f (live)", vix)
-    except Exception as _vix_exc:
-        log.debug("[OPTS] VIX live fetch failed, trying cache: %s", _vix_exc)
-        try:
-            _vc = Path(__file__).parent / "data" / "market" / "vix_cache.json"
-            if _vc.exists() and (time.time() - _vc.stat().st_mtime) < 600:
-                vix = float(json.loads(_vc.read_text()).get("vix", vix))
-        except Exception:
-            pass
+    from market_data import get_vix_with_fallback  # noqa: PLC0415
+    vix = get_vix_with_fallback(default=20.0)
+    log.info("[OPTS] VIX=%.2f", vix)
+    regime = "normal"
 
     from bot_options_stage1_candidates import (  # noqa: PLC0415
         _augment_with_avoid_context,

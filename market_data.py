@@ -77,6 +77,11 @@ ET  = ZoneInfo("America/New_York")
 _VIX_CACHE: dict = {"value": None, "ts": 0.0}
 _VIX_CACHE_MAX_AGE_S: float = 14400.0  # 4 hours
 
+_VIX_FILE_CACHE: Path = Path(__file__).parent / "data" / "market" / "vix_cache.json"
+_VIX_FILE_CACHE_MAX_AGE_S: float = 1800.0  # 30 minutes cross-process fallback
+_VIX_FAILURE_ALERT_THRESHOLD: int = 3
+_vix_consecutive_failures: int = 0
+
 _SAFETY_DEDUP_SECS: float = 300.0
 _SAFETY_ALERT_CACHE: dict[str, float] = {}
 
@@ -222,15 +227,22 @@ def get_vix() -> float | None:
     """
     Section type: REQUIRED
     Compact prompt: YES ({vix}, {vix_label})
-    Fetches live VIX. Caches successful fetches for up to 4 hours.
+    Fetches live VIX. Caches successful fetches in memory (4h) and to disk.
     Returns None (not 0.0) when data is genuinely absent -- callers must degrade.
+    Use get_vix_with_fallback() for a guaranteed float return with alerting.
     """
+    import json as _json  # noqa: PLC0415
     try:
         hist = yf.Ticker("^VIX").history(period="2d")
         if not hist.empty:
             val = round(float(hist["Close"].iloc[-1]), 2)
             _VIX_CACHE["value"] = val
             _VIX_CACHE["ts"] = time.time()
+            try:
+                _VIX_FILE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+                _VIX_FILE_CACHE.write_text(_json.dumps({"vix": val, "fetched_at": time.time()}))
+            except Exception:
+                pass
             return val
     except Exception as exc:
         log.warning("[VIX] Live fetch failed: %s", exc)
@@ -242,6 +254,70 @@ def get_vix() -> float | None:
 
     log.error("[VIX] No valid VIX data -- cache absent or >%.0fh old", _VIX_CACHE_MAX_AGE_S / 3600)
     return None
+
+
+def get_vix_with_fallback(default: float = 20.0) -> float:
+    """
+    Guaranteed-float VIX with layered fallback and consecutive-failure alerting.
+
+    Resolution order:
+      1. get_vix() — live yfinance fetch (+ 4h in-memory cache)
+      2. data/market/vix_cache.json — cross-process file cache (30min TTL)
+      3. default — with WARNING log; WhatsApp alert after _VIX_FAILURE_ALERT_THRESHOLD failures
+
+    A2 bot uses this instead of its own yfinance fetch so A1 and A2 share one VIX source.
+    """
+    import json as _json  # noqa: PLC0415
+    global _vix_consecutive_failures
+
+    result = get_vix()
+    if result is not None:
+        _vix_consecutive_failures = 0
+        return result
+
+    _vix_consecutive_failures += 1
+
+    try:
+        if _VIX_FILE_CACHE.exists():
+            age = time.time() - _VIX_FILE_CACHE.stat().st_mtime
+            if age < _VIX_FILE_CACHE_MAX_AGE_S:
+                cached = float(_json.loads(_VIX_FILE_CACHE.read_text()).get("vix", 0) or 0)
+                if cached > 0:
+                    log.warning(
+                        "[VIX] Live+memory failed; using file cache=%.1f (%.0f min old)",
+                        cached, age / 60,
+                    )
+                    _maybe_fire_vix_alert()
+                    return cached
+    except Exception:
+        pass
+
+    log.warning("[VIX] All sources failed — using fallback=%.1f", default)
+    _maybe_fire_vix_alert()
+    return default
+
+
+def _maybe_fire_vix_alert() -> None:
+    """Fire a WhatsApp alert when consecutive VIX failures reach threshold. 5-min dedup."""
+    if _vix_consecutive_failures < _VIX_FAILURE_ALERT_THRESHOLD:
+        return
+    _key = "vix_fetch_failure"
+    now = time.time()
+    if now - _SAFETY_ALERT_CACHE.get(_key, 0) < _SAFETY_DEDUP_SECS:
+        return
+    _SAFETY_ALERT_CACHE[_key] = now
+    try:
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        from notifications import send_whatsapp_direct  # noqa: PLC0415
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        send_whatsapp_direct(
+            f"[VIX DEGRADED] {_vix_consecutive_failures} consecutive VIX fetch failures — "
+            f"using fallback. Check yfinance / ^VIX ticker. {ts}"
+        )
+    except Exception:
+        pass
+
 
 def vix_regime(vix: float) -> tuple[str, str]:
     """Returns (regime_label, instruction)."""

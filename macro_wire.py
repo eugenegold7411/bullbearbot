@@ -507,7 +507,8 @@ def save_live_cache(articles: list) -> None:
 def save_significant_events(articles: list) -> None:
     """
     Append high-significance articles to significant_events.jsonl.
-    Criteria: impact_score >= 7 OR keyword_tier == "critical"
+    Criteria: (impact_score >= 8.0 AND tier in critical/high) OR
+              (impact_score >= 6.0 AND haiku_confirmed market-moving)
     append-only, never deleted or truncated.
     """
     MACRO_DIR.mkdir(parents=True, exist_ok=True)
@@ -540,8 +541,8 @@ def save_significant_events(articles: list) -> None:
                 score = a.get("impact_score", 0)
                 tier  = a.get("keyword_tier", "none")
                 haiku_confirmed = a.get("is_market_moving") is True
-                if score >= 7 or tier == "critical" or (
-                    score >= 5 and tier in ("critical", "high") and haiku_confirmed
+                if (score >= 8.0 and tier in ("critical", "high")) or (
+                    score >= 6.0 and haiku_confirmed
                 ):
                     rec = {
                         "ts":                        datetime.now(ET).isoformat(),
@@ -560,8 +561,7 @@ def save_significant_events(articles: list) -> None:
                         "spx_move_next_30min":       None,
                         "trade_decisions_next_60min":[],
                         "stored_reason":             (
-                            "critical_keyword" if tier == "critical"
-                            else "haiku_confirmed_market_moving" if haiku_confirmed and score < 7
+                            "haiku_confirmed_market_moving" if haiku_confirmed and score < 8.0
                             else "high_impact_score"
                         ),
                     }
@@ -913,7 +913,7 @@ def build_macro_wire_section() -> str:
         age   = a.get("age_minutes", 9999)
         score = a.get("impact_score", 0)
         tier  = a.get("keyword_tier", "none")
-        if age < 30 or (score >= 7 and age < 240) or (tier == "critical" and age < 1440):
+        if age < 30 or (score >= 7 and age < 240) or (score >= 8.0 and tier in ("critical", "high") and age < 1440):
             qualifying.append(a)
 
     if not qualifying:

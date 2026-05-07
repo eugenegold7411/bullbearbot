@@ -274,14 +274,14 @@ class TestCommodityPriceMonitor(unittest.TestCase):
         self.assertEqual(len(events), 0,
                          f"Expected 0 events for 1.5% move, got {len(events)}: {events}")
 
-    def test_7_haiku_confirmed_events_saved_at_score_5(self):
-        """save_significant_events writes score=5.6 article when is_market_moving=True and tier=high."""
+    def test_7_haiku_confirmed_events_saved_at_score_6(self):
+        """save_significant_events writes score=6.5 article when is_market_moving=True (new gate: score>=6.0+haiku)."""
         from macro_wire import save_significant_events
 
         article = {
             "headline":         "Oil prices fall sharply on Iran deal report",
             "summary":          "WTI crude slides as US-Iran negotiations advance",
-            "impact_score":     5.6,
+            "impact_score":     6.5,
             "keyword_tier":     "high",
             "source":           "WSJ",
             "is_market_moving": True,
@@ -292,17 +292,16 @@ class TestCommodityPriceMonitor(unittest.TestCase):
             "one_line_summary": "Oil falls on Iran deal",
         }
 
-        # Gate logic: score >= 7 OR tier == "critical" OR (score>=5 AND high AND is_market_moving)
+        # Gate logic: (score>=8.0 AND tier in critical/high) OR (score>=6.0 AND haiku_confirmed)
         score = article["impact_score"]
         tier  = article["keyword_tier"]
         haiku_confirmed = article.get("is_market_moving") is True
         should_save = (
-            score >= 7
-            or tier == "critical"
-            or (score >= 5 and tier in ("critical", "high") and haiku_confirmed)
+            (score >= 8.0 and tier in ("critical", "high"))
+            or (score >= 6.0 and haiku_confirmed)
         )
         self.assertTrue(should_save,
-                        "score=5.6, tier=high, is_market_moving=True should pass the gate")
+                        "score=6.5, tier=high, is_market_moving=True should pass the gate")
 
         # Also verify the function actually writes — patch SIG_EVENTS path and MACRO_DIR
         written = []
@@ -323,17 +322,16 @@ class TestCommodityPriceMonitor(unittest.TestCase):
                         "Expected at least one write call for score=5.6 + haiku confirmed")
 
     def test_7b_not_saved_without_haiku_confirmation(self):
-        """score=5.6, tier=high, is_market_moving=False does NOT pass the gate."""
-        score = 5.6
+        """score=6.5, tier=high, is_market_moving=False does NOT pass the gate."""
+        score = 6.5
         tier  = "high"
         haiku_confirmed = False
         should_save = (
-            score >= 7
-            or tier == "critical"
-            or (score >= 5 and tier in ("critical", "high") and haiku_confirmed)
+            (score >= 8.0 and tier in ("critical", "high"))
+            or (score >= 6.0 and haiku_confirmed)
         )
         self.assertFalse(should_save,
-                         "score=5.6, tier=high, is_market_moving=False should NOT pass without haiku")
+                         "score=6.5, tier=high, is_market_moving=False should NOT pass without haiku")
 
 
 if __name__ == "__main__":

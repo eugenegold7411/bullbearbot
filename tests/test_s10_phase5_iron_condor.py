@@ -15,7 +15,7 @@ Tests:
   IC-11  _select_iron_butterfly_strikes() ATM strike is closest to spot
   IC-12  RULE_IRON fires — iv_rank=75, neutral direction → ['iron_condor']
   IC-13  RULE_IRON fires — iv_rank=85, neutral direction → ['iron_butterfly', 'iron_condor']
-  IC-14  RULE_IRON fires — iv_rank=85, bullish direction → ['iron_butterfly', 'iron_condor']
+  IC-14  RULE_IRON neutral-only — iv_rank=85, bullish direction → ['short_put'] (RULE_SHORT_PUT)
   IC-15  RULE_IRON does NOT fire — iv_rank=65 (below 70 floor)
   IC-16  RULE_IRON does NOT fire — earnings within blackout (eda=1)
   IC-17  RULE_IRON does NOT fire — iv_rank=72, bearish direction (only neutral or ≥85)
@@ -298,11 +298,11 @@ class TestRuleIron:
                                "a1_direction": "neutral"})
         assert result == ["iron_butterfly", "iron_condor"]
 
-    def test_IC14_fires_bullish_iv85_both_structures(self):
-        """iv_rank=85, expensive env, bullish direction → ['iron_butterfly', 'iron_condor'] (≥85 overrides direction)."""
+    def test_IC14_fires_bullish_iv85_routes_short_put(self):
+        """iv_rank=85, expensive env, bullish direction → ['short_put'] (RULE_IRON neutral-only; bullish falls to RULE_SHORT_PUT)."""
         result = self._route({"iv_rank": 85.0, "iv_environment": "expensive",
                                "a1_direction": "bullish"})
-        assert result == ["iron_butterfly", "iron_condor"]
+        assert result == ["short_put"]
 
     def test_IC15_does_not_fire_iv_rank_too_low(self):
         """iv_rank=40 < 50 floor → RULE_IRON skipped (new threshold is 50)."""

@@ -163,10 +163,13 @@ class TestOcaCancelStopPath(unittest.TestCase):
         alpaca.cancel_order_by_id.return_value = None
 
         replaced = []
+        _mock_tp_path = MagicMock()
+        _mock_tp_path.exists.return_value = False
         with patch.object(self._oe, "_get_alpaca", return_value=alpaca):
             with patch.object(self._oe, "_submit_sell", return_value=("sell-id", 383.0, 45, None)):
                 with patch.object(self._oe, "_replace_stop", side_effect=lambda s, q, sp: replaced.append((s, q, sp))):
-                    self._oe._sell_cancel_stop_and_sell("GOOGL", 45, [pos])
+                    with patch("order_executor.Path", return_value=_mock_tp_path):
+                        self._oe._sell_cancel_stop_and_sell("GOOGL", 45, [pos])
 
         # Should re-place stop for remaining 126 - 45 = 81 shares
         self.assertEqual(len(replaced), 1)

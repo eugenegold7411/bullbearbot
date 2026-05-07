@@ -7,10 +7,10 @@ normally via IV environment rules (no blanket earnings block).
 Covers:
   R1-01: eda=0 timing=unknown -> routes normally (RULE6: debit_call_spread)
   R1-02: eda=1 pre_market iv_rank=95 bullish -> credit_put_spread (RULE2_CREDIT)
-  R1-03: eda=1 pre_market iv_rank=30 bullish -> debit_call_spread + straddle (RULE_EARNINGS)
-  R1-04: eda=1 pre_market iv_rank=55 bullish -> debit_call_spread + straddle (RULE_EARNINGS)
+  R1-03: eda=1 pre_market iv_rank=30 bullish -> debit_call_spread (RULE_EARNINGS, straddle neutral-only)
+  R1-04: eda=1 pre_market iv_rank=55 bullish -> debit_call_spread (RULE_EARNINGS, straddle neutral-only)
   R1-05: eda=2 iv_rank=88 bullish -> credit_put_spread (RULE2_CREDIT)
-  R1-06: eda=2 iv_rank=25 bullish -> debit_call_spread + straddle (RULE_EARNINGS)
+  R1-06: eda=2 iv_rank=25 bullish -> debit_call_spread (RULE_EARNINGS, straddle neutral-only)
   R1-07: eda=2 direction=neutral -> straddle (RULE_EARNINGS)
   R1-08: eda=4 iv_rank=100 -> RULE_EARNINGS_HIGH_IV fires first (disabled by default)
   R1-09: eda=-1 -> RULE_POST_EARNINGS fires
@@ -172,20 +172,20 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                          f"Expected credit_call_spread for CVX eda=1 pre_market iv=89, got {result}")
 
     def test_R1_03_eda1_premarket_low_iv_bullish_debit(self):
-        """R1-03: eda=1 iv_rank=30 bullish -> RULE_EARNINGS fires (debit_call_spread + straddle)."""
+        """R1-03: eda=1 iv_rank=30 bullish -> RULE_EARNINGS fires (debit_call_spread; straddle neutral-only)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=30,
                           iv_environment="cheap", a1_direction="bullish")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, ["debit_call_spread", "straddle"],
-                         f"Expected RULE_EARNINGS debit+straddle for eda=1 iv=30, got {result}")
+        self.assertEqual(result, ["debit_call_spread"],
+                         f"Expected RULE_EARNINGS debit_call_spread for eda=1 iv=30, got {result}")
 
     def test_R1_04_eda1_premarket_middle_iv_routes(self):
-        """R1-04: eda=1 iv_rank=55 bullish -> RULE_EARNINGS fires (debit_call_spread + straddle)."""
+        """R1-04: eda=1 iv_rank=55 bullish -> RULE_EARNINGS fires (debit_call_spread; straddle neutral-only)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=55,
                           iv_environment="neutral", a1_direction="bullish")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, ["debit_call_spread", "straddle"],
-                         f"Expected RULE_EARNINGS for eda=1 iv=55 bullish, got {result}")
+        self.assertEqual(result, ["debit_call_spread"],
+                         f"Expected RULE_EARNINGS debit_call_spread for eda=1 iv=55 bullish, got {result}")
 
     def test_R1_04b_eda1_premarket_neutral_direction_credit(self):
         """R1-04b: eda=1 iv_rank=95 very_expensive neutral -> RULE2_CREDIT fires."""
@@ -204,12 +204,12 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                          f"Expected credit_put_spread for eda=2 iv=88, got {result}")
 
     def test_R1_06_eda2_low_iv_bullish_debit(self):
-        """R1-06: eda=2 iv_rank=25 bullish -> RULE_EARNINGS fires (debit_call_spread + straddle)."""
+        """R1-06: eda=2 iv_rank=25 bullish -> RULE_EARNINGS fires (debit_call_spread; straddle neutral-only)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=2, iv_rank=25,
                           iv_environment="cheap", a1_direction="bullish")
         result = _route_no_cal(pack)
-        self.assertEqual(result, ["debit_call_spread", "straddle"],
-                         f"Expected RULE_EARNINGS debit+straddle for eda=2 iv=25, got {result}")
+        self.assertEqual(result, ["debit_call_spread"],
+                         f"Expected RULE_EARNINGS debit_call_spread for eda=2 iv=25, got {result}")
 
     def test_R1_07_eda2_neutral_direction_straddle(self):
         """R1-07: eda=2 direction=neutral -> RULE_EARNINGS fires (straddle only)."""

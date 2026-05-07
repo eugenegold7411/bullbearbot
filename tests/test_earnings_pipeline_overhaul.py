@@ -654,19 +654,21 @@ class TestRuleEarningsDirectional:
         pack.macro_event_flag = False
         return pack
 
-    def test_bullish_returns_debit_call_and_straddle(self):
+    def test_bullish_returns_debit_call_only(self):
+        # 139b57f: strict direction mandate — straddle is neutral-only
         from bot_options_stage2_structures import _route_strategy
         pack = self._pack("bullish")
         allowed = _route_strategy(pack)
         assert "debit_call_spread" in allowed
-        assert "straddle" in allowed
+        assert "straddle" not in allowed
 
-    def test_bearish_returns_debit_put_and_straddle(self):
+    def test_bearish_returns_debit_put_only(self):
+        # 139b57f: strict direction mandate — straddle is neutral-only
         from bot_options_stage2_structures import _route_strategy
         pack = self._pack("bearish")
         allowed = _route_strategy(pack)
         assert "debit_put_spread" in allowed
-        assert "straddle" in allowed
+        assert "straddle" not in allowed
 
     def test_neutral_returns_straddle_only(self):
         from bot_options_stage2_structures import _route_strategy
@@ -680,7 +682,7 @@ class TestRuleEarningsDirectional:
         pack = self._pack("bullish", dte=3)
         allowed = _route_strategy(pack)
         # eda=3 > default blackout=2 → RULE1 doesn't fire; RULE_EARNINGS fires (3 in (2,14])
-        # iv_rank=40 < earnings_iv_rank_gate=70 + bullish → debit_call_spread + straddle
+        # iv_rank=40 < earnings_iv_rank_gate=70 + bullish → debit_call_spread (straddle neutral-only)
         assert "debit_call_spread" in allowed
 
     def test_elevated_iv_rank_skips_earnings_rule(self):

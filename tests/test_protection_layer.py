@@ -25,13 +25,11 @@ Issue 3 — order_executor deferred cancel-replace:
 
 from __future__ import annotations
 
-import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

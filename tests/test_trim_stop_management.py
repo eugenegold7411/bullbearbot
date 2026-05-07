@@ -226,7 +226,7 @@ def test_oco_stop_price_extracted_from_leg_and_oco_placed():
 
     # OCO must be submitted for remaining 70 shares
     submitted = [c.args[0] for c in client.submit_order.call_args_list]
-    from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+    from alpaca.trading.enums import OrderClass, OrderSide
     oco_orders = [
         r for r in submitted
         if getattr(r, "order_class", None) == OrderClass.OCO
@@ -286,13 +286,6 @@ def test_oco_replace_fails_fires_safety_alert_and_standalone_stop():
     ), f"Expected 'oco_replace' alert, got: {alerts}"
 
     # Standalone stop must be placed as fallback (third submit_order call)
-    submitted = [c.args[0] for c in client.submit_order.call_args_list]
-    from alpaca.trading.enums import OrderClass
-    stop_only = [
-        r for r in submitted
-        if getattr(r, "order_class", None) not in ("oco", "bracket", OrderClass.OCO, OrderClass.BRACKET)
-        and getattr(r, "stop_price", None) is not None
-    ]
     # The standalone stop is placed via _replace_stop → submit_order with StopOrderRequest
     # Verify at least one stop-only submit happened after the OCO error
     assert len(client.submit_order.call_args_list) >= 3, (
@@ -392,10 +385,11 @@ def test_submit_buy_bug009b_oco_failure_fires_safety_alert():
     _fire_safety_alert must be called with '_submit_buy.oco_placement'.
     """
     _ensure_stubs()
+    from alpaca.trading.enums import OrderSide
+
     import order_executor as oe
 
     # Bracket fills, open_orders has a stop but no TP (BUG-009b path)
-    from alpaca.trading.enums import OrderSide
     stop_ord = MagicMock()
     stop_ord.id = "existing-stop-id"
     stop_ord.side = OrderSide.SELL

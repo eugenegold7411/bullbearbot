@@ -84,7 +84,7 @@ class TestPolylineSparkline(unittest.TestCase):
 class TestClosedTodaySection(unittest.TestCase):
     def setUp(self):
         # Build trades.jsonl with today's fills (in ET) for AMZN exit
-        from datetime import datetime, timedelta
+        from datetime import datetime
         now_et = datetime.now(app.ET)
         # buy at 9:30 ET, sell at 14:00 ET, both today
         buy_ts = now_et.replace(hour=9, minute=30, second=0, microsecond=0).isoformat()

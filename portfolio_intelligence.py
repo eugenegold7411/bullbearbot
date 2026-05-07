@@ -645,9 +645,10 @@ def score_position_thesis(
     Score the thesis of an open position 1-10 using pure Python heuristics.
     No Claude API call — runs every cycle for every position with zero latency.
 
-    Scoring factors (each adds/subtracts from a base of 8):
+    Scoring factors (each adds/subtracts from a base of 6):
       Catalyst recency  — catalyst age in days
       Technical         — price vs MA20, EMA9 from cached bars
+                          above BOTH: +1 | above ONE: 0 | below both: -1
       P&L momentum      — trending toward target or stop
       Sector alignment  — sector ETF performance today
       Time decay        — catalyst type specific decay
@@ -662,7 +663,7 @@ def score_position_thesis(
     Authority: RECOMMENDATION — produces analytics for prompt injection.
       Never places orders. Caller decides whether to act.
     """
-    score         = 8
+    score         = 6
     weaknesses: list[str] = []
 
     entry_price   = float(position.avg_entry_price)
@@ -700,8 +701,7 @@ def score_position_thesis(
             score += 1
             technical_intact = True
         elif above_ma20 or above_ema9:
-            score += 1
-            technical_intact = True
+            technical_intact = True  # one MA intact — neutral, no score adjustment
         else:
             score -= 1
             weaknesses.append("below MA20 and EMA9")

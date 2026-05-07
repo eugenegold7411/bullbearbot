@@ -75,6 +75,7 @@ _A2_ROUTER_DEFAULTS: dict = {
     "pre_earnings_iv_rank_min":                   85,   # IV rank floor (very elevated only)
     "pre_earnings_dte_min":                        7,   # minimum DTE for pre-earnings credit spread
     "pre_earnings_dte_max":                       14,   # maximum DTE for pre-earnings credit spread
+    "earnings_credit_spread_max_size":            0.5,  # max_loss_pct cap for RULE_EARNINGS_HIGH_IV structures
     # RULE_STRADDLE_STRANGLE: cheap IV + approaching earnings window
     "straddle_iv_rank_max":  40,   # IV rank ceiling (cheap premium required)
     "straddle_dte_min":       6,   # minimum DTE window for straddle/strangle entry
@@ -368,10 +369,11 @@ def _route_strategy(
     pe_crush_thr = float(rcfg.get("post_earnings_iv_already_crushed_threshold", 15))
 
     # Pre-earnings high-IV config
-    pre_earn_enabled = bool(rcfg.get("pre_earnings_credit_spread_enabled", False))
-    pre_earn_iv_min  = float(rcfg.get("pre_earnings_iv_rank_min", 85))
-    pre_earn_dte_min = int(rcfg.get("pre_earnings_dte_min", 7))
-    pre_earn_dte_max = int(rcfg.get("pre_earnings_dte_max", 14))
+    pre_earn_enabled  = bool(rcfg.get("pre_earnings_credit_spread_enabled", False))
+    pre_earn_iv_min   = float(rcfg.get("pre_earnings_iv_rank_min", 85))
+    pre_earn_dte_min  = int(rcfg.get("pre_earnings_dte_min", 7))
+    pre_earn_dte_max  = int(rcfg.get("pre_earnings_dte_max", 14))
+    pre_earn_max_size = float(rcfg.get("earnings_credit_spread_max_size", 0.5))
 
     # RULE4 macro event routing config
     macro_routing_enabled     = bool(rcfg.get("macro_event_routing_enabled", True))
@@ -394,9 +396,10 @@ def _route_strategy(
                 _pehi = ["credit_call_spread"]
             else:
                 _pehi = ["credit_put_spread", "credit_call_spread"]
-            log.debug(
-                "[OPTS] _route_strategy %s: RULE_EARNINGS_HIGH_IV eda=%s iv_rank=%.1f dir=%s -> %s",
-                sym, eda, pack.iv_rank, effective_dir, _pehi,
+            log.info(
+                "[STRUCT] RULE_EARNINGS_HIGH_IV fired for %s — eda=%s iv_rank=%.1f dir=%s -> %s"
+                " (max_size=%.2f)",
+                sym, eda, pack.iv_rank, effective_dir, _pehi, pre_earn_max_size,
             )
             return _route_guarded(_pehi, effective_dir, sym, "RULE_EARNINGS_HIGH_IV",
                                   options_regime, _caution_debit_blocked, pack.iv_rank)

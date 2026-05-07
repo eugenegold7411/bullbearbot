@@ -31,6 +31,11 @@ log = get_logger(__name__)
 _SAFETY_DEDUP_SECS: float = 300.0
 _SAFETY_ALERT_CACHE: dict[str, float] = {}
 
+# Cycle-scoped record of stops placed this cycle.  Cleared at run_exit_manager()
+# start.  Read by order_executor._sell_cancel_stop_and_sell to detect and defer
+# cancel-replace operations that would race with a freshly placed stop.
+_stops_placed_this_cycle: dict[str, float] = {}
+
 
 def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
     try:
@@ -617,6 +622,7 @@ def _refresh_exits_locked(
                 "target":  plan["take_profit"],
                 "order_id": str(oco_ord.id),
             })
+            _stops_placed_this_cycle[sym] = time.time()
             return True
         except Exception as exc:
             log.error("[EXIT_MGR] %s: OCO repair failed: %s", sym, exc)
@@ -703,6 +709,7 @@ def _refresh_exits_locked(
                 "target":     plan["take_profit"],
                 "order_id":   str(oco_ord.id),
             })
+            _stops_placed_this_cycle[sym] = time.time()
             return True
         except Exception as _oco_exc:
             log.warning(
@@ -750,6 +757,7 @@ def _refresh_exits_locked(
                 "stop_price": plan["stop_loss"],
                 "order_id":   str(stop_order.id),
             })
+            _stops_placed_this_cycle[sym] = time.time()
             _last_stop_exc = None
             break
         except Exception as exc:
@@ -1055,6 +1063,7 @@ def maybe_trail_stop(
                     "gain_r":   _gain_r,
                     "order_id": str(new_order.id),
                 })
+                _stops_placed_this_cycle[sym] = time.time()
                 _last_exc = None
                 break
             except Exception as exc:
@@ -1088,6 +1097,7 @@ def run_exit_manager(
     if not positions:
         return []
 
+    _stops_placed_this_cycle.clear()
     actions_taken: list[dict] = []
 
     try:

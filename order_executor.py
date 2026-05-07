@@ -981,6 +981,29 @@ def _sell_cancel_stop_and_sell(
     alpaca = _get_alpaca()
     stop_price: float | None = None
 
+    # Guard: defer cancel-replace if exit_manager placed a stop this cycle.
+    # Canceling a freshly-placed stop triggers Alpaca OCA propagation delay
+    # (held_for_orders stays active on the just-cancelled order for ~1–3s),
+    # causing the sell to fail with 40310000 while the position has no stop.
+    _em_guard_fired = False
+    try:
+        import exit_manager as _em_guard  # noqa: PLC0415
+        _placed_at = _em_guard._stops_placed_this_cycle.get(symbol, 0.0)
+        if time.time() - _placed_at < 60:
+            _em_guard_fired = True
+            log.warning(
+                "[EXECUTOR] %s: OCA cancel-replace deferred — exit_manager placed"
+                " stop %.0fs ago (60s guard). Preserving protection; TRIM deferred.",
+                symbol, time.time() - _placed_at,
+            )
+    except Exception:
+        pass  # guard check is non-fatal — proceed with cancel-replace on failure
+
+    if _em_guard_fired:
+        raise RuntimeError(
+            f"deferred: stop placed this cycle by exit_manager for {symbol}"
+        )
+
     # Find and cancel stop orders
     try:
         open_orders = alpaca.get_orders(GetOrdersRequest(

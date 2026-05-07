@@ -755,6 +755,13 @@ def detect_protection_divergence(
             if sym not in current_syms:
                 del _protection_miss_cycles[sym]
 
+        # Build position-side lookup: determines expected exit side (sell for
+        # long, buy for short) used to filter OCO/bracket orders below.
+        _pos_is_long: dict[str, bool] = {
+            getattr(p, "symbol", ""): float(getattr(p, "qty", 0)) > 0
+            for p in positions
+        }
+
         # Build stop order map
         stop_map: dict[str, list] = {}
         for o in open_orders:
@@ -770,6 +777,23 @@ def detect_protection_divergence(
                 raw_status = str(getattr(o, "status", "")).lower().split(".")[-1]
                 if raw_status == "pending_replace":
                     continue
+                # For OCO/bracket parents, filter by expected exit side.
+                # An unfilled BUY-bracket (ADD entry order) has order_class=bracket
+                # and side=BUY — it is not an exit stop and must not be counted as
+                # one.  Without this filter, a pending ADD bracket buy causes a false
+                # duplicate_exit event alongside the real SELL-side OCO stop.
+                if raw_class in ("oco", "bracket"):
+                    _o_sym  = getattr(o, "symbol", "")
+                    _o_side = str(getattr(o, "side", "")).lower().split(".")[-1]
+                    _is_long = _pos_is_long.get(_o_sym, True)
+                    _exp_side = "sell" if _is_long else "buy"
+                    if _o_side != _exp_side:
+                        log.debug(
+                            "[DIV] skipping %s %s — side=%s not exit side for %s position",
+                            getattr(o, "id", "?"), _o_sym, _o_side,
+                            "long" if _is_long else "short",
+                        )
+                        continue
                 sym = o.symbol
                 if sym not in stop_map:
                     stop_map[sym] = []

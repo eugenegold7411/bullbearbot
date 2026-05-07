@@ -739,6 +739,8 @@ class OptionsStructure:
     close_profit_target_pct:  Optional[float] = None  # fraction (0.50 = 50%)
     close_max_loss_pct:       Optional[float] = None
     close_time_stop_pct_dte:  Optional[float] = None
+    # Upgrade evaluator frequency cap (set when candidate is identified).
+    last_upgrade_attempted:   Optional[str]   = None   # ISO-8601 datetime
 
     @property
     def symbol(self) -> str:
@@ -892,6 +894,7 @@ class OptionsStructure:
             close_profit_target_pct=_maybe_float(d.get("close_profit_target_pct")),
             close_max_loss_pct=_maybe_float(d.get("close_max_loss_pct")),
             close_time_stop_pct_dte=_maybe_float(d.get("close_time_stop_pct_dte")),
+            last_upgrade_attempted=d.get("last_upgrade_attempted"),
         )
 
 

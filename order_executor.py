@@ -772,6 +772,7 @@ def _submit_buy(action: dict) -> tuple:
                         symbol, _oco_exc,
                     )
                     _replace_stop(symbol, qty, _eff_stop_price)
+                    _fire_safety_alert("_submit_buy.oco_placement", _oco_exc)
 
     return str(order.id), fp, fq, ft
 
@@ -1005,12 +1006,29 @@ def _sell_cancel_stop_and_sell(
 
     for so in stop_orders:
         sp = float(getattr(so, "stop_price", None) or 0)
+        if sp == 0:
+            # OCO/bracket parents carry stop_price=None — fetch full order to read nested stop leg
+            _oc = str(getattr(so, "order_class", "")).lower().split(".")[-1]
+            if _oc in ("oco", "bracket"):
+                try:
+                    _full = alpaca.get_order_by_id(str(so.id))
+                    for _leg in (getattr(_full, "legs", None) or []):
+                        _ltype = str(getattr(_leg, "order_type", "")).lower().split(".")[-1]
+                        if _ltype in ("stop", "stop_limit"):
+                            sp = float(getattr(_leg, "stop_price", None) or 0)
+                            if sp > 0:
+                                break
+                except Exception as _exc:
+                    log.warning(
+                        "[EXECUTOR] %s: get_order_by_id %s failed — stop_price unknown: %s",
+                        symbol, so.id, _exc,
+                    )
         if sp > 0 and stop_price is None:
             stop_price = sp
         try:
             alpaca.cancel_order_by_id(str(so.id))
             log.info(
-                "[EXECUTOR] %s: cancelled stop order %s (stop_price=$%.2f) for OCA-unlock sell",
+                "[EXECUTOR] %s: cancelled stop/OCO order %s (stop_price=$%.2f) for OCA-unlock sell",
                 symbol, so.id, sp,
             )
         except Exception as exc:
@@ -1028,18 +1046,62 @@ def _sell_cancel_stop_and_sell(
             _replace_stop(symbol, pos_qty, stop_price)
         raise
 
-    # Re-place stop for remaining shares
+    # Re-place stop (with TP if available) for remaining shares
     pos_qty = int(float(next(
         (p.qty for p in positions if p.symbol == symbol), sell_qty
     )))
     remaining_qty = pos_qty - sell_qty
-    if remaining_qty > 0 and stop_price and stop_price > 0:
-        _replace_stop(symbol, remaining_qty, stop_price)
-    else:
+    if remaining_qty <= 0:
         log.info(
-            "[EXECUTOR] %s: no stop re-placement needed (remaining=%d stop=$%s)",
-            symbol, remaining_qty, stop_price,
+            "[EXECUTOR] %s: no stop re-placement needed (remaining=%d)",
+            symbol, remaining_qty,
         )
+    elif stop_price and stop_price > 0:
+        # Attempt OCO (stop + TP) for full protection; fall back to stop-only
+        _tp_price: float | None = None
+        try:
+            import json as _json  # noqa: PLC0415
+            _tp_path = Path("data/runtime/position_targets.json")
+            if _tp_path.exists():
+                _tp_entry = _json.loads(_tp_path.read_text()).get(symbol, {})
+                _raw_tp = _tp_entry.get("take_profit")
+                if _raw_tp and float(_raw_tp) > 0:
+                    _tp_price = round(float(_raw_tp), 2)
+        except Exception as _tp_exc:
+            log.warning("[EXECUTOR] %s: could not read TP from position_targets: %s", symbol, _tp_exc)
+
+        _oco_placed = False
+        if _tp_price:
+            try:
+                _oco_req = LimitOrderRequest(
+                    symbol=symbol, qty=remaining_qty, side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    order_class=OrderClass.OCO,
+                    take_profit=TakeProfitRequest(limit_price=_tp_price),
+                    stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
+                )
+                _oco_ord = alpaca.submit_order(_oco_req)
+                log.info(
+                    "[EXECUTOR] %s: trim OCO placed — stop=$%.2f TP=$%.2f qty=%d order_id=%s",
+                    symbol, stop_price, _tp_price, remaining_qty, _oco_ord.id,
+                )
+                _oco_placed = True
+            except Exception as _oco_exc:
+                log.error(
+                    "[EXECUTOR] %s: trim OCO placement failed — falling back to stop-only: %s",
+                    symbol, _oco_exc,
+                )
+                _fire_safety_alert("_sell_cancel_stop_and_sell.oco_replace", _oco_exc)
+
+        if not _oco_placed:
+            _replace_stop(symbol, remaining_qty, stop_price)
+    else:
+        _alert_exc = RuntimeError(
+            f"{symbol}: remaining_qty={remaining_qty} after trim but stop_price not found — "
+            "position unprotected"
+        )
+        log.error("[EXECUTOR] %s", str(_alert_exc))
+        _fire_safety_alert("_sell_cancel_stop_and_sell.no_stop_price", _alert_exc)
 
     return oid, fp, fq, ft
 

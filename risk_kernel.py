@@ -772,6 +772,15 @@ def size_position(
 # 3. Stop / target placement
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_tier_tp_pct(idea, config: dict) -> "float | None":
+    """Return configured take_profit_pct for the idea's tier, or None if not set."""
+    return (
+        config.get("position_tiers", {})
+        .get(idea.tier.value, {})
+        .get("take_profit_pct")
+    )
+
+
 def place_stops(
     idea: TradeIdea,
     current_price: float,
@@ -829,6 +838,9 @@ def place_stops(
     # ── Price levels ─────────────────────────────────────────────────────────
     stop_dist = current_price * stop_pct
 
+    # Tier-based TP override for longs (e.g. core=12%, dynamic=15%, speculative=20%)
+    _tier_tp_pct = _get_tier_tp_pct(idea, config) if side != "short" else None
+
     if side == "short":
         stop_loss   = round(current_price + stop_dist, 2)          # above entry
         take_profit = round(current_price - stop_dist * target_r, 2)  # below entry
@@ -839,7 +851,11 @@ def place_stops(
         actual_rr = (current_price - take_profit) / (stop_loss - current_price)
     else:
         stop_loss   = round(current_price - stop_dist, 2)
-        take_profit = round(current_price + stop_dist * target_r, 2)
+        take_profit = (
+            round(current_price * (1.0 + float(_tier_tp_pct)), 2)
+            if _tier_tp_pct is not None
+            else round(current_price + stop_dist * target_r, 2)
+        )
         if stop_loss >= current_price:
             return f"stop_loss ${stop_loss:.2f} >= current_price ${current_price:.2f}"
         if take_profit <= current_price:
@@ -853,8 +869,9 @@ def place_stops(
         )
 
     log.debug(
-        "[RISK] place_stops %s side=%s: stop_pct=%.1f%% stop=$%.2f target=$%.2f R/R=%.2fx",
+        "[RISK] place_stops %s side=%s: stop_pct=%.1f%% stop=$%.2f target=$%.2f R/R=%.2fx%s",
         idea.symbol, side, stop_pct * 100, stop_loss, take_profit, actual_rr,
+        f" (tier_tp={float(_tier_tp_pct)*100:.0f}%)" if _tier_tp_pct is not None else "",
     )
 
     return (stop_loss, take_profit)

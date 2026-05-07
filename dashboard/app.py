@@ -1487,7 +1487,7 @@ def _alloc_chart_html(data: dict, fallback_text: str = "") -> str:
         'ticks:{color:"#4A4F60",font:{family:"JetBrains Mono,monospace",size:10},' +
         'callback:function(v){return v+"%";}}},' +
         'y:{grid:{display:false},' +
-        'ticks:{color:"#7B8090",font:{family:"JetBrains Mono,monospace",size:11}}}}}}' +
+        'ticks:{color:"#7B8090",font:{family:"JetBrains Mono,monospace",size:11}}}}}})' +
         '});</script>'
     )
 
@@ -1524,9 +1524,9 @@ def _equity_curve_data() -> dict:
         ordered = sorted(rows.items(), key=lambda x: x[1]["ts"])
         return {
             "dates":    [k for k, _ in ordered],
-            "a1":       [v["a1"] for _, v in ordered],
-            "a2":       [v["a2"] for _, v in ordered],
-            "combined": [v["a1"] + v["a2"] for _, v in ordered],
+            "a1":       [v["a1"] if v["a1"] > 0 else None for _, v in ordered],
+            "a2":       [v["a2"] if v["a2"] > 0 else None for _, v in ordered],
+            "combined": [(v["a1"] + v["a2"]) if (v["a1"] + v["a2"]) > 0 else None for _, v in ordered],
         }
     except Exception:
         return {}
@@ -1540,8 +1540,7 @@ def _equity_curve_html(data: dict) -> str:
     a1_js = _j.dumps(data["a1"])
     a2_js = _j.dumps(data["a2"])
     comb_js = _j.dumps(data["combined"])
-    # Find y-axis min (floor to nearest $1000 below min)
-    all_vals = [v for v in data["combined"] + data["a1"] + data["a2"] if v > 0]
+    all_vals = [v for v in (data["combined"] + data["a1"] + data["a2"]) if v is not None and v > 0]
     y_min = (int(min(all_vals) / 1000) * 1000 - 1000) if all_vals else 190000
     y_max = (int(max(all_vals) / 1000) * 1000 + 2000) if all_vals else 220000
     return (
@@ -1574,7 +1573,7 @@ def _equity_curve_html(data: dict) -> str:
         f'ticks:{{color:"#4A4F60",font:{{family:"JetBrains Mono,monospace",size:9}}}}}},'
         f'y:{{min:{y_min},max:{y_max},grid:{{color:"rgba(31,35,48,0.8)"}},'
         f'ticks:{{color:"#4A4F60",font:{{family:"JetBrains Mono,monospace",size:9}},'
-        f'callback:function(v){{return "$"+(v/1000).toFixed(0)+"K";}}}}}}}}}}}}'
+        f'callback:function(v){{return "$"+(v/1000).toFixed(0)+"K";}}}}}}}}}}}})'
         f'}});</script>'
         '</div></div>'
     )
@@ -5732,6 +5731,13 @@ def _build_status() -> dict:
         _raw_positions = a1d.get("positions", [])
         exposure_dollars = sum(abs(float(p.market_value or 0)) for p in _raw_positions)
         total_capacity = (exposure_dollars + buying_power) or equity
+        _pos_targets: dict = {}
+        try:
+            _pos_targets = json.loads(
+                (BOT_DIR / "data/runtime/position_targets.json").read_text()
+            )
+        except Exception:
+            pass
         stops = _stop_map(a1d.get("orders", []))
         tps = _tp_map(a1d.get("orders", []))
         for p in _raw_positions:
@@ -5743,8 +5749,9 @@ def _build_status() -> dict:
             unreal_pl = float(p.unrealized_pl or 0)
             unreal_plpc = float(p.unrealized_plpc or 0) * 100
             pct_capacity = (abs(market_val) / total_capacity * 100) if total_capacity else 0
-            stop = stops.get(sym)
-            tp = tps.get(sym)
+            _tgt = _pos_targets.get(sym, {})
+            stop = (float(_tgt["stop_loss"]) if _tgt.get("stop_loss") is not None else None) or stops.get(sym)
+            tp = (float(_tgt["take_profit"]) if _tgt.get("take_profit") is not None else None) or tps.get(sym)
             gap = ((current - stop) / current * 100) if stop and current else None
             if pct_capacity > 25:
                 oversize = "critical"

@@ -19,6 +19,8 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # ── stubs ─────────────────────────────────────────────────────────────────────
 
 def _ensure_stubs():
@@ -91,6 +93,74 @@ def _ensure_stubs():
 
 
 _ensure_stubs()
+
+
+# ── ordering-isolation fixture ────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _clean_oe_stubs(monkeypatch):
+    """Force-restore alpaca enum string values and request-class stubs in order_executor.
+
+    Two contamination patterns exist in the full suite:
+    1. test_trim_exposure_clean sets OrderClass/OrderSide to MagicMock() globally.
+    2. test_trades_log_trade_record / test_close_* use patch.dict(sys.modules) with
+       a custom _OrderClassEnum (no OCO/BRACKET attrs); order_executor captures the
+       reference at first import so the contaminated class persists after patch.dict
+       restores sys.modules.
+
+    Fix: create fresh canonical stub classes and patch them onto BOTH oe and the
+    enums module so order_executor and test helpers see the same objects.
+    """
+    import order_executor as oe
+
+    class _OC:
+        BRACKET = "bracket"
+        OCO     = "oco"
+        SIMPLE  = "simple"
+        MLEG    = "mleg"
+
+    class _OS:
+        BUY  = "buy"
+        SELL = "sell"
+
+    class _TIF:
+        DAY = "day"
+        GTC = "gtc"
+
+    class _QOS:
+        OPEN = "open"
+        ALL  = "all"
+
+    # Patch order_executor's module-level bindings (captured at first import)
+    for _attr, _val in (("OrderClass", _OC), ("OrderSide", _OS), ("TimeInForce", _TIF)):
+        if hasattr(oe, _attr):
+            monkeypatch.setattr(oe, _attr, _val)
+
+    # Patch sys.modules so that `from alpaca.trading.enums import …` in helpers
+    # returns the same canonical objects
+    enums = sys.modules.get("alpaca.trading.enums")
+    if enums:
+        for _attr, _val in (
+            ("OrderClass", _OC), ("OrderSide", _OS),
+            ("TimeInForce", _TIF), ("QueryOrderStatus", _QOS),
+        ):
+            try:
+                setattr(enums, _attr, _val)
+            except (AttributeError, TypeError):
+                pass
+
+    def _make_req_stub(name):
+        class _Req:
+            def __init__(self, **kw):
+                for k, v in kw.items():
+                    setattr(self, k, v)
+        _Req.__name__ = name
+        return _Req
+
+    for _cls_name in ("LimitOrderRequest", "MarketOrderRequest", "StopOrderRequest",
+                      "StopLossRequest", "TakeProfitRequest"):
+        if hasattr(oe, _cls_name):
+            monkeypatch.setattr(oe, _cls_name, _make_req_stub(_cls_name))
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

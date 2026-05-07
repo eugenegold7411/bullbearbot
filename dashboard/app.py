@@ -4010,6 +4010,18 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
     _struct_debate = struct.get("debate") or {}
     _debate_backfill = bool(_struct_debate.get("backfill_note"))
     if _struct_debate and not _debate_backfill:
+        # Guard: if the stored debate reasons explicitly say this symbol was rejected,
+        # the debate from a different candidate's session was written here by mistake.
+        # Suppress it so FRO/other debate text doesn't bleed into XPEV's card header.
+        import re as _re
+        _reasons_raw = str(_struct_debate.get("reasons", "") or "")
+        if _re.search(
+            r"\b" + _re.escape(underlying) + r"\b.{0,120}is rejected",
+            _reasons_raw,
+            _re.IGNORECASE | _re.DOTALL,
+        ):
+            _struct_debate = {}
+    if _struct_debate and not _debate_backfill:
         dp = _struct_debate
     else:
         dp = (dec.get("debate_parsed") or {}) if dec else {}

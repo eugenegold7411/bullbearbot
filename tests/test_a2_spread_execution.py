@@ -34,8 +34,63 @@ Tests:
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+
+# ── Alpaca stubs ──────────────────────────────────────────────────────────────
+# Each test that calls _submit_spread_mleg wraps its call in
+# `with patch.dict(sys.modules, _make_alpaca_stubs())` so it is immune to all
+# sys.modules contamination that happens at collection time (test_trim_exposure_clean.py,
+# test_a2_decision_store.py, etc.).
+
+class _PositionIntent:
+    BUY_TO_OPEN   = "buy_to_open"
+    BUY_TO_CLOSE  = "buy_to_close"
+    SELL_TO_OPEN  = "sell_to_open"
+    SELL_TO_CLOSE = "sell_to_close"
+
+
+class _TimeInForce:
+    DAY = "day"
+    GTC = "gtc"
+
+
+class _OrderClass:
+    MLEG   = "mleg"
+    SIMPLE = "simple"
+
+
+class _MockOptionLegRequest:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+class _MockLimitOrderRequest:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+def _make_alpaca_stubs() -> dict:
+    enums_mod = MagicMock()
+    enums_mod.PositionIntent = _PositionIntent
+    enums_mod.TimeInForce    = _TimeInForce
+    enums_mod.OrderClass     = _OrderClass
+
+    requests_mod = MagicMock()
+    requests_mod.LimitOrderRequest  = _MockLimitOrderRequest
+    requests_mod.OptionLegRequest   = _MockOptionLegRequest
+
+    return {
+        "alpaca":                 MagicMock(),
+        "alpaca.trading":         MagicMock(),
+        "alpaca.trading.enums":   enums_mod,
+        "alpaca.trading.requests": requests_mod,
+        "alpaca.trading.client":  MagicMock(),
+    }
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -111,109 +166,97 @@ def _intents_by_sym(req) -> dict:
 
 def test_sell_to_close_when_long_exists():
     """SELL leg + existing LONG (qty > 0) → SELL_TO_CLOSE to avoid 42210000."""
-    from alpaca.trading.enums import PositionIntent
-
-    from options_executor import _submit_spread_mleg
-
-    long_occ = "NVDA260619C00380000"
+    long_occ  = "NVDA260619C00380000"
     short_occ = "NVDA260619C00385000"
     structure = _make_spread_structure(long_occ=long_occ, short_occ=short_occ)
-    client = _mock_client({short_occ: 10.0})  # sell leg has an existing LONG
+    client    = _mock_client({short_occ: 10.0})  # sell leg has an existing LONG
 
-    _submit_spread_mleg(structure, client, config={})
+    with patch.dict(sys.modules, _make_alpaca_stubs()):
+        from options_executor import _submit_spread_mleg
+        _submit_spread_mleg(structure, client, config={})
 
     intents = _intents_by_sym(_get_submitted_req(client))
-    assert intents[short_occ] == PositionIntent.SELL_TO_CLOSE, (
+    assert intents[short_occ] == _PositionIntent.SELL_TO_CLOSE, (
         f"SELL leg with existing LONG must use SELL_TO_CLOSE, got {intents[short_occ]!r}"
     )
-    assert intents[long_occ] == PositionIntent.BUY_TO_OPEN
+    assert intents[long_occ] == _PositionIntent.BUY_TO_OPEN
 
 
 def test_buy_to_close_when_short_exists():
     """BUY leg + existing SHORT (qty < 0) → BUY_TO_CLOSE to avoid 42210000."""
-    from alpaca.trading.enums import PositionIntent
-
-    from options_executor import _submit_spread_mleg
-
-    long_occ = "NVDA260619C00380000"
+    long_occ  = "NVDA260619C00380000"
     short_occ = "NVDA260619C00385000"
     structure = _make_spread_structure(long_occ=long_occ, short_occ=short_occ)
-    client = _mock_client({long_occ: -10.0})  # buy leg has an existing SHORT
+    client    = _mock_client({long_occ: -10.0})  # buy leg has an existing SHORT
 
-    _submit_spread_mleg(structure, client, config={})
+    with patch.dict(sys.modules, _make_alpaca_stubs()):
+        from options_executor import _submit_spread_mleg
+        _submit_spread_mleg(structure, client, config={})
 
     intents = _intents_by_sym(_get_submitted_req(client))
-    assert intents[long_occ] == PositionIntent.BUY_TO_CLOSE, (
+    assert intents[long_occ] == _PositionIntent.BUY_TO_CLOSE, (
         f"BUY leg with existing SHORT must use BUY_TO_CLOSE, got {intents[long_occ]!r}"
     )
-    assert intents[short_occ] == PositionIntent.SELL_TO_OPEN
+    assert intents[short_occ] == _PositionIntent.SELL_TO_OPEN
 
 
 def test_sell_to_open_no_existing():
     """SELL leg with no existing position → SELL_TO_OPEN."""
-    from alpaca.trading.enums import PositionIntent
-
-    from options_executor import _submit_spread_mleg
-
     short_occ = "NVDA260619C00385000"
     structure = _make_spread_structure()
-    client = _mock_client({})
+    client    = _mock_client({})
 
-    _submit_spread_mleg(structure, client, config={})
+    with patch.dict(sys.modules, _make_alpaca_stubs()):
+        from options_executor import _submit_spread_mleg
+        _submit_spread_mleg(structure, client, config={})
 
     intents = _intents_by_sym(_get_submitted_req(client))
-    assert intents[short_occ] == PositionIntent.SELL_TO_OPEN
+    assert intents[short_occ] == _PositionIntent.SELL_TO_OPEN
 
 
 def test_buy_to_open_no_existing():
     """BUY leg with no existing position → BUY_TO_OPEN."""
-    from alpaca.trading.enums import PositionIntent
-
-    from options_executor import _submit_spread_mleg
-
-    long_occ = "NVDA260619C00380000"
+    long_occ  = "NVDA260619C00380000"
     structure = _make_spread_structure()
-    client = _mock_client({})
+    client    = _mock_client({})
 
-    _submit_spread_mleg(structure, client, config={})
+    with patch.dict(sys.modules, _make_alpaca_stubs()):
+        from options_executor import _submit_spread_mleg
+        _submit_spread_mleg(structure, client, config={})
 
     intents = _intents_by_sym(_get_submitted_req(client))
-    assert intents[long_occ] == PositionIntent.BUY_TO_OPEN
+    assert intents[long_occ] == _PositionIntent.BUY_TO_OPEN
 
 
 def test_mixed_legs_correct_intents():
     """Buy leg has existing SHORT → BUY_TO_CLOSE; sell leg has no position → SELL_TO_OPEN."""
-    from alpaca.trading.enums import PositionIntent
-
-    from options_executor import _submit_spread_mleg
-
-    long_occ = "NVDA260619C00380000"
+    long_occ  = "NVDA260619C00380000"
     short_occ = "NVDA260619C00385000"
     structure = _make_spread_structure(long_occ=long_occ, short_occ=short_occ)
-    client = _mock_client({long_occ: -5.0})  # short position on buy leg only
+    client    = _mock_client({long_occ: -5.0})  # short position on buy leg only
 
-    _submit_spread_mleg(structure, client, config={})
+    with patch.dict(sys.modules, _make_alpaca_stubs()):
+        from options_executor import _submit_spread_mleg
+        _submit_spread_mleg(structure, client, config={})
 
     intents = _intents_by_sym(_get_submitted_req(client))
-    assert intents[long_occ]  == PositionIntent.BUY_TO_CLOSE
-    assert intents[short_occ] == PositionIntent.SELL_TO_OPEN
+    assert intents[long_occ]  == _PositionIntent.BUY_TO_CLOSE
+    assert intents[short_occ] == _PositionIntent.SELL_TO_OPEN
 
 
 # ── Test 6: TIF fix (Fix B submit side) ──────────────────────────────────────
 
 def test_mleg_order_uses_gtc():
     """All spread orders must use GTC so preflight (not session close) controls expiry."""
-    from alpaca.trading.enums import TimeInForce
-
-    from options_executor import _submit_spread_mleg
-
     structure = _make_spread_structure("call_debit_spread")
-    client = _mock_client()
+    client    = _mock_client()
 
-    _submit_spread_mleg(structure, client, config={})
+    with patch.dict(sys.modules, _make_alpaca_stubs()):
+        from options_executor import _submit_spread_mleg
+        _submit_spread_mleg(structure, client, config={})
 
     req = _get_submitted_req(client)
-    assert req.time_in_force == TimeInForce.GTC, (
+    assert req.time_in_force == _TimeInForce.GTC, (
         f"Expected GTC but got {req.time_in_force!r} — spread will expire after ~2 min"
     )
 
@@ -234,13 +277,12 @@ def test_preflight_cancels_stale_gtc_mleg():
     """GTC mleg order older than max_age_minutes must be cancelled and re-enter the pool."""
     from bot_options_stage0_preflight import _cancel_and_clear_unfilled_orders
 
-    stale = _make_submitted_structure(age_minutes=35.0)  # > default 30
+    stale  = _make_submitted_structure(age_minutes=35.0)  # > default 30
     alpaca = MagicMock()
     alpaca.get_order_by_id.return_value = MagicMock(filled_qty=0)
 
     config = {"account2": {"mleg_max_age_minutes": 30.0}}
 
-    # options_state is imported locally inside the function — patch it in its own namespace
     with (
         patch("options_state.load_structures", return_value=[stale]),
         patch("options_state.save_structure"),
@@ -256,7 +298,7 @@ def test_preflight_keeps_fresh_gtc_mleg():
     """GTC mleg order younger than max_age_minutes must NOT be cancelled."""
     from bot_options_stage0_preflight import _cancel_and_clear_unfilled_orders
 
-    fresh = _make_submitted_structure(age_minutes=10.0)  # < default 30
+    fresh  = _make_submitted_structure(age_minutes=10.0)  # < default 30
     alpaca = MagicMock()
     alpaca.get_order_by_id.return_value = MagicMock(filled_qty=0)
 
@@ -276,10 +318,6 @@ def test_preflight_keeps_fresh_gtc_mleg():
 
 def test_credit_spread_uses_gtc():
     """Credit spread must use GTC after Fix B (no regression)."""
-    from alpaca.trading.enums import TimeInForce
-
-    from options_executor import _submit_spread_mleg
-
     structure = _make_spread_structure(
         "call_credit_spread",
         long_bid=0.20, long_ask=0.30,
@@ -287,43 +325,41 @@ def test_credit_spread_uses_gtc():
     )
     client = _mock_client()
 
-    _submit_spread_mleg(structure, client, config={})
+    with patch.dict(sys.modules, _make_alpaca_stubs()):
+        from options_executor import _submit_spread_mleg
+        _submit_spread_mleg(structure, client, config={})
 
     req = _get_submitted_req(client)
-    assert req.time_in_force == TimeInForce.GTC
+    assert req.time_in_force == _TimeInForce.GTC
 
 
 def test_buy_to_open_when_long_exists():
     """BUY leg + existing LONG (qty > 0) → BUY_TO_OPEN (adding to long, not closing short)."""
-    from alpaca.trading.enums import PositionIntent
-
-    from options_executor import _submit_spread_mleg
-
-    long_occ = "NVDA260619C00380000"
+    long_occ  = "NVDA260619C00380000"
     structure = _make_spread_structure(long_occ=long_occ)
-    client = _mock_client({long_occ: 10.0})  # existing LONG on buy leg
+    client    = _mock_client({long_occ: 10.0})  # existing LONG on buy leg
 
-    _submit_spread_mleg(structure, client, config={})
+    with patch.dict(sys.modules, _make_alpaca_stubs()):
+        from options_executor import _submit_spread_mleg
+        _submit_spread_mleg(structure, client, config={})
 
     intents = _intents_by_sym(_get_submitted_req(client))
-    assert intents[long_occ] == PositionIntent.BUY_TO_OPEN, (
+    assert intents[long_occ] == _PositionIntent.BUY_TO_OPEN, (
         f"BUY leg + existing LONG must use BUY_TO_OPEN (not CLOSE), got {intents[long_occ]!r}"
     )
 
 
 def test_sell_to_open_when_short_exists():
     """SELL leg + existing SHORT (qty < 0) → SELL_TO_OPEN (adding to short, not closing long)."""
-    from alpaca.trading.enums import PositionIntent
-
-    from options_executor import _submit_spread_mleg
-
     short_occ = "NVDA260619C00385000"
     structure = _make_spread_structure(short_occ=short_occ)
-    client = _mock_client({short_occ: -10.0})  # existing SHORT on sell leg
+    client    = _mock_client({short_occ: -10.0})  # existing SHORT on sell leg
 
-    _submit_spread_mleg(structure, client, config={})
+    with patch.dict(sys.modules, _make_alpaca_stubs()):
+        from options_executor import _submit_spread_mleg
+        _submit_spread_mleg(structure, client, config={})
 
     intents = _intents_by_sym(_get_submitted_req(client))
-    assert intents[short_occ] == PositionIntent.SELL_TO_OPEN, (
+    assert intents[short_occ] == _PositionIntent.SELL_TO_OPEN, (
         f"SELL leg + existing SHORT must use SELL_TO_OPEN (not CLOSE), got {intents[short_occ]!r}"
     )

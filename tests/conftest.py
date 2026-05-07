@@ -135,6 +135,7 @@ def _stub_alpaca_tree() -> None:
         "LimitOrderRequest", "MarketOrderRequest",
         "StopLossRequest", "StopOrderRequest", "TrailingStopOrderRequest",
         "ReplaceOrderRequest", "TakeProfitRequest",
+        "OptionLegRequest",
     ):
         setattr(_rq_mod, _name, _KwargsRequest)
     for _name in (
@@ -229,6 +230,15 @@ else:
         from alpaca.data.historical.news import NewsClient as _nc  # noqa: F401
         from alpaca.data.requests import NewsRequest as _nr  # noqa: F401
         from alpaca.data.timeframe import TimeFrame as _tf  # noqa: F401
+    except Exception:
+        pass
+    # Pre-load alpaca.trading subpackages so module-collection-time guards in
+    # test_a2_decision_store.py, test_a2_feature_pack.py, and test_a2_integration.py
+    # (all using `if name not in sys.modules`) find them already populated and skip
+    # inserting MagicMock/None stubs that would contaminate options_executor tests.
+    try:
+        from alpaca.trading.enums import PositionIntent as _pi  # noqa: F401
+        from alpaca.trading.requests import OptionLegRequest as _olr  # noqa: F401
     except Exception:
         pass
 

@@ -289,9 +289,9 @@ def _submit_spread_mleg(
     """
     Submit a spread as a single atomic mleg order (OrderClass.MLEG).
 
-    Debit spreads: limit_price = net debit at mid, TIF=DAY.
-    Credit spreads: limit_price = net credit × 0.90 (more aggressive to get filled),
-                    TIF=GTC so the order persists past the current session.
+    All spreads use TIF=GTC. Preflight cancels stale orders before resubmit,
+    so debit spreads need time across multiple cycles to fill.
+    Credit spreads: limit_price = net credit × 0.90 (more aggressive to get filled).
 
     limit_price is always rounded to nearest $0.05 tick and capped at 2 decimal places
     before submission to satisfy Alpaca's 42210000 "must be limited to 2 decimal places"
@@ -355,24 +355,37 @@ def _submit_spread_mleg(
     abs_rounded = max(0.05, abs_rounded)
     limit_price = round(abs_rounded if adjusted >= 0 else -abs_rounded, 2)
 
-    tif_day   = False  # GTC unless explicitly debit
-    if not is_credit:
-        tif_day = True  # debit spreads expire at close; re-priced next cycle if missed
-
     try:
         from alpaca.trading.enums import OrderClass, PositionIntent, TimeInForce
         from alpaca.trading.requests import LimitOrderRequest, OptionLegRequest
 
-        tif = TimeInForce.DAY if tif_day else TimeInForce.GTC
+        # GTC for all mleg orders — preflight cancels stale orders before resubmit,
+        # so spreads need multiple cycles to fill rather than expiring after ~2 min.
+        tif = TimeInForce.GTC
+
+        # Fetch existing positions to determine correct position intent per leg.
+        # Alpaca 42210000 fires when intent doesn't match the inferred position state:
+        #   SELL leg + existing LONG (qty > 0) must use SELL_TO_CLOSE
+        #   BUY  leg + existing SHORT (qty < 0) must use BUY_TO_CLOSE
+        # All other cases use the _TO_OPEN variant.
+        try:
+            existing_pos = {str(p.symbol): float(p.qty) for p in trading_client.get_all_positions()}
+        except Exception:
+            existing_pos = {}
 
         leg_requests = []
         for leg in structure.legs:
             occ_sym = leg.occ_symbol or build_occ_symbol(
                 structure.underlying, structure.expiration, leg.option_type, leg.strike
             )
-            intent = (
-                PositionIntent.BUY_TO_OPEN if leg.side == "buy"
-                else PositionIntent.SELL_TO_OPEN
+            pos_qty = existing_pos.get(occ_sym, 0.0)
+            if leg.side == "buy":
+                intent = PositionIntent.BUY_TO_CLOSE if pos_qty < 0 else PositionIntent.BUY_TO_OPEN
+            else:
+                intent = PositionIntent.SELL_TO_CLOSE if pos_qty > 0 else PositionIntent.SELL_TO_OPEN
+            log.info(
+                "[A2_EXEC] %s intent=%s existing_position=%s (qty=%.0f)",
+                occ_sym, getattr(intent, "value", str(intent)), pos_qty != 0.0, pos_qty,
             )
             leg_requests.append(OptionLegRequest(
                 symbol=occ_sym,

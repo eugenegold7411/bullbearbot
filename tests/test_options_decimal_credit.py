@@ -6,7 +6,7 @@ Tests for:
 - DP-02: short_put single-leg limit rounded to 2dp
 - DP-03: credit_put_spread net credit rounded to 2dp
 - DP-04: Negative net credit (e.g. -0.457) rounds correctly to -0.45 or -0.46 (nearest $0.05)
-- CS-01: Credit spread TIF is GTC; debit spread TIF is DAY
+- CS-01: All spread mleg orders use GTC; preflight cancels stale orders
 - CS-02: Credit spread limit uses 0.90× credit factor (more aggressive than pure mid)
 - CS-03: Credit spread with net credit < min_credit_usd is not submitted
 """
@@ -359,8 +359,8 @@ class TestCreditSpreadBehaviour(unittest.TestCase):
                     f"{strat}: expected TIF=GTC but got {tif!r}"
                 )
 
-    def test_cs01_debit_spread_tif_is_day(self):
-        """CS-01 complement: Debit spread mleg orders use DAY time-in-force."""
+    def test_cs01_debit_spread_tif_is_gtc(self):
+        """CS-01: Debit spread mleg orders use GTC — preflight cancels stale orders."""
         for strat in ("put_debit_spread", "call_debit_spread"):
             with self.subTest(strategy=strat):
                 legs = [
@@ -370,8 +370,8 @@ class TestCreditSpreadBehaviour(unittest.TestCase):
                 struct = _make_structure(legs=legs, strategy_value=strat)
                 _, tif = _captured_limit_price(struct)
                 self.assertEqual(
-                    tif, _TimeInForce.DAY,
-                    f"{strat}: expected TIF=DAY but got {tif!r}"
+                    tif, _TimeInForce.GTC,
+                    f"{strat}: expected TIF=GTC but got {tif!r}"
                 )
 
     def test_cs02_credit_spread_limit_uses_credit_factor(self):

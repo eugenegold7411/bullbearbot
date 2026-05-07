@@ -1664,17 +1664,24 @@ class TestAllocatorFixes:
         from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
 
-        mock_execute_all = MagicMock()
-        mock_account     = MagicMock()
-        mock_snapshot    = MagicMock()
+        from order_executor import ExecutionResult
+        submitted = ExecutionResult(symbol="AAPL", action="sell", status="submitted",
+                                    order_id="ord-001")
+        mock_account  = MagicMock()
+        mock_snapshot = MagicMock()
         mock_snapshot.positions = []
 
         # qty=50, price=$100 → MV=$5000; equity=$10000 → target_mv=$1500, target_qty=15, trim=35
         pos = SimpleNamespace(
             symbol="AAPL", qty="50", market_value="5000", current_price="100.0"
         )
+        captured_args = {}
 
-        with patch("order_executor.execute_all", mock_execute_all):
+        def capture_execute_all(*args, **kwargs):
+            captured_args["args"] = args
+            return [submitted]
+
+        with patch("order_executor.execute_all", side_effect=capture_execute_all):
             result = pa._execute_live_trim(
                 symbol="AAPL",
                 positions=[pos],
@@ -1691,11 +1698,11 @@ class TestAllocatorFixes:
             )
 
         assert result == "ok:35", f"Expected ok:35 (50-15 shares), got {result}"
-        mock_execute_all.assert_called_once()
-        call_args = mock_execute_all.call_args[0]   # positional args tuple
-        assert call_args[1] is mock_account,          "2nd arg must be account"
-        assert call_args[3] == "open",                "4th arg must be market_status"
-        assert call_args[4] == 60,                    "5th arg must be minutes_since_open"
+        assert "args" in captured_args, "execute_all must have been called"
+        call_args = captured_args["args"]
+        assert call_args[1] is mock_account,  "2nd arg must be account"
+        assert call_args[3] == "open",        "4th arg must be market_status"
+        assert call_args[4] == 60,            "5th arg must be minutes_since_open"
 
     # 3. Concurrency guard returns None when lock is held ────────────────────
 
@@ -1948,3 +1955,295 @@ class TestAllocatorFixes:
         assert len(add_calls)     == 0, "_execute_live_add must not be called when enable_live_add=False"
         assert len(replace_calls) == 0, "_execute_live_replace must not be called when enable_live_replace=False"
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Suite 12 — execute_all error propagation + add_min_score config
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestErrorPropagationAndAddMinScore:
+    """FIX 1: execute_all status="error" propagates back as trim_failed/add_failed.
+    FIX 2: ADD gate uses config-driven add_min_score (0-100 normalized scale).
+    """
+
+    def setup_method(self, method):
+        pa._save_cooldown({})
+
+    # ── FIX 1 — execute_all error propagation ─────────────────────────────────
+
+    def test_trim_failed_when_execute_all_returns_error(self):
+        """_execute_live_trim returns 'trim_failed:...' when execute_all status=error."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        mock_account  = MagicMock()
+        mock_snapshot = MagicMock()
+        mock_snapshot.positions = []
+
+        pos = SimpleNamespace(
+            symbol="TSM", qty="97", market_value="40500", current_price="417.0"
+        )
+
+        # execute_all returns a list with one error result
+        from order_executor import ExecutionResult
+        error_result = ExecutionResult(
+            symbol="TSM", action="sell", status="error",
+            reason="insufficient qty available for order (held_for_orders)",
+        )
+
+        with patch("order_executor.execute_all", return_value=[error_result]):
+            result = pa._execute_live_trim(
+                symbol="TSM",
+                positions=[pos],
+                snapshot=mock_snapshot,
+                cfg={},
+                session_tier="market",
+                reason="size trim",
+                account=mock_account,
+                market_status="open",
+                minutes_since_open=60,
+                equity=106_000.0,
+                max_pos_pct_equity=0.15,
+            )
+
+        assert result.startswith("trim_failed:"), (
+            f"Expected 'trim_failed:...' when execute_all returns error, got {result!r}"
+        )
+        assert "held_for_orders" in result
+
+    def test_trim_ok_when_execute_all_returns_submitted(self):
+        """_execute_live_trim returns 'ok:N' when execute_all status=submitted."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        mock_account  = MagicMock()
+        mock_snapshot = MagicMock()
+        mock_snapshot.positions = []
+
+        pos = SimpleNamespace(
+            symbol="AAPL", qty="124", market_value="35600", current_price="287.0"
+        )
+
+        from order_executor import ExecutionResult
+        submitted_result = ExecutionResult(
+            symbol="AAPL", action="sell", status="submitted", order_id="order-001",
+        )
+
+        with patch("order_executor.execute_all", return_value=[submitted_result]):
+            result = pa._execute_live_trim(
+                symbol="AAPL",
+                positions=[pos],
+                snapshot=mock_snapshot,
+                cfg={},
+                session_tier="market",
+                reason="size trim",
+                account=mock_account,
+                equity=106_000.0,
+                max_pos_pct_equity=0.15,
+            )
+
+        # equity=106000, target_mv=15900, target_qty=55, held=124, trim=69
+        assert result == "ok:69", f"Expected ok:69, got {result!r}"
+
+    def test_add_failed_when_execute_all_returns_error(self):
+        """_execute_live_add returns 'add_failed:...' when execute_all status=error."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        mock_account  = MagicMock()
+        mock_snapshot = MagicMock()
+        mock_snapshot.positions = []
+
+        pos = SimpleNamespace(
+            symbol="GLD", qty="10", market_value="1000", current_price="100.0"
+        )
+
+        from order_executor import ExecutionResult
+        error_result = ExecutionResult(
+            symbol="GLD", action="buy", status="error",
+            reason="account not approved for margin",
+        )
+
+        mock_broker = MagicMock()
+        mock_broker.qty = 5
+
+        with patch("risk_kernel.process_idea", return_value=mock_broker), \
+             patch("order_executor.execute_all", return_value=[error_result]):
+            result = pa._execute_live_add(
+                symbol="GLD",
+                positions=[pos],
+                snapshot=mock_snapshot,
+                cfg={},
+                session_tier="market",
+                reason="add test",
+                account=mock_account,
+            )
+
+        assert result.startswith("add_failed:"), (
+            f"Expected 'add_failed:...' when execute_all returns error, got {result!r}"
+        )
+        assert "margin" in result
+
+    def test_replace_phase_a_failed_propagates(self):
+        """_execute_live_replace returns 'phase_a_failed:...' when Phase A execute_all errors."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        mock_account  = MagicMock()
+        mock_snapshot = MagicMock()
+        mock_snapshot.positions = []
+
+        pos = SimpleNamespace(
+            symbol="XBI", qty="20", market_value="2000", current_price="100.0"
+        )
+
+        from order_executor import ExecutionResult
+        error_result = ExecutionResult(
+            symbol="XBI", action="sell", status="error",
+            reason="position not found",
+        )
+
+        mock_broker = MagicMock()
+        mock_broker.qty = 20
+
+        with patch("risk_kernel.process_idea", return_value=mock_broker), \
+             patch("order_executor.execute_all", return_value=[error_result]):
+            result = pa._execute_live_replace(
+                exit_symbol="XBI",
+                enter_symbol="GLD",
+                positions=[pos],
+                snapshot=mock_snapshot,
+                cfg={},
+                session_tier="market",
+                reason="replace test",
+                enter_price=100.0,
+                account=mock_account,
+            )
+
+        assert result.startswith("phase_a_failed:"), (
+            f"Expected 'phase_a_failed:...' when Phase A errors, got {result!r}"
+        )
+
+    # ── FIX 2 — add_min_score config gate ─────────────────────────────────────
+
+    def test_add_min_score_default_is_65(self):
+        """Default config has add_min_score=65.0."""
+        pa_cfg = pa._get_pa_config({})
+        assert pa_cfg["add_min_score"] == 65.0
+
+    def test_add_fires_when_norm_above_add_min_score(self):
+        """ADD fires for incumbent with normalized=70 when add_min_score=65."""
+        equity = 100_000.0
+        mv     = equity * 0.10   # 10% of equity — below tier_max-deadband
+        inc = {
+            "symbol":                  "GLD",
+            "market_value":            mv,
+            "account_pct":             2.5,   # 10% equity / 4× capacity = 2.5% of capacity
+            "thesis_score":            7,
+            "thesis_score_normalized": 70,
+            "health":                  "HEALTHY",
+            "recommended_pi_action":   "hold",
+            "override_flag":           None,
+            "weakest_factor":          "",
+        }
+        sizes = {
+            "core": equity * 0.15, "standard": equity * 0.08,
+            "buying_power": 20_000.0, "available_for_new": 20_000.0,
+            "max_exposure": equity * 0.95, "current_exposure": equity * 0.40,
+        }
+        cfg    = _base_cfg()
+        pa_cfg = pa._get_pa_config(cfg)   # add_min_score=65 by default
+        proposed, _ = pa._decide_actions([inc], [], _make_pi_data([], equity=equity),
+                                         cfg, pa_cfg, sizes, equity)
+        add = next((p for p in proposed if p["symbol"] == "GLD" and p["action"] == "ADD"), None)
+        assert add is not None, "ADD must fire for norm=70 >= add_min_score=65"
+
+    def test_add_blocked_when_norm_below_add_min_score(self):
+        """ADD does NOT fire for incumbent with normalized=60 when add_min_score=65."""
+        equity = 100_000.0
+        mv     = equity * 0.10
+        inc = {
+            "symbol":                  "SLV",
+            "market_value":            mv,
+            "account_pct":             2.5,
+            "thesis_score":            6,
+            "thesis_score_normalized": 60,
+            "health":                  "MONITORING",
+            "recommended_pi_action":   "hold",
+            "override_flag":           None,
+            "weakest_factor":          "",
+        }
+        sizes = {
+            "core": equity * 0.15, "standard": equity * 0.08,
+            "buying_power": 20_000.0, "available_for_new": 20_000.0,
+            "max_exposure": equity * 0.95, "current_exposure": equity * 0.40,
+        }
+        cfg    = _base_cfg()
+        pa_cfg = pa._get_pa_config(cfg)
+        proposed, _ = pa._decide_actions([inc], [], _make_pi_data([], equity=equity),
+                                         cfg, pa_cfg, sizes, equity)
+        add = next((p for p in proposed if p["symbol"] == "SLV" and p["action"] == "ADD"), None)
+        assert add is None, "ADD must NOT fire for norm=60 < add_min_score=65"
+
+    def test_add_min_score_configurable_from_strategy_config(self):
+        """add_min_score=80 in config raises the threshold, blocking norm=70."""
+        equity = 100_000.0
+        mv     = equity * 0.10
+        inc = {
+            "symbol":                  "GLD",
+            "market_value":            mv,
+            "account_pct":             2.5,
+            "thesis_score":            7,
+            "thesis_score_normalized": 70,
+            "health":                  "HEALTHY",
+            "recommended_pi_action":   "hold",
+            "override_flag":           None,
+            "weakest_factor":          "",
+        }
+        sizes = {
+            "core": equity * 0.15, "standard": equity * 0.08,
+            "buying_power": 20_000.0, "available_for_new": 20_000.0,
+            "max_exposure": equity * 0.95, "current_exposure": equity * 0.40,
+        }
+        cfg = _base_cfg()
+        cfg.setdefault("portfolio_allocator", {})["add_min_score"] = 80
+        pa_cfg = pa._get_pa_config(cfg)
+        assert pa_cfg["add_min_score"] == 80
+        proposed, _ = pa._decide_actions([inc], [], _make_pi_data([], equity=equity),
+                                         cfg, pa_cfg, sizes, equity)
+        add = next((p for p in proposed if p["symbol"] == "GLD" and p["action"] == "ADD"), None)
+        assert add is None, "ADD must be blocked when norm=70 < add_min_score=80"
+
+    def test_replace_fires_when_gap_exceeds_threshold(self):
+        """REPLACE fires when candidate signal_score=85, incumbent normalized=30, gap=55 >= 15."""
+        equity = 100_000.0
+        weakest = {
+            "symbol":                  "XBI",
+            "market_value":            10_000.0,
+            "account_pct":             2.5,
+            "thesis_score":            3,
+            "thesis_score_normalized": 30,
+            "health":                  "MONITORING",
+            "recommended_pi_action":   "hold",
+            "override_flag":           None,
+            "weakest_factor":          "",
+        }
+        candidate = {"symbol": "NVDA", "signal_score": 85,
+                     "catalyst": "AI demand", "signals": []}
+        sizes = {
+            "core": equity * 0.15, "standard": equity * 0.08,
+            "buying_power": 20_000.0, "available_for_new": 20_000.0,
+            "max_exposure": equity * 0.95, "current_exposure": equity * 0.40,
+        }
+        cfg    = _base_cfg()
+        pa_cfg = pa._get_pa_config(cfg)
+        with patch.object(pa, "_symbol_sector", return_value=""):
+            proposed, _ = pa._decide_actions(
+                [weakest], [candidate], _make_pi_data([], equity=equity),
+                cfg, pa_cfg, sizes, equity,
+            )
+        rep = next((p for p in proposed if p["action"] == "REPLACE"), None)
+        assert rep is not None, (
+            "REPLACE must fire: candidate=85, incumbent=30, gap=55 >= replace_score_gap=15"
+        )
+        assert rep["symbol"] == "NVDA"
+        assert rep["exit_symbol"] == "XBI"

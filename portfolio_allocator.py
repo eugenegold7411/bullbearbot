@@ -13,7 +13,7 @@ Feature flags (strategy_config.json portfolio_allocator section):
 Decision rules (explicit, legible):
   HOLD    — default for all incumbents
   TRIM    — thesis_score <= 5 (normalized <=50) AND notional > min_rebalance_notional
-  ADD     — thesis_score >= 7 (normalized >=70) AND room below tier ceiling
+  ADD     — thesis_score_normalized >= add_min_score (default 65) AND room below tier ceiling
             AND available_for_new > min_rebalance_notional
   REPLACE — candidate.signal_score − weakest_incumbent.thesis_score_normalized
             >= replace_score_gap (default 15) AND all friction checks pass
@@ -127,6 +127,7 @@ _PA_DEFAULTS: dict = {
     "enable_live_replace":             False,   # Stage 2: REPLACE actions execute two-phase close+buy (off by default)
     "enable_live_trim":                False,   # explicit trim gate — must be True alongside enable_live for trim to execute
     "max_position_pct_equity":         0.15,    # equity-based single-name cap for SIZE TRIM trigger (position/equity > this fires trim)
+    "add_min_score":                   65.0,    # normalized (0-100) thesis_score threshold for ADD gate (65 = 6.5/10 raw)
 }
 
 
@@ -477,6 +478,7 @@ def _decide_actions(
     max_pos_cap_dollars  = max_pos_pct_capacity * total_capacity if total_capacity > 0 else float("inf")
     # Equity-based single-name cap for SIZE TRIM trigger (equity × pct, not capacity × pct)
     max_pos_pct_equity   = float(pa_cfg.get("max_position_pct_equity", 0.15))
+    add_min_score        = float(pa_cfg.get("add_min_score", 65))
 
     target_wts = _target_weights(incumbents, sizes)
     proposed:   list[dict] = []
@@ -545,8 +547,8 @@ def _decide_actions(
                     continue
 
         # ADD: thesis strong AND room to grow below tier ceiling AND below kernel cap.
-        # threshold: thesis_score >= 7 (normalized >= 70)
-        if (score >= 7
+        # threshold: thesis_score_normalized >= add_min_score (config-driven, default 65)
+        if (norm >= add_min_score
                 and available_for_new > min_notional
                 and acct_pct < tier_max - weight_deadband
                 and mv < max_pos_cap_dollars):
@@ -764,10 +766,16 @@ def _execute_live_trim(
 
     exec_positions = snapshot.positions if snapshot is not None else positions
     try:
-        execute_all(
+        results = execute_all(
             [action], account, exec_positions, market_status, minutes_since_open,
             session_tier=session_tier,
         )
+        if results:
+            first = results[0]
+            if first.status not in ("submitted", "hold"):
+                reason = getattr(first, "reason", None) or first.status
+                log.warning("[ALLOC] TRIM %s FAILED — %s", symbol, reason)
+                return f"trim_failed: {reason}"
         return f"ok:{shares_to_sell}"
     except Exception as exc:
         return f"execute_all error: {exc}"
@@ -842,10 +850,16 @@ def _execute_live_add(
 
     exec_positions = snapshot.positions if snapshot is not None else positions
     try:
-        execute_all(
+        results = execute_all(
             [result], account, exec_positions, market_status, minutes_since_open,
             session_tier=session_tier,
         )
+        if results:
+            first = results[0]
+            if first.status not in ("submitted", "hold"):
+                reason = getattr(first, "reason", None) or first.status
+                log.warning("[ALLOC] ADD %s FAILED — %s", symbol, reason)
+                return f"add_failed: {reason}"
         return f"ok:{result.qty}"
     except Exception as exc:
         return f"execute_all error: {exc}"
@@ -928,10 +942,17 @@ def _execute_live_replace(
 
     exec_positions = snapshot.positions if snapshot is not None else positions
     try:
-        execute_all(
+        phase_a_res = execute_all(
             [close_result], account, exec_positions, market_status, minutes_since_open,
             session_tier=session_tier,
         )
+        if phase_a_res:
+            first = phase_a_res[0]
+            if first.status not in ("submitted", "hold"):
+                reason_a = getattr(first, "reason", None) or first.status
+                log.warning("[ALLOC] REPLACE %s→%s Phase A FAILED — %s",
+                            exit_symbol, enter_symbol, reason_a)
+                return f"phase_a_failed: {reason_a}"
     except Exception as exc:
         return f"phase_a_execute_error: {exc}"
 
@@ -963,10 +984,15 @@ def _execute_live_replace(
         return f"ok:close={exit_symbol};phase_b_rejected:{enter_result}"
 
     try:
-        execute_all(
+        phase_b_res = execute_all(
             [enter_result], account, exec_positions, market_status, minutes_since_open,
             session_tier=session_tier,
         )
+        if phase_b_res:
+            first = phase_b_res[0]
+            if first.status not in ("submitted", "hold"):
+                reason_b = getattr(first, "reason", None) or first.status
+                return f"ok:close={exit_symbol};phase_b_failed:{reason_b}"
         return f"ok:close={exit_symbol}+enter={enter_symbol}:{enter_result.qty}"
     except Exception as exc:
         return f"ok:close={exit_symbol};phase_b_execute_error:{exc}"

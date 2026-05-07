@@ -1,7 +1,7 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-06 (S-Merge: L3+Scratchpad single-call — d9b5c7e)
+Last updated: 2026-05-07 (15 commits across 4 parallel sessions)
 
 ---
 
@@ -45,27 +45,6 @@ verification.
 
 ---
 
-### Remaining Silent Failures (#9–#29)
-Priority: High — must fix before May 16 live promotion
-Estimated effort: 2–3 hour build session
-Dependencies: None
-
-From the silent failure audit, 27 findings remain unaddressed:
-- #9: options_state.py atomic write swallowed at call sites (HIGH)
-- #10: trade_memory.py save failure returns "" silently (HIGH)
-- #11: fill-check loop leaves orders in pending dict forever (HIGH)
-- #12: exit_manager TP submission failure misreported as success (HIGH)
-- #13: reconciliation cancel-before-replace sequence fails silently (HIGH)
-- #14: mode-transition audit log write fails silently (HIGH)
-- #15: options leg close continues on exception → naked short risk (HIGH)
-- #16: emergency close leg fails silently → naked position (HIGH)
-- #17: attribution log write fails silently → P&L audit gap (HIGH)
-- #18–#29: MEDIUM and LOW findings
-Fix approach: fail-alert pattern (same as divergence.py a6812b0) for
-HIGH severity. Promote log level + add WhatsApp alert with 5-min dedup.
-
----
-
 ### Dashboard Safety Panel
 Priority: Low — cosmetic until safety alerts fire in production
 Estimated effort: 1 hour
@@ -89,47 +68,51 @@ Dashboard shows position size as % of buying_power instead of
 
 ---
 
-### Weekly Review — Critical Structural Fixes (from 2026-05-04 review)
-Priority: CRITICAL — win rate 26.3%, stock_buy 13.2%, Tech sector 0-for-24
-Estimated effort: 2–4 session sprint
+### Weekly Review — Remaining Structural Findings (from 2026-05-04 review)
+Priority: Medium — partially addressed by today's sprint
+Estimated effort: 1–2 session sprint
 
-Findings from Agent 1 (Quant), Agent 2 (Risk), Agent 6 (Strategy Director):
-1. **Bracket-order deadlock** (8 symbols can't exit at take-profit) — held_for_orders
-   == existing_qty across CAT, GOOGL, MSFT, etc. Recurring 3-week carry. This is
-   exit infrastructure failure, not a market regime problem.
-2. **414 missing stop-losses** — divergence module KeyError leaves 89% of divergence
-   events unpatched. Stock_buy entering without exit protection.
-3. **Signal scorer 0W/25L on QCOM+MSFT** — top-ranked symbols 0% win rate. Either
-   inputs are stale or scoring function has confirmation bias.
+Items still unresolved from Agent 1/2/6 weekly review:
 4. **Catalyst taxonomy 248/248 unknown** — outcome attribution completely broken;
    no learning signal from any closed trade. Long-tier ChromaDB at zero.
+   (linked to Vector Memory fixes above)
 5. **Regime oscillation** — unstable in 21:30–22:30 ET window; cycling normal→caution
-   5 times in 40 minutes. Suppressing trade generation with no external trigger.
+   5 times in 40 minutes. May have improved with signal scorer and PI fixes today.
 6. **Bearish template lock** — "Iran war, inflation, Fed" recycled verbatim in 7/20
-   decisions; macro reasoning not refreshing per cycle.
+   decisions; macro reasoning not refreshing per cycle. macro_wire fix today
+   (63c4b20) may partially address this.
 7. **Pending trade accounting problem** — MA/TSM/STNG/AMZN/BTC show zero closed
    trades despite high fill counts; 26.3% win rate may understate actual losses.
 
-Agent 6 parameter changes already applied to strategy_config.json on VPS:
-- min_confidence_threshold: medium (was unknown)
-- stop_loss_pct_core: 0.03
-- take_profit_multiple: 2.5
-- max_weekly_drawdown_pct: 0.035, max_daily_drawdown_pct: 0.025
-- max_positions: 30, margin_sizing_multiplier: 4.0
-
-RESOLVED: blocked_symbols guard added (S24 c45da26). QCOM restored to server config.
-_merge_blocked_symbols() now enforces append-only semantics at both write paths.
+RESOLVED in today's sprint:
+- Bracket-order deadlock → mleg TIF DAY→GTC (b7c5461), OCO race fix (ab0eb93)
+- Missing stop-losses → divergence side-filter + cycle-scoped stop registry (ab0eb93)
+- Signal scorer 0W/25L bias → PI base score + technical bias fix (20a2a3f)
+- Blocked_symbols guard → already done (c45da26 on 2026-05-04)
 
 ---
 
-### Agent 6 Config Write Guards
-COMPLETED — commit 408e7f6
+## COMPLETED TODAY (2026-05-07)
 
----
+| Commit  | What |
+|---------|------|
+| a8875b7 | feat(earnings): A1 EARNINGS RULE prompt injection at eda≤3 + straddle direction override for earnings vol plays + calendar sparse-coverage health check |
+| 02f5d5f | feat(intelligence): avoid_log.jsonl per cycle + short rule in avoid_line for bearish signals + A2 receives high-IV avoided symbols as credit spread candidates |
+| f0cec37 | fix(a2): add earnings_credit_spread_max_size=0.5 default + upgrade RULE_EARNINGS_HIGH_IV log to info with [STRUCT] prefix |
+| 4325a96 | fix(dashboard): stop/TP from position_targets.json + missing Chart() paren on allocator+equity canvas + zero-suppress A2 pre-launch equity |
+| 63c4b20 | fix(macro_wire): remove standalone tier==critical storage arm — require score>=8.0+tier OR score>=6.0+haiku_confirmed |
+| a19c5a4 | chore: commit test_order_hygiene.py (6 order hygiene tests) + backlog update |
+| 7c4418b | fix(ci): resolve 9 test_a2_spread_execution failures from alpaca stub contamination |
+| e805e7f | fix(a2): debate snapshot stored only for winner — fallback structures get empty debate (eliminates cross-candidate bleed) |
+| a2ac4f8 | fix(a2): preflight max-age guard for GTC mleg spreads (30min default) + TTL backstop 15→60min |
+| dfbaaec | fix(dashboard): suppress cross-candidate debate bleed on A2 cards + test ordering isolation for trim_stop tests |
+| 8cb327f | chore(lint): fix ruff I001+F401 in test_protection_layer.py (unblocks CI) |
+| b7c5461 | fix(a2): spread leg intent from existing positions (eliminates 42210000 Alpaca errors) + mleg TIF DAY→GTC |
+| ab0eb93 | fix(protection): divergence side-filter stops false duplicate_exit + exit_manager cycle-scoped stop registry prevents TRIM race |
+| 20a2a3f | fix(pi): lower base score 8→6 + fix technical bias (both MAs required for +1) |
+| 5e6ea15 | fix(allocator): churn guard — skip ADD when open buy order already pending for symbol |
 
----
-
-## COMPLETED TODAY (2026-05-06)
+## COMPLETED (2026-05-06)
 
 | Commit  | What |
 |---------|------|
@@ -177,4 +160,5 @@ COMPLETED — commit 408e7f6
 |----|-------------|----------|
 | BUG-015 | OCO on existing positions requires cancel+resubmit with unprotected window | Low |
 | — | Dashboard OVERSIZE display bug (display only) | Low |
-| — | test_scratchpad_memory / test_sprint2_5 ChromaDB failures | Pre-existing |
+| — | test_scratchpad_memory / test_bug009b_tp_fallback ordering failures | Pre-existing |
+| — | CI: 56 pre-existing test failures (test_short_selling, test_swtp_shorts, test_scratchpad) | Pre-existing |

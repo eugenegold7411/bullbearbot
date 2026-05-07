@@ -439,7 +439,7 @@ All credentials in `.env` (gitignored):
 
 ## Tests and deployment
 
-- Test suite: `tests/` — ~117 files, ~1 814 tests (as of S17B). Run with `pytest`.
+- Test suite: `tests/` — ~171 files, ~3,560 tests (as of 2026-05-07). Run with `pytest`.
 - Deploy: `make deploy` — rsync to VPS then `systemctl restart trading-bot.service` only.
   - **After any `dashboard/app.py` change:** also run `systemctl restart trading-bot-dashboard`
 - `strategy_config.json` is **excluded from deploy** (Makefile rsync exclude) — it lives on the VPS only and should not be overwritten.

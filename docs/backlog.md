@@ -1,7 +1,7 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-04 (CI skip guards — 33a27f6)
+Last updated: 2026-05-06 (S-Merge: L3+Scratchpad single-call — d9b5c7e)
 
 ---
 
@@ -129,7 +129,14 @@ COMPLETED — commit 408e7f6
 
 ---
 
-## COMPLETED TODAY (2026-05-04)
+## COMPLETED TODAY (2026-05-06)
+
+| Commit  | What |
+|---------|------|
+| ddcf9da | S-Merge: merged Stage 2 L3 + Stage 2.5 scratchpad into single Haiku call/cycle — `_run_merged_synthesis()` top-40 symbols, held positions bumped to front, L2-only fallback for 41-102, embedded scratchpad extraction in `run_scratchpad_stage()`, fallback chain to batched L3; 11 new tests |
+| d9b5c7e | fix: compact output rules in `_MERGED_SYSTEM` — signals max 3, conflicts max 2, catalyst ≤6 words, triggers max 5 total; resolves token overflow (8,400→~5,200 estimated tokens) that caused merged call to fall back on every cycle |
+
+## COMPLETED (2026-05-04)
 
 | Commit  | What |
 |---------|------|

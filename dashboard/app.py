@@ -4770,6 +4770,339 @@ def _a2_hero_strip_html(status: dict) -> str:
     )
 
 
+# ── A2 structure eligibility matrix ──────────────────────────────────────────
+
+_MIN_IV_HIST = 20
+_ALL_STRUCT_TYPES = [
+    "long_call", "long_put",
+    "debit_call_spread", "debit_put_spread",
+    "credit_call_spread", "credit_put_spread",
+    "iron_condor", "iron_butterfly",
+    "straddle", "strangle",
+    "short_put",
+]
+
+
+def _iv_rank_local(symbol: str) -> float | None:
+    p = BOT_DIR / "data" / "options" / "iv_history" / f"{symbol}_iv_history.json"
+    try:
+        history = json.loads(p.read_text())
+        ivs = [e["iv"] for e in history if e.get("iv", 0) > 0]
+        if len(ivs) < _MIN_IV_HIST:
+            return None
+        current, lo, hi = ivs[-1], min(ivs), max(ivs)
+        if hi == lo:
+            return None
+        return round((current - lo) / (hi - lo) * 100, 1)
+    except Exception:
+        return None
+
+
+def _iv_env_local(rank: float | None) -> str:
+    if rank is None:
+        return "unknown"
+    if rank < 15:
+        return "very_cheap"
+    if rank < 35:
+        return "cheap"
+    if rank < 65:
+        return "neutral"
+    if rank < 85:
+        return "expensive"
+    return "very_expensive"
+
+
+def _vix_options_regime(vix: float) -> str:
+    if vix < 15:
+        return "calm"
+    if vix < 22:
+        return "normal"
+    if vix < 30:
+        return "elevated"
+    if vix < 40:
+        return "high"
+    return "crisis"
+
+
+def _route_eligible_local(
+    direction: str, iv_env: str, iv_rank: float | None, vix_regime: str
+) -> tuple[list[str], dict[str, str]]:
+    """Simplified routing mirroring _route_strategy logic. Returns (eligible, {struct: reason})."""
+    if vix_regime == "crisis":
+        return [], {s: "VIX crisis — no new positions" for s in _ALL_STRUCT_TYPES}
+
+    # Determine routed set (mirrors RULE2_CREDIT → RULE_IRON → RULE_SHORT_PUT → RULE5-7)
+    if iv_env == "very_expensive":
+        if direction == "bullish":
+            routed = ["credit_put_spread"]
+        elif direction == "bearish":
+            routed = ["credit_call_spread"]
+        else:
+            routed = ["credit_put_spread", "credit_call_spread"]
+        rule = "RULE2_CREDIT: very expensive IV → sell premium"
+    elif iv_rank is not None and iv_rank >= 50 and direction == "neutral":
+        routed = ["iron_butterfly", "iron_condor"] if iv_rank >= 85 else ["iron_condor"]
+        rule = "RULE_IRON: high IV rank + neutral direction"
+    elif (iv_rank is not None and iv_rank >= 50
+            and direction in ("bullish", "neutral")
+            and iv_env not in ("very_cheap", "cheap")):
+        routed = ["short_put"]
+        rule = "RULE_SHORT_PUT: elevated IV + bullish/neutral"
+    elif iv_env in ("very_cheap", "cheap") and direction == "bullish":
+        routed = ["long_call", "debit_call_spread"]
+        rule = "RULE5: cheap IV + bullish"
+    elif iv_env in ("very_cheap", "cheap") and direction == "bearish":
+        routed = ["long_put", "debit_put_spread"]
+        rule = "RULE5: cheap IV + bearish"
+    elif iv_env == "neutral" and direction == "bullish":
+        routed = ["debit_call_spread"]
+        rule = "RULE6: neutral IV + bullish"
+    elif iv_env == "neutral" and direction == "bearish":
+        routed = ["debit_put_spread"]
+        rule = "RULE6: neutral IV + bearish"
+    elif iv_env == "expensive" and direction == "bullish":
+        routed = ["credit_put_spread", "debit_call_spread"]
+        rule = "RULE7: expensive IV + bullish"
+    elif iv_env == "expensive" and direction == "bearish":
+        routed = ["credit_call_spread", "debit_put_spread"]
+        rule = "RULE7: expensive IV + bearish"
+    else:
+        routed = []
+        rule = f"RULE8: no match (iv_env={iv_env}, dir={direction})"
+
+    # VIX post-filter (mirrors _apply_vix_regime_filter)
+    vix_stripped: dict[str, str] = {}
+    if vix_regime == "elevated":
+        after = [s for s in routed if s not in ("long_call", "long_put")]
+        if after:
+            for s in ("long_call", "long_put"):
+                if s in routed:
+                    vix_stripped[s] = "VIX elevated — single legs stripped"
+            routed = after
+    elif vix_regime == "high":
+        allowed_high = {s for s in _ALL_STRUCT_TYPES
+                        if "credit" in s or "iron" in s or s == "short_put"}
+        for s in routed:
+            if s not in allowed_high:
+                vix_stripped[s] = "VIX high — only credit/iron/short_put eligible"
+        routed = [s for s in routed if s in allowed_high]
+
+    eligible = list(routed)
+    eligible_set = set(eligible)
+    blocked: dict[str, str] = {}
+
+    for s in _ALL_STRUCT_TYPES:
+        if s in eligible_set:
+            continue
+        if s in vix_stripped:
+            blocked[s] = vix_stripped[s]
+        elif vix_regime == "high" and s not in {t for t in _ALL_STRUCT_TYPES
+                                                  if "credit" in t or "iron" in t or t == "short_put"}:
+            blocked[s] = "VIX high — only credit/iron/short_put eligible"
+        elif s in ("iron_condor", "iron_butterfly") and (iv_rank is None or iv_rank < 50):
+            r_str = f"{iv_rank:.0f}" if iv_rank is not None else "N/A"
+            blocked[s] = f"IV rank too low ({r_str} < 50 required)"
+        elif s == "short_put" and (iv_rank is None or iv_rank < 50):
+            r_str = f"{iv_rank:.0f}" if iv_rank is not None else "N/A"
+            blocked[s] = f"IV rank too low ({r_str} < 50 required)"
+        elif s in ("long_call", "debit_call_spread", "credit_put_spread") and direction == "bearish":
+            blocked[s] = "direction: bearish — bullish structures not routed"
+        elif s in ("long_put", "debit_put_spread", "credit_call_spread") and direction == "bullish":
+            blocked[s] = "direction: bullish — bearish structures not routed"
+        elif s in ("straddle", "strangle") and direction != "neutral":
+            blocked[s] = f"direction: {direction} — straddle/strangle need neutral or earnings"
+        elif s in ("long_call", "long_put") and vix_regime == "elevated":
+            blocked[s] = "VIX elevated — single legs not eligible"
+        else:
+            blocked[s] = f"not selected: {rule}"
+
+    return eligible, blocked
+
+
+def _a2_eligibility_data() -> list[dict]:
+    """Assemble per-symbol structure eligibility from cached data files."""
+    try:
+        vix = float(json.loads(
+            (BOT_DIR / "data/market/vix_cache.json").read_text()
+        ).get("vix", 20.0))
+    except Exception:
+        vix = 20.0
+    vix_regime = _vix_options_regime(vix)
+
+    try:
+        scored = json.loads(
+            (BOT_DIR / "data/market/signal_scores.json").read_text()
+        ).get("scored_symbols", {})
+    except Exception:
+        scored = {}
+
+    # Fall back to core watchlist if no scored symbols
+    if not scored:
+        try:
+            wl = json.loads((BOT_DIR / "watchlist_core.json").read_text())
+            for entry in wl.get("symbols", []):
+                sym = entry.get("symbol", "")
+                if sym:
+                    scored[sym] = {}
+        except Exception:
+            pass
+
+    held_map: dict[str, str] = {}
+    try:
+        structs_raw = json.loads(
+            (BOT_DIR / "data/account2/positions/structures.json").read_text()
+        )
+        active_lc = {"fully_filled", "open", "submitted", "proposed", "orphan_tracked"}
+        for s in structs_raw:
+            if isinstance(s, dict) and s.get("lifecycle") in active_lc:
+                sym = s.get("symbol", "")
+                if sym:
+                    held_map[sym] = s.get("structure_type", s.get("strategy", "?"))
+    except Exception:
+        pass
+
+    rows = []
+    for sym, sig in sorted(scored.items()):
+        if not isinstance(sig, dict):
+            sig = {}
+        direction = str(sig.get("direction", "neutral")).lower()
+        if direction not in ("bullish", "bearish", "neutral"):
+            direction = "neutral"
+        iv_rank = _iv_rank_local(sym)
+        iv_env = _iv_env_local(iv_rank)
+        eligible, blocked = _route_eligible_local(direction, iv_env, iv_rank, vix_regime)
+        rows.append({
+            "symbol": sym,
+            "iv_rank": iv_rank,
+            "iv_env": iv_env,
+            "direction": direction,
+            "score": sig.get("score"),
+            "vix": vix,
+            "vix_regime": vix_regime,
+            "eligible": eligible,
+            "blocked": [{"structure": s, "reason": r} for s, r in sorted(blocked.items())],
+            "held": held_map.get(sym, ""),
+        })
+    return rows
+
+
+def _a2_structure_eligibility_html() -> str:
+    """Render the Structure Eligibility Matrix section for the A2 options page."""
+    rows = _a2_eligibility_data()
+    if not rows:
+        return (
+            '<div style="background:var(--bg-card);border:1px solid var(--border);'
+            'border-radius:8px;padding:20px;margin-bottom:12px;'
+            'font-size:13px;color:var(--text-muted)">'
+            'No signal data — run intelligence brief first.</div>'
+        )
+
+    vix = rows[0]["vix"]
+    vix_regime = rows[0]["vix_regime"]
+    regime_color = {
+        "calm": "#4facfe", "normal": "#00e676",
+        "elevated": "#ffaa20", "high": "#ff5050", "crisis": "#c0392b",
+    }.get(vix_regime, "#8b949e")
+
+    th = ('font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.8px;'
+          'color:var(--text-muted);padding:8px 10px;text-align:left;'
+          'border-bottom:1px solid var(--border);white-space:nowrap;background:var(--bg-card-2)')
+    td = ('font-size:12px;color:var(--text-secondary);padding:7px 10px;'
+          'border-bottom:1px solid var(--border-subtle);vertical-align:top')
+
+    header = (
+        '<div class="section-label" style="margin-top:0;margin-bottom:6px">'
+        'Structure Eligibility Matrix</div>'
+        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">'
+        f'VIX <b style="color:var(--text-primary)">{vix:.1f}</b>'
+        f' &mdash; regime: <b style="color:{regime_color}">{vix_regime}</b>'
+        ' &mdash; simplified routing (sans earnings/macro/liquidity gates)</div>'
+    )
+
+    dir_color = {"bullish": "#00e676", "bearish": "#ff5050", "neutral": "#8b949e"}
+
+    tbody = ""
+    for row in rows:
+        sym = row["symbol"]
+        iv_rank = row["iv_rank"]
+        iv_env = row["iv_env"]
+        direction = row["direction"]
+        eligible = row["eligible"]
+        blocked = row["blocked"]
+        held = row["held"]
+
+        iv_str = (
+            f'{iv_rank:.0f} <span style="color:var(--text-muted);font-size:10px">'
+            f'({iv_env})</span>'
+            if iv_rank is not None
+            else '<span style="color:var(--text-muted)">N/A</span>'
+        )
+        dc = dir_color.get(direction, "#8b949e")
+        dir_html = f'<span style="color:{dc};font-weight:500">{direction}</span>'
+
+        if eligible:
+            elig_html = " ".join(
+                f'<span style="background:rgba(0,230,118,.12);color:#00e676;'
+                f'border:1px solid rgba(0,230,118,.3);border-radius:3px;'
+                f'padding:1px 6px;font-size:10px;white-space:nowrap">{s}</span>'
+                for s in eligible
+            )
+        else:
+            elig_html = '<span style="color:var(--text-muted)">—</span>'
+
+        blocked_html = "".join(
+            f'<div style="font-size:10px;margin:1px 0">'
+            f'<span style="color:#ff5050">{b["structure"]}</span>'
+            f'<span style="color:var(--text-muted)">: {b["reason"]}</span></div>'
+            for b in blocked[:5]
+        )
+        if len(blocked) > 5:
+            more = len(blocked) - 5
+            blocked_html += (
+                f'<div style="font-size:10px;color:var(--text-dim)">+{more} more</div>'
+            )
+
+        held_html = (
+            f'<span style="background:rgba(79,172,254,.12);color:#4facfe;'
+            f'border:1px solid rgba(79,172,254,.3);border-radius:3px;'
+            f'padding:1px 6px;font-size:10px">{held}</span>'
+            if held
+            else '<span style="color:var(--text-muted)">—</span>'
+        )
+
+        tbody += (
+            '<tr>'
+            f'<td style="{td};font-weight:500;color:var(--text-primary)">{sym}</td>'
+            f'<td style="{td}">{iv_str}</td>'
+            f'<td style="{td}">{dir_html}</td>'
+            f'<td style="{td}">{elig_html}</td>'
+            f'<td style="{td}">{blocked_html}</td>'
+            f'<td style="{td}">{held_html}</td>'
+            '</tr>'
+        )
+
+    table = (
+        '<div style="overflow-x:auto">'
+        '<table style="width:100%;border-collapse:collapse">'
+        '<thead><tr>'
+        f'<th style="{th}">Symbol</th>'
+        f'<th style="{th}">IV Rank</th>'
+        f'<th style="{th}">Direction</th>'
+        f'<th style="{th}">Eligible</th>'
+        f'<th style="{th}">Blocked (sample)</th>'
+        f'<th style="{th}">Held</th>'
+        '</tr></thead>'
+        f'<tbody>{tbody}</tbody>'
+        '</table></div>'
+    )
+
+    return (
+        '<div style="background:var(--bg-card);border:1px solid var(--border);'
+        'border-radius:8px;padding:16px 20px;margin-bottom:12px">'
+        + header + table + '</div>'
+    )
+
+
 # ── A2 detail page ────────────────────────────────────────────────────────────
 def _page_a2(status: dict, now_et: str) -> str:
     a2d = status["a2"]
@@ -4828,6 +5161,7 @@ def _page_a2(status: dict, now_et: str) -> str:
     )
 
     a2_hero_html = _a2_hero_strip_html(status)
+    eligibility_html = _a2_structure_eligibility_html()
 
     body = f"""
 <div class="container">
@@ -4837,6 +5171,7 @@ def _page_a2(status: dict, now_et: str) -> str:
 {pipeline_html}
 {closed_html}
 {perf_section}
+{eligibility_html}
 <div style="height:24px"></div>
 </div>"""
     return _page_shell("A2 Options", nav, body, ticker)
@@ -5937,6 +6272,12 @@ def api_health():
         return jsonify(status), code
     except Exception as exc:
         return jsonify({"all_ok": False, "error": str(exc), "checks": []}), 500
+
+
+@app.route("/api/a2_eligibility")
+def api_a2_eligibility():
+    """Return per-symbol structure eligibility data for the A2 options page."""
+    return jsonify(_a2_eligibility_data())
 
 
 # ── Trade journal (cached 5 min — Alpaca API call) ───────────────────────────

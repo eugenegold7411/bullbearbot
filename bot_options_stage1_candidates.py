@@ -565,6 +565,35 @@ def run_candidate_stage(
         reverse=True
     )[:8]  # top 8 candidates only
 
+    # Fresh catalyst override — inject post-earnings beats not yet in the top-8.
+    # Reads signal_scores for symbols with catalyst_type="earnings_beat" and score > 70,
+    # adds up to 2 to scored_symbols if not already present.
+    # Gate: a2_router.fresh_catalyst_override_enabled (default false).
+    _fc_override_enabled = config.get("a2_router", {}).get("fresh_catalyst_override_enabled", False)
+    if _fc_override_enabled:
+        try:
+            _scored_sym_set = {s for s, _ in scored_symbols}
+            _fc_threshold = float(config.get("a2_router", {}).get(
+                "fresh_catalyst_override_min_score", 70.0
+            ))
+            _fc_candidates = [
+                (sym, sig) for sym, sig in signal_scores.items()
+                if isinstance(sig, dict)
+                and sym not in _scored_sym_set
+                and sig.get("score", 0) >= _fc_threshold
+                and sig.get("catalyst_type") in ("earnings_beat", "earnings_post", "earnings_surprise")
+            ]
+            _fc_added = _fc_candidates[:2]
+            if _fc_added:
+                for _sym, _sig in _fc_added:
+                    log.info(
+                        "[OPTS] fresh_catalyst_override: adding %s (score=%.0f, catalyst=%s)",
+                        _sym, _sig.get("score", 0), _sig.get("catalyst_type", "?"),
+                    )
+                scored_symbols = scored_symbols + _fc_added
+        except Exception as _fce:
+            log.debug("[OPTS] fresh_catalyst_override failed (non-fatal): %s", _fce)
+
     # blocked_symbols gate — mirrors A1 risk_kernel check (parameters.blocked_symbols).
     # Fail-safe: any config read error yields empty block set so A2 never halts on bad config.
     try:
@@ -584,15 +613,38 @@ def run_candidate_stage(
 
     # Active structures gate — skip symbols already held in an active structure.
     # Prevents a 2-minute Claude debate on symbols Stage 4 will block as DUPLICATE_SUBMIT.
+    # Config: a2_router.allow_multiple_structures_per_symbol (default false).
+    # When true, the gate allows re-entry if no structure exists for the near-term expiry
+    # (next 35 days). This enables a new spread on a different expiry while one is open.
+    _allow_multi = config.get("a2_router", {}).get("allow_multiple_structures_per_symbol", False)
     try:
         import options_state as _os  # noqa: PLC0415
         _ACTIVE_LC = {"submitted", "partially_filled", "fully_filled", "orphan_tracked"}
-        _active_structure_syms = {
-            s.underlying
-            for s in _os.load_structures()
+        _all_active = [
+            s for s in _os.load_structures()
             if (s.lifecycle.value if hasattr(s.lifecycle, "value") else str(s.lifecycle))
             in _ACTIVE_LC
-        }
+        ]
+        if _allow_multi:
+            # Expiry-aware gate: block symbol only if it has an active structure
+            # expiring within 35 days (same near-term window as the new trade would use).
+            from datetime import date as _date  # noqa: PLC0415
+            _today = _date.today()
+            _near_exp_syms: set[str] = set()
+            for _s in _all_active:
+                _exp = getattr(_s, "expiration", None)
+                if _exp:
+                    try:
+                        _exp_date = _date.fromisoformat(str(_exp)[:10])
+                        if (_exp_date - _today).days <= 35:
+                            _near_exp_syms.add(_s.underlying)
+                    except Exception:
+                        _near_exp_syms.add(_s.underlying)  # be conservative on parse failure
+                else:
+                    _near_exp_syms.add(_s.underlying)      # no expiry → block conservatively
+            _active_structure_syms = _near_exp_syms
+        else:
+            _active_structure_syms = {s.underlying for s in _all_active}
         if _active_structure_syms:
             log.info("[OPTS] Active structure gate: skipping %s", sorted(_active_structure_syms))
     except Exception as _ase:

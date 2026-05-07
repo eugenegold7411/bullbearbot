@@ -448,9 +448,21 @@ def build_user_prompt(
             alert_lines.append(f"  {sym}: {label_map.get(eda, f'{eda} days')}")
         alert_lines += [
             "",
-            "RULE: For each position above, default action is REDUCE or CLOSE before the",
-            "earnings event unless you have an explicit, high-conviction thesis for holding",
-            "through the report. State your reasoning if you choose to hold.",
+            "RULE: For each position above, make an informed decision using ALL available context.",
+            "Do NOT default to reduce/exit. Consider:",
+            "  • beat_rate (beat_quarters / total_quarters) and avg_surprise_pct",
+            "  • analyst_consensus: bullish_pct, price_target vs current price",
+            "  • IV trajectory (ramping = premium expensive, flat = vol play viable)",
+            "  • current P&L and position size relative to conviction",
+            "  • recent news sentiment and catalyst strength",
+            "",
+            "Valid actions — choose based on evidence:",
+            "  HOLD   — thesis intact, beat rate high, analyst buy consensus, position sized right",
+            "  ADD    — very high conviction, strong beat history, analyst upgrades, fresh catalyst",
+            "  REDUCE — mixed signals, oversized, approaching stop, unclear catalyst outcome",
+            "  CLOSE  — thesis broken, consistent misser, bearish catalyst, position at significant loss",
+            "",
+            "State your explicit reasoning for each position. 'Reduce by default' is not acceptable.",
         ]
         rendered += "\n\n" + "\n".join(alert_lines)
     return rendered

@@ -342,7 +342,9 @@ def submit_selected_candidate(
                     decision_record.no_trade_reason = "duplicate_submission_blocked"
                     return "no_trade"
 
-                structure.debate = _build_debate_snapshot(debate_result, decision_record.decision_id)
+                structure.debate = _build_debate_snapshot(
+                    debate_result if _attempt == 1 else {}, decision_record.decision_id
+                )
                 structure.delta = _cand.get("delta")
                 structure.theta = _cand.get("theta")
                 structure.vega  = _cand.get("vega")

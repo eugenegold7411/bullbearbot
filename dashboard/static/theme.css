@@ -1,0 +1,299 @@
+/*
+ * BullBearBot — Design System Tokens
+ * Namespaced --bbb-* to coexist with the existing dashboard CSS.
+ * Used exclusively by the new Hero strip and Cycle Pulse components.
+ * Do NOT use these tokens in existing page components.
+ *
+ * Source: bullbearbot-design-system/project/colors_and_type.css
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  /* ── Surfaces (four-layer dark stack) ─────────────────────────────────────── */
+  --bbb-bg:           #0B0D14;   /* page background */
+  --bbb-surface:      #13151D;   /* default card body */
+  --bbb-surface-2:    #181B26;   /* hover / elevated / nested panel */
+  --bbb-border:       #1F2330;   /* hairline border — structural only */
+
+  /* ── Text ─────────────────────────────────────────────────────────────────── */
+  --bbb-fg:           #E8EAF0;   /* primary text */
+  --bbb-fg-muted:     #7B8090;   /* labels, secondary metadata */
+  --bbb-fg-dim:       #4A4F60;   /* disabled, footnote, deep tertiary */
+
+  /* ── Money & status ───────────────────────────────────────────────────────── */
+  --bbb-profit:       #34D399;   /* warm green — gains */
+  --bbb-loss:         #F87171;   /* warm coral — losses */
+  --bbb-warn:         #FBBF24;   /* amber — stale data, caution regime */
+  --bbb-info:         #60A5FA;   /* blue — cancel, info, neutral system */
+
+  /* ── AI accent — one pigment, used like ink ───────────────────────────────── *
+   * RESERVED FOR: cycle-pulse dot, agent avatars, Sonnet reasoning panels,      *
+   * bot voice strip. NEVER on nav, borders, buttons, fills, or chrome.          */
+  --bbb-ai:           #9B5DE5;
+  --bbb-ai-soft:      rgba(155, 93, 229, 0.12);
+  --bbb-ai-border:    rgba(155, 93, 229, 0.30);
+
+  /* ── Typography ───────────────────────────────────────────────────────────── */
+  --bbb-font-sans:    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --bbb-font-mono:    'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Two weights only — never use 600 or 700 in new components. */
+  --bbb-w-regular:    400;
+  --bbb-w-medium:     500;
+
+  /* Type scale */
+  --bbb-t-hero:       52px;   /* Hero numbers: equity totals, daily P&L */
+  --bbb-t-hero-sm:    44px;   /* Hero numbers at narrower breakpoints */
+  --bbb-t-h2:         24px;
+  --bbb-t-h3:         16px;
+  --bbb-t-body:       14px;
+  --bbb-t-reasoning:  13px;   /* Sonnet output, log lines */
+  --bbb-t-label:      12px;   /* UPPERCASE tracked labels */
+  --bbb-t-caption:    11px;   /* Footer chips, timestamps */
+
+  /* Line heights */
+  --bbb-lh-tight:     1.15;
+  --bbb-lh-snug:      1.35;
+  --bbb-lh-normal:    1.50;
+
+  /* ── Spacing — tight inside, generous between ─────────────────────────────── */
+  --bbb-s-1:  4px;    /* icon-to-text gap, label-to-value in a chip */
+  --bbb-s-2:  8px;    /* stat-card row gap, table cell padding-y */
+  --bbb-s-3:  12px;   /* card inner padding-y, group separation */
+  --bbb-s-4:  16px;   /* card inner padding-x, default form gap */
+  --bbb-s-5:  24px;   /* outer grid gutter, section-to-section */
+  --bbb-s-6:  32px;   /* page padding, large group separation */
+  --bbb-s-7:  48px;   /* hero block padding */
+
+  /* ── Radii ────────────────────────────────────────────────────────────────── */
+  --bbb-r-1:  2px;    /* pills, status dots in chips */
+  --bbb-r-2:  4px;    /* inputs, small cards, table corners */
+  --bbb-r-3:  6px;    /* default cards */
+  --bbb-r-4:  8px;    /* modals, large surfaces */
+
+  /* ── Motion ───────────────────────────────────────────────────────────────── */
+  --bbb-ease:      cubic-bezier(0.2, 0, 0, 1);
+  --bbb-dur-fast:  120ms;
+  --bbb-dur-base:  200ms;
+  --bbb-dur-slow:  400ms;
+
+  /* No shadow system. No gradient system. No glow. Intentional. */
+}
+
+/* ── Cycle-pulse animation ────────────────────────────────────────────────────
+ * The only "alive" animation in the system.
+ * Stops the moment the cycle resolves (controlled by JS toggling .is-pulsing).
+ */
+@keyframes bbb-ai-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+
+/* ── Number tick ──────────────────────────────────────────────────────────────
+ * When a value updates, fade the new value in over 200ms.
+ * No count-up, no flip, no slide.
+ */
+@keyframes bbb-num-tick {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* =============================================================================
+   HERO STRIP  (.bbb-hero-strip)
+   Three-pane card: Cumulative Return (2fr) | A1 Equity (1fr) | A2 Equity (1fr)
+   ============================================================================= */
+
+.bbb-hero-strip {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  background: var(--bbb-surface);
+  border: 1px solid var(--bbb-border);
+  border-radius: var(--bbb-r-3);
+  overflow: hidden;      /* clips the dividers at the card corners */
+  margin-bottom: var(--bbb-s-4);
+}
+
+.bbb-hero-pane {
+  padding: 20px var(--bbb-s-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--bbb-s-2);
+  border-right: 1px solid var(--bbb-border);
+}
+.bbb-hero-pane:last-child {
+  border-right: none;
+}
+
+/* CUMULATIVE RETURN — label above big number */
+.bbb-hero-label {
+  font-family: var(--bbb-font-sans);
+  font-size: var(--bbb-t-label);
+  font-weight: var(--bbb-w-medium);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bbb-fg-muted);
+  line-height: var(--bbb-lh-snug);
+}
+
+/* The 44px headline number */
+.bbb-hero-num {
+  font-family: var(--bbb-font-mono);
+  font-size: var(--bbb-t-hero-sm);
+  font-weight: var(--bbb-w-medium);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}
+
+/* The secondary number in A1/A2 panes */
+.bbb-hero-num-sm {
+  font-family: var(--bbb-font-mono);
+  font-size: 22px;
+  font-weight: var(--bbb-w-medium);
+  line-height: 1;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+  color: var(--bbb-fg);
+}
+
+/* Metadata line under each number: "+1.73% day · 1 position · util 1%" */
+.bbb-hero-meta {
+  font-family: var(--bbb-font-mono);
+  font-size: var(--bbb-t-caption);
+  color: var(--bbb-fg-muted);
+  line-height: var(--bbb-lh-snug);
+}
+
+/* Hairline between cumulative total and today's row */
+.bbb-hero-divider {
+  height: 1px;
+  background: var(--bbb-border);
+  margin: var(--bbb-s-1) 0;
+}
+
+/* Color helpers scoped to new components */
+.bbb-pos { color: var(--bbb-profit); }
+.bbb-neg { color: var(--bbb-loss); }
+.bbb-muted { color: var(--bbb-fg-muted); }
+.bbb-dim { color: var(--bbb-fg-dim); }
+.bbb-fg { color: var(--bbb-fg); }
+
+/* =============================================================================
+   CYCLE PULSE STRIP  (.bbb-pulse-strip)
+   Horizontal bar: dot | outcome text | cost | stage breadcrumbs
+   ============================================================================= */
+
+.bbb-pulse-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--bbb-s-3);
+  padding: 11px var(--bbb-s-4);
+  background: var(--bbb-surface);
+  border: 1px solid var(--bbb-ai-border);
+  border-radius: var(--bbb-r-3);
+  margin-bottom: var(--bbb-s-4);
+}
+
+/* Pulsing violet dot */
+.bbb-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bbb-ai);
+  flex: none;
+  animation: bbb-ai-pulse 1.5s ease-in-out infinite;
+}
+/* Static dot (cycle complete, no active run) */
+.bbb-pulse-dot.is-idle {
+  animation: none;
+  opacity: 0.5;
+}
+
+/* "Cycle N — outcome text" */
+.bbb-pulse-text {
+  font-family: var(--bbb-font-mono);
+  font-size: var(--bbb-t-reasoning);
+  color: var(--bbb-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+/* "cost $0.014" */
+.bbb-pulse-cost {
+  font-family: var(--bbb-font-mono);
+  font-size: var(--bbb-t-caption);
+  color: var(--bbb-fg-muted);
+  white-space: nowrap;
+  flex: none;
+}
+
+/* Stage breadcrumb row */
+.bbb-pulse-stages {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.bbb-stage {
+  font-family: var(--bbb-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bbb-fg-dim);
+  padding: 2px 5px;
+  border-radius: var(--bbb-r-1);
+  white-space: nowrap;
+}
+.bbb-stage.is-done {
+  color: var(--bbb-fg-muted);
+}
+/* is-active reserved for future live-stage tracking */
+.bbb-stage.is-active {
+  color: var(--bbb-ai);
+  border: 1px solid var(--bbb-ai-border);
+}
+
+/* =============================================================================
+   BOT VOICE STRIP  (.bbb-voice-strip)
+   First-person register — violet left border, mono text, attribution at right
+   ============================================================================= */
+
+.bbb-voice-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--bbb-s-3);
+  padding: 11px var(--bbb-s-4);
+  background: var(--bbb-surface);
+  border: 1px solid var(--bbb-border);
+  border-left: 2px solid var(--bbb-ai);
+  border-radius: var(--bbb-r-3);
+  margin-bottom: var(--bbb-s-4);
+}
+
+.bbb-voice-quote {
+  font-family: var(--bbb-font-mono);
+  font-size: var(--bbb-t-reasoning);
+  color: var(--bbb-fg);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bbb-voice-attr {
+  font-family: var(--bbb-font-mono);
+  font-size: var(--bbb-t-caption);
+  color: var(--bbb-ai);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex: none;
+  white-space: nowrap;
+}

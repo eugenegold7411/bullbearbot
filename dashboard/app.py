@@ -3077,6 +3077,37 @@ def _page_overview(status: dict, now_et: str) -> str:
 
 
 # ── A1 detail page ────────────────────────────────────────────────────────────
+def _pos_polyline_spark(bars: list, width: int = 48, height: int = 14) -> str:
+    """48×14 right-aligned polyline next to P&L. Color = green if last>=first, red otherwise.
+    On insufficient data: flat line at y=height/2."""
+    b = [float(x) for x in (bars or []) if x is not None][-10:]
+    if len(b) < 2:
+        mid = height / 2
+        return (
+            f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+            f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" '
+            f'style="display:block;flex-shrink:0">'
+            f'<line x1="0" y1="{mid:.1f}" x2="{width}" y2="{mid:.1f}" '
+            f'stroke="#4A4F60" stroke-width="1" stroke-dasharray="2,2"/></svg>'
+        )
+    mn, mx = min(b), max(b)
+    rng = mx - mn or (mx * 0.01) or 0.01
+    n = len(b)
+    color = "#1D9E75" if b[-1] >= b[0] else "#E24B4A"
+    pts = []
+    for i, p in enumerate(b):
+        x = i / (n - 1) * width
+        y = (1 - (p - mn) / rng) * (height - 2) + 1
+        pts.append(f"{x:.2f},{y:.2f}")
+    return (
+        f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+        f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" '
+        f'style="display:block;flex-shrink:0">'
+        f'<polyline points="{" ".join(pts)}" fill="none" stroke="{color}" '
+        f'stroke-width="1.5" stroke-linejoin="round"/></svg>'
+    )
+
+
 def _pos_compact_bar_spark(bars: list, height: int = 14) -> str:
     """10-bar mini chart for position cards. Bar height = price level; color = direction vs prev bar."""
     b = [float(x) for x in (bars or []) if x is not None][-10:]
@@ -3099,6 +3130,199 @@ def _pos_compact_bar_spark(bars: list, height: int = 14) -> str:
         f'<svg viewBox="0 0 100 {height}" width="100%" height="{height}" '
         f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" style="display:block;margin:2px 0">'
         + "".join(parts) + "</svg>"
+    )
+
+
+_ACTION_TYPE_LABELS = {
+    "EXIT_LONG_STOP": "stop triggered",
+    "EXIT_SHORT_STOP": "stop triggered",
+    "EXIT_LONG_TP": "take profit",
+    "EXIT_SHORT_TP": "take profit",
+    "EXIT_LONG_TRIM": "trimmed",
+    "EXIT_SHORT_TRIM": "trimmed",
+    "EXIT_LONG_FORCED": "forced exit",
+    "EXIT_SHORT_FORCED": "forced exit",
+    "EXIT_LONG": "exited long",
+    "EXIT_SHORT": "covered short",
+    "COVER": "covered short",
+    "SELL": "exited",
+    "BUY": "bought",
+    "TRIM": "trimmed",
+}
+
+
+def _action_type_label(at: str) -> str:
+    if not at:
+        return "exited"
+    key = str(at).upper().strip()
+    if key in _ACTION_TYPE_LABELS:
+        return _ACTION_TYPE_LABELS[key]
+    if "STOP" in key:
+        return "stop triggered"
+    if "TP" in key or "TAKE_PROFIT" in key or "TAKEPROFIT" in key:
+        return "take profit"
+    if "TRIM" in key:
+        return "trimmed"
+    if "FORCED" in key:
+        return "forced exit"
+    return key.lower().replace("_", " ")
+
+
+def _a1_closed_today_data() -> list:
+    """Read data/trades.jsonl, return today's A1 exits grouped by symbol with est P&L.
+    Returns list sorted by abs(est_pnl) desc. Empty list on missing file or any error."""
+    try:
+        path = BOT_DIR / "data/trades.jsonl"
+        if not path.exists():
+            return []
+        today_et = datetime.now(ET).date()
+        all_rows = []
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                all_rows.append(json.loads(line))
+            except Exception:
+                continue
+        a1_today = []
+        for t in all_rows:
+            if not isinstance(t, dict):
+                continue
+            if t.get("account", "a1") != "a1":
+                continue
+            if t.get("event_type") and t["event_type"] != "filled":
+                continue
+            ts = t.get("fill_timestamp") or t.get("written_at") or ""
+            if not ts:
+                continue
+            try:
+                dt_et = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(ET).date()
+            except Exception:
+                continue
+            if dt_et != today_et:
+                continue
+            a1_today.append(t)
+        # exits = sells + EXIT_* action types + COVER
+        def _is_exit(t):
+            side = (t.get("side") or "").lower()
+            at = (t.get("action_type") or "").upper()
+            if side == "sell":
+                return True
+            if at.startswith("EXIT_") or at == "COVER" or at == "TRIM":
+                return True
+            return False
+        exits = [t for t in a1_today if _is_exit(t)]
+        if not exits:
+            return []
+        # build buy basis: first buy fill_price per symbol from today's a1 fills
+        buy_basis: dict = {}
+        for t in a1_today:
+            side = (t.get("side") or "").lower()
+            at = (t.get("action_type") or "").upper()
+            sym = t.get("symbol", "")
+            if not sym:
+                continue
+            if side == "buy" or at == "BUY" or at.startswith("ENTRY_"):
+                if sym not in buy_basis:
+                    try:
+                        buy_basis[sym] = float(t.get("fill_price") or 0)
+                    except (TypeError, ValueError):
+                        pass
+        # group exits by symbol
+        by_sym: dict = {}
+        for t in exits:
+            sym = t.get("symbol", "")
+            if not sym:
+                continue
+            try:
+                qty = float(t.get("qty") or 0)
+                fp = float(t.get("fill_price") or 0)
+            except (TypeError, ValueError):
+                continue
+            entry = by_sym.setdefault(sym, {
+                "symbol": sym, "qty": 0.0, "fp_sum": 0.0,
+                "last_ts": "", "action_type": t.get("action_type") or t.get("side") or "",
+            })
+            entry["qty"] += qty
+            entry["fp_sum"] += fp * qty
+            ts = t.get("fill_timestamp") or t.get("written_at") or ""
+            if ts > entry["last_ts"]:
+                entry["last_ts"] = ts
+                entry["action_type"] = t.get("action_type") or t.get("side") or entry["action_type"]
+        out = []
+        for sym, e in by_sym.items():
+            avg_exit = (e["fp_sum"] / e["qty"]) if e["qty"] else 0.0
+            cost = buy_basis.get(sym)
+            est_pnl = ((avg_exit - cost) * e["qty"]) if cost else None
+            out.append({
+                "symbol": sym,
+                "qty": e["qty"],
+                "exit_price": avg_exit,
+                "time_iso": e["last_ts"],
+                "action_type": e["action_type"],
+                "est_pnl": est_pnl,
+            })
+        out.sort(key=lambda r: -abs(r["est_pnl"] or 0))
+        return out
+    except Exception:
+        return []
+
+
+def _a1_closed_today_html(closed: list) -> str:
+    if not closed:
+        return (
+            '<div class="section-label">Closed Today</div>'
+            '<div class="card" style="padding:10px 14px;color:#8b949e;font-size:11px">'
+            'No activity recorded today.</div>'
+        )
+    realized = sum(r["est_pnl"] for r in closed if r.get("est_pnl") is not None)
+    realized_known = any(r.get("est_pnl") is not None for r in closed)
+    if realized_known:
+        r_color = "#3fb950" if realized >= 0 else "#f85149"
+        r_sign = "+" if realized >= 0 else ""
+        header_pnl = (
+            f' <span style="font-family:monospace;font-size:11px;color:{r_color};margin-left:8px">'
+            f'net {r_sign}{_fm(realized)}</span>'
+        )
+    else:
+        header_pnl = ' <span style="font-size:10px;color:#8b949e;margin-left:8px">P&L est unavailable</span>'
+    cards = ""
+    for r in closed:
+        sym = r["symbol"]
+        qty = r["qty"]
+        exit_p = r["exit_price"]
+        at = r["action_type"]
+        label = _action_type_label(at)
+        try:
+            t_et = datetime.fromisoformat(str(r["time_iso"]).replace("Z", "+00:00")).astimezone(ET)
+            t_str = t_et.strftime("%-I:%M %p")
+        except Exception:
+            t_str = "—"
+        pnl = r.get("est_pnl")
+        if pnl is not None:
+            pc = "#3fb950" if pnl >= 0 else "#f85149"
+            ps = "+" if pnl >= 0 else ""
+            pnl_html = f'<span style="font-family:monospace;font-size:11px;color:{pc}">{ps}{_fm(pnl)}</span>'
+        else:
+            pnl_html = '<span style="font-family:monospace;font-size:10px;color:#8b949e">P&L —</span>'
+        cards += (
+            f'<div style="opacity:0.75;padding:7px 10px;border:1px solid #21262d;border-left:2px solid #4a5080;'
+            f'border-radius:4px">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px">'
+            f'<div style="min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:5px">'
+            f'<span style="color:var(--accent-blue);font-weight:600;font-size:13px">{sym}</span>'
+            f'<span style="font-size:10px;color:#8b949e">{int(qty) if qty == int(qty) else qty:g} sh @ {_fm(exit_p)}</span>'
+            f'</div>'
+            f'{pnl_html}'
+            f'</div>'
+            f'<div style="font-family:monospace;font-size:10px;color:#8b949e;margin-top:2px">'
+            f'{label} · {t_str}</div>'
+            f'</div>'
+        )
+    return (
+        f'<div class="section-label">Closed Today ({len(closed)}){header_pnl}</div>'
+        f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">{cards}</div>'
     )
 
 
@@ -3266,7 +3490,7 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
         stop_arrow = "↑" if is_short else "↓"
         stop_str = f"{stop_arrow} {_fm(stop)}" if stop else "no stop"
 
-        spark = _pos_compact_bar_spark(_a1_bars.get(sym, []))
+        spark = _pos_polyline_spark(_a1_bars.get(sym, []))
 
         # Thesis row
         if th:
@@ -3290,22 +3514,35 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
         else:
             thesis_row = ""
 
+        tp_html = (
+            f'<span style="font-family:monospace;font-size:10px;color:#34D399">TP {_fm(tp_val)}</span>'
+            if tp_val else
+            '<span style="font-family:monospace;font-size:10px;color:#F87171">TP none</span>'
+        )
+
         return (
             f'<div style="padding:8px 10px;border:1px solid #21262d;border-radius:4px;{border}">'
-            f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px">'
-            f'<div style="display:flex;align-items:center;flex-wrap:wrap;gap:3px">'
+            # Row 1: symbol + badges ........ sparkline + P&L
+            f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:2px">'
+            f'<div style="display:flex;align-items:center;flex-wrap:wrap;gap:3px;min-width:0">'
             f'<span style="color:var(--accent-blue);font-weight:600;font-size:13px">{sym}</span>'
-            f'<span style="font-size:10px;color:#8b949e">{"SHORT" if is_short else "LONG"} {qty}</span>'
             f'{badges}</div>'
-            f'<span style="font-family:monospace;font-size:11px;color:{pl_c}">'
+            f'<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">'
+            f'{spark}'
+            f'<span style="font-family:monospace;font-size:11px;color:{pl_c};white-space:nowrap">'
             f'{pl_s}{_fm(pl)} ({pl_s}{plpc:.1f}%)</span>'
             f'</div>'
-            f'<div style="font-family:monospace;font-size:10px;color:#8b949e;margin-bottom:3px">'
-            f'{_fm(entry)} → {_fm(current)} · {pct_cap:.1f}% cap · '
-            f'<span style="color:#F87171">{stop_str}</span>'
+            f'</div>'
+            # Row 2: qty · entry → current · cap%
+            f'<div style="font-family:monospace;font-size:10px;color:#8b949e;margin-bottom:2px">'
+            f'{"SHORT" if is_short else "LONG"} {qty} · {_fm(entry)} → {_fm(current)} · {pct_cap:.1f}% cap'
             '</div>'
-            + (f'<div style="margin:2px 0">{spark}</div>' if spark else "") +
-            thesis_row +
+            # Row 3: stop · TP
+            f'<div style="display:flex;gap:10px;align-items:baseline;margin-bottom:3px">'
+            f'<span style="font-family:monospace;font-size:10px;color:#F87171">stop {stop_str}</span>'
+            f'{tp_html}'
+            f'</div>'
+            + thesis_row +
             '</div>'
         )
 
@@ -3315,6 +3552,9 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
         pos_cards_html += _pos_card_compact(p)
     if not pos_cards_html:
         pos_cards_html = '<div style="color:#8b949e;font-size:11px;padding:10px">No open positions.</div>'
+
+    closed_today = _a1_closed_today_data()
+    closed_today_html = _a1_closed_today_html(closed_today)
 
     # Recent decisions (last 8) + last decision reasoning block
     a1_decs = status.get("a1_decisions", [])
@@ -3451,6 +3691,8 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
   {pos_cards_html}
 </div>
+
+{closed_today_html}
 
 <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;align-items:start">
   <div>

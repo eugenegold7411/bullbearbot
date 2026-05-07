@@ -228,6 +228,42 @@ def _load_strategy_config() -> str:
         return "  (strategy_config.json not yet generated — using system prompt defaults)"
 
 
+def _eda_for_positions(positions: list) -> list[tuple[str, int]]:
+    """Return [(symbol, eda_days)] for held long positions with earnings ≤ 3 days away."""
+    try:
+        cal_path = Path(__file__).parent / "data" / "market" / "earnings_calendar.json"
+        if not cal_path.exists():
+            return []
+        cal = json.loads(cal_path.read_text())
+        today = datetime.now().date()
+        cal_by_sym: dict[str, int] = {}
+        for entry in cal.get("calendar", []):
+            sym = (entry.get("symbol") or "").upper()
+            if not sym:
+                continue
+            iso = str(entry.get("earnings_date", ""))[:10]
+            try:
+                eda = (datetime.strptime(iso, "%Y-%m-%d").date() - today).days
+            except Exception:
+                continue
+            if sym not in cal_by_sym or eda < cal_by_sym[sym]:
+                cal_by_sym[sym] = eda
+        result = []
+        for p in positions:
+            try:
+                if float(p.qty) <= 0:
+                    continue
+            except Exception:
+                continue
+            sym = p.symbol.upper()
+            eda = cal_by_sym.get(sym)
+            if eda is not None and eda <= 3:
+                result.append((sym, eda))
+        return result
+    except Exception:
+        return []
+
+
 def build_user_prompt(
     account,
     positions:            list,
@@ -402,6 +438,21 @@ def build_user_prompt(
     # This avoids modifying user_template_v1.txt for backward compatibility with cached prompts.
     if allocator_section and allocator_section.strip():
         rendered += "\n\n" + allocator_section
+    # Issue 21: hard rotation gate — inject mandatory earnings warning for positions ≤3 days away.
+    earnings_alerts = _eda_for_positions(positions)
+    if earnings_alerts:
+        label_map = {0: "TODAY", 1: "1 day", 2: "2 days", 3: "3 days"}
+        alert_lines = ["EARNINGS RULE — ACTIVE",
+                       "Held positions with earnings ≤ 3 days away:"]
+        for sym, eda in earnings_alerts:
+            alert_lines.append(f"  {sym}: {label_map.get(eda, f'{eda} days')}")
+        alert_lines += [
+            "",
+            "RULE: For each position above, default action is REDUCE or CLOSE before the",
+            "earnings event unless you have an explicit, high-conviction thesis for holding",
+            "through the report. State your reasoning if you choose to hold.",
+        ]
+        rendered += "\n\n" + "\n".join(alert_lines)
     return rendered
 
 

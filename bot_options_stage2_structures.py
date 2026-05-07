@@ -80,6 +80,7 @@ _A2_ROUTER_DEFAULTS: dict = {
     "straddle_iv_rank_max":  40,   # IV rank ceiling (cheap premium required)
     "straddle_dte_min":       6,   # minimum DTE window for straddle/strangle entry
     "straddle_dte_max":      14,   # maximum DTE window for straddle/strangle entry
+    "straddle_earnings_direction_override": False,  # relax neutral-only gate for eda≤10, iv_rank<45
     # RULE_SHORT_PUT: sell OTM put in elevated IV + bullish/neutral environments
     "short_put_iv_rank_min": 50,   # minimum IV rank to enter short put
     # RULE_IRON: iron condor/butterfly when IV is elevated + neutral or low-conviction outlook
@@ -531,15 +532,29 @@ def _route_strategy(
     straddle_iv_max  = float(rcfg.get("straddle_iv_rank_max", 40))
     straddle_dte_min = int(rcfg.get("straddle_dte_min", 6))
     straddle_dte_max = int(rcfg.get("straddle_dte_max", 14))
+    # Issue 22: earnings_vol_play relaxes the neutral-only gate when the override flag is
+    # set and eda≤10 with cheap IV — catches directional symbols (e.g. NVDA) where a
+    # straddle is still the best play even though a1_direction is non-neutral.
+    _straddle_dir_override = rcfg.get("straddle_earnings_direction_override", False)
+    _earnings_vol_play = (
+        _straddle_dir_override
+        and eda is not None
+        and eda <= 10
+        and pack.iv_rank < 45
+    )
     if (eda is not None
             and straddle_dte_min <= eda <= straddle_dte_max
             and eda > earnings_dte_blackout
             and pack.iv_rank < straddle_iv_max
-            and effective_dir == "neutral"):
+            and (effective_dir == "neutral" or _earnings_vol_play)):
         allowed = ["straddle", "strangle"]
-        log.info("[OPTS] RULE_STRADDLE_STRANGLE %s: eda=%d iv_rank=%.1f dir=%s → %s",
-                 sym, eda, pack.iv_rank, effective_dir, allowed)
-        return _route_guarded(allowed, effective_dir, sym, "RULE_STRADDLE_STRANGLE",
+        log.info("[OPTS] RULE_STRADDLE_STRANGLE %s: eda=%d iv_rank=%.1f dir=%s vol_play=%s → %s",
+                 sym, eda, pack.iv_rank, effective_dir, _earnings_vol_play, allowed)
+        # When earnings_vol_play is active the position is a volatility bet, not a
+        # directional bet — use "neutral" for the direction guard so straddle/strangle
+        # are not stripped by the bullish/bearish structure sets.
+        _guard_dir = "neutral" if _earnings_vol_play else effective_dir
+        return _route_guarded(allowed, _guard_dir, sym, "RULE_STRADDLE_STRANGLE",
                               options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE_EARNINGS: direction-split when near (but not in blackout for) earnings

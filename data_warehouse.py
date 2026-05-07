@@ -713,6 +713,12 @@ def refresh_earnings_calendar_av() -> dict:
         "[EARNINGS_AV] Calendar saved: %d entries covering %d core stocks",
         len(new_entries), n_wl,
     )
+    if n_wl < 5:
+        log.warning(
+            "[EARNINGS_AV] Sparse coverage: only %d core stocks in saved calendar "
+            "— data may be incomplete or universe file missing",
+            n_wl,
+        )
     return saved
 
 

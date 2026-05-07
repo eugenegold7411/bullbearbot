@@ -506,6 +506,21 @@ def _check_earnings_calendar(now_et: datetime) -> CheckResult:
                          "today_entries": 0, "total_entries": 0},
             )
 
+        # Issue 23: warn when upcoming entries are sparse — calendar may be stale or
+        # fetched during a market-data outage.
+        upcoming = [e for e in calendar if str(e.get("earnings_date", ""))[:10] >= today_str]
+        if len(upcoming) < 5:
+            return CheckResult(
+                name=name, ok=False, severity="WARNING",
+                message=(
+                    f"[HEALTH] earnings_calendar sparse: only {len(upcoming)} upcoming "
+                    f"entries (expected ≥5 for universe coverage) — calendar may need refresh"
+                ),
+                details={"age_h": age_h, "refresh_date": refresh_date,
+                         "today_entries": len(today_entries), "total_entries": total_entries,
+                         "upcoming_entries": len(upcoming)},
+            )
+
         return CheckResult(
             name=name, ok=True, severity="OK",
             message=f"earnings_calendar OK — refreshed today, {len(today_entries)} entries today, {total_entries} total",

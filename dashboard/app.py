@@ -351,7 +351,9 @@ document.addEventListener('visibilitychange',function(){
 _cache: dict = {}
 
 
-def _cached(key: str, ttl: int = 60):
+def _cached(key: str, ttl: int = 60, cache_on=bool):
+    """Cache decorator. Skips storing when cache_on(result) is falsy (prevents caching error
+    sentinels like empty dicts from blanking the UI for the full TTL period)."""
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
@@ -360,7 +362,8 @@ def _cached(key: str, ttl: int = 60):
             if entry and now - entry["ts"] < ttl:
                 return entry["data"]
             result = fn(*args, **kwargs)
-            _cache[key] = {"ts": now, "data": result}
+            if cache_on(result):
+                _cache[key] = {"ts": now, "data": result}
             return result
         return wrapper
     return decorator
@@ -698,12 +701,17 @@ def _earnings_flags():
     return flags
 
 
+def _enum_str(val) -> str:
+    """Convert Alpaca enum to plain lowercase name: OrderType.LIMIT → 'limit'."""
+    return str(val).lower().split(".")[-1]
+
+
 def _stop_map(orders):
     stops: dict[str, float] = {}
     for o in orders:
         try:
-            side = str(getattr(o, "side", "")).lower()
-            otype = str(getattr(o, "type", "")).lower()
+            side = _enum_str(getattr(o, "side", ""))
+            otype = _enum_str(getattr(o, "type", ""))
             sym = getattr(o, "symbol", "")
             sp = getattr(o, "stop_price", None)
             if "sell" in side and ("stop" in otype or "trail" in otype) and sp:
@@ -717,8 +725,8 @@ def _tp_map(orders):
     tps: dict[str, float] = {}
     for o in orders:
         try:
-            side = str(getattr(o, "side", "")).lower()
-            otype = str(getattr(o, "type", "")).lower()
+            side = _enum_str(getattr(o, "side", ""))
+            otype = _enum_str(getattr(o, "type", ""))
             sym = getattr(o, "symbol", "")
             lp = getattr(o, "limit_price", None)
             if "sell" in side and otype == "limit" and lp:

@@ -1208,7 +1208,8 @@ def _maybe_refresh_earnings_calendar_av_daily(dry_run: bool = False) -> None:
         else:
             log.warning("[EARNINGS_AV] daily refresh returned empty — will retry next eligible cycle")
     except Exception as exc:
-        log.warning("[EARNINGS_AV] daily refresh failed (non-fatal): %s", exc)
+        log.error("[EARNINGS_AV] daily refresh failed: %s", exc)
+        _fire_safety_alert("_maybe_refresh_earnings_calendar_av_daily", exc)
 
 
 def _maybe_run_earnings_rotation(dry_run: bool = False) -> None:
@@ -1317,12 +1318,26 @@ def _maybe_check_earnings_calendar_staleness(dry_run: bool = False) -> None:
 
     try:
         import data_warehouse as dw  # noqa: PLC0415
-        status = dw._check_earnings_calendar_staleness()
-        if status == "ok":
-            log.info("[EARNINGS_STALE] calendar fresh")
+        staleness = dw.get_earnings_calendar_staleness()
+        if staleness.get("stale"):
+            log.error(
+                "[EARNINGS_STALE] calendar stale (%sh) — forcing refresh",
+                staleness.get("hours_old", "?"),
+            )
+            try:
+                dw.refresh_earnings_calendar_av()
+                log.info("[EARNINGS_STALE] forced refresh complete")
+            except Exception as retry_exc:
+                log.error("[EARNINGS_STALE] forced refresh failed: %s", retry_exc)
+                _fire_safety_alert("_maybe_check_earnings_calendar_staleness", retry_exc)
+        else:
+            log.info(
+                "[EARNINGS_STALE] calendar fresh (%sh old)",
+                staleness.get("hours_old", "?"),
+            )
         _earnings_stale_check_date = today
     except Exception as exc:
-        log.debug("[EARNINGS_STALE] check failed (non-fatal): %s", exc)
+        log.warning("[EARNINGS_STALE] check failed (non-fatal): %s", exc)
 
 
 def _maybe_refresh_form4_trades(dry_run: bool = False) -> None:
@@ -1829,6 +1844,19 @@ def run(dry_run: bool = False) -> None:
         log.info("[HEALTH] Startup health check complete")
     except Exception as _hm_exc:
         log.warning("[HEALTH] Startup health check failed (non-fatal): %s", _hm_exc)
+    if not dry_run:
+        try:
+            import data_warehouse as _dw_startup  # noqa: PLC0415
+            _cal_staleness = _dw_startup.get_earnings_calendar_staleness()
+            if _cal_staleness.get("stale") or _cal_staleness.get("hours_old") is None:
+                log.info(
+                    "[EARNINGS_AV] Startup: calendar stale (%sh) — refreshing now",
+                    _cal_staleness.get("hours_old", "missing"),
+                )
+                _dw_startup.refresh_earnings_calendar_av()
+                log.info("[EARNINGS_AV] Startup calendar refresh complete")
+        except Exception as _cal_exc:
+            log.warning("[EARNINGS_AV] Startup calendar refresh failed (non-fatal): %s", _cal_exc)
     log.info("Scheduler starting (24/7 mode)  dry_run=%s", dry_run)
     print("[scheduler] 24/7 mode active. Press Ctrl+C to stop.\n")
 

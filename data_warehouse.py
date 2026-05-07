@@ -76,9 +76,10 @@ BARS_DIR         = DATA / "bars"
 FUND_DIR         = DATA / "fundamentals"
 NEWS_DIR         = DATA / "news"
 OPT_DIR          = DATA / "options"
-MARKET_DIR       = DATA / "market"
-ARCHIVE_DIR      = DATA / "archive"
-CRYPTO_DIR       = DATA / "crypto" 
+MARKET_DIR            = DATA / "market"
+ARCHIVE_DIR           = DATA / "archive"
+CRYPTO_DIR            = DATA / "crypto"
+EARNINGS_CALENDAR_PATH: Path = MARKET_DIR / "earnings_calendar.json"
 
 _data:    StockHistoricalDataClient | None = None
 _crypto:  CryptoHistoricalDataClient | None = None
@@ -583,7 +584,7 @@ def refresh_earnings_calendar_av() -> dict:
         resp.raise_for_status()
         body = resp.text or ""
     except Exception as exc:
-        log.warning("[EARNINGS_AV] HTTP fetch failed (non-fatal): %s", exc)
+        log.error("[EARNINGS_AV] HTTP fetch failed: %s", exc)
         return {}
 
     # ── Parse CSV ─────────────────────────────────────────────────────────────
@@ -596,7 +597,7 @@ def refresh_earnings_calendar_av() -> dict:
                 continue
             rows.append(row)
     except Exception as exc:
-        log.warning("[EARNINGS_AV] CSV parse failed (non-fatal): %s", exc)
+        log.error("[EARNINGS_AV] CSV parse failed: %s", exc)
         return {}
 
     if not rows:
@@ -710,8 +711,8 @@ def refresh_earnings_calendar_av() -> dict:
 
     n_wl = sum(1 for e in new_entries if e["symbol"] in core_stocks)
     log.info(
-        "[EARNINGS_AV] Calendar saved: %d entries covering %d core stocks",
-        len(new_entries), n_wl,
+        "[EARNINGS_AV] Calendar saved: %d entries covering %d core stocks at %s",
+        len(new_entries), n_wl, cal_path,
     )
     if n_wl < 5:
         log.warning(

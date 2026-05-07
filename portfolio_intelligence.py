@@ -697,7 +697,7 @@ def score_position_thesis(
         above_ema9  = bool(current_price > ema9)
 
         if above_ma20 and above_ema9:
-            score += 2
+            score += 1
             technical_intact = True
         elif above_ma20 or above_ema9:
             score += 1
@@ -719,7 +719,7 @@ def score_position_thesis(
         pct_to_target = (current_price - entry_price) / (target_price - entry_price) if target_price != entry_price else 0
         if pct_to_target > 0.1:
             trending_toward = "target"
-            score += 2
+            score += 1
         elif unrealized_pl < 0 and current_price < entry_price:
             dist_to_stop    = current_price - stop_price
             dist_entry_stop = entry_price   - stop_price
@@ -806,7 +806,10 @@ def score_position_thesis(
                 break
 
     # ── Clamp and classify ─────────────────────────────────────────────────
-    score = max(1, min(10, score))
+    # Heuristic ceiling capped at 9 — 10 is reserved for an explicit positive
+    # override (not yet wired). Prevents trivial saturation in broad rallies
+    # where every held position scores +tech +pnl +sector and clamps to max.
+    score = max(1, min(9, score))
 
     if override_flag:
         score              = min(score, 4)
@@ -830,6 +833,18 @@ def score_position_thesis(
 
     if thesis_status == "invalidated":
         log.warning("[PI] THESIS INVALIDATED: %s — %s", symbol, override_flag or weakest_factor)
+
+    # Greppable per-position summary — fires every cycle for every held position
+    _pnl_pct = ((current_price - entry_price) / entry_price * 100.0) if entry_price else 0.0
+    log.info(
+        "[PI] %s: score=%d/10 catalyst_age=%dd tech=%s trend=%s sector=%s pnl=%+.1f%% weak=%s",
+        symbol, score, days_held,
+        "ok" if technical_intact else "broken",
+        trending_toward,
+        "aligned" if sector_aligned else ("n/a" if not sector else "down"),
+        _pnl_pct,
+        weakest_factor,
+    )
 
     return {
         "symbol":              symbol,
@@ -1153,6 +1168,33 @@ def build_portfolio_intelligence(
             ts["thesis_tags"] = _qual_entry.get("thesis_tags") or []
 
         thesis_scores.append(ts)
+
+    if thesis_scores:
+        _scores = [int(t["thesis_score"]) for t in thesis_scores]
+        log.info(
+            "[PI] Thesis scoring complete: %d positions  avg=%.1f  min=%d  max=%d",
+            len(_scores),
+            sum(_scores) / len(_scores),
+            min(_scores),
+            max(_scores),
+        )
+
+    # Persist latest thesis_scores for dashboard / audit / post-mortem.
+    # Atomic tmp+rename. Non-fatal on failure — never block the cycle.
+    try:
+        _out_dir = _ROOT / "data" / "analytics"
+        _out_dir.mkdir(parents=True, exist_ok=True)
+        _out_path = _out_dir / "thesis_scores_latest.json"
+        _payload = {
+            "generated_at": now.isoformat(),
+            "count":        len(thesis_scores),
+            "thesis_scores": thesis_scores,
+        }
+        _tmp = _out_path.with_suffix(".json.tmp")
+        _tmp.write_text(json.dumps(_payload, indent=2, default=str), encoding="utf-8")
+        _tmp.replace(_out_path)
+    except Exception as _ts_exc:
+        log.debug("[PI] thesis_scores_latest.json write failed (non-fatal): %s", _ts_exc)
 
     return {
         "sizes":          sizes,

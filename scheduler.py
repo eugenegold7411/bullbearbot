@@ -448,6 +448,7 @@ _earnings_cull_ran_date:       str = ""   # "YYYY-MM-DD" of last 2 AM cull
 _earnings_stale_check_date:    str = ""   # "YYYY-MM-DD" of last staleness check
 _earnings_intel_ran_date:      str = ""   # "YYYY-MM-DD" of last analyst intel refresh
 _zero_fill_alert_date:         str = ""   # "YYYY-MM-DD" of last zero-fill alert
+_portfolio_audit_slots_ran:    set = set()  # {"YYYY-MM-DD-open","YYYY-MM-DD-close"} fired today
 _last_qualitative_sweep_key:   str = ""   # "YYYY-MM-DD-HH" of last L1 sweep (hourly slot)
 _last_qualitative_news_hash:   str = ""   # news hash at last L1 sweep, for event-driven refresh
 _qualitative_sweep_running:    bool = False  # guard against concurrent sweeps
@@ -1354,6 +1355,43 @@ def _maybe_refresh_form4_trades(dry_run: bool = False) -> None:
 
 
 
+def _maybe_run_portfolio_audit(dry_run: bool = False) -> None:
+    """Run scripts/portfolio_audit.py at 9:10 AM ET (open) and 3:55 PM ET (close), weekdays only.
+    Writes data/reports/portfolio_audit_latest.json. Never blocks the scheduler loop.
+    """
+    global _portfolio_audit_slots_ran
+    now_et  = datetime.now(ET)
+    weekday = now_et.weekday()
+    if weekday >= 5:
+        return
+
+    today   = _today()
+    now_min = now_et.hour * 60 + now_et.minute
+
+    # Two slots: 9:10 AM ET (window 9:10-9:14) and 3:55 PM ET (window 15:55-15:59)
+    slot = None
+    if 9 * 60 + 10 <= now_min <= 9 * 60 + 14:
+        slot = f"{today}-open"
+    elif 15 * 60 + 55 <= now_min <= 15 * 60 + 59:
+        slot = f"{today}-close"
+    if slot is None or slot in _portfolio_audit_slots_ran:
+        return
+
+    if dry_run:
+        _portfolio_audit_slots_ran.add(slot)
+        return
+
+    try:
+        from scripts.portfolio_audit import run_portfolio_audit  # noqa: PLC0415
+        result = run_portfolio_audit(send_whatsapp=True)
+        n_pos = len(result.get("positions") or []) if isinstance(result, dict) else 0
+        log.info("[PORTFOLIO_AUDIT] %s slot complete: %d positions audited", slot, n_pos)
+        _portfolio_audit_slots_ran.add(slot)
+    except Exception as exc:
+        log.error("[PORTFOLIO_AUDIT] %s slot failed (non-fatal): %s", slot, exc, exc_info=True)
+        _fire_safety_alert("_maybe_run_portfolio_audit", exc)
+
+
 def _maybe_refresh_crypto_sentiment(dry_run: bool = False) -> None:
     """Refresh crypto Fear & Greed + BTC dominance every 4 hours. 24/7 - never pauses."""
     global _crypto_sentiment_refresh_key
@@ -1897,6 +1935,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_refresh_global_indices(dry_run)
         _maybe_refresh_reddit_sentiment(dry_run)
         _maybe_refresh_form4_trades(dry_run)
+        _maybe_run_portfolio_audit(dry_run)
         _maybe_refresh_crypto_sentiment(dry_run)
         _maybe_refresh_macro_wire(dry_run)
         _maybe_refresh_qualitative_context(dry_run)

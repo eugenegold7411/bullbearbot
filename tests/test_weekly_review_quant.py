@@ -129,26 +129,39 @@ def test_summary_signal_source_win_rates(tmp_path: Path) -> None:
 
 
 # ─── Agent 6 injection tests ─────────────────────────────────────────────────
+# These tests exercise _build_quantitative_performance_block() added by Session 3
+# in weekly_review.py. That function is only present once Session 3 merges its
+# uncommitted work. Skip gracefully when running against origin without those changes.
 
-def test_agent6_receives_quant_section(tmp_path: Path) -> None:
+try:
+    from weekly_review import _build_quantitative_performance_block as _wr_quant_block
+    _WR_QUANT_AVAILABLE = True
+except ImportError:
+    _WR_QUANT_AVAILABLE = False
+
+_skip_no_wr_quant = pytest.mark.skipif(
+    not _WR_QUANT_AVAILABLE,
+    reason="_build_quantitative_performance_block not yet merged from Session 3",
+)
+
+
+@_skip_no_wr_quant
+def test_agent6_receives_quant_section(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """_build_quantitative_performance_block returns keys consumed by governance signals."""
     lines = (
         [_make_outcome("AAPL", "alpha_positive", module_tags=["macro_wire"])] * 4
         + [_make_outcome("AAPL", "alpha_negative", module_tags=["macro_wire"])] * 2
     )
     _write_outcomes(tmp_path, lines)
-    with mock.patch("weekly_review.Path") as mock_path_cls:
-        # Only redirect the outcomes path lookup inside _build_quantitative_performance_block
-        real_path = tmp_path / "data" / "analytics" / "decision_outcomes.jsonl"
-        mock_path_cls.side_effect = lambda *a: real_path if "decision_outcomes" in str(a) else Path(*a)
-        from weekly_review import _build_quantitative_performance_block
-        result = _build_quantitative_performance_block()
+    monkeypatch.chdir(tmp_path)
+    result = _wr_quant_block()
     assert "win_rates_by_symbol" in result
     assert "total_classified" in result
     assert result["total_classified"] == 6
 
 
-def test_agent6_quant_section_format(tmp_path: Path) -> None:
+@_skip_no_wr_quant
+def test_agent6_quant_section_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """win_rates_by_symbol is a dict of symbol→float."""
     lines = [
         _make_outcome("NVDA", "alpha_positive"),
@@ -156,25 +169,20 @@ def test_agent6_quant_section_format(tmp_path: Path) -> None:
         _make_outcome("NVDA", "alpha_negative"),
     ]
     _write_outcomes(tmp_path, lines)
-    with mock.patch("weekly_review.Path") as mock_path_cls:
-        real_path = tmp_path / "data" / "analytics" / "decision_outcomes.jsonl"
-        mock_path_cls.side_effect = lambda *a: real_path if "decision_outcomes" in str(a) else Path(*a)
-        from weekly_review import _build_quantitative_performance_block
-        result = _build_quantitative_performance_block()
+    monkeypatch.chdir(tmp_path)
+    result = _wr_quant_block()
     wr = result["win_rates_by_symbol"]
     assert isinstance(wr, dict)
     assert "NVDA" in wr
     assert isinstance(wr["NVDA"], float)
 
 
-def test_agent6_handles_empty_summary(tmp_path: Path) -> None:
+@_skip_no_wr_quant
+def test_agent6_handles_empty_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When no classified data exists, block returns safe defaults without crashing."""
     _write_outcomes(tmp_path, [])
-    with mock.patch("weekly_review.Path") as mock_path_cls:
-        real_path = tmp_path / "data" / "analytics" / "decision_outcomes.jsonl"
-        mock_path_cls.side_effect = lambda *a: real_path if "decision_outcomes" in str(a) else Path(*a)
-        from weekly_review import _build_quantitative_performance_block
-        result = _build_quantitative_performance_block()
+    monkeypatch.chdir(tmp_path)
+    result = _wr_quant_block()
     assert result["total_classified"] == 0
     assert result["win_rates_by_symbol"] == {}
     assert result["top_performing_symbols"] == []

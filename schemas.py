@@ -746,6 +746,12 @@ class OptionsStructure:
     # if scalar entry greeks (delta/theta/vega above) are unpopulated. Includes gamma.
     entry_greeks:             Optional[dict]  = None   # {delta, theta, vega, gamma}
     greek_history_length:     int             = 0     # snapshots in greek_history file
+    # Execution integrity audit trail (populated by stage4 at submission time)
+    intended_structure:   Optional[str]   = None   # debate-selected structure_type
+    execution_fallback:   Optional[bool]  = None   # True if a non-winner candidate was executed
+    fallback_reason:      Optional[str]   = None   # why fallback occurred
+    risk_authorized:      Optional[float] = None   # max_loss the debate approved (post size_mod)
+    risk_executed:        Optional[float] = None   # max_loss of the structure actually submitted
 
     @property
     def symbol(self) -> str:
@@ -902,6 +908,11 @@ class OptionsStructure:
             last_upgrade_attempted=d.get("last_upgrade_attempted"),
             entry_greeks=d.get("entry_greeks"),
             greek_history_length=int(d.get("greek_history_length", 0) or 0),
+            intended_structure=d.get("intended_structure"),
+            execution_fallback=d.get("execution_fallback"),
+            fallback_reason=d.get("fallback_reason"),
+            risk_authorized=_maybe_float(d.get("risk_authorized")),
+            risk_executed=_maybe_float(d.get("risk_executed")),
         )
 
 

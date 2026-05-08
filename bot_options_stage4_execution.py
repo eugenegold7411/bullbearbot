@@ -238,6 +238,130 @@ def _check_expiring_positions(positions: list, alpaca_client) -> list[str]:
     return warn_symbols
 
 
+# ── Execution guards ──────────────────────────────────────────────────────────
+
+def _validate_execution_matches_debate(
+    selected_candidate: dict,
+    structure_to_execute,
+    strategy_map: dict,
+) -> bool:
+    """
+    Confirm the structure being executed matches what the debate selected.
+    Returns False and fires CRITICAL log + WhatsApp if strategies differ.
+    """
+    expected_enum = strategy_map.get(selected_candidate.get("structure_type", ""))
+    if expected_enum is None:
+        return True
+    if structure_to_execute.strategy != expected_enum:
+        _debate_strat = selected_candidate.get("structure_type", "unknown")
+        _exec_strat = (
+            structure_to_execute.strategy.value
+            if hasattr(structure_to_execute.strategy, "value")
+            else str(structure_to_execute.strategy)
+        )
+        log.critical(
+            "[EXEC] STRATEGY MISMATCH — debate selected %s but execution is %s. "
+            "BLOCKING order submission.",
+            _debate_strat, _exec_strat,
+        )
+        try:
+            from notifications import send_whatsapp_direct  # noqa: PLC0415
+            send_whatsapp_direct(
+                f"[A2 BLOCKED] Strategy mismatch: debate approved "
+                f"{_debate_strat} but {_exec_strat} attempted. "
+                f"Trade blocked."
+            )
+        except Exception as _wa_exc:
+            log.debug("[EXEC] WhatsApp alert failed: %s", _wa_exc)
+        return False
+    return True
+
+
+def _audit_open_structures_for_mismatch() -> list[dict]:
+    """
+    FIX-D: Check all active structures for execution_fallback or strategy mismatch.
+    For pre-fix structures, cross-references decision files via debate.decision_id.
+    Returns a list of mismatch records and logs each one.
+    """
+    try:
+        import options_state  # noqa: PLC0415
+        _sm = _get_strategy_map()
+        mismatches: list[dict] = []
+        _ACTIVE = {"submitted", "partially_filled", "fully_filled"}
+
+        for s in options_state.load_structures():
+            lc = s.lifecycle.value if hasattr(s.lifecycle, "value") else str(s.lifecycle)
+            if lc not in _ACTIVE:
+                continue
+            actual = s.strategy.value if hasattr(s.strategy, "value") else str(s.strategy)
+            intended = getattr(s, "intended_structure", None)
+
+            if intended is not None:
+                # Normalize: intended is structure_type ("long_call"), actual is enum value
+                # ("single_call"). Use strategy_map to compare apples to apples.
+                intended_enum = _sm.get(intended)
+                intended_val = intended_enum.value if intended_enum else intended
+                if intended_val != actual:
+                    rec: dict = {
+                        "structure_id":       s.structure_id,
+                        "symbol":             s.underlying,
+                        "intended_structure": intended,
+                        "actual_strategy":    actual,
+                        "lifecycle":          lc,
+                        "risk_authorized":    getattr(s, "risk_authorized", None),
+                        "risk_executed":      getattr(s, "risk_executed", None),
+                    }
+                    mismatches.append(rec)
+                    log.warning(
+                        "[EXEC] FIX-D MISMATCH: %s (%s) intended=%s actual=%s",
+                        s.underlying, s.structure_id[:8], intended, actual,
+                    )
+                continue
+
+            # Pre-fix structures: cross-reference via decision file
+            debate = getattr(s, "debate", {}) or {}
+            decision_id = debate.get("decision_id")
+            if not decision_id:
+                continue
+            try:
+                dec_path = _DECISIONS_DIR / f"{decision_id}.json"
+                if not dec_path.exists():
+                    continue
+                dec = json.loads(dec_path.read_text(encoding="utf-8"))
+                sc = dec.get("selected_candidate") or {}
+                intended_type = sc.get("structure_type", "")
+                if not intended_type:
+                    continue
+                intended_enum = _sm.get(intended_type)
+                if intended_enum and intended_enum.value != actual:
+                    rec = {
+                        "structure_id":       s.structure_id,
+                        "symbol":             s.underlying,
+                        "intended_structure": intended_type,
+                        "actual_strategy":    actual,
+                        "lifecycle":          lc,
+                        "source":             "decision_file",
+                    }
+                    mismatches.append(rec)
+                    log.warning(
+                        "[EXEC] FIX-D MISMATCH (via decision file): %s (%s) "
+                        "intended=%s actual=%s",
+                        s.underlying, s.structure_id[:8], intended_type, actual,
+                    )
+            except Exception as _de:
+                log.debug("[EXEC] FIX-D decision check failed for %s: %s", s.structure_id, _de)
+
+        if not mismatches:
+            log.info("[EXEC] FIX-D audit complete — no mismatches in active structures")
+        else:
+            log.critical("[EXEC] FIX-D audit found %d mismatch(es): %s",
+                         len(mismatches), [m["symbol"] for m in mismatches])
+        return mismatches
+    except Exception as _exc:
+        log.warning("[EXEC] _audit_open_structures_for_mismatch failed: %s", _exc)
+        return []
+
+
 # ── Execution ─────────────────────────────────────────────────────────────────
 
 def submit_selected_candidate(
@@ -315,6 +439,8 @@ def submit_selected_candidate(
             decision_record.no_trade_reason = "debate_rejected_all"
             return "no_trade"
 
+        _winner_type = _winner.get("structure_type", "unknown")
+
         _fallback_pool = [_winner] + [
             c for c in candidate_structures if c.get("candidate_id") != _sel_id
         ]
@@ -323,12 +449,37 @@ def submit_selected_candidate(
         if pf_allow_new_entries:
             for _attempt, _cand in enumerate(_fallback_pool[:_MAX_BUILD_ATTEMPTS], 1):
                 sym = _cand["symbol"]
+                _cand_type = _cand.get("structure_type", "unknown")
                 if _attempt == 1:
                     log.info("[OPTS] Bounded selection: %s  %s  conf=%.2f  size_mod=%.1f",
-                             sym, _cand.get("structure_type", "?"), _conf, _size_mod)
+                             sym, _cand_type, _conf, _size_mod)
                 else:
                     log.info("[OPTS] Build fallback attempt %d/%d: %s  %s",
-                             _attempt, _MAX_BUILD_ATTEMPTS, sym, _cand.get("structure_type", "?"))
+                             _attempt, _MAX_BUILD_ATTEMPTS, sym, _cand_type)
+                    # FIX-A: abort if fallback strategy differs from debate winner
+                    if _cand_type != _winner_type:
+                        _risk_auth = _winner.get("max_loss", 0.0)
+                        _risk_fall = _cand.get("max_loss", 0.0)
+                        log.critical(
+                            "[EXEC] %s: spread short leg failed — ABORTING trade. "
+                            "Debate approved %s only, %s was explicitly rejected. "
+                            "original=%s attempted=%s risk_delta=$%.0f",
+                            sym, _winner_type, _cand_type,
+                            _winner_type, _cand_type, _risk_fall - _risk_auth,
+                        )
+                        try:
+                            from notifications import (
+                                send_whatsapp_direct,  # noqa: PLC0415
+                            )
+                            send_whatsapp_direct(
+                                f"[A2 TRADE ABORTED] {sym}: spread leg failed, "
+                                f"no fallback executed. Manual review needed."
+                            )
+                        except Exception as _wa_exc:
+                            log.debug("[EXEC] WhatsApp alert failed: %s", _wa_exc)
+                        decision_record.execution_result = "rejected"
+                        decision_record.no_trade_reason = "spread_leg_failed_no_fallback"
+                        return "rejected"
 
                 # Mode gate — hard stop (not candidate-specific)
                 if a2_mode is not None:
@@ -392,11 +543,47 @@ def submit_selected_candidate(
                                 sym, _attempt, _MAX_BUILD_ATTEMPTS, build_err)
                     continue
 
+                # FIX-C: validate structure matches what the debate actually selected
+                if not _validate_execution_matches_debate(_winner, structure, strategy_map):
+                    decision_record.execution_result = "rejected"
+                    decision_record.no_trade_reason = "spread_leg_failed_no_fallback"
+                    return "rejected"
+
                 # Per-symbol submission lock — block duplicates (T2-1)
                 if _is_duplicate_submission(sym, structure.legs):
                     decision_record.execution_result = "no_trade"
                     decision_record.no_trade_reason = "duplicate_submission_blocked"
                     return "no_trade"
+
+                # FIX-B: stamp execution audit trail fields
+                _risk_auth = _winner.get("max_loss", 0.0) * _size_mod
+                _risk_exec = _cand.get("max_loss", 0.0) * _size_mod
+                structure.intended_structure = _winner_type
+                structure.execution_fallback = (_attempt > 1)
+                structure.fallback_reason = (
+                    f"winner_build_failed_attempt_{_attempt - 1}" if _attempt > 1 else None
+                )
+                structure.risk_authorized = _risk_auth
+                structure.risk_executed = _risk_exec
+
+                # FIX-B: block if fallback somehow executes with higher risk
+                if structure.execution_fallback and _risk_exec > _risk_auth:
+                    log.critical(
+                        "[EXEC] %s: execution_fallback=True and risk_executed=$%.0f "
+                        "> risk_authorized=$%.0f — BLOCKING order submission.",
+                        sym, _risk_exec, _risk_auth,
+                    )
+                    try:
+                        from notifications import send_whatsapp_direct  # noqa: PLC0415
+                        send_whatsapp_direct(
+                            f"[A2 CRITICAL] {sym}: fallback risk ${_risk_exec:.0f} "
+                            f"exceeds authorized ${_risk_auth:.0f}. Trade blocked."
+                        )
+                    except Exception as _wa_exc:
+                        log.debug("[EXEC] WhatsApp alert failed: %s", _wa_exc)
+                    decision_record.execution_result = "rejected"
+                    decision_record.no_trade_reason = "spread_leg_failed_no_fallback"
+                    return "rejected"
 
                 structure.debate = _build_debate_snapshot(
                     debate_result if _attempt == 1 else {}, decision_record.decision_id

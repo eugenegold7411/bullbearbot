@@ -224,11 +224,14 @@ class TestExecutorHardLeverageCap(unittest.TestCase):
         account   = _FakeAccount(equity)
 
         action = self._make_action()
+        # Supply the symbol's current price so validate_action skips
+        # _get_current_price (which would 401 in CI without Alpaca keys).
+        current_prices = {action["symbol"]: action["entry"]}
 
         # Should not raise for the leverage cap (may raise for other reasons;
         # catch ValueError and check it's not the cap block)
         try:
-            oe.validate_action(action, account, positions, "open", 60, {})
+            oe.validate_action(action, account, positions, "open", 60, current_prices)
         except ValueError as exc:
             self.assertNotIn("BLOCKED", str(exc), "Hard cap block should NOT fire at 1.8×")
 

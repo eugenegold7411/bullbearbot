@@ -246,10 +246,10 @@ def test_straddle_blocked_directional_without_override():
 
 # ── Tests 9–10: Issue 23 — health_monitor sparse check ───────────────────────
 
-def _make_health_mock_path(entries: list[dict], today_str: str) -> MagicMock:
+def _make_health_mock_path(entries: list[dict], refresh_iso: str) -> MagicMock:
     cal_data = {
         "fetched_at":           datetime.now(timezone.utc).isoformat(),
-        "last_daily_refresh_at": today_str,
+        "last_daily_refresh_at": refresh_iso,
         "calendar":             entries,
     }
     mp = MagicMock()
@@ -268,9 +268,11 @@ def test_health_calendar_sparse_warning():
     import health_monitor as hm
 
     now_et = _now_et()
-    today_str = now_et.strftime("%Y-%m-%d")
+    # Full ISO timestamp — date-only would be parsed as midnight UTC and read
+    # as ~27h stale on any CI run after early evening ET.
+    refresh_iso = datetime.now(timezone.utc).isoformat()
     entries = [{"symbol": "NVDA", "earnings_date": _future_iso(5)}]  # only 1
-    mp = _make_health_mock_path(entries, today_str)
+    mp = _make_health_mock_path(entries, refresh_iso)
 
     with patch.object(hm, "_DATA_DIR", MagicMock()) as md:
         md.__truediv__.return_value.__truediv__.return_value = mp
@@ -288,12 +290,14 @@ def test_health_calendar_ok_when_sufficient_upcoming():
     import health_monitor as hm
 
     now_et = _now_et()
-    today_str = now_et.strftime("%Y-%m-%d")
+    # Full ISO timestamp — date-only would be parsed as midnight UTC and read
+    # as ~27h stale on any CI run after early evening ET.
+    refresh_iso = datetime.now(timezone.utc).isoformat()
     entries = [
         {"symbol": s, "earnings_date": _future_iso(i + 2)}
         for i, s in enumerate(["NVDA", "AAPL", "MSFT", "GOOG", "AMZN", "META"])
     ]
-    mp = _make_health_mock_path(entries, today_str)
+    mp = _make_health_mock_path(entries, refresh_iso)
 
     with patch.object(hm, "_DATA_DIR", MagicMock()) as md:
         md.__truediv__.return_value.__truediv__.return_value = mp

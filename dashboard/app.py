@@ -3853,8 +3853,8 @@ def _strip_md(t: str) -> str:
     return t
 
 
-def _a2_snip(text: str, n: int = 2) -> str:
-    """First n sentences from text, markdown stripped, max 220 chars."""
+def _a2_snip(text: str, n: int = 2, max_chars: int = 220) -> str:
+    """First n sentences from text, markdown stripped, max max_chars chars."""
     import re as _re
     if not text:
         return ""
@@ -3863,8 +3863,8 @@ def _a2_snip(text: str, n: int = 2) -> str:
     text = _re.sub(r"^[\-\*\d\.]+\s*", "", text, flags=_re.MULTILINE)
     sentences = _re.split(r"(?<=[.!?])\s+", text.strip())
     snippet = " ".join(s.strip() for s in sentences[:n] if s.strip())
-    if len(snippet) > 220:
-        snippet = snippet[:217] + "…"
+    if len(snippet) > max_chars:
+        snippet = snippet[:max_chars - 3] + "…"
     return snippet.strip()
 
 
@@ -3909,7 +3909,18 @@ def _a2_vote_tally(conf, reject) -> dict:
 
 
 def _a2_match_decision(struct: dict, all_decs: list) -> dict:
-    """Find best matching decision for a structure by symbol + timestamp proximity."""
+    """Find best matching decision: debate.decision_id exact lookup first, then symbol+timestamp proximity."""
+    decision_id = (struct.get("debate") or {}).get("decision_id")
+    if decision_id:
+        for d in all_decs:
+            if d.get("decision_id") == decision_id:
+                return d
+        try:
+            f = BOT_DIR / "data/account2/decisions" / f"{decision_id}.json"
+            if f.exists():
+                return json.loads(f.read_text())
+        except Exception:
+            pass
     underlying = struct.get("underlying", "")
     opened_at = struct.get("opened_at", "")
     if not underlying or not opened_at:
@@ -4187,8 +4198,8 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
     # Build per-agent text from structured debate data.
     # Bounded debate is a single synthesis — map reasons→DIRECTIONAL ADVOCATE
     # and key_risks→RISK OFFICER; other agents show "—" (no per-role text available).
-    _reasons_snip = _a2_snip(str(reasons), 2) if reasons else ""
-    _risks_snip = " · ".join(str(r) for r in key_risks[:2]) if key_risks else ""
+    _reasons_snip = _a2_snip(str(reasons), 4, max_chars=480) if reasons else ""
+    _risks_snip = " · ".join(str(r) for r in key_risks) if key_risks else ""
     if _debate_backfill:
         _reasons_snip = "debate data not available — predates persistence fix"
     # VOL ANALYST slot: IV environment + size modifier override + first reason sentence
@@ -4232,7 +4243,7 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
     debate_cards_html = ""
     for agent_key, border_col, name_col in _agent_cfgs:
         agent_text = _structured_sections.get(agent_key, "")
-        snip = _a2_snip(agent_text, 2) if agent_text else "—"
+        snip = _a2_snip(agent_text, 4, max_chars=480) if agent_text else "—"
         av = per_agent.get(agent_key, "FLAG")
         if av == "PROCEED":
             av_pill = (

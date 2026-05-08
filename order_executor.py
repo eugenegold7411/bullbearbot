@@ -339,6 +339,18 @@ def validate_action(action: dict, account, positions: list, market_status: str,
         _check(action.get("stop_loss") is not None, "stop_loss required for short_sell")
         return
 
+    if act == "reallocate":
+        _check(action.get("exit_symbol"), "exit_symbol required for reallocate")
+        _check(
+            action.get("entry_symbol") or action.get("symbol"),
+            "entry_symbol required for reallocate",
+        )
+        qty = action.get("qty")
+        _check(qty and float(qty) > 0, "qty must be positive for reallocate")
+        _check(action.get("stop_loss") is not None, "stop_loss required for reallocate")
+        _check(action.get("take_profit") is not None, "take_profit required for reallocate")
+        return
+
     if act != "buy":
         raise ValueError(f"unknown action '{act}'")
 
@@ -1457,7 +1469,7 @@ def execute_all(
         tier       = action.get("tier", "core")
 
         # T-006: block entry orders when session tier is unresolved
-        if act in ("buy", "short_sell") and session_tier == "unknown":
+        if act in ("buy", "short_sell", "reallocate") and session_tier == "unknown":
             log.warning("[EXECUTOR] T-006 %s: session=unknown — BUY blocked until session is identified", symbol)
             _reason = "session=unknown: BUY order blocked (session not yet classified)"
             results.append(ExecutionResult(symbol=symbol, action=act, status="rejected", reason=_reason))

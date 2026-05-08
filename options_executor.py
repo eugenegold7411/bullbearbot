@@ -42,6 +42,76 @@ _SAFETY_DEDUP_SECS: float = 300.0
 _SAFETY_ALERT_CACHE: dict[str, float] = {}
 _MAX_CLOSE_ATTEMPTS: int = 5
 
+# Cached subclasses — built lazily so Alpaca imports stay deferred.
+_CLOSE_REQ_CLASSES: "tuple | None" = None
+
+
+def _get_close_request_classes() -> tuple:
+    """
+    Return (_OptionLimitCloseRequest, _OptionMarketCloseRequest) — subclasses of
+    the Alpaca SDK request classes that carry position_effect="closing" through
+    to the API payload.  Built once and cached; Alpaca imports are deferred so
+    they stay compatible with test stubs.
+
+    Falls back to the base classes directly when stubs are lambdas or otherwise
+    non-subclassable (e.g., in tests that patch alpaca.trading.requests).
+    """
+    global _CLOSE_REQ_CLASSES
+    if _CLOSE_REQ_CLASSES is not None:
+        return _CLOSE_REQ_CLASSES
+    from alpaca.trading.requests import (  # noqa: PLC0415
+        LimitOrderRequest,
+        MarketOrderRequest,
+    )
+    try:
+        from pydantic import ConfigDict  # noqa: PLC0415
+
+        class _OptionLimitCloseRequest(LimitOrderRequest):
+            model_config = ConfigDict(extra="allow", validate_assignment=True)
+
+        class _OptionMarketCloseRequest(MarketOrderRequest):
+            model_config = ConfigDict(extra="allow", validate_assignment=True)
+
+        _CLOSE_REQ_CLASSES = (_OptionLimitCloseRequest, _OptionMarketCloseRequest)
+    except Exception:
+        # Base classes are stubs/lambdas (test environment) — use them directly.
+        # position_effect="closing" will be accepted as a kwarg and ignored by stubs.
+        _CLOSE_REQ_CLASSES = (LimitOrderRequest, MarketOrderRequest)
+    return _CLOSE_REQ_CLASSES
+
+
+def _fetch_live_close_price(occ_symbol: str) -> "Optional[float]":
+    """
+    Fetch current bid price for a single option contract via Alpaca snapshot.
+    Used to price close limit orders at current market, not avg entry cost.
+    Falls back to last trade price when bid is unavailable.
+    Non-fatal: returns None on any failure so callers fall back to _mid_for_leg.
+    """
+    try:
+        from alpaca.data.requests import OptionSnapshotRequest  # noqa: PLC0415
+
+        import options_data  # noqa: PLC0415
+        client = options_data._make_options_data_client()
+        req = OptionSnapshotRequest(symbol_or_symbols=occ_symbol)
+        snap = client.get_option_snapshot(req)
+        if not snap or occ_symbol not in snap:
+            return None
+        data = snap[occ_symbol]
+        quote = getattr(data, "latest_quote", None)
+        if quote is not None:
+            bid = getattr(quote, "bid_price", None)
+            if bid is not None and float(bid) > 0:
+                return float(bid)
+        trade = getattr(data, "latest_trade", None)
+        if trade is not None:
+            price = getattr(trade, "price", None)
+            if price is not None and float(price) > 0:
+                return float(price)
+        return None
+    except Exception as exc:
+        log.debug("[EXECUTOR] live close price unavailable for %s: %s", occ_symbol, exc)
+        return None
+
 
 def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
     try:
@@ -484,13 +554,14 @@ def _submit_spread_mleg(
 def _emergency_close_leg(trading_client, occ_symbol: str, qty: int) -> None:
     """Submit a market close for a single filled option leg."""
     try:
-        from alpaca.trading.enums import OrderSide, TimeInForce
-        from alpaca.trading.requests import MarketOrderRequest
-        req = MarketOrderRequest(
+        from alpaca.trading.enums import OrderSide, TimeInForce  # noqa: PLC0415
+        _, _MktCloseReq = _get_close_request_classes()
+        req = _MktCloseReq(
             symbol=occ_symbol,
             qty=qty,
             side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY,
+            position_effect="closing",
         )
         trading_client.submit_order(req)
         log.info("[EXECUTOR] emergency close submitted for %s qty=%d", occ_symbol, qty)
@@ -686,38 +757,42 @@ def close_structure(
         close_qty = structure.contracts
 
         try:
+            from alpaca.trading.enums import (  # noqa: PLC0415
+                OrderSide,
+                PositionIntent,
+                TimeInForce,
+            )
+            _LimitCloseReq, _MktCloseReq = _get_close_request_classes()
+            close_side   = OrderSide.SELL if leg.side == "buy" else OrderSide.BUY
+            close_intent = (
+                PositionIntent.SELL_TO_CLOSE if leg.side == "buy"
+                else PositionIntent.BUY_TO_CLOSE
+            )
             if method == "market":
-                from alpaca.trading.enums import OrderSide, PositionIntent, TimeInForce
-                from alpaca.trading.requests import MarketOrderRequest
-                close_side   = OrderSide.SELL if leg.side == "buy" else OrderSide.BUY
-                close_intent = (
-                    PositionIntent.SELL_TO_CLOSE if leg.side == "buy"
-                    else PositionIntent.BUY_TO_CLOSE
-                )
-                req = MarketOrderRequest(
+                req = _MktCloseReq(
                     symbol=occ_sym,
                     qty=close_qty,
                     side=close_side,
                     position_intent=close_intent,
                     time_in_force=TimeInForce.DAY,
+                    position_effect="closing",
                 )
             else:
-                from alpaca.trading.enums import OrderSide, PositionIntent, TimeInForce
-                from alpaca.trading.requests import LimitOrderRequest
-                close_side   = OrderSide.SELL if leg.side == "buy" else OrderSide.BUY
-                close_intent = (
-                    PositionIntent.SELL_TO_CLOSE if leg.side == "buy"
-                    else PositionIntent.BUY_TO_CLOSE
-                )
-                mid = _mid_for_leg(leg)
-                limit_price = _round_limit(mid) if mid and mid > 0 else 0.05
-                req = LimitOrderRequest(
+                live_price = _fetch_live_close_price(occ_sym)
+                if live_price is not None:
+                    log.info("[EXECUTOR] %s close limit=%.4f (live bid)", occ_sym, live_price)
+                    limit_price = _round_limit(live_price)
+                else:
+                    mid = _mid_for_leg(leg)
+                    limit_price = _round_limit(mid) if mid and mid > 0 else 0.05
+                req = _LimitCloseReq(
                     symbol=occ_sym,
                     qty=close_qty,
                     side=close_side,
                     position_intent=close_intent,
                     time_in_force=TimeInForce.GTC,
                     limit_price=limit_price,
+                    position_effect="closing",
                 )
 
             order = trading_client.submit_order(req)

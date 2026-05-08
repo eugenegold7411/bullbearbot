@@ -8,6 +8,7 @@ Covers:
 4. test_position_effect_close_on_long_call
 5. test_bracket_canceled_before_close
 6. test_manual_review_stops_retry
+7. test_close_order_construction — position_effect + live bid price (Fix A + Fix B)
 """
 from __future__ import annotations
 
@@ -280,3 +281,129 @@ class TestManualReviewStopsRetry:
         )
         assert should_close is False
         assert reason == ""
+
+
+# ── Test 7: close order construction — Fix A (position_effect) + Fix B (live bid) ──
+
+def _make_spread_struct_two_legs():
+    """2-leg spread: buy C140 + sell C145 (both filled)."""
+    from schemas import (
+        OptionsLeg,
+        OptionsStructure,
+        OptionStrategy,
+        StructureLifecycle,
+        Tier,
+    )
+    buy_leg = OptionsLeg(
+        occ_symbol="TSM260620C00140000", underlying="TSM", side="buy", qty=1,
+        option_type="call", strike=140.0, expiration="2026-06-20",
+        filled_price=2.50, bid=2.10, ask=2.90,
+    )
+    sell_leg = OptionsLeg(
+        occ_symbol="TSM260620C00145000", underlying="TSM", side="sell", qty=1,
+        option_type="call", strike=145.0, expiration="2026-06-20",
+        filled_price=1.20, bid=0.90, ask=1.50,
+    )
+    return OptionsStructure(
+        structure_id="test-spread-tsm",
+        underlying="TSM",
+        strategy=OptionStrategy.CALL_DEBIT_SPREAD,
+        lifecycle=StructureLifecycle.FULLY_FILLED,
+        legs=[buy_leg, sell_leg],
+        contracts=1,
+        max_cost_usd=200.0,
+        opened_at="2026-05-01T10:00:00+00:00",
+        catalyst="test",
+        tier=Tier.CORE,
+        debit_paid=1.30,
+        max_profit_usd=None,
+    )
+
+
+class TestCloseOrderConstruction:
+    """Fix A: position_effect="closing" on all per-leg close requests.
+    Fix B: close limit price comes from live bid, not avg_entry_price."""
+
+    def test_long_call_close_has_position_effect_closing(self):
+        """Fix A: single-leg long call close must carry position_effect='closing'."""
+        import options_executor
+
+        struct = _make_structure()
+        submitted_req = {}
+
+        def capture(req):
+            submitted_req["req"] = req
+            return MagicMock(id="ord-a")
+
+        client = MagicMock()
+        client.submit_order.side_effect = capture
+        client.get_all_positions.return_value = []
+
+        with patch("options_executor._fetch_live_close_price", return_value=None):
+            options_executor.close_structure(struct, client, reason="test_position_effect")
+
+        req = submitted_req.get("req")
+        assert req is not None, "No order was submitted"
+        assert getattr(req, "position_effect", None) == "closing", (
+            f"Expected position_effect='closing', got {getattr(req, 'position_effect', '<missing>')}"
+        )
+
+    def test_close_limit_price_uses_live_bid_not_avg_entry(self):
+        """Fix B: close limit price should be the live bid, not avg_entry_price."""
+        import options_executor
+
+        # leg has stale bid=0.50 and filled_price (avg entry) = 1.00
+        # live bid from the snapshot = 0.35  ← should win
+        struct = _make_structure()  # leg.filled_price=1.00, leg.bid=0.50
+        submitted_req = {}
+
+        def capture(req):
+            submitted_req["req"] = req
+            return MagicMock(id="ord-b")
+
+        client = MagicMock()
+        client.submit_order.side_effect = capture
+        client.get_all_positions.return_value = []
+
+        live_bid = 0.35
+        with patch("options_executor._fetch_live_close_price", return_value=live_bid):
+            options_executor.close_structure(struct, client, reason="test_live_bid", method="limit")
+
+        req = submitted_req.get("req")
+        assert req is not None, "No order was submitted"
+        # Price should be live bid rounded to $0.05 tick = 0.35
+        from options_executor import _round_limit
+        expected = _round_limit(live_bid)
+        assert abs(req.limit_price - expected) < 0.001, (
+            f"Expected limit_price≈{expected} (live bid), got {req.limit_price}"
+        )
+        # Must NOT be avg_entry_price (1.00) or stale leg.bid (0.50)
+        assert req.limit_price < 0.50, (
+            f"limit_price {req.limit_price} looks like stale leg data — expected {expected}"
+        )
+
+    def test_spread_per_leg_fallback_also_has_position_effect(self):
+        """Fix A: per-leg fallback for a spread close also carries position_effect='closing'."""
+        import options_executor
+
+        struct = _make_spread_struct_two_legs()
+        submitted_reqs = []
+
+        def capture(req):
+            submitted_reqs.append(req)
+            return MagicMock(id=f"ord-{len(submitted_reqs)}")
+
+        client = MagicMock()
+        client.submit_order.side_effect = capture
+        client.get_all_positions.return_value = []
+
+        # Force MLEG to fail so per-leg fallback runs
+        with patch("options_executor._close_spread_mleg", side_effect=Exception("mleg-fail")):
+            with patch("options_executor._fetch_live_close_price", return_value=None):
+                options_executor.close_structure(struct, client, reason="test_spread_pe", method="limit")
+
+        assert len(submitted_reqs) == 2, f"Expected 2 per-leg orders, got {len(submitted_reqs)}"
+        for req in submitted_reqs:
+            assert getattr(req, "position_effect", None) == "closing", (
+                f"Spread per-leg req missing position_effect='closing': {req}"
+            )

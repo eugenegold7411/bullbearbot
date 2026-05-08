@@ -228,6 +228,58 @@ def _load_strategy_config() -> str:
         return "  (strategy_config.json not yet generated — using system prompt defaults)"
 
 
+def _earnings_opportunities_section() -> str:
+    """
+    Build a pre-event earnings opportunities block for A1's prompt.
+    Reads earnings_convictions.json and surfaces active-phase symbols with
+    high/medium conviction so Sonnet can proactively consider pre-earnings entries.
+    Returns '' if no active-phase candidates or file missing. Non-fatal.
+    """
+    try:
+        conv_path = Path(__file__).parent / "data" / "market" / "earnings_convictions.json"
+        if not conv_path.exists():
+            return ""
+        data = json.loads(conv_path.read_text())
+        candidates = data if isinstance(data, list) else data.get("candidates", [])
+        active = [
+            c for c in candidates
+            if c.get("phase") in ("active", "transition")
+            and c.get("conviction_level") in ("high", "medium")
+        ]
+        if not active:
+            return ""
+        lines = ["=== EARNINGS OPPORTUNITIES (pre-event) ==="]
+        for c in active[:6]:
+            sym = c.get("symbol", "?")
+            eda = c.get("eda", "?")
+            timing = c.get("timing", "unknown")
+            direction = c.get("direction", "neutral")
+            level = c.get("conviction_level", "?")
+            beat_rate = c.get("beat_rate")
+            consensus = c.get("analyst_consensus") or "?"
+            iv_traj = c.get("iv_trajectory", "unknown")
+            structure = c.get("recommended_structure") or "none"
+            a1 = c.get("a1_signal") or "none"
+            notes = c.get("notes", "")
+
+            beat_str = f"{beat_rate:.0%}" if beat_rate is not None else "?"
+            lines.append(
+                f"  {sym} eda={eda} {timing} | {direction} conviction={level}"
+            )
+            lines.append(
+                f"    Beat rate: {beat_str} | Consensus: {consensus} | IV: {iv_traj}"
+            )
+            lines.append(
+                f"    Recommended: {structure} | A1 signal: {a1}"
+            )
+            if notes:
+                lines.append(f"    {notes}")
+        return "\n".join(lines)
+    except Exception as exc:
+        log.debug("[DECISION] earnings opportunities section failed: %s", exc)
+        return ""
+
+
 def _eda_for_positions(positions: list) -> list[tuple[str, int]]:
     """Return [(symbol, eda_days)] for held long positions with earnings ≤ 3 days away."""
     try:
@@ -475,6 +527,11 @@ def build_user_prompt(
     # This avoids modifying user_template_v1.txt for backward compatibility with cached prompts.
     if allocator_section and allocator_section.strip():
         rendered += "\n\n" + allocator_section
+    # Pre-event earnings opportunities — proactive entry signals for active-phase symbols.
+    _opp_section = _earnings_opportunities_section()
+    if _opp_section:
+        rendered += "\n\n" + _opp_section
+
     # Issue 21: hard rotation gate — inject mandatory earnings warning for positions ≤3 days away.
     earnings_alerts = _eda_for_positions(positions)
     if earnings_alerts:

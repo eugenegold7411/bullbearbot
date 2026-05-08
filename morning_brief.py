@@ -397,6 +397,53 @@ def _build_pre_earnings_intel_section() -> str:
         return ""
 
 
+def _build_earnings_conviction_section() -> str:
+    """
+    Inject pre-event earnings conviction data for active-phase symbols into Sonnet's context.
+    Reads earnings_convictions.json (written by scan_earnings_candidates).
+    Returns '' if file missing or no active-phase candidates.
+    Non-fatal.
+    """
+    try:
+        conv_path = _BASE_DIR / "data" / "market" / "earnings_convictions.json"
+        if not conv_path.exists():
+            return ""
+        data = json.loads(conv_path.read_text())
+        candidates = data if isinstance(data, list) else data.get("candidates", [])
+        active = [
+            c for c in candidates
+            if c.get("phase") in ("active", "transition")
+            and c.get("conviction_level") in ("high", "medium", "low")
+        ]
+        if not active:
+            return ""
+        lines = ["\n=== EARNINGS CONVICTION SLATE (pre-event) ==="]
+        for c in active[:8]:
+            sym = c.get("symbol", "?")
+            eda = c.get("eda", "?")
+            timing = c.get("timing", "unknown")
+            direction = c.get("direction", "neutral")
+            level = c.get("conviction_level", "?")
+            structure = c.get("recommended_structure") or "none"
+            a1 = c.get("a1_signal") or "none"
+            beat_rate = c.get("beat_rate")
+            consensus = c.get("analyst_consensus") or "?"
+            iv_traj = c.get("iv_trajectory", "unknown")
+            notes = c.get("notes", "")
+
+            beat_str = f"{beat_rate:.0%}" if beat_rate is not None else "?"
+            lines.append(
+                f"  {sym} eda={eda} {timing} | {direction} conviction={level}"
+                f"\n    Beat: {beat_str} | Consensus: {consensus} | IV: {iv_traj}"
+                f"\n    Structure: {structure} | A1 signal: {a1}"
+                + (f"\n    {notes}" if notes else "")
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        log.debug("[MORNING] earnings conviction section failed: %s", exc)
+        return ""
+
+
 def _load_context() -> str:
     """Assemble all available overnight intelligence into a context string."""
     parts = []
@@ -579,6 +626,11 @@ def _load_context() -> str:
     _pre_earnings_section = _build_pre_earnings_intel_section()
     if _pre_earnings_section:
         parts.append(_pre_earnings_section)
+
+    # Earnings conviction slate — active phase pre-event opportunities
+    _conviction_section = _build_earnings_conviction_section()
+    if _conviction_section:
+        parts.append(_conviction_section)
 
     # Congressional + insider activity (last 48h)
     try:

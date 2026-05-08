@@ -594,6 +594,56 @@ def run_candidate_stage(
         except Exception as _fce:
             log.debug("[OPTS] fresh_catalyst_override failed (non-fatal): %s", _fce)
 
+    # Earnings conviction injection — add active-phase pre-event candidates to A2 universe.
+    # Reads earnings_convictions.json (written by earnings_rotation.scan_earnings_candidates).
+    # Injects symbols with active phase + medium/high conviction + a2_structure set.
+    # Gate: a2_router.earnings_conviction_injection_enabled (default true).
+    _ec_inject_enabled = config.get("a2_router", {}).get("earnings_conviction_injection_enabled", True)
+    if _ec_inject_enabled:
+        try:
+            _ec_path = _BASE / "data" / "market" / "earnings_convictions.json"
+            if _ec_path.exists():
+                _ec_data = json.loads(_ec_path.read_text())
+                _ec_list = _ec_data if isinstance(_ec_data, list) else _ec_data.get("candidates", [])
+                _ec_scored_set = {s for s, _ in scored_symbols}
+                _ec_injected: list = []
+                for _ec in _ec_list:
+                    if len(_ec_injected) >= 3:
+                        break
+                    _ec_sym = (_ec.get("symbol") or "").upper()
+                    if not _ec_sym:
+                        continue
+                    if _ec.get("phase") not in ("active", "transition"):
+                        continue
+                    if _ec.get("conviction_level") not in ("high", "medium"):
+                        continue
+                    if _ec.get("a2_structure") is None:
+                        continue
+                    if _ec_sym in _ec_scored_set:
+                        continue
+                    _ec_sig = {
+                        "conviction": _ec.get("conviction_level", "medium"),
+                        "score": round(_ec.get("conviction_score", 0.5) * 100),
+                        "direction": _ec.get("direction", "neutral"),
+                        "catalyst_type": "earnings_pre_event",
+                        "primary_catalyst": (
+                            f"earnings in {_ec.get('eda')}d ({_ec.get('timing', '?')})"
+                        ),
+                        "price": signal_scores.get(_ec_sym, {}).get("price", 1.0),
+                        "tier": "earnings",
+                        "earnings_conviction": _ec,
+                    }
+                    scored_symbols = scored_symbols + [(_ec_sym, _ec_sig)]
+                    _ec_scored_set.add(_ec_sym)
+                    _ec_injected.append(_ec_sym)
+                    log.info(
+                        "[OPTS] earnings_conviction_inject: %s eda=%s %s structure=%s",
+                        _ec_sym, _ec.get("eda"), _ec.get("conviction_level"),
+                        _ec.get("a2_structure"),
+                    )
+        except Exception as _ece:
+            log.debug("[OPTS] earnings conviction injection failed (non-fatal): %s", _ece)
+
     # blocked_symbols gate — mirrors A1 risk_kernel check (parameters.blocked_symbols).
     # Fail-safe: any config read error yields empty block set so A2 never halts on bad config.
     try:
@@ -651,9 +701,23 @@ def run_candidate_stage(
         log.warning("[OPTS] Could not load active structures for duplicate gate (non-fatal): %s", _ase)
         _active_structure_syms = set()
 
+    # Position-intel close-recommended gate — skip symbols whose most recent
+    # intel run flagged a CLOSE / CLOSE_SHORT_LEG action. Meaningful primarily
+    # when a2_router.allow_multiple_structures_per_symbol=true; otherwise the
+    # active-structure gate above already covers these symbols.
+    try:
+        import options_position_manager as _opm  # noqa: PLC0415
+        _close_rec_syms = _opm.get_close_recommended_symbols()
+    except Exception as _pi_exc:
+        log.debug("[OPTS] position_intel read failed (non-fatal): %s", _pi_exc)
+        _close_rec_syms = set()
+
     for sym, sig_data in scored_symbols:
         if sym in _pending_underlyings:
             log.info("[OPTS] %s: skipping — mleg order pending from prior cycle", sym)
+            continue
+        if sym in _close_rec_syms:
+            log.info("[OPTS] %s: skipping candidate eval — position intel recommends close", sym)
             continue
         if sym in _active_structure_syms:
             log.debug("[OPTS] %s: already has active structure — skipping candidate generation", sym)

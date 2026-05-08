@@ -462,3 +462,296 @@ def run_earnings_rotation(config: Optional[dict] = None) -> dict:
 
     # `culled` is always 0 in this function — cull is owned by 2 AM job.
     return {"added": added, "culled": 0, "watchlist_size_after": rotation_size}
+
+
+# ── Earnings conviction assembler (v2) ───────────────────────────────────────
+
+_INTEL_DIR = _BASE / "data" / "earnings_intel"
+_IV_HIST_DIR = _BASE / "data" / "options" / "iv_history"
+_CONVICTIONS_PATH = _BASE / "data" / "market" / "earnings_convictions.json"
+
+
+def _ec_derive_direction(intel: dict) -> tuple[str, float]:
+    """Return (direction, confidence) from analyst intel."""
+    bullish_pct = intel.get("bullish_pct")
+    rec_mean = intel.get("rec_mean")
+
+    if bullish_pct is not None:
+        if bullish_pct >= 80:
+            return "bullish", min(0.90, bullish_pct / 100.0)
+        if bullish_pct <= 40:
+            return "bearish", min(0.90, (100.0 - bullish_pct) / 100.0)
+        # 40 < bullish_pct < 80 — neutral
+        return "neutral", 0.50
+
+    if rec_mean is not None:
+        if rec_mean <= 2.0:
+            conf = max(0.55, (5.0 - rec_mean) / 4.0 * 0.90)
+            return "bullish", conf
+        if rec_mean >= 3.5:
+            conf = max(0.55, (rec_mean - 1.0) / 4.0 * 0.90)
+            return "bearish", conf
+        return "neutral", 0.50
+
+    return "neutral", 0.50
+
+
+def _ec_consensus_label(intel: dict) -> Optional[str]:
+    rec_mean = intel.get("rec_mean")
+    bullish_pct = intel.get("bullish_pct")
+    if rec_mean is not None:
+        if rec_mean <= 1.5:
+            return "strong_buy"
+        if rec_mean <= 2.5:
+            return "buy"
+        if rec_mean <= 3.5:
+            return "hold"
+        if rec_mean <= 4.5:
+            return "sell"
+        return "strong_sell"
+    if bullish_pct is not None:
+        if bullish_pct >= 80:
+            return "buy"
+        if bullish_pct >= 60:
+            return "hold"
+        return "sell"
+    return None
+
+
+def _ec_iv_trajectory(iv_history: list) -> tuple[str, Optional[float]]:
+    """Return (trajectory, current_iv_rank) from iv history entries."""
+    recent = [e for e in iv_history[-7:] if e.get("iv_rank") is not None]
+    if not recent:
+        return "unknown", None
+    current = recent[-1].get("iv_rank")
+    if len(recent) < 3:
+        return "flat", current
+    mid = len(recent) // 2
+    first_avg = sum(e.get("iv_rank", 0) for e in recent[:mid]) / mid
+    second_avg = sum(e.get("iv_rank", 0) for e in recent[mid:]) / (len(recent) - mid)
+    if second_avg - first_avg > 5:
+        return "ramping", current
+    if current is not None and current > 60:
+        return "elevated", current
+    return "flat", current
+
+
+def _ec_vol_conviction(iv_trajectory: str, iv_rank: Optional[float]) -> str:
+    if iv_rank is not None:
+        if iv_rank < 40:
+            return "buy_vol"
+        if iv_rank > 60:
+            return "sell_vol"
+        return "neutral_vol"
+    if iv_trajectory in ("ramping", "elevated"):
+        return "sell_vol"
+    return "neutral_vol"
+
+
+def _ec_conviction_matrix(
+    direction: str, vol_conviction: str, confidence: float
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Return (recommended_structure, a1_signal, a2_structure)."""
+    if direction == "bullish":
+        if vol_conviction == "sell_vol":
+            return "bull_put_spread", "enter_long", "bull_put_spread"
+        if confidence >= 0.75:
+            return "long_call", "enter_long", "long_call"
+        return "debit_call_spread", "enter_long", "debit_call_spread"
+    if direction == "bearish":
+        if vol_conviction == "sell_vol":
+            return "bear_call_spread", "enter_short", "bear_call_spread"
+        if confidence >= 0.75:
+            return "long_put", "enter_short", "long_put"
+        return "debit_put_spread", "enter_short", "debit_put_spread"
+    # neutral
+    if vol_conviction == "sell_vol":
+        return "iron_condor", None, "iron_condor"
+    return "straddle", None, "straddle"
+
+
+def assemble_earnings_conviction(
+    symbol: str, eda: int, timing: str, config: Optional[dict] = None
+) -> dict:
+    """
+    Assemble a pre-earnings conviction record for a single symbol.
+
+    Returns a dict with direction, phase, beat_rate, analyst_consensus,
+    IV analysis, conviction_score, a1_signal, a2_structure, and recommended_structure.
+    Non-fatal — missing data files return a conviction with None fields rather than crashing.
+    """
+    # Load analyst intel (cache file, no network)
+    intel: dict = {}
+    intel_path = _INTEL_DIR / f"{symbol}_analyst_intel.json"
+    if intel_path.exists():
+        try:
+            intel = json.loads(intel_path.read_text())
+        except Exception as exc:
+            log.debug("[EARNINGS] %s analyst_intel read failed: %s", symbol, exc)
+
+    # Load IV history
+    iv_history: list = []
+    iv_path = _IV_HIST_DIR / f"{symbol}_iv_history.json"
+    if iv_path.exists():
+        try:
+            raw = json.loads(iv_path.read_text())
+            iv_history = raw if isinstance(raw, list) else raw.get("history", [])
+        except Exception as exc:
+            log.debug("[EARNINGS] %s iv_history read failed: %s", symbol, exc)
+
+    # Phase
+    if eda > 7:
+        phase = "watch"
+    elif eda >= 3:
+        phase = "active"
+    else:
+        phase = "transition"
+
+    direction, confidence = _ec_derive_direction(intel)
+    consensus = _ec_consensus_label(intel)
+
+    beat_q = intel.get("beat_quarters")
+    total_q = intel.get("total_quarters")
+    beat_rate: Optional[float] = round(beat_q / total_q, 3) if (beat_q is not None and total_q) else None
+
+    pt_upside_pct = intel.get("price_target_upside_pct")
+    price_target_upside: Optional[float] = round(pt_upside_pct / 100.0, 3) if pt_upside_pct is not None else None
+
+    iv_trajectory, iv_rank = _ec_iv_trajectory(iv_history)
+    vol_conv = _ec_vol_conviction(iv_trajectory, iv_rank)
+
+    # Crowded consensus: overwhelmingly bullish + expensive IV
+    bullish_pct_val = intel.get("bullish_pct") or 0.0
+    crowded = bool(bullish_pct_val >= 90 and iv_rank is not None and iv_rank > 60)
+
+    base = {
+        "symbol": symbol,
+        "eda": eda,
+        "timing": timing,
+        "phase": phase,
+        "direction": direction,
+        "direction_confidence": round(confidence, 3),
+        "beat_rate": beat_rate,
+        "avg_eps_surprise": intel.get("avg_surprise_pct"),
+        "analyst_consensus": consensus,
+        "price_target_upside": price_target_upside,
+        "iv_rank": iv_rank,
+        "iv_trajectory": iv_trajectory,
+        "vol_conviction": vol_conv,
+        "crowded_consensus_flag": crowded,
+    }
+
+    if phase == "watch":
+        return {
+            **base,
+            "recommended_structure": None,
+            "conviction_score": 0.0,
+            "conviction_level": "skip",
+            "a1_signal": None,
+            "a2_structure": None,
+            "notes": f"Watch phase — eda={eda}, data gathering only",
+        }
+
+    # Conviction assembly for active / transition
+    structure, a1_signal, a2_structure = _ec_conviction_matrix(direction, vol_conv, confidence)
+
+    if crowded:
+        a1_signal = None
+        notes = (
+            f"Crowded consensus (bullish_pct={bullish_pct_val:.0f}%, IV elevated) — downgraded"
+        )
+    else:
+        notes = f"eda={eda}, {direction} ({confidence:.0%} confidence), IV={iv_trajectory}"
+
+    # Beat rate suppresses confidence for poor beat histories
+    if beat_rate is not None and beat_rate == 0.0 and direction == "bullish":
+        confidence = confidence * 0.6
+        notes += " | beat_rate=0 suppresses confidence"
+
+    score_parts = [confidence]
+    if beat_rate is not None:
+        score_parts.append(beat_rate)
+    if bullish_pct_val:
+        score_parts.append(bullish_pct_val / 100.0)
+    conviction_score = sum(score_parts) / len(score_parts)
+    if crowded:
+        conviction_score *= 0.6
+
+    conviction_score = round(conviction_score, 3)
+
+    if conviction_score >= 0.75:
+        conviction_level = "high"
+    elif conviction_score >= 0.55:
+        conviction_level = "medium"
+    elif conviction_score >= 0.35:
+        conviction_level = "low"
+    else:
+        conviction_level = "skip"
+
+    return {
+        **base,
+        "recommended_structure": structure,
+        "conviction_score": conviction_score,
+        "conviction_level": conviction_level,
+        "a1_signal": a1_signal,
+        "a2_structure": a2_structure,
+        "notes": notes,
+    }
+
+
+def scan_earnings_candidates(lookforward: int = 14, config: Optional[dict] = None) -> list:
+    """
+    Scan earnings_calendar.json for upcoming symbols and assemble conviction records.
+
+    Writes results to data/market/earnings_convictions.json.
+    Returns list of conviction dicts sorted by conviction_score descending.
+    Non-fatal — returns [] on calendar read failure.
+    """
+    if not _CAL_PATH.exists():
+        log.warning("[EARNINGS] earnings_calendar.json not found — conviction scan skipped")
+        return []
+    try:
+        cal_data = json.loads(_CAL_PATH.read_text())
+    except Exception as exc:
+        log.warning("[EARNINGS] calendar read failed: %s", exc)
+        return []
+
+    today = date.today()
+    candidates = []
+    active_count = 0
+
+    for entry in cal_data.get("calendar", []):
+        sym = (entry.get("symbol") or "").upper()
+        if not sym or "/" in sym:
+            continue
+        ed_raw = str(entry.get("earnings_date", ""))[:10]
+        try:
+            ed = date.fromisoformat(ed_raw)
+        except ValueError:
+            continue
+        eda = (ed - today).days
+        if not (0 <= eda <= lookforward):
+            continue
+        timing = str(entry.get("timing") or "unknown")
+        conviction = assemble_earnings_conviction(sym, eda, timing, config)
+        candidates.append(conviction)
+        if conviction["phase"] in ("active", "transition"):
+            active_count += 1
+
+    candidates.sort(key=lambda c: c["conviction_score"], reverse=True)
+
+    try:
+        _CONVICTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _CONVICTIONS_PATH.write_text(json.dumps(
+            {"generated_at": datetime.now(timezone.utc).isoformat(), "candidates": candidates},
+            indent=2,
+        ))
+    except Exception as exc:
+        log.warning("[EARNINGS] earnings_convictions.json write failed: %s", exc)
+
+    active_syms = [c["symbol"] for c in candidates if c["phase"] in ("active", "transition")]
+    log.info(
+        "[EARNINGS] %d candidates scanned, %d in active phase, top: %s",
+        len(candidates), active_count, active_syms[:5],
+    )
+    return candidates

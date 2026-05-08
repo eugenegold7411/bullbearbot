@@ -548,19 +548,65 @@ Rules:
 """
 
 
-def _synthesize_with_haiku(rows_a1: list[dict], rows_a2: list[dict]) -> list[dict]:
-    """One Haiku call that returns per-position verdicts. Non-fatal: returns []
-    on failure so the caller can ship data without verdicts."""
+def _try_parse_haiku_json(raw: str) -> tuple[Optional[dict], Optional[str]]:
+    """Attempt the four-stage parse of a Haiku response. Returns (obj, error)."""
+    cleaned = re.sub(r"```(?:json)?\s*", "", raw).replace("```", "").strip()
+    last_err: Optional[str] = None
+    for candidate in [cleaned, raw]:
+        try:
+            return json.loads(candidate), None
+        except json.JSONDecodeError as exc:
+            last_err = str(exc)
+    m = re.search(r"\{[\s\S]*\}", cleaned)
+    if m:
+        try:
+            return json.loads(m.group(0)), None
+        except json.JSONDecodeError as exc:
+            last_err = str(exc)
+            fixed = re.sub(r",\s*([}\]])", r"\1", m.group(0))
+            try:
+                return json.loads(fixed), None
+            except json.JSONDecodeError as exc2:
+                last_err = str(exc2)
+    return None, last_err
+
+
+def _synthesize_with_haiku(
+    rows_a1: list[dict],
+    rows_a2: list[dict],
+) -> tuple[list[dict], dict]:
+    """One Haiku call that returns per-position verdicts.
+
+    Returns (positions, meta). meta carries diagnostic fields:
+        ok: bool — True if a valid JSON object was parsed.
+        raw_excerpt: str — first 500 chars of the *last* raw response.
+        parse_error: Optional[str] — last JSONDecodeError text, if any.
+        retried: bool — True if a retry was issued.
+        skipped: Optional[str] — reason if the call never happened
+            ("no_sdk" | "no_key" | "exception:<msg>").
+
+    Non-fatal: on any failure positions is [] and the caller falls back.
+    """
+    meta: dict = {
+        "ok":           False,
+        "raw_excerpt":  "",
+        "parse_error":  None,
+        "retried":      False,
+        "skipped":      None,
+    }
+
     try:
-        import anthropic
+        import anthropic  # noqa: PLC0415
     except Exception as exc:
         log.warning("[AUDIT] anthropic SDK not importable: %s", exc)
-        return []
+        meta["skipped"] = "no_sdk"
+        return [], meta
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         log.warning("[AUDIT] ANTHROPIC_API_KEY missing — skipping Haiku synthesis")
-        return []
+        meta["skipped"] = "no_key"
+        return [], meta
 
     payload = json.dumps({
         "a1_positions": rows_a1,
@@ -568,24 +614,22 @@ def _synthesize_with_haiku(rows_a1: list[dict], rows_a2: list[dict]) -> list[dic
     }, default=str)
 
     today_str = datetime.now(ET).strftime("%Y-%m-%d")
-    user_prompt = (
+    base_prompt = (
         f"Today's date is {today_str}.\n\n"
         f"Collected portfolio state (JSON):\n{payload}\n\n{_AUDIT_SCHEMA_HINT}"
     )
 
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
+    def _call_haiku(client, prompt_text: str) -> str:
         resp = client.messages.create(
             model=_HAIKU_MODEL,
             max_tokens=4000,
             system=_AUDIT_SYSTEM,
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=[{"role": "user", "content": prompt_text}],
         )
-        raw = "".join(
+        raw_text = "".join(
             (block.text if hasattr(block, "text") else str(block))
             for block in getattr(resp, "content", [])
         )
-
         # Cost spine logging (non-fatal)
         try:
             from cost_attribution import log_spine_record  # noqa: PLC0415
@@ -601,44 +645,50 @@ def _synthesize_with_haiku(rows_a1: list[dict], rows_a2: list[dict]) -> list[dic
             })
         except Exception as _cs_exc:
             log.debug("[AUDIT] cost spine log failed (non-fatal): %s", _cs_exc)
+        return raw_text
 
-        # Strip markdown fences
-        cleaned = re.sub(r"```(?:json)?\s*", "", raw).replace("```", "").strip()
-        # Try direct parse first
-        obj = None
-        for candidate in [cleaned, raw]:
-            try:
-                obj = json.loads(candidate)
-                break
-            except json.JSONDecodeError:
-                pass
-        # Fallback: extract outermost {...} and retry
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        raw = _call_haiku(client, base_prompt)
+        meta["raw_excerpt"] = raw[:500]
+
+        obj, err = _try_parse_haiku_json(raw)
         if obj is None:
-            m = re.search(r"\{[\s\S]*\}", candidate)
-            if m:
-                try:
-                    obj = json.loads(m.group(0))
-                except json.JSONDecodeError:
-                    # Last resort: fix trailing commas and retry
-                    fixed = re.sub(r",\s*([}\]])", r"\1", m.group(0))
-                    try:
-                        obj = json.loads(fixed)
-                    except json.JSONDecodeError:
-                        pass
-        if obj is None:
-            log.warning("[AUDIT] Haiku returned unparseable JSON")
-            return []
-        return list(obj.get("positions", []))
+            log.warning(
+                "[AUDIT] Haiku raw response (first 500): %s", raw[:500],
+            )
+            log.warning("[AUDIT] Haiku JSON parse failed: %s — retrying once", err)
+            meta["retried"] = True
+            retry_prompt = (
+                base_prompt
+                + "\n\nYour previous response failed JSON parsing with error: "
+                + str(err)
+                + ". Respond ONLY with valid JSON, no preamble, no markdown."
+            )
+            raw2 = _call_haiku(client, retry_prompt)
+            meta["raw_excerpt"] = raw2[:500]
+            obj, err = _try_parse_haiku_json(raw2)
+            if obj is None:
+                log.warning(
+                    "[AUDIT] Haiku retry also unparseable (first 500): %s",
+                    raw2[:500],
+                )
+                meta["parse_error"] = err
+                return [], meta
+
+        meta["ok"] = True
+        return list(obj.get("positions", [])), meta
     except Exception as exc:
         log.warning("[AUDIT] Haiku synthesis failed (non-fatal): %s", exc)
-        return []
+        meta["skipped"] = f"exception:{exc}"
+        return [], meta
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Formatting
 # ─────────────────────────────────────────────────────────────────────────────
 
-_VERDICT_EMOJI = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
+_VERDICT_EMOJI = {"green": "🟢", "yellow": "🟡", "red": "🔴", "unknown": "⚪"}
 
 
 def _format_audit_message(
@@ -646,17 +696,29 @@ def _format_audit_message(
     equity_a2: float,
     positions: list[dict],
     time_et: datetime,
+    fallback_used: bool = False,
+    raw_excerpt: str = "",
 ) -> str:
     lines: list[str] = []
     time_str = time_et.strftime("%Y-%m-%d %H:%M %Z")
     lines.append(f"📋 PORTFOLIO AUDIT — {time_str}")
     lines.append(f"A1: ${equity_a1:,.0f} | A2: ${equity_a2:,.0f}")
+    if fallback_used:
+        n_unrated = sum(
+            1 for p in positions
+            if (p.get("verdict") or "").lower() == "unknown"
+        )
+        lines.append(
+            f"[AUDIT DEGRADED] Haiku parse failed — {n_unrated} positions unrated."
+        )
+        if raw_excerpt:
+            lines.append(f"Raw: {raw_excerpt[:200]}")
     lines.append("")
 
     if not positions:
         lines.append("(no positions to audit)")
     for p in positions:
-        verdict = (p.get("verdict") or "yellow").lower()
+        verdict = (p.get("verdict") or "unknown").lower()
         emoji   = _VERDICT_EMOJI.get(verdict, "⚪")
         lines.append(
             f"{emoji} {p.get('symbol', '?')} [{p.get('account', '?')}] — "
@@ -671,16 +733,22 @@ def _format_audit_message(
             lines.append(f"Earnings: {p['earnings']}")
         lines.append("")
 
-    n_green  = sum(1 for p in positions if (p.get("verdict") or "").lower() == "green")
-    n_yellow = sum(1 for p in positions if (p.get("verdict") or "").lower() == "yellow")
-    n_red    = sum(1 for p in positions if (p.get("verdict") or "").lower() == "red")
-    lines.append(f"Overall: {n_green} 🟢 {n_yellow} 🟡 {n_red} 🔴")
+    n_green   = sum(1 for p in positions if (p.get("verdict") or "").lower() == "green")
+    n_yellow  = sum(1 for p in positions if (p.get("verdict") or "").lower() == "yellow")
+    n_red     = sum(1 for p in positions if (p.get("verdict") or "").lower() == "red")
+    n_unknown = sum(1 for p in positions if (p.get("verdict") or "").lower() == "unknown")
+    summary = f"Overall: {n_green} 🟢 {n_yellow} 🟡 {n_red} 🔴"
+    if n_unknown:
+        summary += f" {n_unknown} ⚪"
+    lines.append(summary)
     lines.append("Run `python3 scripts/portfolio_audit.py` for on-demand")
     return "\n".join(lines)
 
 
 def _fallback_positions_from_rows(rows_a1: list[dict], rows_a2: list[dict]) -> list[dict]:
-    """Build a minimal 'positions' list without Haiku verdicts — used if Haiku fails."""
+    """Build a minimal 'positions' list without Haiku verdicts — used if Haiku fails.
+    All positions carry verdict='unknown' (sentinel) so callers can distinguish
+    fallback output from a real Haiku 'yellow' rating."""
     out: list[dict] = []
     for r in rows_a1:
         sym = r["symbol"]
@@ -694,7 +762,7 @@ def _fallback_positions_from_rows(rows_a1: list[dict], rows_a2: list[dict]) -> l
         out.append({
             "symbol":     sym,
             "account":    "A1",
-            "verdict":    "yellow",
+            "verdict":    "unknown",
             "structure":  f"{r['qty']:.0f} shares long" if r.get("qty", 0) > 0 else f"{r['qty']:.0f} shares",
             "thesis_intact": r.get("capture_found", False),
             "concerns":   [] if stop else ["no stop order visible (no bracket, no SL)"],
@@ -711,7 +779,7 @@ def _fallback_positions_from_rows(rows_a1: list[dict], rows_a2: list[dict]) -> l
         out.append({
             "symbol":     r["symbol"],
             "account":    "A2",
-            "verdict":    "yellow",
+            "verdict":    "unknown",
             "structure":  str(r.get("structure_type") or "unknown").replace("_", " "),
             "thesis_intact": bool(r.get("reasoning")),
             "concerns":   [],
@@ -756,21 +824,34 @@ def run_portfolio_audit(send_whatsapp: bool = True) -> dict:
     equity_a1 = _fetch_equity(a1_client) if a1_client else 0.0
     equity_a2 = _fetch_equity(a2_client) if a2_client else 0.0
 
-    positions = _synthesize_with_haiku(rows_a1, rows_a2)
-    if not positions:
+    positions, haiku_meta = _synthesize_with_haiku(rows_a1, rows_a2)
+    fallback_used = not positions
+    raw_excerpt = haiku_meta.get("raw_excerpt", "") if isinstance(haiku_meta, dict) else ""
+    if fallback_used:
         positions = _fallback_positions_from_rows(rows_a1, rows_a2)
+        log.warning(
+            "[AUDIT DEGRADED] Haiku synthesis failed — %d positions returned with 'unknown' verdict",
+            len(positions),
+        )
 
-    message = _format_audit_message(equity_a1, equity_a2, positions, now_et)
+    message = _format_audit_message(
+        equity_a1, equity_a2, positions, now_et,
+        fallback_used=fallback_used,
+        raw_excerpt=raw_excerpt,
+    )
 
     result = {
-        "timestamp":  now_et.isoformat(),
-        "equity_a1":  equity_a1,
-        "equity_a2":  equity_a2,
-        "positions":  positions,
-        "n_green":    sum(1 for p in positions if (p.get("verdict") or "").lower() == "green"),
-        "n_yellow":   sum(1 for p in positions if (p.get("verdict") or "").lower() == "yellow"),
-        "n_red":      sum(1 for p in positions if (p.get("verdict") or "").lower() == "red"),
-        "message":    message,
+        "timestamp":     now_et.isoformat(),
+        "equity_a1":     equity_a1,
+        "equity_a2":     equity_a2,
+        "positions":     positions,
+        "n_green":       sum(1 for p in positions if (p.get("verdict") or "").lower() == "green"),
+        "n_yellow":      sum(1 for p in positions if (p.get("verdict") or "").lower() == "yellow"),
+        "n_red":         sum(1 for p in positions if (p.get("verdict") or "").lower() == "red"),
+        "n_unknown":     sum(1 for p in positions if (p.get("verdict") or "").lower() == "unknown"),
+        "fallback_used": fallback_used,
+        "haiku_meta":    haiku_meta,
+        "message":       message,
     }
 
     # Persist
@@ -779,12 +860,14 @@ def run_portfolio_audit(send_whatsapp: bool = True) -> dict:
         _AUDIT_LATEST.write_text(json.dumps(result, indent=2, default=str))
         with _AUDIT_LOG.open("a") as fh:
             fh.write(json.dumps({
-                "ts":         now_et.isoformat(),
-                "n_green":    result["n_green"],
-                "n_yellow":   result["n_yellow"],
-                "n_red":      result["n_red"],
-                "equity_a1":  equity_a1,
-                "equity_a2":  equity_a2,
+                "ts":            now_et.isoformat(),
+                "n_green":       result["n_green"],
+                "n_yellow":      result["n_yellow"],
+                "n_red":         result["n_red"],
+                "n_unknown":     result["n_unknown"],
+                "fallback_used": fallback_used,
+                "equity_a1":     equity_a1,
+                "equity_a2":     equity_a2,
             }) + "\n")
     except Exception as exc:
         log.warning("[AUDIT] persistence failed (non-fatal): %s", exc)
@@ -801,8 +884,9 @@ def run_portfolio_audit(send_whatsapp: bool = True) -> dict:
             log.warning("[AUDIT] WhatsApp send failed (non-fatal): %s", exc)
 
     log.info(
-        "[AUDIT] complete — green=%d yellow=%d red=%d positions=%d",
-        result["n_green"], result["n_yellow"], result["n_red"], len(positions),
+        "[AUDIT] complete — green=%d yellow=%d red=%d unknown=%d positions=%d fallback=%s",
+        result["n_green"], result["n_yellow"], result["n_red"],
+        result["n_unknown"], len(positions), fallback_used,
     )
     return result
 

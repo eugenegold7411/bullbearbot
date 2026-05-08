@@ -121,6 +121,7 @@ _STATUS_DIR = Path("data/status")   # flag files for once-per-day jobs
 
 _PID_FILE = Path("data/runtime/scheduler.pid")
 _BRIEF_SLOTS_PATH = Path("data/runtime/brief_slots_ran.json")
+_AUDIT_SLOTS_PATH = Path("data/runtime/audit_slots_ran.json")
 _pid_lock_fd = None   # held open for process lifetime so flock stays effective
 
 
@@ -253,6 +254,57 @@ def _persist_brief_slots_ran() -> None:
         tmp.replace(_BRIEF_SLOTS_PATH)
     except Exception as exc:
         log.warning("[BRIEF-SLOTS] Could not persist %s (%s)", _BRIEF_SLOTS_PATH, exc)
+
+
+def _load_audit_slots_ran() -> set:
+    """Load persisted portfolio-audit slot keys for today from disk.
+
+    Returns an empty set if the file doesn't exist, belongs to a previous
+    day, or is corrupt. Never raises. Mirror of _load_brief_slots_ran.
+    """
+    try:
+        raw = _AUDIT_SLOTS_PATH.read_text()
+        data = json.loads(raw)
+        today = datetime.now(ET).strftime("%Y-%m-%d")
+        if data.get("date") == today:
+            loaded: set = set(data.get("slots", []))
+            log.info(
+                "[AUDIT-SLOTS] Loaded %d persisted slot(s) from disk: %s",
+                len(loaded), loaded,
+            )
+            return loaded
+        log.info(
+            "[AUDIT-SLOTS] Disk slots are for %s (today=%s) — discarding (new day)",
+            data.get("date"), today,
+        )
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log.warning(
+            "[AUDIT-SLOTS] Could not load %s (%s) — starting empty",
+            _AUDIT_SLOTS_PATH, exc,
+        )
+    return set()
+
+
+def _persist_audit_slots_ran() -> None:
+    """Write current _portfolio_audit_slots_ran to disk atomically.
+
+    Uses write-then-rename so a partial write never leaves a corrupt file.
+    Never raises. Mirror of _persist_brief_slots_ran.
+    """
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    tmp = _AUDIT_SLOTS_PATH.with_suffix(".tmp")
+    try:
+        _AUDIT_SLOTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            {"date": today, "slots": sorted(_portfolio_audit_slots_ran)},
+            indent=2,
+        )
+        tmp.write_text(payload)
+        tmp.replace(_AUDIT_SLOTS_PATH)
+    except Exception as exc:
+        log.warning("[AUDIT-SLOTS] Could not persist %s (%s)", _AUDIT_SLOTS_PATH, exc)
 
 
 def _handle_sigterm(signum, frame) -> None:
@@ -1395,6 +1447,7 @@ def _maybe_run_portfolio_audit(dry_run: bool = False) -> None:
 
     if dry_run:
         _portfolio_audit_slots_ran.add(slot)
+        _persist_audit_slots_ran()
         return
 
     try:
@@ -1403,6 +1456,7 @@ def _maybe_run_portfolio_audit(dry_run: bool = False) -> None:
         n_pos = len(result.get("positions") or []) if isinstance(result, dict) else 0
         log.info("[PORTFOLIO_AUDIT] %s slot complete: %d positions audited", slot, n_pos)
         _portfolio_audit_slots_ran.add(slot)
+        _persist_audit_slots_ran()
     except Exception as exc:
         log.error("[PORTFOLIO_AUDIT] %s slot failed (non-fatal): %s", slot, exc, exc_info=True)
         _fire_safety_alert("_maybe_run_portfolio_audit", exc)
@@ -1823,8 +1877,9 @@ def run(dry_run: bool = False) -> None:
     _acquire_pid_lock()
 
     # Restore brief slot dedup state from previous run (prevents re-fire on restart)
-    global _intelligence_brief_slots_ran
+    global _intelligence_brief_slots_ran, _portfolio_audit_slots_ran
     _intelligence_brief_slots_ran = _load_brief_slots_ran()
+    _portfolio_audit_slots_ran = _load_audit_slots_ran()
 
     # Convert SIGTERM → KeyboardInterrupt so the finally block always runs.
     try:

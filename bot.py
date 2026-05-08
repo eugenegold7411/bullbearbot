@@ -994,25 +994,102 @@ def run_cycle(
                     log.debug("[DIV] fill divergence check failed (non-fatal): %s", _fd_exc)
         print("=" * 62)
 
-        # Forensic review for closed positions (T2.3)
+        # Forensic review + alpha classification for closed positions (T2.3)
         for _fr in results:
             if _fr.status != "submitted" or _fr.action not in ("sell", "close"):
                 continue
             try:
                 from feature_flags import is_enabled as _ff_fr  # noqa: PLC0415
-                if _ff_fr("enable_thesis_checksum"):
-                    from forensic_reviewer import review_closed_trade  # noqa: PLC0415
-                    _fr_action    = next((a for a in actions if a.get("symbol") == _fr.symbol), {})
-                    _entry_price  = float(_fr.fill_price or 0) or 0.0
-                    _exit_price   = float(_fr.fill_price or 0) or 0.0
-                    review_closed_trade(
-                        decision_id=_decision_id, symbol=_fr.symbol,
-                        entry_price=_entry_price, exit_price=_exit_price,
-                        realized_pnl=0.0, hold_duration_hours=0.0,
-                        entry_decision=_fr_action,
-                        exit_reason=_fr_action.get("catalyst", ""),
-                        regime_at_entry=regime_obj,
+                if not _ff_fr("enable_thesis_checksum"):
+                    continue
+
+                # Look up the matching round-trip from order history so the
+                # forensic call sees real entry/exit/pnl/duration. Without
+                # this, review_closed_trade() received zeros and produced
+                # "inconclusive" verdicts on every close.
+                _entry_price        = float(_fr.fill_price or 0) or 0.0
+                _exit_price         = float(_fr.fill_price or 0) or 0.0
+                _realized_pnl       = 0.0
+                _hold_hours         = 0.0
+                _entry_decision_id  = _decision_id  # fallback to current cycle's id
+                try:
+                    from trade_journal import build_closed_trades  # noqa: PLC0415
+                    _closed = build_closed_trades()
+                    _ct = next(
+                        (t for t in _closed if t.get("symbol") == _fr.symbol),
+                        None,
                     )
+                    if _ct:
+                        _entry_price  = float(_ct.get("entry_price") or _entry_price)
+                        _exit_price   = float(_ct.get("exit_price")  or _exit_price)
+                        _realized_pnl = float(_ct.get("pnl") or 0.0)
+                        _holding_days = _ct.get("holding_days")
+                        if _holding_days is not None:
+                            _hold_hours = float(_holding_days) * 24.0
+                        # Score the *entry* decision when we can identify it,
+                        # not the cycle that closed the position.
+                        if _ct.get("decision_id"):
+                            _entry_decision_id = _ct["decision_id"]
+                except Exception as _ct_exc:
+                    log.debug("[FORENSIC] closed-trade lookup failed: %s", _ct_exc)
+
+                from forensic_reviewer import review_closed_trade  # noqa: PLC0415
+                _fr_action = next(
+                    (a for a in actions if a.get("symbol") == _fr.symbol), {},
+                )
+                review_closed_trade(
+                    decision_id=_entry_decision_id, symbol=_fr.symbol,
+                    entry_price=_entry_price, exit_price=_exit_price,
+                    realized_pnl=_realized_pnl, hold_duration_hours=_hold_hours,
+                    entry_decision=_fr_action,
+                    exit_reason=_fr_action.get("catalyst", ""),
+                    regime_at_entry=regime_obj,
+                )
+
+                # Alpha classification — score the entry decision against the
+                # realized round-trip outcome.
+                try:
+                    from decision_outcomes import (  # noqa: PLC0415
+                        OUTCOMES_LOG,
+                        DecisionOutcomeRecord,
+                        classify_alpha,
+                        update_outcome_record,
+                    )
+                    if _entry_price and _entry_price != 0:
+                        _outcome_pct = (_exit_price - _entry_price) / _entry_price
+                    else:
+                        _outcome_pct = None
+                    if _outcome_pct is not None and _entry_decision_id and OUTCOMES_LOG.exists():
+                        _entry_rec: DecisionOutcomeRecord | None = None
+                        for _line in OUTCOMES_LOG.read_text().splitlines():
+                            if not _line.strip():
+                                continue
+                            try:
+                                _drec = json.loads(_line)
+                            except Exception:
+                                continue
+                            if _drec.get("decision_id") == _entry_decision_id:
+                                _entry_rec = DecisionOutcomeRecord.from_dict(_drec)
+                                break
+                        if _entry_rec is not None:
+                            _entry_rec.outcome_pct = _outcome_pct
+                            _classification = classify_alpha(_entry_rec)
+                            update_outcome_record(
+                                _entry_decision_id,
+                                symbol=_fr.symbol,
+                                action="buy",
+                                outcome_pct=_outcome_pct,
+                                alpha_classification=_classification,
+                                alpha_classification_reason="closed_trade_realized_outcome",
+                                alpha_classified_at=datetime.now(timezone.utc)
+                                    .isoformat().replace("+00:00", "Z"),
+                            )
+                            log.info(
+                                "[OUTCOMES] %s: outcome=%.1f%% classification=%s",
+                                _fr.symbol, _outcome_pct * 100, _classification,
+                            )
+                except Exception as _alpha_exc:
+                    log.debug("[OUTCOMES] post-close classify_alpha failed: %s", _alpha_exc)
             except Exception as _frev_exc:
                 log.debug("[FORENSIC] review_closed_trade failed (non-fatal): %s", _frev_exc)
 

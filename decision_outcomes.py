@@ -87,6 +87,10 @@ class DecisionOutcomeRecord:
     correct_1d:    Optional[bool]  = None
     correct_3d:    Optional[bool]  = None
     correct_5d:    Optional[bool]  = None
+    # Realized closed-trade return (signed fractional, e.g. 0.012 = +1.2%).
+    # Set when a buy→sell round-trip closes; classify_alpha prefers this over
+    # forward-return signals (return_1d) because it is the actual outcome.
+    outcome_pct:   Optional[float] = None
     # T1.6 — alpha classification (alpha_measurement_framework_v1.0.0.md §9)
     alpha_classification:        Optional[str] = None
     alpha_classification_reason: Optional[str] = None
@@ -127,6 +131,7 @@ class DecisionOutcomeRecord:
             correct_1d=d.get("correct_1d"),
             correct_3d=d.get("correct_3d"),
             correct_5d=d.get("correct_5d"),
+            outcome_pct=d.get("outcome_pct"),
             alpha_classification=d.get("alpha_classification"),
             alpha_classification_reason=d.get("alpha_classification_reason"),
             alpha_classified_at=d.get("alpha_classified_at"),
@@ -545,39 +550,58 @@ def classify_alpha(record: DecisionOutcomeRecord) -> str:
     Apply alpha_measurement_framework_v1.0.0.md §9 classification rules.
 
     Returns one of 7 classifications from ALPHA_CLASSIFICATIONS.
-    Returns "insufficient_sample" when:
-    - forward_return_1d is None (no outcome data yet)
-    - record is less than 1 trading day old (< 24h)
+    Returns "insufficient_sample" when neither realized outcome nor forward
+    1d return is available, or when the forward-return path requires waiting.
+
+    Signal precedence:
+      1. record.outcome_pct  — realized close-out return; treated as authoritative
+                                because the round-trip is final (no age gate).
+      2. record.return_1d    — forward 1d return; subject to ≥24h age gate.
 
     Never raises.
     """
     try:
-        # No outcome data or too recent → insufficient sample
-        if record.return_1d is None:
+        outcome_present = record.outcome_pct is not None
+        outcome = record.outcome_pct if outcome_present else record.return_1d
+        if outcome is None:
             return "insufficient_sample"
 
-        # Age check: < 24h old → insufficient sample
-        try:
-            ts = datetime.fromisoformat(record.timestamp.replace("Z", "+00:00"))
-            age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
-            if age_hours < 24:
+        # Age gate only applies on the forward-return path. A realized
+        # closed-trade outcome IS the answer — no waiting needed.
+        if not outcome_present:
+            try:
+                ts = datetime.fromisoformat(record.timestamp.replace("Z", "+00:00"))
+                age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+                if age_hours < 24:
+                    return "insufficient_sample"
+            except Exception:
                 return "insufficient_sample"
-        except Exception:
-            return "insufficient_sample"
 
         # Only classify submitted trades (not rejections)
         if record.status != "submitted":
             return "quality_positive_non_alpha"
 
-        # Alpha classification based on 1d forward return direction
-        correct_1d = record.correct_1d
-        return_1d = record.return_1d
+        # Determine "correct" direction.
+        # Realized outcomes are scored direction-aware against the action:
+        #   buy  → outcome>0 is correct
+        #   sell → outcome<0 is correct (sell decision avoided a drop)
+        # Forward-return path falls back to the existing correct_1d boolean.
+        if outcome_present:
+            action = (record.action or "").lower()
+            if action == "buy":
+                correct = outcome > 0
+            elif action == "sell":
+                correct = outcome < 0
+            else:
+                correct = record.correct_1d
+        else:
+            correct = record.correct_1d
 
-        if correct_1d is True and return_1d is not None and return_1d > 0.003:
+        if correct is True and outcome > 0.003:
             return "alpha_positive"
-        elif correct_1d is False and return_1d is not None and return_1d < -0.003:
+        elif correct is False and outcome < -0.003:
             return "alpha_negative"
-        elif correct_1d is not None:
+        elif correct is not None:
             return "alpha_neutral"
         else:
             return "insufficient_sample"
@@ -585,6 +609,63 @@ def classify_alpha(record: DecisionOutcomeRecord) -> str:
     except Exception as exc:  # noqa: BLE001
         log.warning("[OUTCOMES] classify_alpha failed: %s", exc)
         return "insufficient_sample"
+
+
+def update_outcome_record(
+    decision_id: str,
+    symbol: Optional[str] = None,
+    action: Optional[str] = None,
+    **fields,
+) -> bool:
+    """
+    Rewrite the row matching (decision_id, symbol?, action?) in
+    decision_outcomes.jsonl, merging in `fields`. Returns True iff a row was
+    found and updated.
+
+    Multi-symbol decisions produce multiple rows under one decision_id —
+    pass `symbol` (and optionally `action`) to disambiguate. Without `symbol`
+    every row sharing the decision_id is updated, which is the correct
+    behaviour for fields that apply to the whole decision (rare).
+
+    Atomic via tmp-then-replace so a crash mid-write cannot corrupt the log.
+    Non-fatal: returns False on any exception.
+    """
+    try:
+        if not OUTCOMES_LOG.exists():
+            return False
+        records: list[dict] = []
+        found = False
+        with open(OUTCOMES_LOG) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if (
+                    d.get("decision_id") == decision_id
+                    and (symbol is None or d.get("symbol") == symbol)
+                    and (action is None or d.get("action") == action)
+                ):
+                    d.update(fields)
+                    d["_logged_at"] = (
+                        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                    )
+                    found = True
+                records.append(d)
+        if not found:
+            return False
+        tmp = OUTCOMES_LOG.with_suffix(OUTCOMES_LOG.suffix + ".tmp")
+        with open(tmp, "w") as fh:
+            for d in records:
+                fh.write(json.dumps(d) + "\n")
+        tmp.replace(OUTCOMES_LOG)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[OUTCOMES] update_outcome_record failed: %s", exc)
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

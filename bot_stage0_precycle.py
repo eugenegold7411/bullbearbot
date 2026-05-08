@@ -496,6 +496,18 @@ def run_precycle(
             # positions need buy-stop coverage, which divergence.py does not check.
             # Short positions are logged above; operator must manage them manually.
             _long_positions = [p for p in snapshot.positions if p.qty > 0]
+            # Symbol-scoped protection response: pass alpaca_client + cfg so
+            # divergence.py can call exit_manager.attempt_repair_or_sell when
+            # 1–2 symbols are unprotected (instead of halting the whole
+            # account). market_is_open derived from md (already fetched this
+            # cycle); falls back to clock fetch inside divergence if absent.
+            _market_open = None
+            try:
+                _mc = md.get("market_clock") if isinstance(md, dict) else None
+                if isinstance(_mc, dict) and "is_open" in _mc:
+                    _market_open = bool(_mc.get("is_open"))
+            except Exception:
+                _market_open = None
             div_events = detect_protection_divergence(
                 account="A1",
                 positions=_long_positions,
@@ -504,6 +516,9 @@ def run_precycle(
                 grace_seconds=float(
                     cfg.get("exit_management", {}).get("protection_grace_seconds", 120)
                 ),
+                alpaca_client=_get_alpaca(),
+                strategy_config=cfg,
+                market_is_open=_market_open,
             )
         if div_events:
             a1_mode = respond_to_divergence(div_events, "A1", a1_mode)

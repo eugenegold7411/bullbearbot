@@ -831,6 +831,173 @@ def _refresh_exits_locked(
     return True
 
 
+# ── 3b. Symbol-scoped repair-or-sell ──────────────────────────────────────────
+
+_PENDING_PROTECTION_SELLS_PATH = (
+    Path(__file__).parent / "data" / "runtime" / "pending_protection_sells.json"
+)
+
+
+def _read_pending_protection_sells() -> dict:
+    try:
+        if _PENDING_PROTECTION_SELLS_PATH.exists():
+            return json.loads(_PENDING_PROTECTION_SELLS_PATH.read_text())
+    except Exception as exc:
+        log.warning(
+            "[EXIT_MGR] read pending_protection_sells.json failed: %s", exc
+        )
+    return {}
+
+
+def _write_pending_protection_sell(symbol: str, entry: dict) -> None:
+    try:
+        _PENDING_PROTECTION_SELLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = _read_pending_protection_sells()
+        data[symbol] = entry
+        _PENDING_PROTECTION_SELLS_PATH.write_text(json.dumps(data, indent=2))
+    except Exception as exc:
+        log.error(
+            "[EXIT_MGR] %s: write pending_protection_sells.json failed: %s",
+            symbol, exc,
+        )
+        _fire_safety_alert(f"pending_protection_sells_write_{symbol}", exc)
+
+
+def attempt_repair_or_sell(
+    symbol: str,
+    position,
+    alpaca_client,
+    strategy_config: dict,
+    market_is_open: bool,
+) -> bool:
+    """
+    Symbol-scoped response to a single unprotected position.
+
+    Step 1: Try OCO repair via refresh_exits_for_position.
+    Step 2: On repair failure with market open, place a market sell for the
+            full position quantity and flag in pending_protection_sells.json
+            with status "sell_placed".
+    Step 3: On repair failure with market closed, flag in
+            pending_protection_sells.json with status "pending_open".
+            Pickup at market open is a separate scheduler.py responsibility
+            (see scheduler.py owner / Session 1) — the file is the durable
+            handoff.
+    Step 4: On both repair AND market-sell failure, log CRITICAL, fire a
+            WhatsApp safety alert via _fire_safety_alert. Position remains
+            unprotected; intentionally bounded — single symbol exposure is
+            preferable to halting all trading.
+
+    Returns True only if OCO repair succeeded. Returns False in every other
+    case (sell placed, flagged, or hard failure).
+
+    Used by divergence.detect_protection_divergence when 1–2 symbols are
+    unprotected (single-symbol or pair). For 3+ unprotected, the caller
+    falls back to account-scope HALT (systemic failure).
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    # Step 1: OCO repair
+    try:
+        repaired = refresh_exits_for_position(
+            position, alpaca_client, strategy_config
+        )
+    except Exception as exc:
+        log.error(
+            "[EXIT_MGR] %s: refresh_exits raised during repair-or-sell: %s",
+            symbol, exc,
+        )
+        repaired = False
+
+    if repaired:
+        log.info(
+            "[EXIT_MGR] %s: OCO repair succeeded (symbol-scoped response)",
+            symbol,
+        )
+        return True
+
+    # Step 2/3: repair failed — branch on market status
+    pos_qty = abs(float(getattr(position, "qty", 0) or 0))
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if not market_is_open:
+        _write_pending_protection_sell(
+            symbol,
+            {
+                "qty": pos_qty,
+                "reason": "repair_failed_market_closed",
+                "flagged_at": now_iso,
+                "market_status": "pending_open",
+            },
+        )
+        log.warning(
+            "[EXIT_MGR] %s: unprotected overnight, flagged for market open"
+            " sell qty=%g (scheduler.py pickup required)",
+            symbol, pos_qty,
+        )
+        return False
+
+    # Market open — place market sell as fallback
+    try:
+        from alpaca.trading.enums import (  # noqa: PLC0415
+            OrderSide,
+            TimeInForce,
+        )
+        from alpaca.trading.requests import (  # noqa: PLC0415
+            MarketOrderRequest,
+        )
+        sell_req = MarketOrderRequest(
+            symbol=symbol,
+            qty=pos_qty,
+            side=OrderSide.SELL,
+            time_in_force=(
+                TimeInForce.GTC if _is_crypto(symbol) else TimeInForce.DAY
+            ),
+        )
+        sell_ord = alpaca_client.submit_order(sell_req)
+        _write_pending_protection_sell(
+            symbol,
+            {
+                "qty": pos_qty,
+                "reason": "repair_failed",
+                "flagged_at": now_iso,
+                "market_status": "sell_placed",
+                "order_id": str(getattr(sell_ord, "id", "")),
+            },
+        )
+        log.warning(
+            "[EXIT_MGR] %s: OCO repair failed, market sell placed qty=%g"
+            " order_id=%s",
+            symbol, pos_qty, getattr(sell_ord, "id", "?"),
+        )
+        log_trade({
+            "event":  "protection_repair_market_sell",
+            "symbol": symbol,
+            "qty":    pos_qty,
+            "reason": "OCO repair failed — symbol-scoped fallback sell",
+            "order_id": str(getattr(sell_ord, "id", "")),
+        })
+        return False
+    except Exception as exc:
+        log.critical(
+            "[EXIT_MGR] %s: CRITICAL — both OCO repair and market sell"
+            " failed: %s. Position remains unprotected; account is NOT"
+            " halted (symbol-scoped). Operator review required.",
+            symbol, exc,
+        )
+        _fire_safety_alert(f"repair_and_sell_failed_{symbol}", exc)
+        _write_pending_protection_sell(
+            symbol,
+            {
+                "qty": pos_qty,
+                "reason": "repair_and_sell_failed",
+                "flagged_at": now_iso,
+                "market_status": "hard_failure",
+                "last_error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+        return False
+
+
 # ── 4. Trail stop ─────────────────────────────────────────────────────────────
 
 def _graduated_trail_stop(

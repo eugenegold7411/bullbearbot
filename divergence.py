@@ -723,6 +723,9 @@ def detect_protection_divergence(
     open_orders: list,     # list of NormalizedOrder
     vix: float = 20,
     grace_seconds: float = 120.0,
+    alpaca_client=None,
+    strategy_config: Optional[dict] = None,
+    market_is_open: Optional[bool] = None,
 ) -> list[DivergenceEvent]:
     """
     Scan all positions for missing/wrong stops.
@@ -738,6 +741,15 @@ def detect_protection_divergence(
     stops into GET /orders; without the grace period the first cycle after a fill
     always fires a spurious HALT event. 120 s = two full market cycles.
     Read from strategy_config["exit_management"]["protection_grace_seconds"].
+
+    Symbol-scoped protection response (config gate
+    strategy_config.exit_management.symbol_scope_protection_enabled, default
+    True): when 1–2 symbols are simultaneously unprotected (post-grace,
+    post-defer, post-startup), do NOT emit HALT events; instead call
+    exit_manager.attempt_repair_or_sell per symbol.  Account-scope HALT only
+    fires when 3+ symbols are simultaneously unprotected (systemic failure).
+    Falls back to legacy per-symbol HALT emission if alpaca_client is None
+    (e.g. in tests/dry-run) or the gate is disabled.
     """
     events: list[DivergenceEvent] = []
     try:
@@ -821,6 +833,11 @@ def detect_protection_divergence(
             if _pqty > 0 and _sqty >= _pqty * 0.95:
                 _pending_close_syms.add(_sym)
 
+        # Collect symbols that have passed all gates and would fire a HALT.
+        # Dispatch (symbol-scoped repair-or-sell vs account-scope HALT) is
+        # decided AFTER the loop, based on len(pending_unprotected).
+        pending_unprotected: list[tuple[str, object, float]] = []
+
         for pos in positions:
             sym = pos.symbol
             size_usd = abs(pos.market_value)
@@ -875,34 +892,9 @@ def detect_protection_divergence(
                     )
                     continue
 
-                # Grace expired (or grace_seconds=0) — fire the event
-                event_type = (
-                    "protection_missing" if size_usd > 2000
-                    else "stop_missing"
-                )
-                severity, scope, recoverability = classify_divergence(
-                    event_type, sym, account,
-                    position_size_usd=size_usd, vix=vix,
-                )
-                severity = check_repeat_escalation(
-                    account, event_type, sym, severity)
-                evt = DivergenceEvent(
-                    event_id=generate_event_id(),
-                    timestamp=now,
-                    account=account,
-                    symbol=sym,
-                    event_type=event_type,
-                    severity=severity,
-                    scope=scope,
-                    scope_id=sym,
-                    paper_expected={"stop_exists": True},
-                    live_observed={"stop_exists": False},
-                    delta={"missing": True},
-                    recoverability=recoverability,
-                    risk_impact="high" if size_usd > 2000 else "medium",
-                )
-                log_divergence_event(evt)
-                events.append(evt)
+                # Past all grace gates — eligible for HALT.  Defer dispatch
+                # until we have counted ALL unprotected symbols this cycle.
+                pending_unprotected.append((sym, pos, size_usd))
 
             else:
                 # Stop exists — clear any grace tracking so that if this position
@@ -946,6 +938,140 @@ def detect_protection_divergence(
                         )
                         log_divergence_event(evt)
                         events.append(evt)
+
+        # Symbol-scoped protection dispatch.  Decision deferred to here so we
+        # have the full count of unprotected symbols this cycle.
+        #
+        # Behavior:
+        #   0 unprotected           → no-op
+        #   1–2 unprotected, gated  → call exit_manager.attempt_repair_or_sell
+        #                             per symbol; emit NO HALT events.  Per-
+        #                             symbol overnight flagging in
+        #                             data/runtime/pending_protection_sells.json
+        #                             handled by exit_manager; market-open
+        #                             pickup is owned by scheduler.py (separate
+        #                             work item — see diagnosis section 3).
+        #   3+ unprotected          → emit HALT events as legacy (systemic
+        #                             failure).
+        #   alpaca_client is None   → fall back to legacy per-symbol HALT
+        #                             (test/dry-run safety).
+        #   gate disabled           → fall back to legacy per-symbol HALT.
+        if pending_unprotected:
+            sscope_enabled = True
+            try:
+                if strategy_config is not None:
+                    sscope_enabled = bool(
+                        strategy_config.get("exit_management", {})
+                        .get("symbol_scope_protection_enabled", True)
+                    )
+            except Exception:
+                sscope_enabled = True
+
+            n_unprot = len(pending_unprotected)
+            use_symbol_scope = (
+                sscope_enabled
+                and alpaca_client is not None
+                and n_unprot <= 2
+            )
+
+            if use_symbol_scope:
+                # Determine market_is_open lazily if not provided.
+                _market_open = market_is_open
+                if _market_open is None:
+                    try:
+                        from market_data import (  # noqa: PLC0415
+                            get_market_clock,
+                        )
+                        _market_open = bool(
+                            get_market_clock().get("is_open", False)
+                        )
+                    except Exception:
+                        _market_open = False
+
+                try:
+                    from exit_manager import (  # noqa: PLC0415
+                        attempt_repair_or_sell,
+                    )
+                except Exception as _imp_exc:
+                    log.error(
+                        "[DIV] symbol-scoped repair-or-sell unavailable"
+                        " (import failed): %s — falling back to per-symbol"
+                        " HALT", _imp_exc,
+                    )
+                    attempt_repair_or_sell = None
+
+                if attempt_repair_or_sell is not None:
+                    for _sym, _pos, _size in pending_unprotected:
+                        log.warning(
+                            "[DIV] %s: unprotected — attempting repair"
+                            " (symbol-scoped, %d unprotected this cycle,"
+                            " market_open=%s)",
+                            _sym, n_unprot, _market_open,
+                        )
+                        try:
+                            attempt_repair_or_sell(
+                                symbol=_sym,
+                                position=_pos,
+                                alpaca_client=alpaca_client,
+                                strategy_config=strategy_config or {},
+                                market_is_open=bool(_market_open),
+                            )
+                        except Exception as _ros_exc:
+                            log.error(
+                                "[DIV] %s: attempt_repair_or_sell raised:"
+                                " %s — single-symbol failure, account"
+                                " remains NORMAL",
+                                _sym, _ros_exc,
+                            )
+                            _fire_safety_alert(
+                                f"attempt_repair_or_sell_{_sym}",
+                                _ros_exc,
+                            )
+                    # Symbol-scoped path consumed all unprotected — do NOT
+                    # emit HALT events.  Account stays NORMAL.
+                else:
+                    # Import failed — fall through to legacy HALT path.
+                    use_symbol_scope = False
+
+            if not use_symbol_scope:
+                # Legacy path: 3+ unprotected (systemic failure), gate
+                # disabled, no alpaca_client, or import failed.
+                if n_unprot >= 3:
+                    log.error(
+                        "[DIV] %d symbols simultaneously unprotected —"
+                        " systemic failure, halting account",
+                        n_unprot,
+                    )
+                for _sym, _pos, _size_usd in pending_unprotected:
+                    event_type = (
+                        "protection_missing" if _size_usd > 2000
+                        else "stop_missing"
+                    )
+                    severity, scope, recoverability = classify_divergence(
+                        event_type, _sym, account,
+                        position_size_usd=_size_usd, vix=vix,
+                    )
+                    severity = check_repeat_escalation(
+                        account, event_type, _sym, severity)
+                    evt = DivergenceEvent(
+                        event_id=generate_event_id(),
+                        timestamp=now,
+                        account=account,
+                        symbol=_sym,
+                        event_type=event_type,
+                        severity=severity,
+                        scope=scope,
+                        scope_id=_sym,
+                        paper_expected={"stop_exists": True},
+                        live_observed={"stop_exists": False},
+                        delta={"missing": True},
+                        recoverability=recoverability,
+                        risk_impact=(
+                            "high" if _size_usd > 2000 else "medium"
+                        ),
+                    )
+                    log_divergence_event(evt)
+                    events.append(evt)
 
     except Exception as e:
         log.warning("[DIV] detect_protection_divergence failed: %s", e)

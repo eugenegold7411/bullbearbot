@@ -1567,6 +1567,28 @@ def execute_all(
                 oid = _submit_options(action)
             elif act == "reallocate":
                 try:
+                    # Cross-cycle deduplication guard
+                    try:
+                        from bot_stage4_execution import is_committed, mark_committed  # noqa: PLC0415
+                        _exit_s  = (action.get("exit_symbol") or action.get("symbol") or "").upper()
+                        _entry_s = (action.get("entry_symbol") or action.get("symbol") or "").upper()
+                        if _exit_s and is_committed(_exit_s):
+                            log.warning(
+                                "[EXEC] REALLOCATE %s: already committed this cycle — skipping",
+                                _exit_s,
+                            )
+                            results.append(ExecutionResult(
+                                symbol=symbol, action=act, status="rejected",
+                                reason=f"already committed this cycle: {_exit_s}",
+                            ))
+                            continue
+                        if _exit_s:
+                            mark_committed(_exit_s)
+                        if _entry_s and _entry_s != _exit_s:
+                            mark_committed(_entry_s)
+                    except ImportError:
+                        pass
+
                     from portfolio_intelligence import (
                         execute_reallocate,  # noqa: PLC0415
                     )

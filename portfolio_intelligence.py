@@ -996,7 +996,15 @@ def execute_reallocate(
 
     log.info("[PI] REALLOCATE: exit %s → enter %s", exit_symbol, entry_action.get("symbol"))
 
-    # Step 1 — close exit position
+    # Step 1 — cancel any protective orders (bracket/stop) before closing,
+    # to release held_for_orders lock (Alpaca 40310000 error on close).
+    try:
+        from portfolio_allocator import _cancel_protective_orders  # noqa: PLC0415
+        _cancel_protective_orders(exit_symbol, poll_seconds=3.0)
+    except Exception as _cpo_exc:
+        log.warning("[PI] REALLOCATE: cancel_protective_orders failed (non-fatal): %s", _cpo_exc)
+
+    # Step 2 — close exit position
     try:
         exit_order   = alpaca_client.close_position(exit_symbol)
         exit_order_id = str(exit_order.id)

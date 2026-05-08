@@ -328,40 +328,66 @@ def _save_cooldown(cooldown: dict) -> None:
         log.warning("[ALLOC] _save_cooldown failed (non-fatal): %s", exc)
 
 
-def _is_on_cooldown(symbol: str, action: str, cooldown: dict, hours: float) -> bool:
-    """Hours-based cooldown check.
+_BLOCK_MATRIX: dict[str, set] = {
+    "ADD":       {"ADD", "TRIM", "SIZE_TRIM"},
+    "TRIM":      {"TRIM", "ADD", "SIZE_TRIM"},
+    "SIZE_TRIM": {"SIZE_TRIM", "ADD", "TRIM"},
+    "REPLACE":   {"REPLACE"},
+}
 
-    Returns True if (symbol, action) has an entry whose timestamp is within
-    `hours` of now. Out-of-window or mismatched-action entries do not block.
+
+def _is_on_cooldown(symbol: str, action: str, cooldown: dict, hours: float) -> bool:
+    """Hours-based cross-action cooldown check.
+
+    Returns True if any entry for symbol whose action is a blocker for
+    `action` (per _BLOCK_MATRIX) is within `hours` of now.
+
+    Handles both new list-per-symbol format and old dict-per-symbol format
+    (auto-migrated on read). ADD and SIZE_TRIM block each other to prevent
+    oscillation — a position cannot be marked for ADD then SIZE_TRIM or vice
+    versa within the cooldown window.
     """
-    entry = cooldown.get(symbol)
-    if entry is None:
-        return False
-    if entry.get("action") != action:
-        return False
-    ts_raw = entry.get("timestamp")
-    if not ts_raw:
-        return False
-    try:
-        entry_ts = datetime.fromisoformat(ts_raw)
-    except ValueError:
-        return False
-    if entry_ts.tzinfo is None:
-        entry_ts = entry_ts.replace(tzinfo=timezone.utc)
-    age_h = (datetime.now(timezone.utc) - entry_ts).total_seconds() / 3600.0
-    return age_h < float(hours)
+    blockers = _BLOCK_MATRIX.get(action, {action})
+    entries = cooldown.get(symbol, [])
+    # Migrate old format: {"action": ..., "timestamp": ...} → list of one entry
+    if isinstance(entries, dict):
+        entries = [entries]
+    now_utc = datetime.now(timezone.utc)
+    for entry in entries:
+        if entry.get("action") in blockers:
+            ts_raw = entry.get("timestamp", "")
+            if not ts_raw:
+                continue
+            try:
+                entry_ts = datetime.fromisoformat(ts_raw)
+                if entry_ts.tzinfo is None:
+                    entry_ts = entry_ts.replace(tzinfo=timezone.utc)
+                age_h = (now_utc - entry_ts).total_seconds() / 3600.0
+                if age_h < float(hours):
+                    return True
+            except (ValueError, TypeError):
+                continue
+    return False
 
 
 def _add_to_cooldown(symbol: str, action: str, cooldown: dict) -> dict:
-    """
-    Returns updated cooldown dict with symbol+action added.
-    Does NOT save to disk — caller must call _save_cooldown().
+    """Returns updated cooldown dict with symbol+action appended.
+
+    Supports multiple entries per symbol (list format). Migrates old
+    dict-per-symbol format to list on write. Does NOT save to disk —
+    caller must call _save_cooldown().
     """
     updated = dict(cooldown)
-    updated[symbol] = {
+    existing = updated.get(symbol, [])
+    # Migrate old format
+    if isinstance(existing, dict):
+        existing = [existing]
+    existing = list(existing)
+    existing.append({
         "action":    action,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    })
+    updated[symbol] = existing
     return updated
 
 
@@ -369,17 +395,32 @@ def _check_cooldown(symbol: str, pa_cfg: dict, action: str = "REPLACE") -> tuple
     """Returns (passes, reason). passes=True means no cooldown block.
 
     Cooldown is rolling-window in hours, not calendar-day. Window is
-    `add_cooldown_hours` (default 1) — the same window applies to ADD,
-    REPLACE, and TRIM unless future config overrides it per action.
+    `add_cooldown_hours` (default 1). Cross-action blocking via _BLOCK_MATRIX:
+    ADD blocks TRIM/SIZE_TRIM and vice versa — prevents oscillation.
+    REPLACE only blocks itself.
     """
     if not pa_cfg["same_symbol_daily_cooldown_enabled"]:
         return True, ""
     hours = float(pa_cfg.get("add_cooldown_hours", 1.0))
     cooldown = _load_cooldown()
     if _is_on_cooldown(symbol, action, cooldown, hours):
+        # Find which blocking action triggered it for the log message
+        blockers = _BLOCK_MATRIX.get(action, {action})
+        entries = cooldown.get(symbol, [])
+        if isinstance(entries, dict):
+            entries = [entries]
+        blocked_by = action  # fallback
+        for entry in entries:
+            if entry.get("action") in blockers:
+                blocked_by = entry.get("action", action)
+                break
+        log.info(
+            "[ALLOC] %s: on cooldown (recent %s) — skipping %s",
+            symbol, blocked_by, action,
+        )
         return False, (
             f"{symbol} {action} cooldown active "
-            f"(<{hours:g}h since last {action} recommendation)"
+            f"(recent {blocked_by} within <{hours:g}h window)"
         )
     return True, ""
 
@@ -504,8 +545,6 @@ def _decide_actions(
     # Single-name cap from risk_kernel — ADD and SIZE TRIM must respect this ceiling.
     max_pos_pct_capacity = float(cfg.get("parameters", {}).get("max_position_pct_capacity", 0.15))
     max_pos_cap_dollars  = max_pos_pct_capacity * total_capacity if total_capacity > 0 else float("inf")
-    # Equity-based single-name cap for SIZE TRIM trigger (equity × pct, not capacity × pct)
-    max_pos_pct_equity   = float(pa_cfg.get("max_position_pct_equity", 0.15))
     add_min_score        = float(pa_cfg.get("add_min_score", 65))
 
     target_wts = _target_weights(incumbents, sizes)
@@ -542,20 +581,18 @@ def _decide_actions(
                 })
                 continue   # don't double-count as HOLD
 
-        # SIZE TRIM: strong thesis but position exceeds equity-based cap or tier max.
-        # Equity-based check (mv/equity > max_pos_pct_equity) fires for real oversize
-        # positions regardless of leverage ratio. Capacity-based check (mv/total_capacity
-        # > tier_max) is retained as a secondary trigger.
+        # SIZE TRIM: strong thesis but position exceeds capacity-based cap or tier max.
+        # 4x margin account: denominator is equity×4 (total_capacity). Check is:
+        # mv/total_capacity > max_pos_pct_capacity+tol OR mv/total_capacity > tier_max+tol.
         # Fires independently of thesis-score TRIM (exclusive paths: score ≤ trim_thresh
         # goes to thesis TRIM above; score > trim_thresh falls through to here).
         if size_trim_enabled and score >= 6 and total_capacity > 0 and equity > 0 and mv > min_notional:
-            cap_frac    = mv / total_capacity
-            equity_frac = mv / equity
-            if equity_frac > max_pos_pct_equity + size_trim_tol or cap_frac > tier_max + size_trim_tol:
+            cap_frac = mv / total_capacity   # 4x margin account: denominator = equity × 4
+            if cap_frac > max_pos_pct_capacity + size_trim_tol or cap_frac > tier_max + size_trim_tol:
+                # Target: bring position back to tier_max % of equity×4 (or kernel cap if lower)
                 target_mv     = min(
-                    max_pos_pct_equity * equity,         # equity-based target
-                    tier_max * total_capacity,           # tier-based target
-                    max_pos_cap_dollars,                 # kernel single-name cap
+                    tier_max * total_capacity,           # tier-based target (equity×4 basis)
+                    max_pos_cap_dollars,                 # kernel single-name cap (equity×4 basis)
                 )
                 trim_notional = round(mv - target_mv, 2)
                 if trim_notional >= min_notional:
@@ -563,8 +600,8 @@ def _decide_actions(
                         "action":           "TRIM",
                         "symbol":           sym,
                         "reason":           (
-                            f"SIZE TRIM — {sym} at {equity_frac*100:.1f}% of equity exceeds "
-                            f"{max_pos_pct_equity*100:.0f}% equity cap "
+                            f"SIZE TRIM — {sym} at {cap_frac*100:.1f}% of equity×4 (${total_capacity:,.0f}) "
+                            f"exceeds {max_pos_pct_capacity*100:.0f}% cap "
                             f"(tol={size_trim_tol*100:.1f}%) — "
                             f"trim ~${trim_notional:,.0f} to target ${target_mv:,.0f}"
                         ),
@@ -727,11 +764,18 @@ def _execute_live_trim(
     minutes_since_open: int = 0,
     equity:             float = 0.0,
     max_pos_pct_equity: float = 0.15,
+    trim_fraction:      Optional[float] = None,
 ) -> str:
     """
-    Execute a single SIZE TRIM directly — bypasses risk_kernel.
-    Uses equity-based target matching the SIZE TRIM trigger:
-        target_mv = max_pos_pct_equity × equity
+    Execute a single TRIM directly — bypasses risk_kernel.
+
+    Modes:
+      - trim_fraction is not None → thesis TRIM: sell trim_fraction * current_qty
+      - trim_fraction is None → SIZE TRIM: sell down to max_pos_pct_equity % of equity×4
+
+    Checks held_for_orders before computing available_qty. If shares_to_sell
+    exceeds available_qty, cancels protective (bracket/stop) orders first.
+
     Returns "ok:{qty}" on success, rejection/error reason string otherwise.
     Non-fatal — caller logs and continues regardless of return value.
     """
@@ -753,11 +797,13 @@ def _execute_live_trim(
 
     price: Optional[float] = None
     current_qty: int = 0
+    pos_obj = None
     for pos in positions:
         try:
             if pos.symbol == symbol and float(pos.qty) > 0:
                 price = float(pos.current_price)
                 current_qty = int(float(pos.qty))
+                pos_obj = pos
                 break
         except Exception:
             pass
@@ -765,21 +811,45 @@ def _execute_live_trim(
     if price is None or price <= 0:
         return f"no current_price for {symbol}"
 
-    target_mv      = max_pos_pct_equity * equity
-    target_qty     = int(target_mv / price)
-    shares_to_sell = current_qty - target_qty
+    # Check held_for_orders before determining available_qty
+    held = int(float(getattr(pos_obj, "held_for_orders", 0) or 0))
+    available_qty = current_qty - held
+
+    if trim_fraction is not None:
+        # Thesis TRIM — sell trim_fraction of current position
+        shares_to_sell = max(1, int(current_qty * trim_fraction))
+        trim_mode = f"thesis ({trim_fraction:.0%})"
+    else:
+        # SIZE TRIM — sell down to max_pos_pct_equity % of equity×4
+        full_account   = equity * 4  # 4x margin account
+        target_mv      = max_pos_pct_equity * full_account
+        target_qty     = int(target_mv / price)
+        shares_to_sell = current_qty - target_qty
+        trim_mode = f"size (target={max_pos_pct_equity*100:.0f}% of equity×4)"
 
     if shares_to_sell <= 0:
-        return (
-            f"reduce {symbol}: position within {max_pos_pct_equity*100:.0f}% "
-            f"equity limit — no trim needed"
-        )
+        return f"reduce {symbol}: no trim needed (trim_mode={trim_mode})"
 
+    # If shares_to_sell exceeds available_qty, try canceling brackets first
+    if shares_to_sell > available_qty:
+        log.info(
+            "[ALLOC] TRIM %s: held_for_orders=%d locks qty — canceling brackets first",
+            symbol, held,
+        )
+        _cancel_protective_orders(symbol, poll_seconds=3.0)
+        # After cancel, all qty should be available
+        available_qty = current_qty
+
+    shares_to_sell = min(shares_to_sell, available_qty)
+    if shares_to_sell <= 0:
+        return f"no available qty for trim of {symbol} (all locked)"
+
+    full_account = equity * 4  # 4x margin account
     log.info(
-        "[ALLOC] TRIM %s: selling %d shares (held=%d → target=%d, %.1f%% equity → %.1f%%)",
-        symbol, shares_to_sell, current_qty, target_qty,
-        current_qty * price / equity * 100,
-        max_pos_pct_equity * 100,
+        "[ALLOC] TRIM %s: selling %d shares (held=%d → mode=%s, "
+        "%.1f%% of equity×4)",
+        symbol, shares_to_sell, current_qty, trim_mode,
+        current_qty * price / full_account * 100,
     )
 
     action = BrokerAction(
@@ -869,6 +939,31 @@ def _execute_live_add(
 
     if account is None:
         return f"account not provided for live ADD of {symbol}"
+
+    # Watchlist guard — only ADD symbols that appear on a known watchlist tier.
+    # First checks the module-level cached map; falls back to a fresh disk read
+    # to handle new additions without requiring a service restart.
+    _sym_upper = (symbol or "").upper()
+    if _sym_upper and _sym_upper not in _SYMBOL_TIER_MAP:
+        # Fresh read fallback (handles recently-added symbols)
+        _fresh_map = _build_watchlist_tier_map()
+        if _sym_upper not in _fresh_map:
+            _warn_msg = (
+                f"[ALLOC] {symbol}: not in any watchlist — ADD suppressed. "
+                f"Add to watchlist_core.json or watchlist_dynamic.json to allow entry."
+            )
+            log.warning(_warn_msg)
+            try:
+                from notifications import send_whatsapp_direct  # noqa: PLC0415
+                send_whatsapp_direct(
+                    f"[ALLOC] Unknown symbol blocked: {symbol}. "
+                    f"Add to watchlist to allow ADD."
+                )
+            except Exception:
+                pass
+            return f"suppressed: {symbol} not in any watchlist"
+        # Symbol found on fresh read — update cache and continue
+        _SYMBOL_TIER_MAP[_sym_upper] = _fresh_map[_sym_upper]
 
     price: Optional[float] = None
     for pos in positions:
@@ -1054,6 +1149,20 @@ def _execute_live_replace(
 
     if account is None:
         return f"account not provided for live REPLACE of {exit_symbol}→{enter_symbol}"
+
+    # ── Cross-cycle deduplication guard ──────────────────────────────────────
+    try:
+        from bot_stage4_execution import is_committed, mark_committed  # noqa: PLC0415
+        if is_committed(exit_symbol) or is_committed(enter_symbol):
+            log.warning(
+                "[ALLOC] REPLACE %s→%s: already committed this cycle — skipping",
+                exit_symbol, enter_symbol,
+            )
+            return f"skipped: {exit_symbol}/{enter_symbol} already committed this cycle"
+        mark_committed(exit_symbol)
+        mark_committed(enter_symbol)
+    except ImportError:
+        pass
 
     # ── Phase A: close exit_symbol ────────────────────────────────────────────
     exit_price: Optional[float] = None
@@ -1281,6 +1390,18 @@ def _run_allocator_shadow_inner(
                 if act["action"] != "TRIM":
                     continue
                 sym = act["symbol"]
+                # Determine if this is a thesis TRIM (has score) or SIZE TRIM
+                _reason_str = act.get("reason", "")
+                _is_size_trim = "SIZE TRIM" in _reason_str
+                _trim_frac: Optional[float] = None
+                if not _is_size_trim:
+                    # Thesis TRIM — look up trim_fraction from config
+                    # Find the incumbent score for this symbol
+                    _inc_score = next(
+                        (inc["thesis_score"] for inc in incumbents if inc["symbol"] == sym),
+                        5,
+                    )
+                    _trim_frac = _trim_pct_for_score(_inc_score, pa_cfg)
                 try:
                     res = _execute_live_trim(
                         sym, positions, snapshot, cfg, session_tier,
@@ -1291,6 +1412,7 @@ def _run_allocator_shadow_inner(
                         minutes_since_open=minutes_since_open,
                         equity=eq_val,
                         max_pos_pct_equity=float(pa_cfg.get("max_position_pct_equity", 0.15)),
+                        trim_fraction=_trim_frac,
                     )
                 except Exception as _trim_exc:
                     res = f"error: {_trim_exc}"

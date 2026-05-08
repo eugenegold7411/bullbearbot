@@ -361,7 +361,8 @@ class TestSizeTrimGateItem3(unittest.TestCase):
         actions  = [p for p in proposed if p["action"] == "TRIM"]
         self.assertEqual(len(actions), 1)
         self.assertIn("SIZE TRIM", actions[0]["reason"])
-        self.assertIn("equity cap", actions[0]["reason"])
+        # New reason format: "SIZE TRIM — {sym} at {pct}% of equity×4..."
+        self.assertIn("equity", actions[0]["reason"].lower())
 
     def test_size_trim_does_not_fire_within_tolerance(self):
         """STNG at 16.5K/100K equity = 16.5% — within 20% + 2% = 22% → no size TRIM."""

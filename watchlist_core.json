@@ -55,6 +55,7 @@
 {"symbol": "AAPL", "sector": "technology", "type": "stock", "tier": "core"},
 {"symbol": "TSLA", "sector": "consumer_discretionary", "type": "stock", "tier": "core"},
 {"symbol": "NFLX", "sector": "communication_services", "type": "stock", "tier": "core"},
-{"symbol": "V", "sector": "financials", "type": "stock", "tier": "core"}
+{"symbol": "V", "sector": "financials", "type": "stock", "tier": "core"},
+{"symbol": "DIS", "sector": "communication_services", "type": "stock", "tier": "core"}
   ]
 }

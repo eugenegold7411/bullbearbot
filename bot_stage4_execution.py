@@ -14,6 +14,28 @@ from log_setup import get_logger, log_trade
 
 log = get_logger(__name__)
 
+# ── Per-cycle committed symbols deduplication ─────────────────────────────────
+# Cleared at the start of each A1 cycle by bot.py → clear_cycle_committed().
+# Used to prevent the same symbol from being traded more than once per cycle
+# (e.g. order_executor REALLOCATE + allocator REPLACE both firing for same symbol).
+
+_cycle_committed: set[str] = set()
+
+
+def clear_cycle_committed() -> None:
+    """Clear committed-symbols state at the start of each A1 cycle."""
+    _cycle_committed.clear()
+
+
+def mark_committed(symbol: str) -> None:
+    """Mark a symbol as committed for the current cycle."""
+    _cycle_committed.add((symbol or "").upper())
+
+
+def is_committed(symbol: str) -> bool:
+    """Return True if symbol has already been committed this cycle."""
+    return (symbol or "").upper() in _cycle_committed
+
 
 def debate_trade(
     action:       dict,

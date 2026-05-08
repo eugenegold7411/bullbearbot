@@ -1103,10 +1103,26 @@ class TestPersistentCooldown:
         cooldown = {"AAPL": {"action": "TRIM", "timestamp": self._recent_ts(5)}}
         assert pa._is_on_cooldown("V", "TRIM", cooldown, hours=1.0) is False
 
-    def test_is_on_cooldown_false_for_different_action(self):
-        """_is_on_cooldown returns False when symbol matches but action differs."""
+    def test_is_on_cooldown_cross_action_trim_blocks_add(self):
+        """TRIM cooldown blocks ADD for same symbol — cross-action blocking prevents oscillation."""
         cooldown = {"V": {"action": "TRIM", "timestamp": self._recent_ts(5)}}
+        # TRIM blocks ADD (prevents ADD→TRIM→ADD oscillation)
+        assert pa._is_on_cooldown("V", "ADD", cooldown, hours=1.0) is True
+
+    def test_is_on_cooldown_replace_does_not_block_add(self):
+        """REPLACE cooldown does NOT block ADD — REPLACE only blocks itself."""
+        cooldown = {"V": {"action": "REPLACE", "timestamp": self._recent_ts(5)}}
         assert pa._is_on_cooldown("V", "ADD", cooldown, hours=1.0) is False
+
+    def test_is_on_cooldown_add_blocks_size_trim(self):
+        """ADD cooldown blocks SIZE_TRIM for same symbol."""
+        cooldown = {"V": [{"action": "ADD", "timestamp": self._recent_ts(5)}]}
+        assert pa._is_on_cooldown("V", "SIZE_TRIM", cooldown, hours=1.0) is True
+
+    def test_is_on_cooldown_size_trim_blocks_add(self):
+        """SIZE_TRIM cooldown blocks ADD for same symbol."""
+        cooldown = {"V": [{"action": "SIZE_TRIM", "timestamp": self._recent_ts(5)}]}
+        assert pa._is_on_cooldown("V", "ADD", cooldown, hours=1.0) is True
 
     def test_save_cooldown_writes_correct_json_structure(self, tmp_path):
         """_save_cooldown writes {date, cooldowns} with today's date."""
@@ -1277,19 +1293,22 @@ class TestDenominatorFix:
     # 4. TRIM target = min(tier_max × total_capacity, cap × total_capacity) ─────
 
     def test_size_trim_target_kernel_consistent(self):
-        """V at 100% of equity → SIZE TRIM target = max_position_pct_equity × equity.
+        """V at 25% of equity×4 → SIZE TRIM target = tier_max × total_capacity.
 
+        4x margin account: full account value = equity × 4.
         total_capacity = equity × 4 = $433,888.
-        V MV = 25% × $433,888 = $108,472 (= 100% equity) → equity check fires first.
-        equity_frac = 100% > max_pos_pct_equity(15%) + tol(2%) = 17% → fires.
-        expected_target = max_pos_pct_equity × equity = 0.15 × $108,472 = $16,271.
+        V MV = 25% × $433,888 = $108,472 → cap_frac = 25% > 17% (15%+2% tol) → fires.
+        expected_target = min(tier_max × total_cap, max_pos_cap × total_cap)
+                        = min(0.15 × $433,888, 0.15 × $433,888) = $65,083.
         """
         equity    = self._EQUITY   # $108,472
         total_cap = equity * 4     # $433,888
-        # Equity-based target is min(max_pos_pct_equity × equity, tier_max × total_cap)
-        expected_target = self._MAX_POS_PCT * equity   # $16,271
+        # 4x margin account: target = tier_max × total_capacity (equity×4 basis)
+        tier_max        = 0.15
+        max_pos_pct_cap = self._MAX_POS_PCT  # 0.15
+        expected_target = min(tier_max * total_cap, max_pos_pct_cap * total_cap)  # $65,083
 
-        mv = total_cap * 0.25   # 25% of total_capacity = $108,472 — exceeds 22% trigger
+        mv = total_cap * 0.25   # 25% of total_capacity = $108,472 — exceeds 17% trigger
         inc = {
             "symbol":                  "V",
             "market_value":            mv,
@@ -1320,7 +1339,7 @@ class TestDenominatorFix:
         actual_target = float(match.group(1).replace(",", ""))
         assert actual_target == pytest.approx(expected_target, abs=1.0), (
             f"TRIM target ${actual_target:,.0f} should be "
-            f"max_pos_pct_equity × equity = ${expected_target:,.0f}"
+            f"tier_max × equity×4 = ${expected_target:,.0f} (4x margin account)"
         )
 
     # 5. SIZE TRIM trigger uses total_capacity denominator ────────────────────
@@ -1357,8 +1376,8 @@ class TestDenominatorFix:
         assert trim is not None, (
             f"SIZE TRIM must fire for AMZN at 25% of equity×4 (${total_cap:,.0f})"
         )
-        assert "equity cap" in trim["reason"], (
-            "SIZE TRIM reason must reference 'equity cap'"
+        assert "SIZE TRIM" in trim["reason"], (
+            "SIZE TRIM reason must contain 'SIZE TRIM'"
         )
 
     # 6. GOOGL at 25.9% equity → ADD blocked (was incorrectly allowed before fix) ──
@@ -1685,9 +1704,14 @@ class TestAllocatorFixes:
         mock_snapshot = MagicMock()
         mock_snapshot.positions = []
 
-        # qty=50, price=$100 → MV=$5000; equity=$10000 → target_mv=$1500, target_qty=15, trim=35
+        # 4x margin account: FULL_ACCOUNT = equity × 4 = $100,000.
+        # target_mv = 0.15 × $100,000 = $15,000 → target_qty = int($15,000/$100) = 150.
+        # qty=200, price=$100 → MV=$20,000 = 20% of $100,000 (above 15% cap).
+        # shares_to_sell = 200 - 150 = 50.
+        equity = 25_000.0   # equity×4 = $100K full account
         pos = SimpleNamespace(
-            symbol="AAPL", qty="50", market_value="5000", current_price="100.0"
+            symbol="AAPL", qty="200", market_value="20000", current_price="100.0",
+            held_for_orders=0,
         )
         captured_args = {}
 
@@ -1707,11 +1731,12 @@ class TestAllocatorFixes:
                 account=mock_account,
                 market_status="open",
                 minutes_since_open=60,
-                equity=10_000.0,
+                equity=equity,
                 max_pos_pct_equity=0.15,
             )
 
-        assert result == "ok:35", f"Expected ok:35 (50-15 shares), got {result}"
+        # target_mv = 0.15 × (25,000 × 4) = $15,000, target_qty = 150, sell 50
+        assert result == "ok:50", f"Expected ok:50 (200-150 shares), got {result}"
         assert "args" in captured_args, "execute_all must have been called"
         call_args = captured_args["args"]
         assert call_args[1] is mock_account,  "2nd arg must be account"
@@ -1993,8 +2018,12 @@ class TestErrorPropagationAndAddMinScore:
         mock_snapshot = MagicMock()
         mock_snapshot.positions = []
 
+        # 4x margin account: equity=106_000 → full_account=424_000.
+        # target_mv = 0.15 × 424_000 = $63,600 → target_qty = int(63600/417) = 152.
+        # qty=200 → mv=83,400 (19.7% of 424K > 15% cap) → shares_to_sell=48.
         pos = SimpleNamespace(
-            symbol="TSM", qty="97", market_value="40500", current_price="417.0"
+            symbol="TSM", qty="200", market_value="83400", current_price="417.0",
+            held_for_orders=0,
         )
 
         # execute_all returns a list with one error result
@@ -2033,8 +2062,12 @@ class TestErrorPropagationAndAddMinScore:
         mock_snapshot = MagicMock()
         mock_snapshot.positions = []
 
+        # 4x margin account: equity=106_000 → full_account=424_000.
+        # target_mv = 0.15 × 424_000 = $63,600 → target_qty = int(63600/287) = 221.
+        # qty=350 → mv=100,450 (23.7% of 424K > 15% cap) → shares_to_sell=129.
         pos = SimpleNamespace(
-            symbol="AAPL", qty="124", market_value="35600", current_price="287.0"
+            symbol="AAPL", qty="350", market_value="100450", current_price="287.0",
+            held_for_orders=0,
         )
 
         from order_executor import ExecutionResult
@@ -2055,8 +2088,8 @@ class TestErrorPropagationAndAddMinScore:
                 max_pos_pct_equity=0.15,
             )
 
-        # equity=106000, target_mv=15900, target_qty=55, held=124, trim=69
-        assert result == "ok:69", f"Expected ok:69, got {result!r}"
+        # equity=106000, full_account=424000, target_mv=63600, target_qty=221, trim=129
+        assert result == "ok:129", f"Expected ok:129, got {result!r}"
 
     def test_add_failed_when_execute_all_returns_error(self):
         """_execute_live_add returns 'add_failed:...' when execute_all status=error."""

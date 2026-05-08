@@ -1,4 +1,12 @@
 {
-  "symbols": [],
+  "symbols": [
+    {"symbol": "CRWD", "sector": "technology",  "type": "stock", "tier": "dynamic"},
+    {"symbol": "DDOG", "sector": "technology",  "type": "stock", "tier": "dynamic"},
+    {"symbol": "ARM",  "sector": "technology",  "type": "stock", "tier": "dynamic"},
+    {"symbol": "SMCI", "sector": "technology",  "type": "stock", "tier": "dynamic"},
+    {"symbol": "U",    "sector": "technology",  "type": "stock", "tier": "dynamic"},
+    {"symbol": "ABNB", "sector": "consumer",    "type": "stock", "tier": "dynamic"},
+    {"symbol": "AMD",  "sector": "technology",  "type": "stock", "tier": "dynamic"}
+  ],
   "reset_at": "2026-04-16T21:27:05.410713-04:00"
 }

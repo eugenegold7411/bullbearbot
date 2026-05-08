@@ -26,6 +26,7 @@ _os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
 import sys
 import types
+from unittest.mock import patch
 
 import pytest
 
@@ -555,6 +556,39 @@ _CI_STRATEGY_CONFIG: dict = {
     },
     "time_bound_actions": [],
 }
+
+
+@pytest.fixture(autouse=True)
+def _isolate_allocator_cooldown(tmp_path):
+    """Route all portfolio_allocator cooldown disk I/O to a temp file.
+
+    Prevents test runs from writing SYM0/SYM1/SYM2/SYM3/SYM4/XYZ entries
+    to the production allocator_cooldown.json file in data/runtime/.
+    """
+    try:
+        import portfolio_allocator as pa
+        fake = tmp_path / "allocator_cooldown_test.json"
+        with patch.object(pa, "_COOLDOWN_PATH", fake):
+            yield fake
+    except ImportError:
+        yield None
+
+
+@pytest.fixture(autouse=True)
+def _clear_cycle_committed():
+    """Clear per-cycle committed-symbols state between tests.
+
+    Prevents REPLACE/ADD deduplication from leaking committed symbols
+    from one test into the next (bot_stage4_execution._cycle_committed is
+    a module-level set cleared by clear_cycle_committed() each real cycle).
+    """
+    try:
+        from bot_stage4_execution import clear_cycle_committed
+        clear_cycle_committed()
+        yield
+        clear_cycle_committed()
+    except ImportError:
+        yield
 
 
 @pytest.fixture(scope="session", autouse=True)

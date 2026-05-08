@@ -218,6 +218,13 @@ def run_cycle(
     # Early-init regime so forced/deadline exit guards never see a NameError.
     regime = "unknown"
 
+    # Clear per-cycle committed-symbols deduplication state
+    try:
+        from bot_stage4_execution import clear_cycle_committed  # noqa: PLC0415
+        clear_cycle_committed()
+    except ImportError:
+        pass
+
     # Stage 0 — pre-cycle infrastructure
     state = run_precycle(session_tier, next_cycle_time, publisher=publisher)
     if state is None:

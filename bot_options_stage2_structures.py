@@ -104,6 +104,9 @@ _A2_ROUTER_DEFAULTS: dict = {
     # False = post_event (-1..-3) suppresses new entry
     # True  = post_event falls through to RULE_POST_EARNINGS credit play (future session)
     "fresh_catalyst_override": False,
+    # RULE3 earnings liquidity override — parallel to OI override in _veto_candidate
+    "earnings_liq_override_floor":   0.08,  # floor when high-conviction earnings eda<=max
+    "earnings_liq_override_max_eda": 7,     # max eda to apply the override
 }
 
 
@@ -328,7 +331,9 @@ def _route_strategy(
     earnings_dte_blackout = int(rcfg["earnings_dte_blackout"])
     earnings_dte_window   = int(rcfg.get("earnings_dte_window", 14))
     earnings_iv_rank_gate = float(rcfg.get("earnings_iv_rank_gate", 70))
-    min_liquidity_score   = float(rcfg["min_liquidity_score"])
+    min_liquidity_score          = float(rcfg["min_liquidity_score"])
+    earnings_liq_override_floor  = float(rcfg.get("earnings_liq_override_floor", 0.08))
+    earnings_liq_override_max_eda = int(rcfg.get("earnings_liq_override_max_eda", 7))
     macro_iv_gate_rank    = float(rcfg["macro_iv_gate_rank"])
     iv_env_blackout       = list(rcfg["iv_env_blackout"])
 
@@ -415,11 +420,24 @@ def _route_strategy(
                   sym, pack.iv_environment, iv_env_blackout)
         return []
 
-    # RULE3: liquidity floor
-    if pack.liquidity_score < min_liquidity_score:
+    # RULE3: liquidity floor (with earnings override for high-conviction pre-event)
+    _liq_floor = min_liquidity_score
+    _ec_liq = getattr(pack, "earnings_conviction", None)
+    _earn_liq_override = (
+        _ec_liq is not None
+        and _ec_liq.get("conviction_level") == "high"
+        and pack.earnings_days_away is not None
+        and 0 < pack.earnings_days_away <= earnings_liq_override_max_eda
+    )
+    if _earn_liq_override:
+        _liq_floor = earnings_liq_override_floor
+    if pack.liquidity_score < _liq_floor:
         log.debug("[OPTS] _route_strategy %s: RULE3 liquidity=%.2f < %.2f -> []",
-                  sym, pack.liquidity_score, min_liquidity_score)
+                  sym, pack.liquidity_score, _liq_floor)
         return []
+    elif _earn_liq_override:
+        log.info("[OPTS] %s: earnings liquidity override applied (eda=%d, liq=%.3f >= %.2f)",
+                 sym, pack.earnings_days_away, pack.liquidity_score, _liq_floor)
 
     # RULE4: macro event router — macro events are catalysts, not blockers.
     # When macro_event_routing_enabled=False, falls back to original block behavior.
@@ -716,7 +734,9 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
     rcfg = _get_router_config(config)
     earnings_dte_blackout = int(rcfg["earnings_dte_blackout"])
     earnings_dte_window   = int(rcfg.get("earnings_dte_window", 14))
-    min_liquidity_score   = float(rcfg["min_liquidity_score"])
+    min_liquidity_score          = float(rcfg["min_liquidity_score"])
+    earnings_liq_override_floor  = float(rcfg.get("earnings_liq_override_floor", 0.08))
+    earnings_liq_override_max_eda = int(rcfg.get("earnings_liq_override_max_eda", 7))
     iv_env_blackout       = list(rcfg["iv_env_blackout"])
     pre_earn_enabled      = bool(rcfg.get("pre_earnings_credit_spread_enabled", False))
     pre_earn_iv_min       = float(rcfg.get("pre_earnings_iv_rank_min", 85))
@@ -738,7 +758,15 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
             return "RULE_EARNINGS_HIGH_IV"
         if pack.iv_environment in iv_env_blackout:
             return "RULE2"
-        if pack.liquidity_score < min_liquidity_score:
+        _ec_infer = getattr(pack, "earnings_conviction", None)
+        _earn_liq_override_infer = (
+            _ec_infer is not None
+            and _ec_infer.get("conviction_level") == "high"
+            and eda is not None
+            and 0 < eda <= earnings_liq_override_max_eda
+        )
+        _liq_floor_infer = earnings_liq_override_floor if _earn_liq_override_infer else min_liquidity_score
+        if pack.liquidity_score < _liq_floor_infer:
             return "RULE3"
         if pack.macro_event_flag:
             return "RULE4"

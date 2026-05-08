@@ -72,11 +72,15 @@ class TestSizeTrimEquityBased(unittest.TestCase):
         }
 
     def test_size_trim_fires_for_oversize_position(self):
-        """TSM at 38% of equity with max_position_pct_equity=0.15 must generate SIZE TRIM."""
+        """TSM at 23% of equity×4 with max_position_pct_capacity=0.15 must generate SIZE TRIM.
+
+        4x margin account: full_account = equity × 4 = $400K.
+        TSM MV = 23% × $400K = $92K → cap_frac = 23% > 15%+2% = 17% → fires.
+        """
         import portfolio_allocator as pa_mod
 
         equity = 100_000.0
-        tsm_mv = equity * 0.38   # 38% of equity — well over 15% cap
+        tsm_mv = equity * 4 * 0.23   # 23% of equity×4 = $92K — over 17% trigger
 
         incumbent = self._make_incumbent("TSM", score=10, mv=tsm_mv)
 

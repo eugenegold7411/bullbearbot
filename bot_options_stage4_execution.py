@@ -762,66 +762,31 @@ def _compute_pnl_unrealized(struct, current_prices: dict) -> float | None:
         return None
 
 
+# ── Upgrade helpers: migrated to options_position_manager.py ─────────────────
+# Stage 4 retains the public names as thin shims for backward compatibility.
+# The real implementations (with identical logic and side effects) live in
+# options_position_manager. A future session removes these shims.
+
 def _compute_dte(structure) -> Optional[int]:
-    """Compute calendar days to expiry from structure.expiration or first leg."""
-    try:
-        exp_str = structure.expiration or ""
-        if not exp_str:
-            for leg in structure.legs:
-                if leg.expiration:
-                    exp_str = leg.expiration
-                    break
-        if not exp_str:
-            return None
-        return (date.fromisoformat(exp_str) - date.today()).days
-    except Exception:
-        return None
+    """Shim — see options_position_manager._compute_dte."""
+    from options_position_manager import _compute_dte as _impl  # noqa: PLC0415
+    return _impl(structure)
 
 
 def _load_latest_debate_selected_candidate() -> Optional[dict]:
-    """Return selected_candidate from the most recent A2 decision file, or None."""
-    try:
-        files = sorted(_DECISIONS_DIR.glob("a2_dec_*.json"))
-        if not files:
-            return None
-        data = json.loads(files[-1].read_text(encoding="utf-8"))
-        return data.get("selected_candidate")
-    except Exception as exc:
-        log.debug("[UPGRADE] latest debate load failed (non-fatal): %s", exc)
-        return None
+    """Shim — see options_position_manager._load_latest_debate_selected_candidate."""
+    from options_position_manager import (  # noqa: PLC0415
+        _load_latest_debate_selected_candidate as _impl,
+    )
+    return _impl()
 
 
 def _build_upgrade_short_leg(structure, is_call: bool) -> Optional[str]:
-    """
-    Build OCC symbol for the upgrade short (hedge) leg.
-    Strike = long_strike × 1.05 (calls) or × 0.95 (puts), rounded to nearest $0.50.
-    Returns None if required fields are missing.
-    """
-    try:
-        ref_strike = structure.long_strike
-        if ref_strike is None:
-            for leg in structure.legs:
-                if leg.strike:
-                    ref_strike = float(leg.strike)
-                    break
-        if ref_strike is None:
-            return None
-        multiplier  = 1.05 if is_call else 0.95
-        short_strike = round(ref_strike * multiplier / 0.5) * 0.5
-        exp_str = structure.expiration or ""
-        if not exp_str:
-            for leg in structure.legs:
-                if leg.expiration:
-                    exp_str = leg.expiration
-                    break
-        if not exp_str:
-            return None
-        exp_part   = exp_str.replace("-", "")[2:]   # "2026-05-22" → "260522"
-        opt_type   = "C" if is_call else "P"
-        strike_int = int(round(short_strike * 1000))
-        return f"{structure.underlying}{exp_part}{opt_type}{strike_int:08d}"
-    except Exception:
-        return None
+    """Shim — see options_position_manager._build_upgrade_short_leg."""
+    from options_position_manager import (
+        _build_upgrade_short_leg as _impl,  # noqa: PLC0415
+    )
+    return _impl(structure, is_call)
 
 
 def _evaluate_structure_upgrade(
@@ -830,78 +795,13 @@ def _evaluate_structure_upgrade(
     config: dict,
 ) -> Optional[dict]:
     """
-    Evaluate whether a single-leg structure should be upgraded to a spread by
-    adding a short hedge leg.
+    Shim — delegates to options_position_manager._check_upgrade.
 
-    Returns an upgrade_action dict when all six conditions are met; None otherwise.
-
-    Side effect: sets structure.last_upgrade_attempted (ISO-8601) when conditions
-    1-5 pass, so the frequency cap persists even when the feature flag is off.
-    The caller is responsible for saving the structure after this call when the
-    timestamp changed.
+    Same signature, same return shape, same side effect (stamps
+    structure.last_upgrade_attempted when conditions 1-5 pass).
     """
-    # Condition 1: only single-leg structures are upgrade candidates.
-    strat = structure.strategy.value if hasattr(structure.strategy, "value") else str(structure.strategy)
-    if strat not in ("single_call", "single_put"):
-        return None
-
-    is_call = (strat == "single_call")
-
-    # Condition 2: debate regime signal — spread for the same direction was selected.
-    if debate_result is None:
-        return None
-    debate_stype = debate_result.get("structure_type", "")
-    _spread_for_dir = "debit_call_spread" if is_call else "debit_put_spread"
-    if debate_stype != _spread_for_dir:
-        return None
-
-    # Condition 3: only upgrade profitable positions.
-    upnl = structure.pnl_unrealized
-    if upnl is None or upnl <= 0:
-        return None
-
-    # Condition 4: sufficient DTE remains.
-    dte = _compute_dte(structure)
-    if dte is None or dte <= 7:
-        return None
-
-    # Condition 5: frequency cap — at most one evaluation per structure per week.
-    if structure.last_upgrade_attempted is not None:
-        try:
-            days_since = (
-                date.today()
-                - date.fromisoformat(structure.last_upgrade_attempted[:10])
-            ).days
-            if days_since < 7:
-                return None
-        except Exception:
-            pass
-
-    # Candidate confirmed — log and stamp the frequency cap.
-    new_type = "call_debit_spread" if is_call else "put_debit_spread"
-    log.info(
-        "[UPGRADE] %s upgrade candidate: %s → %s  upnl=%.2f  dte=%d",
-        structure.underlying, strat, new_type, float(upnl), dte,
-    )
-    structure.last_upgrade_attempted = datetime.now(ET).isoformat()
-
-    # Condition 6: feature flag — opt-in, default OFF.
-    if not config.get("structure_upgrade_enabled", False):
-        return None
-
-    short_leg_occ = _build_upgrade_short_leg(structure, is_call)
-    if short_leg_occ is None:
-        log.warning("[UPGRADE] %s: could not build short leg OCC — skipping", structure.underlying)
-        return None
-
-    return {
-        "action":       "add_hedge_leg",
-        "symbol":       short_leg_occ,
-        "qty":          structure.contracts,
-        "structure_id": structure.structure_id,
-        "old_strategy": strat,
-        "new_strategy": new_type,
-    }
+    from options_position_manager import _check_upgrade as _impl  # noqa: PLC0415
+    return _impl(structure, debate_result, config)
 
 
 def close_check_loop(alpaca_client) -> None:
@@ -1020,6 +920,53 @@ def close_check_loop(alpaca_client) -> None:
                             "closed_at":     getattr(_closed, "closed_at", None),
                         })
                 else:
+                    # Position-intel immediate-close short-circuit. Reads
+                    # data/options/position_intel_latest.json (file-based) and
+                    # acts only when act_on_immediate_close=true (defaults to
+                    # false — operator flips on via SSH after intel JSON
+                    # validation).
+                    _intel_acted = False
+                    try:
+                        import options_position_manager as _opm  # noqa: PLC0415
+                        if _opm.is_immediate_close_action_enabled(_strategy_cfg):
+                            _recs = _opm.get_recommendations(symbol=struct.underlying)
+                            for _rec in _recs:
+                                if _rec.structure_id != struct.structure_id:
+                                    continue
+                                if _rec.urgency != "immediate":
+                                    continue
+                                if _rec.action not in (
+                                    _opm.ACTION_CLOSE, _opm.ACTION_CLOSE_SHORT_LEG,
+                                ):
+                                    continue
+                                _close_reason = f"position_intel:{_rec.action.lower()}:{_rec.reason[:60]}"
+                                log.info(
+                                    "[CLOSE_CHECK] %s (%s): position intel immediate close — %s",
+                                    struct.underlying, struct.structure_id, _rec.reason,
+                                )
+                                _closed = options_executor.close_structure(
+                                    struct, alpaca_client, reason=_close_reason,
+                                    method="limit", current_prices=_current_prices,
+                                )
+                                options_state.save_structure(_closed)
+                                _write_a2_trade({
+                                    "event_type":    "close_submitted",
+                                    "structure_id":  _closed.structure_id,
+                                    "symbol":        _closed.underlying,
+                                    "strategy":      str(getattr(_closed.strategy, "value", _closed.strategy)),
+                                    "close_reason":  _close_reason,
+                                    "lifecycle":     str(getattr(_closed.lifecycle, "value", _closed.lifecycle)),
+                                    "pnl_unrealized": getattr(_closed, "pnl_unrealized", None),
+                                    "closed_at":     getattr(_closed, "closed_at", None),
+                                })
+                                _intel_acted = True
+                                break
+                    except Exception as _pi_exc:
+                        log.debug("[CLOSE_CHECK] position_intel act-check failed: %s", _pi_exc)
+
+                    if _intel_acted:
+                        continue
+
                     # Structure is not closing — evaluate upgrade opportunity.
                     _prev_ts = struct.last_upgrade_attempted
                     _upgrade = _evaluate_structure_upgrade(

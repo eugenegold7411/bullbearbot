@@ -174,12 +174,17 @@ def test_upgrade_frequency_cap_expired():
 
 
 def test_upgrade_log_line():
-    """When upgrade candidate is identified, [UPGRADE] log line is emitted."""
+    """When upgrade candidate is identified, [UPGRADE] log line is emitted.
+
+    The [UPGRADE] log now lives in options_position_manager (migrated from
+    bot_options_stage4_execution). Stage 4's _evaluate_structure_upgrade is
+    a thin shim, so we patch the new module's logger.
+    """
     from bot_options_stage4_execution import _evaluate_structure_upgrade
 
     struct = _make_structure(strategy="single_call", pnl_unrealized=150.0)
 
-    with patch("bot_options_stage4_execution.log") as mock_log:
+    with patch("options_position_manager.log") as mock_log:
         _evaluate_structure_upgrade(struct, _call_spread_debate(), _enabled_config())
 
     logged_msgs = [str(call) for call in mock_log.info.call_args_list]

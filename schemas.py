@@ -741,6 +741,10 @@ class OptionsStructure:
     close_time_stop_pct_dte:  Optional[float] = None
     # Upgrade evaluator frequency cap (set when candidate is identified).
     last_upgrade_attempted:   Optional[str]   = None   # ISO-8601 datetime
+    # Position intelligence (options_position_manager): captured at first observation
+    # if scalar entry greeks (delta/theta/vega above) are unpopulated. Includes gamma.
+    entry_greeks:             Optional[dict]  = None   # {delta, theta, vega, gamma}
+    greek_history_length:     int             = 0     # snapshots in greek_history file
 
     @property
     def symbol(self) -> str:
@@ -895,6 +899,8 @@ class OptionsStructure:
             close_max_loss_pct=_maybe_float(d.get("close_max_loss_pct")),
             close_time_stop_pct_dte=_maybe_float(d.get("close_time_stop_pct_dte")),
             last_upgrade_attempted=d.get("last_upgrade_attempted"),
+            entry_greeks=d.get("entry_greeks"),
+            greek_history_length=int(d.get("greek_history_length", 0) or 0),
         )
 
 

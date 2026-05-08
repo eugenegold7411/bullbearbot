@@ -107,6 +107,19 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
     log.info("[OPTS] VIX=%.2f", vix)
     regime = "normal"
 
+    # Position intelligence — analyse existing structures (greeks → drift →
+    # action recommendations). Runs early so it executes even when later stages
+    # exit (no signals, no candidates, etc.). Reads strategy_config inline so
+    # we don't yet require the full config block. Non-fatal.
+    try:
+        import options_position_manager as _opm  # noqa: PLC0415
+        from bot_options_stage3_debate import (
+            _load_strategy_config as _opm_cfg,  # noqa: PLC0415
+        )
+        _opm.run(state=None, alpaca_client=_get_alpaca(), config=_opm_cfg())
+    except Exception as _pi_exc:
+        log.warning("[OPTS] position_intel failed (non-fatal): %s", _pi_exc)
+
     from bot_options_stage1_candidates import (  # noqa: PLC0415
         _augment_with_avoid_context,
         _get_core_equity_symbols,

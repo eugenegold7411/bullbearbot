@@ -1052,6 +1052,19 @@ def _maybe_append_crypto_reversion_signal(scored_symbols: dict, config: dict) ->
     cr = config.get("crypto_reversion", {})
     if not cr.get("crypto_reversion_enabled", False):
         return
+
+    # Cross-symbol halt: skip all signals after 3 combined losses
+    try:
+        from crypto_reversion_state import CryptoReversionState  # noqa: PLC0415
+        _state = CryptoReversionState()
+        if _state.is_halted():
+            log.info("[CRYPTO-MR] halted — 3+ combined losses, suppressing all crypto reversion signals")
+            return
+    except ImportError:
+        pass
+    except Exception as _se:
+        log.debug("[CRYPTO-MR] halt check failed (non-fatal): %s", _se)
+
     _PAIRS = [("btc", "BTC/USD", "BTC-USD"), ("eth", "ETH/USD", "ETH-USD")]
     for cfg_key, symbol, symbol_yf in _PAIRS:
         cfg = cr.get(cfg_key, {})
@@ -1080,7 +1093,7 @@ def _maybe_append_crypto_reversion_signal(scored_symbols: dict, config: dict) ->
             "sizing_multiplier": float(cfg.get("sizing_multiplier", 0.8)),
         }
         log.info(
-            "[SIGNALS] %s: crypto reversion trigger drop=%.2f%% threshold=%.1f%%",
+            "[CRYPTO-MR] injecting %s signal score=72 drop=%.2f%% threshold=%.1f%%",
             symbol, drop, threshold,
         )
 
@@ -1463,14 +1476,30 @@ def format_signal_scores(scores: dict) -> str:
         lines.append(f"  Elevated caution: {', '.join(scores['elevated_caution'])}")
     if scores.get("reasoning"):
         lines.append(f"  Signal environment: {scores['reasoning']}")
-    for sym, d in list(scores.get("scored_symbols", {}).items())[:10]:
-        conv    = d.get("conviction", "?")
-        cat     = (d.get("primary_catalyst", "") or "")[:60]
-        sigs    = ", ".join((d.get("signals", []) or [])[:4])
-        orb_tag = " ORB" if d.get("orb_candidate") else ""
-        pwl_tag = f"  ⚠{d['pattern_watchlist']}" if d.get("pattern_watchlist") else ""
-        alpha   = _alpha_annotation(sym)
-        lines.append(f"  {sym}: score={d.get('score', 0)} [{conv}]{orb_tag}  {cat}{pwl_tag}{alpha}")
+
+    all_syms = scores.get("scored_symbols", {})
+    crypto_mr = {s: d for s, d in all_syms.items() if d.get("catalyst_type") == "mean_reversion"}
+    equity_syms = [(s, d) for s, d in all_syms.items() if d.get("catalyst_type") != "mean_reversion"]
+
+    # Crypto reversion entries always shown first, outside the equity [:10] cap
+    for sym, d in crypto_mr.items():
+        drop = d.get("drop_pct", 0.0)
+        stop = d.get("stop_pct", 1.5)
+        lines.append(
+            f"  [CRYPTO-MR] {sym}: score={d.get('score', 0)} drop={drop:.2f}% "
+            f"stop={stop}% -- enter_long required"
+        )
+
+    for sym, d in equity_syms[:10]:
+        conv      = d.get("conviction", "?")
+        cat       = (d.get("primary_catalyst", "") or "")[:60]
+        sigs      = ", ".join((d.get("signals", []) or [])[:4])
+        orb_tag   = " ORB" if d.get("orb_candidate") else ""
+        pwl_tag   = f"  ⚠{d['pattern_watchlist']}" if d.get("pattern_watchlist") else ""
+        alpha     = _alpha_annotation(sym)
+        _eda      = d.get("earnings_days_away")
+        pe_tag    = " [POST-EARNINGS]" if (_eda is not None and _eda < 0) else ""
+        lines.append(f"  {sym}: score={d.get('score', 0)} [{conv}]{orb_tag}{pe_tag}  {cat}{pwl_tag}{alpha}")
         if sigs:
             lines.append(f"    signals: {sigs}")
     return "\n".join(lines) if lines else "  (no signals scored)"

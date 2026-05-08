@@ -1992,6 +1992,9 @@ Key:
 - abstention_per_module: {{module_name: rate}} for modules seen in hindsight records (7d)
 - lazy_abstainer_candidates: modules flagged >0.80 in two consecutive weekly windows (advisory)
 - shadow_counterfactual: {{right, wrong, neutral, cumulative_accuracy, advisory, note}} — advisory until n>=50
+- win_rates_by_symbol: alpha_positive / (alpha_positive + alpha_negative) per symbol (entry-side only)
+- top_performing_symbols / underperforming_symbols: symbols with n>=3 classified outcomes and WR >=0.6 / <=0.3
+- signal_source_win_rates: per signal-source module {{win_rate, sample_count, score_status}} — basis for module-level signal weight changes
 
 ---
 
@@ -2551,10 +2554,98 @@ def _build_governance_signals_block() -> str:
     except Exception:
         pass
 
+    # Quantitative performance data (S2 Fix 5) — per-symbol win rates and
+    # per-signal-source credibility. Lets Agent 6 make data-driven weight
+    # recommendations instead of guessing.
+    try:
+        signals.update(_build_quantitative_performance_block())
+    except Exception as _qp_exc:  # noqa: BLE001
+        log.warning("[REVIEW] quantitative performance block failed (non-fatal): %s", _qp_exc)
+
     try:
         return json.dumps(signals, indent=2)
     except Exception:
         return '{"error": "governance_signals_unavailable"}'
+
+
+def _build_quantitative_performance_block() -> dict:
+    """
+    Aggregate per-symbol win rates and per-signal-source credibility for
+    Agent 6 prompt injection. Reads decision_outcomes.jsonl directly so the
+    cohort isn't bounded by the 7-day generate_outcomes_summary window, and
+    so the function contract remains stable for tests that mock its file IO.
+
+    signal_source_win_rates comes from signal_credibility.get_signal_source_win_rates
+    (the persisted per-decision incremental store updated by bot.py's close hook).
+
+    Returns a dict with keys:
+      - win_rates_by_symbol         {SYM: float (0..1)}
+      - classification_distribution {label: count}
+      - top_performing_symbols      [SYM, ...]   (n>=3 and win_rate>=0.6)
+      - underperforming_symbols     [SYM, ...]   (n>=3 and win_rate<=0.3)
+      - signal_source_win_rates     {source: {win_rate, sample_count, ...}}
+      - total_classified            int
+    """
+    out: dict = {
+        "win_rates_by_symbol":         {},
+        "classification_distribution": {},
+        "top_performing_symbols":      [],
+        "underperforming_symbols":     [],
+        "signal_source_win_rates":     {},
+        "total_classified":            0,
+    }
+
+    outcomes_path = Path("data/analytics/decision_outcomes.jsonl")
+    if outcomes_path.exists():
+        from collections import Counter, defaultdict  # noqa: PLC0415
+        per_symbol_outcomes: dict[str, list[str]] = defaultdict(list)
+        cls_counter: Counter[str] = Counter()
+        for line in outcomes_path.read_text(errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            cls = rec.get("alpha_classification")
+            if not cls:
+                continue
+            if (rec.get("action") or "").lower() not in {"buy", "enter_long"}:
+                continue
+            per_symbol_outcomes[rec.get("symbol", "")].append(cls)
+            cls_counter[cls] += 1
+
+        out["classification_distribution"] = dict(cls_counter)
+        out["total_classified"] = sum(cls_counter.values())
+
+        for sym, outcomes in per_symbol_outcomes.items():
+            if not sym:
+                continue
+            decisive = sum(1 for c in outcomes if c in ("alpha_positive", "alpha_negative"))
+            if decisive == 0:
+                continue
+            wins = sum(1 for c in outcomes if c == "alpha_positive")
+            wr = round(wins / decisive, 3)
+            out["win_rates_by_symbol"][sym] = wr
+            if len(outcomes) >= 3 and wr >= 0.6:
+                out["top_performing_symbols"].append(sym)
+            elif len(outcomes) >= 3 and wr <= 0.3:
+                out["underperforming_symbols"].append(sym)
+
+        out["top_performing_symbols"].sort(
+            key=lambda s: -out["win_rates_by_symbol"].get(s, 0.0)
+        )
+        out["underperforming_symbols"].sort(
+            key=lambda s: out["win_rates_by_symbol"].get(s, 1.0)
+        )
+
+    try:
+        import signal_credibility as _sc  # noqa: PLC0415
+        out["signal_source_win_rates"] = _sc.get_signal_source_win_rates()
+    except Exception:
+        pass
+
+    return out
 
 
 def _get_thesis_packet() -> str:

@@ -1088,6 +1088,23 @@ def run_cycle(
                                 "[OUTCOMES] %s: outcome=%.1f%% classification=%s",
                                 _fr.symbol, _outcome_pct * 100, _classification,
                             )
+                            # Signal-source credibility update (S2 Fix 4) — credit
+                            # every module that contributed to this entry decision.
+                            try:
+                                import signal_credibility as _sc  # noqa: PLC0415
+                                _n_sources = _sc.update_from_module_tags(
+                                    module_tags=_entry_rec.module_tags or {},
+                                    classification=_classification,
+                                    outcome_pct=_outcome_pct,
+                                    decision_id=_entry_decision_id,
+                                )
+                                if _n_sources:
+                                    log.info(
+                                        "[OUTCOMES] signal credibility updated for %d sources",
+                                        _n_sources,
+                                    )
+                            except Exception as _sc_exc:
+                                log.debug("[OUTCOMES] signal_credibility update failed: %s", _sc_exc)
                 except Exception as _alpha_exc:
                     log.debug("[OUTCOMES] post-close classify_alpha failed: %s", _alpha_exc)
             except Exception as _frev_exc:

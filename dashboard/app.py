@@ -2389,10 +2389,11 @@ def _bbb_hero_strip_html(status: dict) -> str:
     a1_pos_count = len(status.get("positions", []))
     a1_invested = sum(p.get("market_val", 0) for p in status.get("positions", []))
     _a1_lmv = float(a1_acc.long_market_value or 0) if a1_acc else a1_invested
-    _a1_dtbp = float(a1_acc.daytrading_buying_power or 0) if a1_acc else 0.0
-    _a1_regt = float(a1_acc.regt_buying_power or 0) if a1_acc else 0.0
-    _a1_tcap = _a1_lmv + _a1_dtbp + _a1_regt
-    a1_util = (_a1_lmv / _a1_tcap * 100) if _a1_tcap else 0.0
+    _a1_pv  = float(a1_acc.portfolio_value or 0) if a1_acc else a1_equity
+    # Deployed = long_market_value / portfolio_value. Can exceed 100% when on
+    # margin (LMV > equity); the dashboard displays the raw value so heavy
+    # margin use is visible rather than masked behind a "buying power" divisor.
+    a1_util = (_a1_lmv / _a1_pv * 100) if _a1_pv else 0.0
     a1_leverage = (_a1_lmv / a1_equity) if a1_equity else 0.0
     a1_pnl_cls = _bbb_pnl_color(a1_pnl)
     a1_sign = _bbb_sign(a1_pnl)
@@ -3374,10 +3375,8 @@ def _page_a1(status: dict, now_et: str, debug: bool = False) -> str:
         a1_unreal_c = "#3fb950" if a1_unreal >= 0 else "#f85149"
         a1_unreal_s = "+" if a1_unreal >= 0 else ""
         _lmv = float(a1_acc.long_market_value or 0)
-        _dtbp = float(a1_acc.daytrading_buying_power or 0)
-        _regt = float(a1_acc.regt_buying_power or 0)
-        _tcap = _lmv + _dtbp + _regt
-        a1_util = (_lmv / _tcap * 100) if _tcap else 0.0
+        _pv  = float(a1_acc.portfolio_value or 0) or a1_equity
+        a1_util = (_lmv / _pv * 100) if _pv else 0.0
         a1_util_c = "#f85149" if a1_util > 70 else ("#d29922" if a1_util > 50 else "#3fb950")
     else:
         a1_equity = a1_bp = a1_util = 0.0
@@ -4540,7 +4539,6 @@ def _a2_hero_strip_html(status: dict) -> str:
     a2d = status.get("a2") or {}
     a2_acc = a2d.get("account")
     a2_equity = float(a2_acc.equity or 0) if a2_acc else 0.0
-    a2_bp = float(a2_acc.buying_power or 0) if a2_acc else 0.0
 
     a2_pnl, a2_pnl_pct = status.get("today_pnl_a2", (0.0, 0.0))
     pnl_color = "var(--bbb-profit)" if a2_pnl >= 0 else "var(--bbb-loss)"
@@ -4552,12 +4550,13 @@ def _a2_hero_strip_html(status: dict) -> str:
     a2_since_c = "var(--bbb-profit)" if a2_since_pct >= 0 else "var(--bbb-loss)"
     a2_since_s = "+" if a2_since_pct >= 0 else ""
 
-    # Capital deployed
+    # Capital deployed = long_market_value / portfolio_value. Can exceed 100%
+    # on margin; clamp free_pct so we don't render a negative "free" value.
     a2_live_pos = a2d.get("positions", [])
     a2_deployed = sum(abs(float(getattr(p, "market_value", 0) or 0)) for p in a2_live_pos)
-    a2_total_cap = a2_deployed + a2_bp
-    a2_util = (a2_deployed / a2_total_cap * 100) if a2_total_cap else 0.0
-    a2_free_pct = 100 - a2_util
+    a2_pv       = float(a2_acc.portfolio_value or 0) if a2_acc else a2_equity
+    a2_util = (a2_deployed / a2_pv * 100) if a2_pv else 0.0
+    a2_free_pct = max(0.0, 100 - a2_util)
     a2_util_c = "var(--bbb-loss)" if a2_util > 70 else ("var(--bbb-warn)" if a2_util > 50 else "var(--bbb-profit)")
 
     # Net unrealized P&L from live positions
@@ -6250,6 +6249,52 @@ def api_status():
         "a1_error": status["a1"].get("error"),
         "a2_error": status["a2"].get("error"),
         "warnings": status.get("warnings", []),
+    })
+
+
+@app.route("/api/account")
+def api_account():
+    """Return Alpaca account state with deployed_pct = long_market_value / portfolio_value.
+
+    Per-account block keys:
+        equity              — portfolio_value (mirror of equity for paper)
+        long_market_value   — actual deployed capital (sum of long positions)
+        cash                — negative when on margin
+        buying_power        — remaining BP
+        portfolio_value     — divisor for deployed_pct
+        deployed_pct        — long_market_value / portfolio_value * 100 (can exceed 100% on margin)
+        margin_in_use       — True when cash < 0
+
+    Always returns 200; per-account `error` field is set on failure so the UI
+    can degrade gracefully without surfacing a 5xx.
+    """
+    status = _build_status()
+
+    def _block(acct) -> dict:
+        if acct is None:
+            return {"error": "account unavailable"}
+        try:
+            equity = float(getattr(acct, "equity", 0) or 0)
+            lmv    = float(getattr(acct, "long_market_value", 0) or 0)
+            cash   = float(getattr(acct, "cash", 0) or 0)
+            bp     = float(getattr(acct, "buying_power", 0) or 0)
+            pv     = float(getattr(acct, "portfolio_value", 0) or 0) or equity
+            deployed_pct = (lmv / pv * 100) if pv else 0.0
+            return {
+                "equity":            equity,
+                "long_market_value": lmv,
+                "cash":              cash,
+                "buying_power":      bp,
+                "portfolio_value":   pv,
+                "deployed_pct":      round(deployed_pct, 2),
+                "margin_in_use":     cash < 0,
+            }
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    return jsonify({
+        "a1": _block(status.get("a1", {}).get("account")),
+        "a2": _block(status.get("a2", {}).get("account")),
     })
 
 

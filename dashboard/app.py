@@ -1004,15 +1004,15 @@ def _build_a2_position_cards(structures: list, a2_live_positions: list) -> list:
             rationale = f"IV rank {iv_rank_str} ({iv_env}) — selling put premium."
         elif "single_call" in s:
             breakeven = (ls + net_debit) if ls and net_debit else None
-            title = f"{underlying} ${ls:.0f} Call — {expiry_str} ({dte_str})"
+            title = f"{underlying} ${(ls or 0):.0f} Call — {expiry_str} ({dte_str})"
             profit_line = (f"Profit if {underlying} &gt; ${breakeven:.2f}" if breakeven
-                           else f"Profit if {underlying} rises above ${ls:.0f}")
+                           else f"Profit if {underlying} rises above ${(ls or 0):.0f}")
             rationale = f"IV rank {iv_rank_str} ({iv_env}) — long call, {direction} thesis."
         elif "single_put" in s:
             breakeven = (ls - net_debit) if ls and net_debit else None
-            title = f"{underlying} ${ls:.0f} Put — {expiry_str} ({dte_str})"
+            title = f"{underlying} ${(ls or 0):.0f} Put — {expiry_str} ({dte_str})"
             profit_line = (f"Profit if {underlying} &lt; ${breakeven:.2f}" if breakeven
-                           else f"Profit if {underlying} falls below ${ls:.0f}")
+                           else f"Profit if {underlying} falls below ${(ls or 0):.0f}")
             rationale = f"IV rank {iv_rank_str} ({iv_env}) — long put, bearish/protective."
         else:
             title = f"{underlying} {s.replace('_', ' ').title()} — {expiry_str} ({dte_str})"

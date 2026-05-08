@@ -136,14 +136,14 @@ class TestMaxLossExit(unittest.TestCase):
         )
 
     def test_max_loss_exit_triggers_at_threshold(self):
-        """Fix 1: pnl_unrealized = -(cost_basis × 0.50) → max_loss_exit"""
-        # cost_basis = 9.25 × 4 × 100 = $3,700; 50% = $1,850
+        """pnl_unrealized = -(cost_basis × 0.35) → max_loss_exit (default threshold now 35%)"""
+        # cost_basis = 9.25 × 4 × 100 = $3,700; 35% = $1,295
         legs = [_make_leg(side="buy", filled_price=9.25, expiration_days=15)]
         struct = _make_structure(
             strategy_name  = "single_call",
             contracts      = 4,
             legs           = legs,
-            pnl_unrealized = -1850.0,
+            pnl_unrealized = -1295.0,
             expiration_days= 15,
         )
         should_close, reason = self._close(struct)
@@ -151,20 +151,21 @@ class TestMaxLossExit(unittest.TestCase):
         self.assertEqual(reason, "max_loss_exit")
 
     def test_max_loss_exit_below_threshold_does_not_trigger(self):
-        """pnl_unrealized = -(cost_basis × 0.49) → should NOT trigger max_loss_exit"""
+        """pnl_unrealized = -(cost_basis × 0.34) → should NOT trigger max_loss_exit"""
+        # cost_basis = 9.25 × 4 × 100 = $3,700; 34% = $1,258 — just below new 35% threshold
         legs = [_make_leg(side="buy", filled_price=9.25, expiration_days=15)]
         struct = _make_structure(
             strategy_name  = "single_call",
             contracts      = 4,
             legs           = legs,
-            pnl_unrealized = -1813.0,  # < 50% of 3700
+            pnl_unrealized = -1258.0,  # 34% of 3700 — below new 35% threshold
             expiration_days= 15,
         )
         should_close, reason = self._close(struct)
         # Should not close for max_loss — may close for time_stop but not max_loss_exit
         if should_close:
             self.assertNotEqual(reason, "max_loss_exit",
-                                "49% loss should not trigger max_loss_exit")
+                                "34% loss should not trigger max_loss_exit at 35% threshold")
 
     def test_profit_target_exit_triggers(self):
         """Fix 1: pnl_unrealized = max_profit × 0.75 → profit_target_pct_hit

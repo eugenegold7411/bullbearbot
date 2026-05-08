@@ -57,6 +57,7 @@ _DEFAULTS = {
     "theta_acceleration_factor":  2.0,
     "vega_collapse_factor":       0.30,
     "short_leg_itm_threshold":    0.70,
+    "spread_narrowing_threshold": 0.10,
     "min_history_points":         3,
     "history_max_snapshots":      30,
     "act_on_immediate_close":     False,
@@ -94,6 +95,7 @@ class DriftState(str, Enum):
     THETA_ACCELERATION  = "THETA_ACCELERATION"
     VEGA_COLLAPSE       = "VEGA_COLLAPSE"
     SHORT_LEG_ITM       = "SHORT_LEG_ITM"
+    SPREAD_NARROWING    = "SPREAD_NARROWING"
     INSUFFICIENT_DATA   = "INSUFFICIENT_DATA"
 
 
@@ -355,6 +357,15 @@ def _detect_drift(
 
     abs_delta = abs(current.delta)
 
+    # SPREAD_NARROWING — debit spread approaching max value. Net delta collapses
+    # toward zero as both legs go deep ITM (long delta ≈ short delta). Lock in gain.
+    spread_narrow_t = float(_cfg(config, "spread_narrowing_threshold"))
+    if _is_spread(structure_type) and abs_delta <= spread_narrow_t:
+        return (
+            DriftState.SPREAD_NARROWING,
+            f"|net delta|={abs_delta:.3f} <= {spread_narrow_t:.2f} (spread near max value)",
+        )
+
     # DELTA_ITM — long single deep ITM (gamma small, little upside).
     if _is_single(structure_type) and abs_delta >= delta_itm_t:
         return (
@@ -602,12 +613,21 @@ def _route_action(
             details={"strategy": strat, "dte": dte},
         )
 
+    if drift == DriftState.SPREAD_NARROWING:
+        return PositionAction(
+            action=ACTION_CLOSE,
+            reason="spread near max value — net delta collapsed, lock in gain",
+            symbol=sym, structure_id=sid, urgency="immediate",
+            details={"strategy": strat, "dte": dte},
+        )
+
     if drift == DriftState.DELTA_ITM:
-        # Single-leg deep ITM → close (rolls deferred to a later session).
+        # Single-leg deep ITM → close immediately (urgency was next_cycle; fixed to
+        # immediate so close_check_loop acts on this when act_on_immediate_close=true).
         return PositionAction(
             action=ACTION_CLOSE,
             reason="long single deep ITM — gamma small, lock in",
-            symbol=sym, structure_id=sid, urgency="next_cycle",
+            symbol=sym, structure_id=sid, urgency="immediate",
             details={"strategy": strat, "dte": dte},
         )
 

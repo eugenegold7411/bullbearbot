@@ -404,7 +404,7 @@ def _reconcile_orphan_positions(
                 # Orphans lack original entry context, so close targets are
                 # tightened relative to fresh entries.
                 close_profit_target_pct=0.50,
-                close_max_loss_pct=0.40,
+                close_max_loss_pct=0.35,
                 close_time_stop_pct_dte=0.50,
             )
             _struct.pnl_unrealized = _total_pnl

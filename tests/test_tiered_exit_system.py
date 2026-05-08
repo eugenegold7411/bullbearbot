@@ -201,7 +201,7 @@ def test_orphan_structure_has_close_targets():
     s = saved[0]
     assert s.lifecycle.value == "orphan_tracked"
     assert s.close_profit_target_pct == 0.50
-    assert s.close_max_loss_pct == 0.40
+    assert s.close_max_loss_pct == 0.35
     assert s.close_time_stop_pct_dte == 0.50
 
 

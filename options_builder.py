@@ -1084,8 +1084,9 @@ def size_contracts(
 
     contracts = int(max_cost_usd / cost_per_contract)
 
-    # Hard cap: never exceed 5% of equity per structure regardless of config
-    hard_cap_usd = equity * 0.05
+    # Hard cap: never exceed 5% of equity per structure regardless of config.
+    # Absolute ceiling at $20k so growth past $100k doesn't silently expand positions.
+    hard_cap_usd = min(equity * 0.05, 20_000.0)
     hard_cap_contracts = int(hard_cap_usd / cost_per_contract)
     contracts = min(contracts, hard_cap_contracts)
 

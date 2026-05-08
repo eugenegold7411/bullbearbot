@@ -267,7 +267,7 @@ class ActionRouterTests(unittest.TestCase):
         struct = _make_structure(strategy=OptionStrategy.SINGLE_CALL)
         action = opm._route_action(opm.DriftState.DELTA_ITM, struct, None, {})
         self.assertEqual(action.action, opm.ACTION_CLOSE)
-        self.assertEqual(action.urgency, "next_cycle")
+        self.assertEqual(action.urgency, "immediate")
 
     def test_delta_otm_routes_to_close(self):
         struct = _make_structure(strategy=OptionStrategy.SINGLE_CALL)
@@ -411,7 +411,7 @@ class WiringTests(unittest.TestCase):
                     "symbol": "NVDA", "structure_id": "id1",
                     "structure_type": "single_call",
                     "drift_state": "DELTA_ITM",
-                    "action": "CLOSE", "urgency": "next_cycle",
+                    "action": "CLOSE", "urgency": "immediate",
                     "reason": "|net delta|=0.85 >= 0.80",
                     "greek_snapshot": {
                         "delta": 0.85, "theta": -0.20, "vega": 0.15,

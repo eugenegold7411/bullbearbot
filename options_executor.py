@@ -957,7 +957,7 @@ def _resolve_close_targets(structure: OptionsStructure, config: dict) -> dict:
         "max_loss_pct": (
             structure.close_max_loss_pct
             if structure.close_max_loss_pct is not None
-            else float(a2.get("max_loss_exit_pct", 0.50))
+            else float(a2.get("max_loss_exit_pct", 0.35))
         ),
         "time_stop_pct_dte": (
             structure.close_time_stop_pct_dte
@@ -1089,6 +1089,24 @@ def should_close_structure(
         pass
 
     # ── LAYER 1: PROFIT EXITS ──
+    # L1e / L1f: cost-basis exits — only activate when max_profit_usd is None
+    # (single calls / unlimited upside). When max_profit_usd is set (debit spreads),
+    # the percentage-of-max-profit rules below (L1d, L1b, L1c, L1a) take precedence.
+    _a2_exit_cfg = config.get("account2", {}) if isinstance(config, dict) else {}
+    if not max_profit:
+        # L1e: pnl >= buy_cost × profit_multiple_target (default 1.0 = 100% gain)
+        _profit_multiple = float(_a2_exit_cfg.get("profit_multiple_target", 1.0))
+        if max_loss and pnl is not None and pnl >= max_loss * _profit_multiple:
+            return True, f"cost_basis_profit_target:{_profit_multiple:.1f}x"
+
+        # L1f: peak_pnl >= buy_cost × min_pct AND current pnl retraced threshold from peak
+        _peak_lock_min = float(_a2_exit_cfg.get("peak_retrace_min_pct", 0.50))
+        _peak_retrace  = float(_a2_exit_cfg.get("peak_retrace_threshold", 0.50))
+        if (max_loss and pnl is not None and structure.peak_pnl is not None
+                and structure.peak_pnl >= max_loss * _peak_lock_min
+                and pnl <= structure.peak_pnl * (1.0 - _peak_retrace)):
+            return True, f"peak_retrace_lock:{structure.peak_pnl:.0f}>{pnl:.0f}"
+
     # L1d: profit-lock retrace — peak ≥ 60% gain that has retraced to 30% locks
     # in partial gain rather than giving back the move.
     if (max_profit and pnl is not None
@@ -1118,7 +1136,7 @@ def should_close_structure(
             max_risk    = net_debit * structure.contracts * 100
             current_pnl = current_val - (net_debit * structure.contracts * 100)
 
-            if current_pnl <= -(max_risk * 0.50):
+            if current_pnl <= -(max_risk * 0.35):
                 return True, "stop_loss_hit"
 
             if max_profit and current_pnl >= (max_profit * 0.80):

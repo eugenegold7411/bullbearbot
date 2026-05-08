@@ -94,7 +94,7 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
     if pf.halt:
         _persist_early_exit(session_tier, t_start, "preflight_halt")
         return
-    equity               = pf.equity
+    equity               = pf.equity * 4   # 4x margin: size against full account capacity
     buying_power         = pf.buying_power
     pf_allow_live_orders = pf.pf_allow_live_orders
     pf_allow_new_entries = pf.pf_allow_new_entries

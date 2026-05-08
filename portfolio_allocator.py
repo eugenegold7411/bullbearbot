@@ -127,6 +127,8 @@ _PA_DEFAULTS: dict = {
     "enable_live_add":                 False,   # Stage 2: ADD actions execute via risk_kernel BUY path (off by default)
     "enable_live_replace":             False,   # Stage 2: REPLACE actions execute two-phase close+buy (off by default)
     "enable_live_trim":                False,   # explicit trim gate — must be True alongside enable_live for trim to execute
+    "replace_cancel_brackets":         True,    # before Phase A close, cancel OCO/bracket sells holding the qty (Alpaca 40310000)
+    "replace_cancel_poll_seconds":     3.0,     # max time to wait for cancellations to clear before issuing close
     "max_position_pct_equity":         0.15,    # equity-based single-name cap for SIZE TRIM trigger (position/equity > this fires trim)
     "add_min_score":                   65.0,    # normalized (0-100) thesis_score threshold for ADD gate (65 = 6.5/10 raw)
 }
@@ -928,6 +930,92 @@ def _execute_live_add(
         return f"execute_all error: {exc}"
 
 
+def _cancel_protective_orders(
+    symbol:        str,
+    poll_seconds:  float = 3.0,
+) -> int:
+    """
+    Cancel any open OCO / bracket / stop / stop_limit / trailing_stop SELL orders
+    for `symbol`, then poll Alpaca until the cancellations leave OPEN status
+    (or `poll_seconds` elapses).
+
+    Returns the number of orders for which a cancel request was submitted.
+    Non-fatal — exceptions are logged and the function returns 0.
+
+    Used by _execute_live_replace before Phase A close, to release Alpaca's
+    held_for_orders lock that otherwise causes a 40310000 "insufficient qty"
+    rejection on the close. Alpaca paper does not synchronously release the
+    lock when a cancel is accepted (status sits at PENDING_CANCEL for ~1–3s),
+    so we poll until OPEN orders are gone.
+    """
+    try:
+        import time  # noqa: PLC0415
+
+        from alpaca.trading.enums import QueryOrderStatus  # noqa: PLC0415
+        from alpaca.trading.requests import GetOrdersRequest  # noqa: PLC0415
+
+        from order_executor import _get_alpaca  # noqa: PLC0415
+    except ImportError as exc:
+        log.warning("[REPLACE] %s: cancel_protective_orders import error: %s", symbol, exc)
+        return 0
+
+    try:
+        alpaca = _get_alpaca()
+        open_orders = alpaca.get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, symbols=[symbol],
+        ))
+    except Exception as exc:
+        log.warning("[REPLACE] %s: could not fetch open orders: %s", symbol, exc)
+        return 0
+
+    cancelled_ids: list[str] = []
+    for o in open_orders:
+        o_side  = str(getattr(o, "side",        "")).lower().split(".")[-1]
+        o_type  = str(getattr(o, "order_type",  getattr(o, "type", ""))).lower().split(".")[-1]
+        o_class = str(getattr(o, "order_class", "")).lower().split(".")[-1]
+        if o_side == "sell" and (
+            o_type in ("stop", "stop_limit", "trailing_stop")
+            or o_class in ("oco", "bracket", "oto")
+        ):
+            try:
+                alpaca.cancel_order_by_id(str(o.id))
+                cancelled_ids.append(str(o.id))
+            except Exception as exc:
+                log.warning(
+                    "[REPLACE] %s: cancel order %s failed: %s", symbol, o.id, exc,
+                )
+
+    if not cancelled_ids:
+        return 0
+
+    log.info(
+        "[REPLACE] %s: canceled %d protective orders before close",
+        symbol, len(cancelled_ids),
+    )
+
+    deadline = time.time() + max(0.0, float(poll_seconds))
+    while time.time() < deadline:
+        try:
+            still_open = alpaca.get_orders(GetOrdersRequest(
+                status=QueryOrderStatus.OPEN, symbols=[symbol],
+            ))
+            still_locking = [
+                o for o in still_open if str(o.id) in cancelled_ids
+            ]
+            if not still_locking:
+                return len(cancelled_ids)
+        except Exception as exc:
+            log.warning("[REPLACE] %s: poll cancel-status error: %s", symbol, exc)
+            break
+        time.sleep(0.25)
+
+    log.warning(
+        "[REPLACE] %s: %d cancellations did not confirm within %.1fs — proceeding anyway",
+        symbol, len(cancelled_ids), float(poll_seconds),
+    )
+    return len(cancelled_ids)
+
+
 def _execute_live_replace(
     exit_symbol:        str,
     enter_symbol:       str,
@@ -1002,6 +1090,20 @@ def _execute_live_replace(
 
     if isinstance(close_result, str):
         return f"phase_a_rejected: {close_result}"
+
+    # Pre-cancel any OCO/bracket sell orders holding the incumbent qty.
+    # Without this, Alpaca rejects the close with 40310000 ("insufficient qty
+    # available") because held_for_orders == position qty. The in-executor
+    # OCA-retry exists as a backstop but its 1s sleep is too short for paper
+    # trading's PENDING_CANCEL latency, so we cancel-and-poll up-front.
+    # TODO(real-money): after Phase A fills, immediately place a stop on
+    # enter_symbol before submitting Phase B to close the unprotected window.
+    pa_cfg = _get_pa_config(cfg)
+    if pa_cfg.get("replace_cancel_brackets", True):
+        _cancel_protective_orders(
+            exit_symbol,
+            poll_seconds=float(pa_cfg.get("replace_cancel_poll_seconds", 3.0)),
+        )
 
     exec_positions = snapshot.positions if snapshot is not None else positions
     try:

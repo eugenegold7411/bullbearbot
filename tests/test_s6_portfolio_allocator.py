@@ -1065,17 +1065,22 @@ class TestPersistentCooldown:
             result = pa._load_cooldown()
         assert result == {}
 
-    def test_load_returns_empty_when_date_is_yesterday(self, tmp_path):
-        """_load_cooldown returns {} when the stored date is not today (stale)."""
-        stale = {"date": self._yesterday(), "cooldowns": {"AAPL": {"action": "TRIM", "timestamp": "t"}}}
+    def test_load_returns_entries_regardless_of_date(self, tmp_path):
+        """_load_cooldown is timestamp-based, not date-based — yesterday's
+        entries persist so a 23:00 UTC ADD still blocks at 00:30 UTC.
+        Hours-window filtering is performed by _is_on_cooldown, not _load."""
+        from datetime import timedelta
+        recent_ts = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        payload = {"AAPL": {"action": "TRIM", "timestamp": recent_ts}}
+        stale = {"date": self._yesterday(), "cooldowns": payload}
         f = tmp_path / "cooldown.json"
         f.write_text(json.dumps(stale))
         with patch.object(pa, "_COOLDOWN_PATH", f):
             result = pa._load_cooldown()
-        assert result == {}
+        assert result == payload
 
     def test_load_returns_cooldowns_when_date_is_today(self, tmp_path):
-        """_load_cooldown returns the cooldowns dict when stored date is today."""
+        """_load_cooldown returns the cooldowns dict regardless of file date."""
         payload = {"MSFT": {"action": "ADD", "timestamp": "2026-04-30T12:00:00+00:00"}}
         fresh = {"date": self._today(), "cooldowns": payload}
         f = tmp_path / "cooldown.json"
@@ -1084,20 +1089,24 @@ class TestPersistentCooldown:
             result = pa._load_cooldown()
         assert result == payload
 
+    def _recent_ts(self, minutes_ago: int = 5) -> str:
+        from datetime import timedelta
+        return (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+
     def test_is_on_cooldown_true_for_matching_symbol_and_action(self):
-        """_is_on_cooldown returns True when symbol+action match."""
-        cooldown = {"V": {"action": "TRIM", "timestamp": "t"}}
-        assert pa._is_on_cooldown("V", "TRIM", cooldown) is True
+        """_is_on_cooldown returns True for a fresh matching entry."""
+        cooldown = {"V": {"action": "TRIM", "timestamp": self._recent_ts(5)}}
+        assert pa._is_on_cooldown("V", "TRIM", cooldown, hours=1.0) is True
 
     def test_is_on_cooldown_false_when_symbol_absent(self):
         """_is_on_cooldown returns False when symbol is not in cooldown."""
-        cooldown = {"AAPL": {"action": "TRIM", "timestamp": "t"}}
-        assert pa._is_on_cooldown("V", "TRIM", cooldown) is False
+        cooldown = {"AAPL": {"action": "TRIM", "timestamp": self._recent_ts(5)}}
+        assert pa._is_on_cooldown("V", "TRIM", cooldown, hours=1.0) is False
 
     def test_is_on_cooldown_false_for_different_action(self):
         """_is_on_cooldown returns False when symbol matches but action differs."""
-        cooldown = {"V": {"action": "TRIM", "timestamp": "t"}}
-        assert pa._is_on_cooldown("V", "ADD", cooldown) is False
+        cooldown = {"V": {"action": "TRIM", "timestamp": self._recent_ts(5)}}
+        assert pa._is_on_cooldown("V", "ADD", cooldown, hours=1.0) is False
 
     def test_save_cooldown_writes_correct_json_structure(self, tmp_path):
         """_save_cooldown writes {date, cooldowns} with today's date."""
@@ -1132,17 +1141,22 @@ class TestPersistentCooldown:
             cooldown = pa._add_to_cooldown("GLD", "TRIM", cooldown)
             pa._save_cooldown(cooldown)
             loaded = pa._load_cooldown()
-        assert pa._is_on_cooldown("GLD", "TRIM", loaded) is True
+        assert pa._is_on_cooldown("GLD", "TRIM", loaded, hours=1.0) is True
 
-    def test_date_rollover_clears_yesterday_cooldown(self, tmp_path):
-        """A cooldown saved yesterday is not returned today (date rollover)."""
+    def test_hours_window_clears_old_cooldown(self, tmp_path):
+        """A cooldown older than the hours window is no longer blocking,
+        even though the file still records it for audit purposes."""
+        from datetime import timedelta
         f = tmp_path / "cooldown.json"
-        stale = {"date": self._yesterday(), "cooldowns": {"NVDA": {"action": "ADD", "timestamp": "t"}}}
+        old_ts = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        stale = {"date": self._yesterday(),
+                 "cooldowns": {"NVDA": {"action": "ADD", "timestamp": old_ts}}}
         f.write_text(json.dumps(stale))
         with patch.object(pa, "_COOLDOWN_PATH", f):
             loaded = pa._load_cooldown()
-        assert loaded == {}
-        assert pa._is_on_cooldown("NVDA", "ADD", loaded) is False
+        assert "NVDA" in loaded                      # entry still on disk
+        assert pa._is_on_cooldown("NVDA", "ADD", loaded, hours=1.0) is False
+        assert pa._is_on_cooldown("NVDA", "ADD", loaded, hours=4.0) is True
 
 
 # ---------------------------------------------------------------------------

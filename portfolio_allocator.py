@@ -120,6 +120,7 @@ _PA_DEFAULTS: dict = {
     "min_rebalance_notional":          500.0,   # $500 minimum to recommend
     "max_recommendations_per_cycle":   5,
     "same_symbol_daily_cooldown_enabled": True,
+    "add_cooldown_hours":              1.0,    # rolling-window block for ADD/REPLACE/TRIM (hours since last cooldown entry)
     "same_day_replace_block_hours":    6.0,
     "size_trim_enabled":               True,    # S8: size-based TRIM gate (fires for score ≥ 6 positions over tier max)
     "size_trim_tolerance_pct":         2.0,     # S8: pp over tier max before size TRIM fires
@@ -292,17 +293,15 @@ def _rank_incumbents(
 
 def _load_cooldown() -> dict:
     """
-    Load cooldown state from disk. Returns empty dict if file missing or stale.
-    Stale = date field != today's UTC date → treat as fresh day, no cooldowns active.
+    Load cooldown state from disk. Returns empty dict if file missing.
+    Caller filters stale entries via timestamp delta; persistence retains
+    history across calendar-day flips so 23:00 UTC ADDs still block at 00:30 UTC.
     Non-fatal — returns empty dict on any error.
     """
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     try:
         if not _COOLDOWN_PATH.exists():
             return {}
         data = json.loads(_COOLDOWN_PATH.read_text())
-        if data.get("date") != today:
-            return {}
         return data.get("cooldowns", {})
     except Exception as exc:
         log.debug("[ALLOC] _load_cooldown failed (non-fatal): %s", exc)
@@ -313,6 +312,8 @@ def _save_cooldown(cooldown: dict) -> None:
     """
     Save cooldown state to disk.
     Writes: {"date": today_utc, "cooldowns": {symbol: {action, timestamp}}}
+    The "date" field is informational only (auditable); cooldown semantics
+    are now timestamp-based (see _is_on_cooldown).
     Non-fatal — logs warning on failure, does not raise.
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -325,12 +326,28 @@ def _save_cooldown(cooldown: dict) -> None:
         log.warning("[ALLOC] _save_cooldown failed (non-fatal): %s", exc)
 
 
-def _is_on_cooldown(symbol: str, action: str, cooldown: dict) -> bool:
-    """Returns True if symbol+action is in today's cooldown state."""
+def _is_on_cooldown(symbol: str, action: str, cooldown: dict, hours: float) -> bool:
+    """Hours-based cooldown check.
+
+    Returns True if (symbol, action) has an entry whose timestamp is within
+    `hours` of now. Out-of-window or mismatched-action entries do not block.
+    """
     entry = cooldown.get(symbol)
     if entry is None:
         return False
-    return entry.get("action") == action
+    if entry.get("action") != action:
+        return False
+    ts_raw = entry.get("timestamp")
+    if not ts_raw:
+        return False
+    try:
+        entry_ts = datetime.fromisoformat(ts_raw)
+    except ValueError:
+        return False
+    if entry_ts.tzinfo is None:
+        entry_ts = entry_ts.replace(tzinfo=timezone.utc)
+    age_h = (datetime.now(timezone.utc) - entry_ts).total_seconds() / 3600.0
+    return age_h < float(hours)
 
 
 def _add_to_cooldown(symbol: str, action: str, cooldown: dict) -> dict:
@@ -347,12 +364,21 @@ def _add_to_cooldown(symbol: str, action: str, cooldown: dict) -> dict:
 
 
 def _check_cooldown(symbol: str, pa_cfg: dict, action: str = "REPLACE") -> tuple[bool, str]:
-    """Returns (passes, reason). passes=True means no cooldown block."""
+    """Returns (passes, reason). passes=True means no cooldown block.
+
+    Cooldown is rolling-window in hours, not calendar-day. Window is
+    `add_cooldown_hours` (default 1) — the same window applies to ADD,
+    REPLACE, and TRIM unless future config overrides it per action.
+    """
     if not pa_cfg["same_symbol_daily_cooldown_enabled"]:
         return True, ""
+    hours = float(pa_cfg.get("add_cooldown_hours", 1.0))
     cooldown = _load_cooldown()
-    if _is_on_cooldown(symbol, action, cooldown):
-        return False, f"{symbol} already received a {action} recommendation today (daily cooldown)"
+    if _is_on_cooldown(symbol, action, cooldown, hours):
+        return False, (
+            f"{symbol} {action} cooldown active "
+            f"(<{hours:g}h since last {action} recommendation)"
+        )
     return True, ""
 
 
@@ -1229,6 +1255,21 @@ def _run_allocator_shadow_inner(
                     log.info("[ALLOC] LIVE: replaced %s — %s", key, res)
                 else:
                     log.warning("[ALLOC] LIVE: replace rejected %s — %s", key, res)
+                    # Issue 5: when Phase A close fails (Alpaca 403 / 40310000 etc.),
+                    # write a REPLACE cooldown for the exit symbol so the proposal
+                    # does not re-fire every cycle and spam 403s. The hours-based
+                    # check (Issue 2) clears it automatically after add_cooldown_hours.
+                    if "phase_a" in str(res):
+                        try:
+                            cd = _load_cooldown()
+                            cd = _add_to_cooldown(exit_sym, "REPLACE", cd)
+                            _save_cooldown(cd)
+                            log.info(
+                                "[ALLOC] cooldown written for %s REPLACE after phase_a failure",
+                                exit_sym,
+                            )
+                        except Exception as _cd_exc:
+                            log.debug("[ALLOC] cooldown write failed: %s", _cd_exc)
 
         # 5. Identify weakest/strongest for summary
         weakest   = incumbents[0]  if incumbents  else None

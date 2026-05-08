@@ -264,6 +264,40 @@ def _eda_for_positions(positions: list) -> list[tuple[str, int]]:
         return []
 
 
+def _format_bearish_section(items: list[dict]) -> str:
+    """Render high_conviction_bearish entries as actionable lines for the prompt.
+
+    Empty list returns "" (caller substitutes a placeholder). Each row carries
+    the structured detail the conviction_table compresses out: thesis, entry,
+    stop, target, R/R.
+    """
+    if not items:
+        return ""
+    lines: list[str] = []
+    for item in items[:6]:
+        sym = (item.get("symbol") or "").strip()
+        if not sym:
+            continue
+        score  = item.get("score", "")
+        rr     = item.get("r_r", "")
+        thesis = (item.get("thesis") or "").strip() or "(no thesis)"
+        entry  = (str(item.get("entry") or "")).strip() or "?"
+        stop   = (str(item.get("stop")  or "")).strip() or "?"
+        target = (str(item.get("target") or "")).strip() or "?"
+        head = f"  {sym} score={score}"
+        if rr not in ("", None):
+            head += f" R/R={rr}"
+        lines.append(f"{head} | {thesis} | entry={entry} stop={stop} target={target}")
+    if not lines:
+        return ""
+    body = "\n".join(lines)
+    return (
+        body
+        + "\n  These are pre-analyzed short candidates. enter_short is valid "
+          "when regime and risk kernel permit."
+    )
+
+
 def build_user_prompt(
     account,
     positions:            list,
@@ -343,6 +377,7 @@ def build_user_prompt(
     _regime_line       = ""
     _positions_line    = ""
     _avoid_line        = ""
+    _bearish_section   = ""
     if not _is_extended:
         try:
             from morning_brief import (  # noqa: PLC0415
@@ -354,6 +389,7 @@ def build_user_prompt(
                 _regime_line    = _sb.get("regime_line", "")
                 _positions_line = _sb.get("positions_line", "")
                 _avoid_line     = _sb.get("avoid_line", "")
+                _bearish_section = _format_bearish_section(_sb.get("high_conviction_bearish") or [])
             _conviction_table = build_conviction_reconciliation(
                 sonnet_brief=_sb,
                 signal_scores=signal_scores_raw,
@@ -417,6 +453,7 @@ def build_user_prompt(
         regime_line=_regime_line,
         positions_line=_positions_line,
         avoid_line=_avoid_line,
+        bearish_section=_bearish_section or "  (none)",
         insider_section=md.get("insider_section", "  (insider intelligence unavailable)"),
         reddit_section=md.get("reddit_section", "  (Reddit sentiment unavailable)"),
         earnings_intel_section=md.get("earnings_intel_section", "  (no symbols near earnings)"),
@@ -605,6 +642,17 @@ def build_compact_prompt(
         clines.extend(constraints[:2])
     constraints_block = "\n".join(f"  {l}" for l in clines) if clines else "  No active constraints."
 
+    # Issue 1: surface top bearish ideas with full structure for compact prompt too.
+    bearish_section = "  (none)"
+    try:
+        from morning_brief import load_sonnet_brief  # noqa: PLC0415
+        _sb = load_sonnet_brief() or {}
+        _bear = _format_bearish_section(_sb.get("high_conviction_bearish") or [])
+        if _bear:
+            bearish_section = _bear
+    except Exception:
+        pass
+
     try:
         rendered = template.format(
             equity=f"{equity:,.2f}",
@@ -627,6 +675,7 @@ def build_compact_prompt(
             top_catalyst=top_catalyst,
             n_scored=n_scored,
             top_signals_block=top_signals_block,
+            bearish_section=bearish_section,
             constraints_block=constraints_block,
         )
     except KeyError as _ke:

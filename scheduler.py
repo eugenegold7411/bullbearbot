@@ -430,7 +430,8 @@ _monthly_milestone_posted:     str = ""   # "YYYY-MM" of last milestone post
 _macro_wire_refresh_key:       str = ""   # last macro wire refresh timestamp
 _macro_intel_refresh_key:      str = ""   # "YYYY-MM-DD-HH" of last macro intel pre-fetch
 _iv_refresh_ran_date:          str = ""   # "YYYY-MM-DD" of last IV history refresh
-_orb_scan_ran_date:            str = ""   # "YYYY-MM-DD" of last ORB scan
+_orb_scan_ran_date:            str = ""   # "YYYY-MM-DD" of last pre-open ORB scan
+_orb_postopen_ran_date:        str = ""   # "YYYY-MM-DD" of last 9:35 AM ORB confirmation scan
 _preopen_ran_date:             str = ""   # "YYYY-MM-DD" of last pre-open cycle
 _daily_digest_written_date:    str = ""   # "YYYY-MM-DD" of last daily digest
 _overnight_digest_written_date:str = ""   # "YYYY-MM-DD" of last 4 AM overnight digest
@@ -2348,31 +2349,53 @@ def _maybe_refresh_macro_wire(dry_run: bool = False) -> None:
 
 
 def _maybe_run_orb_scan(dry_run: bool = False) -> None:
-    """Run ORB candidate scan at 4:30 AM ET on weekdays."""
-    global _orb_scan_ran_date
+    """Run ORB candidate scans on weekdays.
+
+    Window 1 (pre-open):    8:00–9:25 AM ET — pre-market is now liquid; gaps and
+                            volume ratios are reliable from yfinance fast_info.
+    Window 2 (post-open):   9:35–9:50 AM ET — confirmation scan after the first
+                            5-min bar. Re-runs scanner.run_orb_scan() to refresh
+                            data/scanner/orb_candidates.json with the actual
+                            opening-range break view.
+    """
+    global _orb_scan_ran_date, _orb_postopen_ran_date
     now_et  = datetime.now(ET)
     today   = _today()
     now_min = now_et.hour * 60 + now_et.minute
     weekday = now_et.weekday()
 
-    if _orb_scan_ran_date == today:
-        return
     if weekday >= 5:
         return
-    if not (4 * 60 + 30 <= now_min <= 5 * 60 + 30):
+
+    # Window 1: pre-open scan — 8:00–9:25 AM ET, once per day
+    if _orb_scan_ran_date != today and (8 * 60 <= now_min <= 9 * 60 + 25):
+        log.info("Running ORB candidate scan (pre-open window)")
+        if not dry_run:
+            try:
+                import scanner  # noqa: PLC0415
+                scanner.run_orb_scan()
+                log.info("ORB pre-open scan complete")
+            except Exception:
+                log.error("ORB pre-open scan failed", exc_info=True)
+        else:
+            log.info("[dry-run] Skipping ORB pre-open scan")
+        _orb_scan_ran_date = today
         return
 
-    log.info("Running ORB candidate scan")
-    if not dry_run:
-        try:
-            import scanner  # noqa: PLC0415
-            scanner.run_orb_scan()
-            log.info("ORB scan complete")
-        except Exception:
-            log.error("ORB scan failed", exc_info=True)
-    else:
-        log.info("[dry-run] Skipping ORB scan")
-    _orb_scan_ran_date = today
+    # Window 2: post-open confirmation scan — 9:35–9:50 AM ET, once per day
+    if _orb_postopen_ran_date != today and (9 * 60 + 35 <= now_min <= 9 * 60 + 50):
+        log.info("Running ORB candidate scan (post-open confirmation)")
+        if not dry_run:
+            try:
+                import scanner  # noqa: PLC0415
+                scanner.run_orb_scan()
+                log.info("ORB post-open scan complete")
+            except Exception:
+                log.error("ORB post-open scan failed", exc_info=True)
+        else:
+            log.info("[dry-run] Skipping ORB post-open scan")
+        _orb_postopen_ran_date = today
+        return
 
 
 def _maybe_run_preopen_cycle(dry_run: bool = False) -> None:

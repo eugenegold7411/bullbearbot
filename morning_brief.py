@@ -1380,6 +1380,19 @@ def _save_intelligence_briefs(full_brief: dict) -> None:
     positions_line = _build_positions_line(full_brief)
     avoid_line = _build_avoid_line(full_brief)
 
+    # Top 6 bearish ideas with full structure for prompt injection (Issue 1)
+    bearish_top: list[dict] = []
+    for item in (full_brief.get("high_conviction_bearish") or [])[:6]:
+        bearish_top.append({
+            "symbol":  item.get("symbol", ""),
+            "score":   item.get("score", 0),
+            "thesis":  (item.get("thesis") or item.get("risk_note") or "")[:160],
+            "entry":   str(item.get("entry_zone") or item.get("entry") or ""),
+            "stop":    str(item.get("stop") or ""),
+            "target":  str(item.get("target") or ""),
+            "r_r":     item.get("r_r") or item.get("risk_reward") or "",
+        })
+
     sonnet_brief = {
         "generated_at": now_iso,
         "brief_type": full_brief.get("brief_type", "unknown"),
@@ -1388,6 +1401,7 @@ def _save_intelligence_briefs(full_brief: dict) -> None:
         "regime_line": regime_line,
         "positions_line": positions_line,
         "avoid_line": avoid_line,
+        "high_conviction_bearish": bearish_top,
     }
     _SONNET_BRIEF_FILE.write_text(json.dumps(sonnet_brief, indent=2))
 

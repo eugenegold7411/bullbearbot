@@ -388,7 +388,7 @@ def _reconcile_orphan_positions(
                 strategy=OptionStrategy.SINGLE_CALL,
                 lifecycle=StructureLifecycle.ORPHAN_TRACKED,
                 legs=_legs,
-                contracts=sum(
+                contracts=max(
                     abs(int(float(getattr(_p, "qty", 0) or 0))) for _p in _oplist
                 ),
                 max_cost_usd=_total_cost,

@@ -1007,6 +1007,84 @@ def _maybe_append_short_rule(scored_symbols: dict) -> None:
         log.warning("[SIGNALS] short_rule append failed (non-fatal): %s", exc)
 
 
+# ── Crypto mean-reversion signal ─────────────────────────────────────────────
+
+_CRYPTO_DROP_CACHE: dict[str, tuple[float, float]] = {}  # yf_symbol -> (drop_pct, ts)
+_CRYPTO_CACHE_TTL = 600.0  # seconds — 10-minute TTL per symbol
+
+
+def _load_crypto_config() -> dict:
+    """Read strategy_config.json from disk. Returns {} on any failure."""
+    try:
+        path = _BASE / "strategy_config.json"
+        return json.loads(path.read_text()) if path.exists() else {}
+    except Exception:
+        return {}
+
+
+def _compute_4h_drop(symbol_yf: str) -> float | None:
+    """Fetch last 8h of hourly closes via yfinance.
+
+    Returns pct change from 4h ago to now (negative = drop).
+    Returns None on any fetch failure. Caches result for 10 minutes.
+    symbol_yf: yfinance format e.g. 'BTC-USD', 'ETH-USD'
+    """
+    now = time.time()
+    cached = _CRYPTO_DROP_CACHE.get(symbol_yf)
+    if cached is not None and (now - cached[1]) < _CRYPTO_CACHE_TTL:
+        return cached[0]
+    try:
+        import yfinance as yf  # noqa: PLC0415
+        hist = yf.Ticker(symbol_yf).history(period="2d", interval="1h")
+        if hist is None or hist.empty or len(hist) < 4:
+            return None
+        closes = hist["Close"].tolist()
+        drop = (closes[-1] - closes[-4]) / closes[-4] * 100.0
+        _CRYPTO_DROP_CACHE[symbol_yf] = (drop, now)
+        return drop
+    except Exception as exc:
+        log.debug("[SIGNALS] _compute_4h_drop(%s) failed: %s", symbol_yf, exc)
+        return None
+
+
+def _maybe_append_crypto_reversion_signal(scored_symbols: dict, config: dict) -> None:
+    """Inject crypto mean-reversion signals into scored_symbols when 4h drop threshold is met."""
+    cr = config.get("crypto_reversion", {})
+    if not cr.get("crypto_reversion_enabled", False):
+        return
+    _PAIRS = [("btc", "BTC/USD", "BTC-USD"), ("eth", "ETH/USD", "ETH-USD")]
+    for cfg_key, symbol, symbol_yf in _PAIRS:
+        cfg = cr.get(cfg_key, {})
+        if not cfg:
+            continue
+        threshold = float(cfg.get("drop_threshold_pct", 1.0))
+        drop = _compute_4h_drop(symbol_yf)
+        if drop is None:
+            log.debug("[SIGNALS] %s: drop compute returned None, skipping", symbol)
+            continue
+        if drop > -threshold:
+            continue
+        catalyst_str = f"crypto_reversion_setup: {symbol} dropped {drop:.1f}% in 4h"
+        scored_symbols[symbol] = {
+            "score": 72,
+            "direction": "bullish",
+            "conviction": "medium",
+            "primary_catalyst": catalyst_str,
+            "catalyst": catalyst_str,
+            "catalyst_type": "mean_reversion",
+            "signals": ["crypto_mean_reversion", "4h_drop_detected"],
+            "drop_pct": drop,
+            "stop_pct": float(cfg.get("stop_pct", 1.5)),
+            "target_reversion_pct": float(cfg.get("target_reversion_pct", 100)),
+            "max_hold_hours": int(cfg.get("max_hold_hours", 8)),
+            "sizing_multiplier": float(cfg.get("sizing_multiplier", 0.8)),
+        }
+        log.info(
+            "[SIGNALS] %s: crypto reversion trigger drop=%.2f%% threshold=%.1f%%",
+            symbol, drop, threshold,
+        )
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # score_signals_layered — public entry point (replaces score_signals)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1099,6 +1177,7 @@ def score_signals_layered(
         _write_avoid_log(result.get("scored_symbols", {}), _cycle_id)
         # Fix 25: enrich avoid_line with SHORT SELLING RULE when signals are bearish
         _maybe_append_short_rule(result.get("scored_symbols", {}))
+        _maybe_append_crypto_reversion_signal(result.get("scored_symbols", {}), _load_crypto_config())
 
         # Archive to daily_conviction.json (unchanged from legacy behaviour)
         try:
@@ -1319,6 +1398,7 @@ def score_signals(
             log.warning("[SIGNALS] All batches failed — returning empty")
             return {}
 
+        _maybe_append_crypto_reversion_signal(merged_symbols, _load_crypto_config())
         sorted_syms = sorted(merged_symbols.items(), key=lambda kv: kv[1].get("score", 0), reverse=True)
         seen_c: set = set()
         result = {
@@ -1357,6 +1437,22 @@ def score_signals(
 # Format helper (unchanged)
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _alpha_annotation(symbol: str) -> str:
+    """Return ` [alpha: X% WR / Nt]` if get_alpha_summary has data, else ""."""
+    try:
+        from decision_outcomes import get_alpha_summary  # noqa: PLC0415
+        summary = get_alpha_summary(symbol)
+    except Exception:
+        return ""
+    if not summary:
+        return ""
+    n = int(summary.get("n", 0) or 0)
+    if n <= 0:
+        return ""
+    wr = float(summary.get("win_rate", 0.0) or 0.0)
+    return f" [alpha: {wr:.0%} WR / {n}t]"
+
+
 def format_signal_scores(scores: dict) -> str:
     if not scores:
         return "  (signal scoring unavailable this cycle)"
@@ -1373,7 +1469,8 @@ def format_signal_scores(scores: dict) -> str:
         sigs    = ", ".join((d.get("signals", []) or [])[:4])
         orb_tag = " ORB" if d.get("orb_candidate") else ""
         pwl_tag = f"  ⚠{d['pattern_watchlist']}" if d.get("pattern_watchlist") else ""
-        lines.append(f"  {sym}: score={d.get('score', 0)} [{conv}]{orb_tag}  {cat}{pwl_tag}")
+        alpha   = _alpha_annotation(sym)
+        lines.append(f"  {sym}: score={d.get('score', 0)} [{conv}]{orb_tag}  {cat}{pwl_tag}{alpha}")
         if sigs:
             lines.append(f"    signals: {sigs}")
     return "\n".join(lines) if lines else "  (no signals scored)"

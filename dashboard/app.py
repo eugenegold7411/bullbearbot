@@ -980,25 +980,25 @@ def _build_a2_position_cards(structures: list, a2_live_positions: list) -> list:
 
         if "call_debit_spread" in s or ("debit" in s and "call" in s):
             breakeven = (ls + net_debit) if ls and net_debit else None
-            s_range = f"${ls:.0f}/${ss:.0f}" if ss else f"${ls:.0f}"
+            s_range = f"${ls or 0:.0f}/${ss or 0:.0f}" if ss else f"${ls or 0:.0f}"
             title = f"{underlying} {s_range} Call Debit Spread — {expiry_str} ({dte_str})"
             profit_line = (f"Profit if {underlying} &gt; ${breakeven:.2f} (breakeven)"
                            if breakeven else f"Profit if {underlying} rises above ${ss:.0f}" if ss else f"Profit if {underlying} rises")
             rationale = f"IV rank {iv_rank_str} ({iv_env}) — debit call spread. Max risk = premium paid."
         elif "put_debit_spread" in s or ("debit" in s and "put" in s):
             breakeven = (ls - net_debit) if ls and net_debit else None
-            s_range = f"${ls:.0f}/${ss:.0f}" if ss else f"${ls:.0f}"
+            s_range = f"${ls or 0:.0f}/${ss or 0:.0f}" if ss else f"${ls or 0:.0f}"
             title = f"{underlying} {s_range} Put Debit Spread — {expiry_str} ({dte_str})"
             profit_line = (f"Profit if {underlying} &lt; ${breakeven:.2f} (breakeven)"
                            if breakeven else f"Profit if {underlying} falls")
             rationale = f"IV rank {iv_rank_str} ({iv_env}) — put debit spread. Bearish thesis."
         elif "call_credit_spread" in s:
-            s_range = f"${ls:.0f}/${ss:.0f}" if ss else f"${ls:.0f}"
+            s_range = f"${ls or 0:.0f}/${ss or 0:.0f}" if ss else f"${ls or 0:.0f}"
             title = f"{underlying} {s_range} Call Credit Spread — {expiry_str} ({dte_str})"
             profit_line = f"Profit if {underlying} stays below ${ss:.0f}" if ss else "Profit if flat/down"
             rationale = f"IV rank {iv_rank_str} ({iv_env}) — selling call premium when vol is elevated."
         elif "put_credit_spread" in s:
-            s_range = f"${ls:.0f}/${ss:.0f}" if ss else f"${ls:.0f}"
+            s_range = f"${ls or 0:.0f}/${ss or 0:.0f}" if ss else f"${ls or 0:.0f}"
             title = f"{underlying} {s_range} Put Credit Spread — {expiry_str} ({dte_str})"
             profit_line = f"Profit if {underlying} stays above ${ss:.0f}" if ss else "Profit if flat/up"
             rationale = f"IV rank {iv_rank_str} ({iv_env}) — selling put premium."

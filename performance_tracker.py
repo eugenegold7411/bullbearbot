@@ -36,6 +36,7 @@ _ALLOCATOR_RECS_PATH = _ROOT / "data" / "analytics" / "allocator_recommendations
 _A2_OUTCOMES_PATH    = _ROOT / "data" / "analytics" / "a2_structure_outcomes.jsonl"
 _SUMMARY_PATH        = _ROOT / "data" / "analytics" / "performance_summary.json"
 _WEEKLY_REPORT_PATH  = _ROOT / "data" / "analytics" / "weekly_performance_report.json"
+_OUTCOMES_LOG        = _ROOT / "data" / "analytics" / "decision_outcomes.jsonl"
 
 _INTENTS_TO_LOG  = {"enter_long", "enter_short", "reduce", "close"}
 _BEARISH_INTENTS = {"enter_short", "reduce", "close"}
@@ -893,3 +894,161 @@ def generate_weekly_performance_report() -> None:
         log.info("[PERF] Weekly report written (%d chars)", len(report_text))
     except Exception as exc:
         log.warning("[PERF] generate_weekly_performance_report failed (non-fatal): %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Quantitative performance summary (for Agent 6 prompt injection)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ENTRY_ACTIONS = {"buy", "enter_long"}
+
+
+def compute_quantitative_performance_summary(days_back: int = 30) -> dict:
+    """
+    Aggregate alpha-classified entry outcomes from decision_outcomes.jsonl.
+
+    Returns a structured dict suitable for injection into Agent 6's prompt.
+    Win rate = alpha_positive / (alpha_positive + alpha_negative); neutrals
+    are counted in the distribution but excluded from the win-rate denominator.
+
+    Non-fatal: returns a valid empty-data dict on any IO/parse failure.
+    """
+    _empty: dict = {
+        "period":                    f"last_{days_back}_days",
+        "total_decisions":           0,
+        "classified_decisions":      0,
+        "classification_distribution": {},
+        "overall_win_rate":          None,
+        "avg_outcome_pct":           None,
+        "by_symbol":                 {},
+        "by_signal_source":          {},
+        "top_performing_symbols":    [],
+        "underperforming_symbols":   [],
+        "top_signal_sources":        [],
+        "weak_signal_sources":       [],
+        "generated_at":              datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+    if not _OUTCOMES_LOG.exists():
+        return _empty
+
+    try:
+        from collections import Counter, defaultdict  # noqa: PLC0415
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+
+        total: int = 0
+        cls_counter: Counter[str] = Counter()
+        per_sym_cls: dict[str, list[str]] = defaultdict(list)
+        per_sym_outcomes: dict[str, list[float]] = defaultdict(list)
+        per_src_cls: dict[str, list[str]] = defaultdict(list)
+        all_outcomes: list[float] = []
+
+        for raw in _OUTCOMES_LOG.read_text(errors="replace").splitlines():
+            if not raw.strip():
+                continue
+            try:
+                rec = json.loads(raw)
+            except Exception:
+                continue
+            total += 1
+
+            cls = rec.get("alpha_classification")
+            if not cls:
+                continue
+
+            # Date filter — skip records outside the window when timestamp present
+            ts = rec.get("decided_at") or rec.get("closed_at") or rec.get("timestamp")
+            if ts:
+                try:
+                    dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                    if dt < cutoff:
+                        continue
+                except Exception:
+                    pass
+
+            if (rec.get("action") or "").lower() not in _ENTRY_ACTIONS:
+                continue
+
+            cls_counter[cls] += 1
+            sym = rec.get("symbol") or ""
+
+            if sym:
+                per_sym_cls[sym].append(cls)
+                op = rec.get("outcome_pct") if rec.get("outcome_pct") is not None else rec.get("return_1d")
+                if op is not None:
+                    try:
+                        v = float(op)
+                        per_sym_outcomes[sym].append(v)
+                        all_outcomes.append(v)
+                    except (TypeError, ValueError):
+                        pass
+
+            for tag in (rec.get("module_tags") or []):
+                if isinstance(tag, str) and tag:
+                    per_src_cls[tag].append(cls)
+
+        classified = sum(cls_counter.values())
+        pos = cls_counter.get("alpha_positive", 0)
+        neg = cls_counter.get("alpha_negative", 0)
+        decisive = pos + neg
+        overall_wr: Optional[float] = round(pos / decisive, 3) if decisive > 0 else None
+        avg_outcome: Optional[float] = (
+            round(sum(all_outcomes) / len(all_outcomes), 5) if all_outcomes else None
+        )
+
+        by_symbol: dict = {}
+        for sym, outcomes in per_sym_cls.items():
+            if len(outcomes) < 2:
+                continue
+            dec = sum(1 for c in outcomes if c in ("alpha_positive", "alpha_negative"))
+            if dec == 0:
+                continue
+            wins = sum(1 for c in outcomes if c == "alpha_positive")
+            op_list = per_sym_outcomes.get(sym, [])
+            by_symbol[sym] = {
+                "n":           len(outcomes),
+                "win_rate":    round(wins / dec, 3),
+                "avg_outcome": round(sum(op_list) / len(op_list), 5) if op_list else None,
+            }
+
+        by_source: dict = {}
+        for src, outcomes in per_src_cls.items():
+            if len(outcomes) < 2:
+                continue
+            dec = sum(1 for c in outcomes if c in ("alpha_positive", "alpha_negative"))
+            if dec == 0:
+                continue
+            wins = sum(1 for c in outcomes if c == "alpha_positive")
+            by_source[src] = {
+                "n":        len(outcomes),
+                "win_rate": round(wins / dec, 3),
+            }
+
+        sym_n3 = {s: v for s, v in by_symbol.items() if v["n"] >= 3}
+        src_n3 = {s: v for s, v in by_source.items() if v["n"] >= 3}
+
+        top_syms = sorted(sym_n3, key=lambda s: -sym_n3[s]["win_rate"])[:3]
+        bot_syms = sorted(sym_n3, key=lambda s: sym_n3[s]["win_rate"])[:3]
+        top_srcs = sorted(src_n3, key=lambda s: -src_n3[s]["win_rate"])[:3]
+        bot_srcs = sorted(src_n3, key=lambda s: src_n3[s]["win_rate"])[:3]
+
+        return {
+            "period":                      f"last_{days_back}_days",
+            "total_decisions":             total,
+            "classified_decisions":        classified,
+            "classification_distribution": dict(cls_counter),
+            "overall_win_rate":            overall_wr,
+            "avg_outcome_pct":             avg_outcome,
+            "by_symbol":                   by_symbol,
+            "by_signal_source":            by_source,
+            "top_performing_symbols":      top_syms,
+            "underperforming_symbols":     bot_syms,
+            "top_signal_sources":          top_srcs,
+            "weak_signal_sources":         bot_srcs,
+            "generated_at":                datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[PERF] compute_quantitative_performance_summary failed: %s", exc)
+        return {**_empty, "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}

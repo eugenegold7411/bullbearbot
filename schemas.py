@@ -957,6 +957,8 @@ class A2FeaturePack:
     # Metadata
     built_at: str                   # ISO timestamp
     data_sources: list[str]         # which sources populated this pack
+    # Earnings conviction (set for earnings_conviction_inject symbols only)
+    earnings_conviction: Optional[dict] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

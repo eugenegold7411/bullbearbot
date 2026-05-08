@@ -45,6 +45,24 @@ def _is_options_occ_symbol(sym: str) -> bool:
     return bool(_OCC_RE.match((sym or "").upper()))
 
 
+def _fmt_earnings_line(eda: int | None, conviction_level: str | None) -> str:
+    """Format the earnings timing line for Stage 3 candidate blocks (FIX-B)."""
+    if eda is None:
+        return ""
+    _phase = "pre-event" if eda > 0 else "event-day" if eda == 0 else "post-event"
+    _weight_hint = (
+        " — WEIGHT: pre-event high conviction favors premium buying structures"
+        " (long_call / debit_call_spread)"
+        if (eda > 0 and conviction_level == "high")
+        else ""
+    )
+    return (
+        f"\n ⚡ EARNINGS: earnings_days_to_event={eda} ({_phase})"
+        + (f" | earnings_conviction_level={conviction_level}" if conviction_level else "")
+        + _weight_hint
+    )
+
+
 # ── Existing position context builder ─────────────────────────────────────────
 
 def _build_existing_position_context(
@@ -384,6 +402,11 @@ def run_options_debate(
                 f"\n A1 signal: {a1_dir_c} | conviction={a1_conv} | score={a1_sc_s}"
                 + (f" | {a1_cat}" if a1_cat else "")
             ) if (a1_dir_c or a1_conv) else ""
+            # Earnings fields — explicit labeled fields for structure selection guidance
+            earnings_line = _fmt_earnings_line(
+                c.get("a1_earnings_eda"),
+                c.get("a1_earnings_conviction_level"),
+            )
             _dir_lower = (a1_dir_c or "").lower()
             if _dir_lower == "bearish":
                 mandate_line = (
@@ -407,7 +430,7 @@ def run_options_debate(
                 f"Max gain: {gain_str} | Breakeven: {beven:.2f}\n"
                 f" Delta: {delta_s} | Theta: {theta_s} | Vega: {vega_s} | "
                 f"EV: {ev_s} | DTE: {dte} | OI: {oi_s} | P(profit): {prob_s}"
-                f"{a1_line}{mandate_line}]"
+                f"{earnings_line}{a1_line}{mandate_line}]"
             )
             allowed_actions_parts.append(f"prefer {cid}")
         allowed_actions_parts.append("reject_all")

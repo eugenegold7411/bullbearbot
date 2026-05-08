@@ -312,10 +312,12 @@ class TestRuleIron:
         assert "iron_butterfly" not in result
 
     def test_IC16_fires_earnings_eda1_with_zero_blackout(self):
-        """eda=1 + earnings_dte_blackout=0 → RULE_IRON fires (no earnings block)."""
+        """eda=1 → FIX-C RULE_PRE_EVENT fires first; neutral → straddle/strangle."""
         result = self._route({"iv_rank": 80.0, "iv_environment": "expensive",
                                "a1_direction": "neutral", "earnings_days_away": 1})
-        assert "iron_condor" in result, f"Expected RULE_IRON for eda=1, got {result}"
+        # FIX-C intercepts eda=1 before RULE_IRON; neutral pre_event → straddle/strangle
+        assert "straddle" in result or "strangle" in result, \
+            f"Expected RULE_PRE_EVENT straddle/strangle for eda=1 neutral, got {result}"
 
     def test_IC17_does_not_fire_bearish_below_85(self):
         """iv_rank=72, bearish direction → RULE_IRON requires neutral for iv_rank < 85."""

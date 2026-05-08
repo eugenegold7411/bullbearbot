@@ -130,99 +130,98 @@ def _route_no_cal(pack, config_overrides=None):
 class TestRule1SmartEarningsRouter(unittest.TestCase):
 
     def test_R1_01_eda0_unknown_timing_routes_normally(self):
-        """R1-01: eda=0 -> RULE1 removed, routes via IV rules (RULE6: debit_call_spread)."""
+        """R1-01: eda=0 -> FIX-C event_day gate: returns [] (no new entry on event day)."""
         pack = _make_pack(symbol="LLY", earnings_days_away=0, iv_rank=7,
                           a1_direction="bullish")
         result = _route(pack, timing=None)
-        self.assertEqual(result, ["debit_call_spread"],
-                         f"Expected RULE6 debit_call_spread for eda=0 neutral IV, got {result}")
+        self.assertEqual(result, [],
+                         f"Expected [] for eda=0 (event_day suppressed by FIX-C), got {result}")
 
     def test_R1_01b_eda0_postmarket_routes_normally(self):
-        """R1-01b: eda=0 timing=post_market -> RULE1 removed, routes via IV rules."""
+        """R1-01b: eda=0 timing=post_market -> FIX-C event_day: returns []."""
         pack = _make_pack(symbol="LLY", earnings_days_away=0, iv_rank=7,
                           a1_direction="bullish")
         result = _route(pack, timing="post_market")
-        self.assertEqual(result, ["debit_call_spread"],
-                         f"Expected RULE6 debit_call_spread for eda=0 post_market, got {result}")
+        self.assertEqual(result, [],
+                         f"Expected [] for eda=0 post_market (event_day suppressed), got {result}")
 
     def test_R1_01c_eda0_premarket_falls_through(self):
-        """R1-01c: eda=0 timing=pre_market -> routes via IV rules (RULE1 removed)."""
+        """R1-01c: eda=0 timing=pre_market -> FIX-C event_day gate: returns []."""
         pack = _make_pack(symbol="LLY", earnings_days_away=0, iv_rank=7,
                           iv_environment="very_cheap", a1_direction="bullish",
                           macro_event_flag=False)
         result = _route(pack, timing="pre_market")
-        # Normal routing for very_cheap + bullish: RULE5 -> long_call/debit_call_spread
-        self.assertIn("debit_call_spread", result,
-                      f"Expected RULE5 routing for eda=0 pre_market, got {result}")
+        self.assertEqual(result, [],
+                         f"Expected [] for eda=0 pre_market (event_day suppressed), got {result}")
 
     def test_R1_02_eda1_premarket_high_iv_bullish_credit(self):
-        """R1-02: eda=1 pre_market iv_rank=95 bullish -> credit_put_spread."""
+        """R1-02: eda=1 pre_market iv_rank=95 bullish -> RULE_PRE_EVENT -> premium buying."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=95,
                           iv_environment="very_expensive", a1_direction="bullish")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, ["credit_put_spread"],
-                         f"Expected credit_put_spread for XOM eda=1 pre_market iv=95, got {result}")
+        self.assertEqual(result, ["long_call", "debit_call_spread"],
+                         f"Expected RULE_PRE_EVENT premium buying for eda=1 bullish, got {result}")
 
     def test_R1_02b_eda1_premarket_high_iv_bearish_credit(self):
-        """R1-02b: eda=1 pre_market iv_rank=89 bearish -> credit_call_spread (CVX case)."""
+        """R1-02b: eda=1 pre_market iv_rank=89 bearish -> RULE_PRE_EVENT -> premium buying."""
         pack = _make_pack(symbol="CVX", earnings_days_away=1, iv_rank=89,
                           iv_environment="very_expensive", a1_direction="bearish")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, ["credit_call_spread"],
-                         f"Expected credit_call_spread for CVX eda=1 pre_market iv=89, got {result}")
+        self.assertEqual(result, ["long_put", "debit_put_spread"],
+                         f"Expected RULE_PRE_EVENT premium buying for eda=1 bearish, got {result}")
 
     def test_R1_03_eda1_premarket_low_iv_bullish_debit(self):
-        """R1-03: eda=1 iv_rank=30 bullish -> RULE_EARNINGS fires (debit_call_spread; straddle neutral-only)."""
+        """R1-03: eda=1 iv_rank=30 bullish -> RULE_PRE_EVENT -> premium buying structs."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=30,
                           iv_environment="cheap", a1_direction="bullish")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, ["debit_call_spread"],
-                         f"Expected RULE_EARNINGS debit_call_spread for eda=1 iv=30, got {result}")
+        self.assertEqual(result, ["long_call", "debit_call_spread"],
+                         f"Expected RULE_PRE_EVENT [long_call, debit_call_spread] for eda=1 iv=30, got {result}")
 
     def test_R1_04_eda1_premarket_middle_iv_routes(self):
-        """R1-04: eda=1 iv_rank=55 bullish -> RULE_EARNINGS fires (debit_call_spread; straddle neutral-only)."""
+        """R1-04: eda=1 iv_rank=55 bullish -> RULE_PRE_EVENT -> premium buying structs."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=55,
                           iv_environment="neutral", a1_direction="bullish")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, ["debit_call_spread"],
-                         f"Expected RULE_EARNINGS debit_call_spread for eda=1 iv=55 bullish, got {result}")
+        self.assertEqual(result, ["long_call", "debit_call_spread"],
+                         f"Expected RULE_PRE_EVENT [long_call, debit_call_spread] for eda=1 iv=55, got {result}")
 
     def test_R1_04b_eda1_premarket_neutral_direction_credit(self):
-        """R1-04b: eda=1 iv_rank=95 very_expensive neutral -> RULE2_CREDIT fires."""
+        """R1-04b: eda=1 neutral -> RULE_PRE_EVENT -> straddle/strangle (symmetric vol play)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=95,
                           iv_environment="very_expensive", a1_direction="neutral")
         result = _route(pack, timing="pre_market")
-        self.assertIn("credit_put_spread", result,
-                      f"Expected RULE2_CREDIT for eda=1 very_expensive neutral, got {result}")
+        self.assertEqual(result, ["straddle", "strangle"],
+                         f"Expected RULE_PRE_EVENT straddle/strangle for eda=1 neutral, got {result}")
 
     def test_R1_05_eda2_high_iv_bullish_credit(self):
-        """R1-05: eda=2 iv_rank=88 bullish -> credit_put_spread."""
+        """R1-05: eda=2 iv_rank=88 bullish -> RULE_PRE_EVENT fires (eda in 1..7)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=2, iv_rank=88,
                           iv_environment="very_expensive", a1_direction="bullish")
         result = _route_no_cal(pack)
-        self.assertEqual(result, ["credit_put_spread"],
-                         f"Expected credit_put_spread for eda=2 iv=88, got {result}")
+        self.assertEqual(result, ["long_call", "debit_call_spread"],
+                         f"Expected RULE_PRE_EVENT premium buying for eda=2 bullish, got {result}")
 
     def test_R1_06_eda2_low_iv_bullish_debit(self):
-        """R1-06: eda=2 iv_rank=25 bullish -> RULE_EARNINGS fires (debit_call_spread; straddle neutral-only)."""
+        """R1-06: eda=2 iv_rank=25 bullish -> RULE_PRE_EVENT fires (eda in 1..7)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=2, iv_rank=25,
                           iv_environment="cheap", a1_direction="bullish")
         result = _route_no_cal(pack)
-        self.assertEqual(result, ["debit_call_spread"],
-                         f"Expected RULE_EARNINGS debit_call_spread for eda=2 iv=25, got {result}")
+        self.assertEqual(result, ["long_call", "debit_call_spread"],
+                         f"Expected RULE_PRE_EVENT [long_call, debit_call_spread] for eda=2 iv=25, got {result}")
 
     def test_R1_07_eda2_neutral_direction_straddle(self):
-        """R1-07: eda=2 direction=neutral -> RULE_EARNINGS fires (straddle only)."""
+        """R1-07: eda=2 direction=neutral -> RULE_PRE_EVENT fires (straddle/strangle symmetric play)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=2, iv_rank=50,
                           iv_environment="neutral", a1_direction="neutral")
         result = _route_no_cal(pack)
-        self.assertEqual(result, ["straddle"],
-                         f"Expected RULE_EARNINGS straddle for eda=2 neutral, got {result}")
+        self.assertEqual(result, ["straddle", "strangle"],
+                         f"Expected RULE_PRE_EVENT straddle/strangle for eda=2 neutral, got {result}")
 
     def test_R1_08_eda4_high_iv_rule_earnings_high_iv_fires_first(self):
-        """R1-08: eda=4 iv_rank=100 -> RULE_EARNINGS_HIGH_IV DTE window is [7,14], eda=4 misses it."""
-        # eda=4 NOT in [7, 14] range → RULE_EARNINGS_HIGH_IV doesn't fire.
-        # iv_env=very_expensive → RULE2_CREDIT fires → credit_put_spread.
+        """R1-08: eda=4 -> RULE_EARNINGS_HIGH_IV window [7,14] misses; RULE_PRE_EVENT fires."""
+        # eda=4 NOT in EHI window [7,14] → EHI doesn't fire.
+        # FIX-C: eda=4 in 1..7 → RULE_PRE_EVENT → premium buying.
         pack = _make_pack(symbol="PLTR", earnings_days_away=4, iv_rank=100,
                           iv_environment="very_expensive", a1_direction="bullish")
         result = _route_no_cal(pack,
@@ -233,10 +232,9 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                                    "pre_earnings_dte_max": 14,
                                    "earnings_dte_blackout": 2,
                                })
-        # eda=4 not in [7,14] -> RULE_EARNINGS_HIGH_IV doesn't fire
-        # iv_env=very_expensive -> RULE2_CREDIT fires -> credit_put_spread
-        self.assertEqual(result, ["credit_put_spread"],
-                         f"Expected RULE2_CREDIT for eda=4, got {result}")
+        # FIX-C pre_event takes priority when eda in 1..7 and EHI window misses
+        self.assertEqual(result, ["long_call", "debit_call_spread"],
+                         f"Expected RULE_PRE_EVENT for eda=4 (EHI window=7..14 misses), got {result}")
 
     def test_R1_08b_eda7_high_iv_rule_earnings_high_iv_fires_first(self):
         """R1-08b: eda=7 iv_rank=100 -> RULE_EARNINGS_HIGH_IV fires (eda in [7,14] window)."""
@@ -255,7 +253,7 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                          f"Expected RULE_EARNINGS_HIGH_IV for eda=7 iv=100, got {result}")
 
     def test_R1_09_eda_negative_routes_to_post_earnings_not_rule1(self):
-        """R1-09: eda=-1 -> RULE_POST_EARNINGS fires, not RULE1."""
+        """R1-09: eda=-1 fresh_catalyst_override=True -> RULE_POST_EARNINGS fires."""
         today = date.today()
         from datetime import timedelta
         yesterday = (today - timedelta(days=1)).isoformat()
@@ -268,13 +266,14 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                           iv_environment="expensive", a1_direction="bearish",
                           liquidity_score=0.8)
         from bot_options_stage2_structures import _route_strategy
-        # Patch _iv_already_crushed so the test is not sensitive to real IV history files
-        # on the server — this test validates routing logic, not the crush-detection heuristic.
+        # fresh_catalyst_override=True allows post_event to fall through to RULE_POST_EARNINGS.
         with patch("bot_options_stage2_structures._iv_already_crushed", return_value=False):
-            result = _route_strategy(pack, earnings_calendar_data=cal)
+            result = _route_strategy(pack,
+                                     config={"a2_router": {"fresh_catalyst_override": True}},
+                                     earnings_calendar_data=cal)
         # iv_rank=80 >= post_earnings_iv_rank_min default 75 -> RULE_POST_EARNINGS fires
         self.assertEqual(result, ["credit_call_spread"],
-                         f"Expected RULE_POST_EARNINGS for eda=-1, got {result}")
+                         f"Expected RULE_POST_EARNINGS for eda=-1 override=True, got {result}")
 
 
 # ── RULE4 tests ───────────────────────────────────────────────────────────────
@@ -369,45 +368,44 @@ class TestScenarioTraces(unittest.TestCase):
         return {"calendar": [{"symbol": symbol, "earnings_date": eda_date, "timing": timing}]}
 
     def test_scenario_xom_eda1_premarket_iv95_bullish(self):
-        """XOM: eda=1, timing=pre_market, iv_rank=95, direction=bullish -> credit_put_spread."""
+        """XOM: eda=1, pre_market, iv_rank=95, bullish -> RULE_PRE_EVENT premium buying."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=95,
                           iv_environment="very_expensive", a1_direction="bullish")
         from bot_options_stage2_structures import _route_strategy
         result = _route_strategy(pack,
                                  earnings_calendar_data=self._make_calendar("XOM", 1, "pre_market"))
-        self.assertEqual(result, ["credit_put_spread"], f"XOM scenario failed: {result}")
+        self.assertEqual(result, ["long_call", "debit_call_spread"], f"XOM scenario failed: {result}")
 
     def test_scenario_cvx_eda1_premarket_iv89_bullish(self):
-        """CVX: eda=1, timing=pre_market, iv_rank=89, direction=bullish -> credit_put_spread."""
+        """CVX: eda=1, pre_market, iv_rank=89, bullish -> RULE_PRE_EVENT premium buying."""
         pack = _make_pack(symbol="CVX", earnings_days_away=1, iv_rank=89,
                           iv_environment="very_expensive", a1_direction="bullish")
         from bot_options_stage2_structures import _route_strategy
         result = _route_strategy(pack,
                                  earnings_calendar_data=self._make_calendar("CVX", 1, "pre_market"))
-        self.assertEqual(result, ["credit_put_spread"], f"CVX scenario failed: {result}")
+        self.assertEqual(result, ["long_call", "debit_call_spread"], f"CVX scenario failed: {result}")
 
     def test_scenario_lly_eda0_routes_normally(self):
-        """LLY: eda=0, iv_rank=7, very_cheap, bullish -> RULE5 fires (long_call/debit_call_spread)."""
+        """LLY: eda=0 -> FIX-C event_day gate returns [] (no new entry on event day)."""
         pack = _make_pack(symbol="LLY", earnings_days_away=0, iv_rank=7,
                           iv_environment="very_cheap", a1_direction="bullish")
         from bot_options_stage2_structures import _route_strategy
         result = _route_strategy(pack,
                                  earnings_calendar_data=self._make_calendar("LLY", 0, "post_market"))
-        self.assertIn("long_call", result, f"LLY scenario failed: expected RULE5, got {result}")
-        self.assertIn("debit_call_spread", result, f"LLY scenario failed: {result}")
+        self.assertEqual(result, [], f"LLY scenario: expected [] for eda=0 (event_day), got {result}")
 
     def test_scenario_aapl_eda0_credit_routes(self):
-        """AAPL: eda=0, iv_rank=94, very_expensive, neutral -> RULE2_CREDIT fires."""
+        """AAPL: eda=0 -> FIX-C event_day gate returns [] (no new entry on event day)."""
         pack = _make_pack(symbol="AAPL", earnings_days_away=0, iv_rank=94,
                           iv_environment="very_expensive", a1_direction="neutral")
         from bot_options_stage2_structures import _route_strategy
         result = _route_strategy(pack,
                                  earnings_calendar_data=self._make_calendar("AAPL", 0, "post_market"))
-        self.assertIn("credit_put_spread", result,
-                      f"AAPL scenario failed: expected RULE2_CREDIT, got {result}")
+        self.assertEqual(result, [],
+                         f"AAPL scenario: expected [] for eda=0 (event_day), got {result}")
 
     def test_scenario_pltr_eda4_iv100_rule_earnings_high_iv(self):
-        """PLTR: eda=4, iv_rank=100 -> eda not in RULE_EARNINGS_HIGH_IV [7,14]; RULE2_CREDIT fires."""
+        """PLTR: eda=4 -> EHI window [7,14] misses; RULE_PRE_EVENT fires."""
         pack = _make_pack(symbol="PLTR", earnings_days_away=4, iv_rank=100,
                           iv_environment="very_expensive", a1_direction="bullish")
         from bot_options_stage2_structures import _route_strategy
@@ -420,24 +418,26 @@ class TestScenarioTraces(unittest.TestCase):
                                      "earnings_dte_blackout": 2,
                                  }},
                                  earnings_calendar_data={"calendar": []})
-        # eda=4 not in [7,14] -> RULE_EARNINGS_HIGH_IV doesn't fire
-        # RULE2_CREDIT: very_expensive + bullish -> credit_put_spread
-        self.assertEqual(result, ["credit_put_spread"],
+        # eda=4 in FIX-C 1..7 window → RULE_PRE_EVENT → premium buying
+        self.assertEqual(result, ["long_call", "debit_call_spread"],
                          f"PLTR eda=4 scenario failed: {result}")
 
     def test_scenario_meta_eda_negative(self):
-        """META: eda=-1, iv_rank=13 -> RULE_POST_EARNINGS check (iv too low, falls through)."""
+        """META: eda=-1 fresh_catalyst_override=True, iv_rank=13 -> falls through to RULE5."""
         from datetime import timedelta
         yesterday = (date.today() - timedelta(days=1)).isoformat()
         pack = _make_pack(symbol="META", earnings_days_away=-1, iv_rank=13,
                           iv_environment="very_cheap", a1_direction="bearish",
                           liquidity_score=0.8)
         from bot_options_stage2_structures import _route_strategy
-        # iv_rank=13 < post_earnings_iv_rank_min default 75 -> POST_EARNINGS won't fire
-        # Falls through to RULE5: very_cheap + bearish -> long_put, debit_put_spread
+        # fresh_catalyst_override=True: post_event falls through.
+        # iv_rank=13 < post_earnings_iv_rank_min=75 -> POST_EARNINGS won't fire.
+        # Falls through to RULE5: very_cheap + bearish -> long_put, debit_put_spread.
         cal = {"calendar": [{"symbol": "META", "earnings_date": yesterday,
                              "timing": "post_market"}]}
-        result = _route_strategy(pack, earnings_calendar_data=cal)
+        result = _route_strategy(pack,
+                                 config={"a2_router": {"fresh_catalyst_override": True}},
+                                 earnings_calendar_data=cal)
         # Should route to debit/long structures since IV is cheap
         self.assertTrue(len(result) > 0,
                         f"META eda=-1 low iv scenario should route somewhere, got {result}")

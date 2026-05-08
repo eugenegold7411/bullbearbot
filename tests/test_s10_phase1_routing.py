@@ -165,13 +165,16 @@ class TestRulePostEarnings:
     def test_fires_for_eda_neg1_premarket_bullish(self, monkeypatch):  # PE-04
         _no_crush(monkeypatch)
         pack = MockPack(symbol="AAPL", earnings_days_away=-1, iv_rank=80.0, iv_environment="expensive")
-        result = _route_strategy(pack, _cfg(), earnings_calendar_data=self._pre_market_cal(1))
+        # fresh_catalyst_override=True: post-event falls through to RULE_POST_EARNINGS
+        result = _route_strategy(pack, _cfg({"fresh_catalyst_override": True}),
+                                 earnings_calendar_data=self._pre_market_cal(1))
         assert result == ["credit_put_spread"]
 
     def test_fires_for_eda_neg1_postmarket(self, monkeypatch):  # PE-05
         _no_crush(monkeypatch)
         pack = MockPack(symbol="AAPL", earnings_days_away=-1, iv_rank=80.0, iv_environment="expensive")
-        result = _route_strategy(pack, _cfg(), earnings_calendar_data=self._post_market_cal(1))
+        result = _route_strategy(pack, _cfg({"fresh_catalyst_override": True}),
+                                 earnings_calendar_data=self._post_market_cal(1))
         assert result == ["credit_put_spread"]
 
     def test_does_not_fire_when_outside_premarket_window(self, monkeypatch):  # PE-06
@@ -201,21 +204,24 @@ class TestRulePostEarnings:
         _no_crush(monkeypatch)
         pack = MockPack(symbol="AAPL", earnings_days_away=-1, iv_rank=80.0,
                         iv_environment="expensive", a1_direction="bearish")
-        result = _route_strategy(pack, _cfg(), earnings_calendar_data=self._pre_market_cal(1))
+        result = _route_strategy(pack, _cfg({"fresh_catalyst_override": True}),
+                                 earnings_calendar_data=self._pre_market_cal(1))
         assert result == ["credit_call_spread"]
 
     def test_neutral_direction_gives_both_spreads(self, monkeypatch):  # PE-10
         _no_crush(monkeypatch)
         pack = MockPack(symbol="AAPL", earnings_days_away=-1, iv_rank=80.0,
                         iv_environment="expensive", a1_direction="neutral")
-        result = _route_strategy(pack, _cfg(), earnings_calendar_data=self._pre_market_cal(1))
+        result = _route_strategy(pack, _cfg({"fresh_catalyst_override": True}),
+                                 earnings_calendar_data=self._pre_market_cal(1))
         assert set(result) == {"credit_put_spread", "credit_call_spread"}
 
     def test_fires_for_eda_neg2_premarket(self, monkeypatch):  # PE-11
         _no_crush(monkeypatch)
         # window=2, days_since=2 -> 2 <= 2 -> fires
         pack = MockPack(symbol="AAPL", earnings_days_away=-2, iv_rank=80.0, iv_environment="expensive")
-        result = _route_strategy(pack, _cfg(), earnings_calendar_data=self._pre_market_cal(2))
+        result = _route_strategy(pack, _cfg({"fresh_catalyst_override": True}),
+                                 earnings_calendar_data=self._pre_market_cal(2))
         assert result == ["credit_put_spread"]
 
     def test_does_not_fire_for_eda_neg2_postmarket(self, monkeypatch):  # PE-12
@@ -268,8 +274,9 @@ class TestRuleEarningsHighIV:
             "earnings_dte_blackout": 2,
         })
         result = _route_strategy(pack, cfg)
-        # eda=5 < dte_min=7 -> RULE_EARNINGS_HIGH_IV misses; RULE2_CREDIT fires
-        assert "credit_put_spread" in result
+        # eda=5 < dte_min=7 -> RULE_EARNINGS_HIGH_IV misses
+        # FIX-C: eda=5 in 1..7 -> RULE_PRE_EVENT fires -> premium buying
+        assert "long_call" in result or "debit_call_spread" in result
 
     def test_enabled_does_not_fire_below_iv_min(self):  # PE-16
         pack = MockPack(earnings_days_away=10, iv_rank=80.0, iv_environment="expensive")
@@ -312,10 +319,10 @@ class TestInferRouterRuleFired:
         assert result == "RULE8"
 
     def test_infers_rule8_when_eda_negative_low_iv(self):
-        # eda < 0, iv_rank too low for POST_EARNINGS -> falls to RULE8
+        # eda=-1 with empty allowed -> FIX-C suppressed post_event -> RULE_POST_EVENT_SUPPRESS
         pack = MockPack(earnings_days_away=-1, iv_rank=40.0, iv_environment="neutral")
         result = _infer_router_rule_fired(pack, [], _cfg())
-        assert result == "RULE8"
+        assert result == "RULE_POST_EVENT_SUPPRESS"
 
     def test_infers_rule5_for_cheap_iv(self):
         pack = MockPack(iv_environment="cheap", a1_direction="bullish")
@@ -413,13 +420,13 @@ class TestEarningsHighIVEnabled:
         assert _route_strategy(pack, self._cfg_enabled()) == ["credit_call_spread"]
 
     def test_ehi04_eda_at_blackout_boundary_routes_via_rule2_credit(self):
-        """EHI-04: eda=2, EHI window is dte_min=7 so EHI misses; RULE1 removed.
-        Very-expensive IV + bullish → RULE2_CREDIT routes to credit_put_spread."""
+        """EHI-04: eda=2, EHI window is dte_min=7 so EHI misses.
+        FIX-C: eda=2 in 1..7 → RULE_PRE_EVENT → premium buying structs."""
         pack = MockPack(earnings_days_away=2, iv_rank=95.0,
                         iv_environment="very_expensive", a1_direction="bullish")
         result = _route_strategy(pack, self._cfg_enabled())
-        # iv_environment=very_expensive → RULE2_CREDIT fires → credit_put_spread
-        assert result == ["credit_put_spread"]
+        # EHI window=7..14 misses (eda=2 < 7); FIX-C RULE_PRE_EVENT fires
+        assert result == ["long_call", "debit_call_spread"]
 
     def test_ehi05_below_iv_floor_does_not_fire(self):
         """EHI-05: iv_rank=80 < 85 → EHI misses; another rule fires."""

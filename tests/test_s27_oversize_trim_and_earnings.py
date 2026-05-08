@@ -353,10 +353,10 @@ class TestA2EarningsRouting(unittest.TestCase):
         )
 
     def test_eda_0_routes_normally(self):
-        """eda=0 -> RULE1 removed; routes via IV rules (neutral IV + bullish → RULE6)."""
+        """eda=0 -> FIX-C event_day gate: returns [] (no new entry on event day)."""
         result = self._route(eda=0)
-        self.assertNotEqual(result, [],
-                            f"eda=0 should route normally (RULE1 removed), got: {result}")
+        self.assertEqual(result, [],
+                         f"eda=0 should return [] (event_day suppressed by FIX-C), got: {result}")
 
     def test_eda_1_routes_normally(self):
         """eda=1 -> RULE1 removed; routes via IV rules."""

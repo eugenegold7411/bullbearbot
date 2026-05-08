@@ -447,6 +447,7 @@ def _build_a2_feature_pack(
         liquidity_score      = liquidity_score,
         built_at             = datetime.now(timezone.utc).isoformat(),
         data_sources         = data_sources,
+        earnings_conviction  = sig.get("earnings_conviction"),
     )
     log.debug(
         "[OPTS] A2FeaturePack built for %s: iv_rank=%.1f env=%s dir=%s earn=%s liq=%.2f skew=%s",
@@ -786,11 +787,18 @@ def run_candidate_stage(
             # Use effective direction (post skew-override) so the mandate in Stage 3 is
             # consistent with the structure that was actually routed.
             _a1_dir = _compute_effective_direction(pack, config) if pack is not None else "unknown"
+            _ec_data = sig_data.get("earnings_conviction")
             for _c in cset.surviving_candidates:
-                _c["a1_direction"]        = _a1_dir
-                _c["a1_conviction"]       = sig_data.get("conviction", "unknown")
-                _c["a1_score"]            = int(sig_data.get("score", 0))
-                _c["a1_primary_catalyst"] = sig_data.get("primary_catalyst", "")
+                _c["a1_direction"]               = _a1_dir
+                _c["a1_conviction"]              = sig_data.get("conviction", "unknown")
+                _c["a1_score"]                   = int(sig_data.get("score", 0))
+                _c["a1_primary_catalyst"]        = sig_data.get("primary_catalyst", "")
+                _c["a1_earnings_eda"]            = (
+                    _ec_data.get("eda") if _ec_data else sig_data.get("earnings_days_away")
+                )
+                _c["a1_earnings_conviction_level"] = (
+                    _ec_data.get("conviction_level") if _ec_data else None
+                )
 
         # Build StructureProposal (for debate + legacy path)
         proposal = options_intelligence.select_options_strategy(

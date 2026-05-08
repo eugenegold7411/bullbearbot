@@ -154,16 +154,16 @@ class TestRouteStrategy(unittest.TestCase):
         return _route_strategy(self._make_pack(**kw))
 
     def test_earnings_day_routes_normally(self):
-        """RULE1 removed: eda=0 no longer blocks; falls through to normal IV routing."""
-        # eda=0 with cheap IV (default MockPack) → RULE5 fires → long_call/debit_call_spread
+        """FIX-C: eda=0 event_day returns []; eda=1,5 route via RULE_PRE_EVENT."""
+        # eda=0: FIX-C event_day gate → no new entry
         result_0 = self._route(earnings_days_away=0)
-        self.assertNotEqual(result_0, [], "eda=0 should route (RULE1 removed)")
-        # eda=1 routes normally
+        self.assertEqual(result_0, [], "eda=0 should return [] (event_day FIX-C)")
+        # eda=1: FIX-C pre_event → premium buying (non-empty)
         result_1 = self._route(earnings_days_away=1)
-        self.assertNotEqual(result_1, [], "eda=1 should route")
-        # eda=5 routes normally
+        self.assertNotEqual(result_1, [], "eda=1 should route via RULE_PRE_EVENT")
+        # eda=5: FIX-C pre_event → premium buying (non-empty)
         result_5 = self._route(earnings_days_away=5)
-        self.assertNotEqual(result_5, [], "eda=5 should reach normal routing")
+        self.assertNotEqual(result_5, [], "eda=5 should route via RULE_PRE_EVENT")
 
     def test_rule1_earnings_clear(self):
         """Earnings > 5 days → not blocked by rule 1."""

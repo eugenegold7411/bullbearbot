@@ -392,12 +392,12 @@ class TestRuleStraddleStrangle(unittest.TestCase):
         self.assertNotEqual(result, ["straddle", "strangle"])
 
     def test_st11b_eda_near_earnings_routes_via_rule_earnings(self):
-        """ST-11b: eda=2 (RULE1 removed) → RULE_EARNINGS routes based on direction.
-        neutral → straddle; bullish → debit_call_spread."""
-        # Neutral direction → RULE_EARNINGS routes to straddle (no directional thesis)
+        """ST-11b: eda=2 → FIX-C RULE_PRE_EVENT fires (eda in 1..7).
+        neutral → straddle/strangle; bullish → long_call/debit_call_spread."""
+        # Neutral: RULE_PRE_EVENT → symmetric vol play (straddle + strangle)
         result_neutral = self._route(iv_rank=35, eda=2, direction="neutral")
-        self.assertEqual(result_neutral, ["straddle"])
-        # Bullish direction + cheap iv → RULE_EARNINGS routes to debit_call_spread
+        self.assertEqual(result_neutral, ["straddle", "strangle"])
+        # Bullish: RULE_PRE_EVENT → premium buying
         result_bullish = self._route(iv_rank=35, eda=2, direction="bullish")
         self.assertIn("debit_call_spread", result_bullish)
 

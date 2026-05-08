@@ -100,6 +100,10 @@ _A2_ROUTER_DEFAULTS: dict = {
     "vix_crisis_no_trades":          True,  # block all new structures in crisis VIX regime
     # Low-conviction caution gate (Fix 3)
     "caution_regime_min_score": 50.0,  # block directional debit when a1_signal_score < this
+    # Earnings timing router (FIX-C)
+    # False = post_event (-1..-3) suppresses new entry
+    # True  = post_event falls through to RULE_POST_EARNINGS credit play (future session)
+    "fresh_catalyst_override": False,
 }
 
 
@@ -466,10 +470,43 @@ def _route_strategy(
             )
             return []
 
+    # EARNINGS TIMING ROUTER ── pre_event / event_day / post_event gates.
+    # Fires before RULE_POST_EARNINGS to own the -3..+7 day window explicitly.
+    # fresh_catalyst_override (a2_router.fresh_catalyst_override, default False):
+    #   False → post_event (-1..-3) suppresses new entry (credit structures deferred)
+    #   True  → post_event falls through to RULE_POST_EARNINGS credit path
+    _fc_override = bool(rcfg.get("fresh_catalyst_override", False))
+    if eda is not None and -3 <= eda <= 7:
+        if eda == 0:
+            log.info("[EARNINGS] %s event_day (eda=0) — skipping new entry", sym)
+            return []
+        if -3 <= eda <= -1:
+            if not _fc_override:
+                log.info(
+                    "[EARNINGS] %s post-event eda=%d — fresh_catalyst_override=OFF, skipping",
+                    sym, eda,
+                )
+                return []
+            # fresh_catalyst_override=True: fall through to RULE_POST_EARNINGS
+        else:  # 1 <= eda <= 7: pre-event — buy premium to capture move
+            if effective_dir == "bullish":
+                _pre_structs = ["long_call", "debit_call_spread"]
+            elif effective_dir == "bearish":
+                _pre_structs = ["long_put", "debit_put_spread"]
+            else:  # neutral — binary event, symmetric vol play
+                _pre_structs = ["straddle", "strangle"]
+            log.info(
+                "[EARNINGS] %s pre-event eda=%d → premium buying structure",
+                sym, eda,
+            )
+            return _route_guarded(_pre_structs, effective_dir, sym, "RULE_PRE_EVENT",
+                                  options_regime, _caution_debit_blocked, pack.iv_rank)
+
     # RULE_POST_EARNINGS: sell IV premium after earnings print when IV still elevated.
     # eda < 0 means earnings already happened (abs(eda) = days since print).
     # Timing-aware window: pre-market print gives a 2-day window; post-market gives 1.
     # Blocked if IV has already crashed (crush detected from history).
+    # Note: only reached when fresh_catalyst_override=True (eda in -1..-3) or eda < -3.
     if eda is not None and eda < 0:
         # Lazy-load earnings calendar from disk if not supplied by caller
         if earnings_calendar_data is None:
@@ -690,6 +727,10 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
     eda = pack.earnings_days_away
 
     if not allowed:
+        if eda is not None and eda == 0:
+            return "RULE_EVENT_DAY"
+        if eda is not None and -3 <= eda <= -1:
+            return "RULE_POST_EVENT_SUPPRESS"
         if (pre_earn_enabled
                 and eda is not None
                 and pre_earn_dte_min <= eda <= pre_earn_dte_max
@@ -704,6 +745,8 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
         return "RULE8"
 
     # Non-empty allowed: infer which positive rule fired
+    if eda is not None and 1 <= eda <= 7:
+        return "RULE_PRE_EVENT"
     if (pre_earn_enabled
             and eda is not None
             and pre_earn_dte_min <= eda <= pre_earn_dte_max
@@ -795,8 +838,23 @@ def _apply_veto_rules(
         return f"bid_ask_spread_pct={spread:.3f}>{max_spread}"
 
     oi = candidate.get("open_interest")
-    if oi is not None and oi < min_oi:
-        return f"open_interest={oi}<{min_oi}"
+    if oi is not None:
+        _oi_floor = min_oi
+        _ec = getattr(pack, "earnings_conviction", None)
+        if (
+            _ec is not None
+            and _ec.get("conviction_level") == "high"
+            and pack.earnings_days_away is not None
+            and 0 < pack.earnings_days_away <= 7
+        ):
+            _oi_floor = 25
+            if oi >= 25:
+                log.info(
+                    "[OPTS] %s: earnings OI override (eda=%d, OI=%d >= 25)",
+                    pack.symbol, pack.earnings_days_away, oi,
+                )
+        if oi < _oi_floor:
+            return f"open_interest={oi}<{_oi_floor}"
 
     theta = candidate.get("theta")
     debit = candidate.get("debit")

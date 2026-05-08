@@ -223,7 +223,8 @@ class StructureLifecycle(str, Enum):
     REJECTED         = "rejected"          # broker rejected one or more legs
     EXPIRED          = "expired"           # option expired without exercise
     CANCELLED        = "cancelled"         # manually cancelled before fill
-    ORPHAN_TRACKED   = "orphan_tracked"    # live Alpaca position with no matched structure; monitoring only
+    ORPHAN_TRACKED          = "orphan_tracked"           # live Alpaca position with no matched structure; monitoring only
+    MANUAL_REVIEW_REQUIRED  = "manual_review_required"  # close failed max times; human action needed
 
 
 # ─────────────────────────────────────────────────────────────────────────────

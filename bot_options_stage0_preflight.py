@@ -328,7 +328,7 @@ def _reconcile_orphan_positions(
             s.lifecycle.value
             if hasattr(s.lifecycle, "value")
             else str(s.lifecycle)
-        ) == "orphan_tracked"
+        ) in ("orphan_tracked", "manual_review_required")
     }
 
     # Group untracked positions by underlying

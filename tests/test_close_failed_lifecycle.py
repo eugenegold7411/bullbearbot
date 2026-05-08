@@ -178,15 +178,15 @@ class TestCloseFailedLifecycle(unittest.TestCase):
             "close_attempt_count must increment on each failed close",
         )
 
-    def test_failed_close_at_threshold_fires_safety_alert(self):
-        """close_attempt_count ≥ 3 after failure → _fire_safety_alert called with stuck key."""
+    def test_failed_close_at_attempt_1_fires_safety_alert(self):
+        """First close failure (count 0→1) → _fire_safety_alert called with close_stuck key."""
         import importlib
 
         with patch.dict(sys.modules, _alpaca_mocks()):
             import options_executor
             importlib.reload(options_executor)
 
-            struct = _make_single_leg_close_struct(close_attempt_count=3)
+            struct = _make_single_leg_close_struct(close_attempt_count=0)
             client = MagicMock()
             client.submit_order.side_effect = Exception("network_error")
             mock_pos = MagicMock()
@@ -204,7 +204,7 @@ class TestCloseFailedLifecycle(unittest.TestCase):
             ]
             self.assertTrue(
                 len(stuck_calls) > 0,
-                f"Expected _fire_safety_alert with 'close_stuck' key at count ≥ 3; "
+                f"Expected _fire_safety_alert with 'close_stuck' key on first failure; "
                 f"actual calls: {mock_alert.call_args_list}",
             )
 

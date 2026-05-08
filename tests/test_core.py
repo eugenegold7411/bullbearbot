@@ -2673,7 +2673,8 @@ class TestSuite14OptionsBuilder(unittest.TestCase):
         expected = {
             "proposed", "submitted", "partially_filled", "fully_filled",
             "closed", "rejected", "expired", "cancelled",
-            "orphan_tracked",  # added in orphan reconciler (S25)
+            "orphan_tracked",          # added in orphan reconciler (S25)
+            "manual_review_required",  # close exceeded max attempts; human action needed
         }
         actual = {e.value for e in StructureLifecycle}
         self.assertEqual(

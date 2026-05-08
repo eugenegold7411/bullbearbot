@@ -428,12 +428,17 @@ class TestSF15CloseStructure(unittest.TestCase):
     def test_sf15_leg_failure_fires_alert(self) -> None:
         mock_client = MagicMock()
         mock_client.submit_order.side_effect = RuntimeError("alpaca error")
+        # Position must still be live so the failed-close alert path is reached.
+        live_pos = MagicMock()
+        live_pos.symbol = "SPY230620C00400000"
+        mock_client.get_all_positions.return_value = [live_pos]
         with patch("notifications.send_whatsapp_direct") as mock_wa:
             options_executor.close_structure(
                 _make_single_call(), mock_client, reason="test", method="market"
             )
+        # Alert fires on first attempt (count 0→1): key is close_stuck_<structure_id>
         mock_wa.assert_called()
-        assert "close_structure_leg_failed" in mock_wa.call_args[0][0]
+        assert "close_stuck" in mock_wa.call_args[0][0]
 
     def test_sf15_market_close_unchanged_when_partial_and_position_live(self) -> None:
         """

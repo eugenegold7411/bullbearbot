@@ -40,6 +40,7 @@ log = logging.getLogger(__name__)
 
 _SAFETY_DEDUP_SECS: float = 300.0
 _SAFETY_ALERT_CACHE: dict[str, float] = {}
+_MAX_CLOSE_ATTEMPTS: int = 5
 
 
 def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
@@ -59,6 +60,60 @@ def _fire_safety_alert(fn_name: str, exc: Exception) -> None:
             send_whatsapp_direct(msg)
         except Exception:
             pass
+    except Exception:
+        pass
+
+
+def _cancel_holding_orders(trading_client, occ_sym: str, exc: Exception) -> bool:
+    """
+    If exc is an Alpaca 40310000 held_for_orders error, cancel the related orders
+    so the qty is released for a close attempt. Returns True if any cancel was attempted.
+    """
+    try:
+        import uuid  # noqa: PLC0415
+        exc_str = str(exc)
+        if "held_for_orders" not in exc_str or "related_orders" not in exc_str:
+            return False
+        # Parse the JSON body out of the exception string.
+        _body_start = exc_str.find("{")
+        if _body_start == -1:
+            return False
+        _data = json.loads(exc_str[_body_start:])
+        _related = _data.get("related_orders") or []
+        if not _related:
+            return False
+        _canceled = 0
+        for _oid in _related:
+            try:
+                trading_client.cancel_order_by_id(uuid.UUID(str(_oid)))
+                log.info(
+                    "[EXECUTOR] canceled holding order %s for %s to release qty",
+                    _oid, occ_sym,
+                )
+                _canceled += 1
+            except Exception as _cex:
+                log.warning(
+                    "[EXECUTOR] could not cancel holding order %s for %s: %s",
+                    _oid, occ_sym, _cex,
+                )
+        return _canceled > 0
+    except Exception as _pex:
+        log.warning("[EXECUTOR] _cancel_holding_orders parse error: %s", _pex)
+        return False
+
+
+def _fire_manual_review_alert(
+    symbol: str, sid_short: str, attempts: int, positions_str: str
+) -> None:
+    try:
+        from notifications import send_whatsapp_direct  # noqa: PLC0415
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        msg = (
+            f"[A2 MANUAL REVIEW] {symbol} ({sid_short}): close failed {attempts} times"
+            f" — positions still open: {positions_str}."
+            f" Marked manual_review_required. {ts}"
+        )
+        send_whatsapp_direct(msg)
     except Exception:
         pass
 
@@ -672,10 +727,30 @@ def close_structure(
             log.info("[EXECUTOR] close leg %s %s order=%s", occ_sym, method, order_id)
 
         except Exception as exc:
+            # Attempt bracket cancel + single retry for held_for_orders errors.
+            _cancel_attempted = _cancel_holding_orders(trading_client, occ_sym, exc)
+            if _cancel_attempted:
+                try:
+                    order = trading_client.submit_order(req)
+                    order_id = str(order.id)
+                    structure.order_ids.append(order_id)
+                    structure.add_audit(
+                        f"close leg {occ_sym} submitted after bracket cancel: order_id={order_id}"
+                    )
+                    log.info(
+                        "[EXECUTOR] close leg %s %s order=%s (after bracket cancel)",
+                        occ_sym, method, order_id,
+                    )
+                    continue
+                except Exception as _retry_exc:
+                    log.error(
+                        "[EXECUTOR] close %s retry after bracket cancel also failed: %s",
+                        occ_sym, _retry_exc,
+                    )
+                    exc = _retry_exc
             all_submitted = False
             structure.add_audit(f"close leg {occ_sym} FAILED: {exc}")
             log.error("[EXECUTOR] close %s failed: %s", occ_sym, exc)
-            _fire_safety_alert("close_structure_leg_failed", exc)
 
     if all_submitted:
         structure.realized_pnl = _compute_realized_pnl_estimate(structure, current_prices)
@@ -716,22 +791,38 @@ def close_structure(
             )
         else:
             # Close FAILED and position still live — do NOT mark closed or set closed_at.
-            # Lifecycle stays FULLY_FILLED so the next reconciliation cycle retries.
             structure.close_attempt_count += 1
+            _positions_str = ", ".join(sorted(_leg_occs))
             log.error(
                 "[EXECUTOR] %s (%s) close FAILED — position still live in Alpaca "
                 "after %d attempt(s). Lifecycle unchanged at %s.",
                 structure.underlying, structure.structure_id[:8],
                 structure.close_attempt_count, structure.lifecycle.value,
             )
-            if structure.close_attempt_count >= 3:
+            if structure.close_attempt_count == 1:
+                # First failure — notify once.
                 _fire_safety_alert(
                     f"close_stuck_{structure.structure_id[:8]}",
                     Exception(
                         f"A2 {structure.underlying} ({structure.structure_id[:8]}) "
-                        f"close STUCK after {structure.close_attempt_count} attempts"
-                        f" — positions still open: {', '.join(sorted(_leg_occs))}"
+                        f"close failed on first attempt — positions still open: {_positions_str}"
                     ),
+                )
+            elif structure.close_attempt_count >= _MAX_CLOSE_ATTEMPTS:
+                # Max attempts reached — escalate and stop retrying.
+                structure = _set_lifecycle(
+                    structure, StructureLifecycle.MANUAL_REVIEW_REQUIRED,
+                    f"close failed {structure.close_attempt_count} times — manual review required",
+                )
+                log.error(
+                    "[EXECUTOR] %s: max close attempts (%d) reached — marking manual_review_required",
+                    structure.underlying, structure.close_attempt_count,
+                )
+                _fire_manual_review_alert(
+                    structure.underlying,
+                    structure.structure_id[:8],
+                    structure.close_attempt_count,
+                    _positions_str,
                 )
 
     _log_structure_event(structure, "close", reason)

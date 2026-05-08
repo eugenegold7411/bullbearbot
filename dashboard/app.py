@@ -581,7 +581,11 @@ def _a2_structures() -> list:
         raw = json.loads((BOT_DIR / "data/account2/positions/structures.json").read_text())
         structs = [s for s in raw if isinstance(s, dict)]
         active_lc = {"fully_filled", "open", "submitted", "proposed", "orphan_tracked"}
-        return [s for s in structs if s.get("lifecycle") in active_lc]
+        return [
+            s for s in structs
+            if s.get("lifecycle") in active_lc
+            and not str(s.get("structure_id", "")).startswith("test-")
+        ]
     except Exception:
         return []
 
@@ -924,6 +928,75 @@ def _calc_dte(expiry_str: str):
         return (date.fromisoformat(expiry_str) - date.today()).days
     except Exception:
         return None
+
+
+def _enrich_struct(struct: dict) -> dict:
+    """Fill in missing expiration/strike/direction for orphan structures from leg OCC symbols."""
+    import re as _re
+    if struct.get("expiration") and struct.get("long_strike") is not None:
+        return struct
+    legs = struct.get("legs", [])
+    if not legs:
+        return struct
+    s = dict(struct)
+    buy_legs = [lg for lg in legs if lg.get("side") == "buy"]
+    sell_legs = [lg for lg in legs if lg.get("side") == "sell"]
+
+    def _parse(occ: str) -> dict:
+        m = _re.match(r'^([A-Z]+)(\d{6})([CP])(\d{8})$', str(occ or ""))
+        if not m:
+            return {}
+        und, ds, cp, stk = m.groups()
+        return {
+            "underlying": und,
+            "expiration": f"20{ds[:2]}-{ds[2:4]}-{ds[4:]}",
+            "option_type": cp,
+            "strike": int(stk) / 1000.0,
+        }
+
+    # Derive expiration and strikes from the first buy leg
+    if buy_legs:
+        parsed = _parse(buy_legs[0].get("occ_symbol", ""))
+        if parsed:
+            if not s.get("expiration"):
+                s["expiration"] = parsed["expiration"]
+            if s.get("long_strike") is None:
+                s["long_strike"] = parsed["strike"]
+            # direction from option type when missing
+            if not s.get("direction"):
+                s["direction"] = "bullish" if parsed.get("option_type") == "C" else "bearish"
+
+    if sell_legs and s.get("short_strike") is None:
+        parsed_sell = _parse(sell_legs[0].get("occ_symbol", ""))
+        if parsed_sell:
+            s["short_strike"] = parsed_sell["strike"]
+
+    # Compute debit_paid from leg filled prices when missing
+    if s.get("debit_paid") is None:
+        total, ok = 0.0, True
+        for lg in legs:
+            fp = lg.get("filled_price")
+            if fp is None:
+                ok = False
+                break
+            total += float(fp) if lg.get("side") == "buy" else -float(fp)
+        if ok:
+            s["debit_paid"] = round(total, 4)
+
+    # Compute max_profit_usd for spreads when width is known
+    if s.get("max_profit_usd") is None and s.get("max_cost_usd") is None:
+        ls = s.get("long_strike")
+        ss = s.get("short_strike")
+        dp = s.get("debit_paid")
+        if ls is not None and ss is not None and dp is not None:
+            width = abs(float(ss) - float(ls))
+            contracts = int(s.get("contracts") or 1)
+            max_gain = max(0.0, (width - abs(dp)) * contracts * 100)
+            max_loss = abs(dp) * contracts * 100
+            s["max_profit_usd"] = round(max_gain, 2)
+            s["max_cost_usd"] = round(max_loss, 2)
+
+    return s
 
 
 def _build_a2_position_cards(structures: list, a2_live_positions: list) -> list:
@@ -3957,6 +4030,7 @@ def _a2_payoff_bar_html(max_loss, max_gain, breakeven) -> str:
 
 def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
     """Full cinematic thesis card for one open A2 structure."""
+    struct = _enrich_struct(struct)
     underlying = struct.get("underlying", "?")
     strategy = struct.get("strategy", "")
     expiry = struct.get("expiration", "")
@@ -4072,6 +4146,11 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
 
     a1_score = sc.get("a1_score")
     a1_conv = sc.get("a1_conviction", "")
+    a1_eda = sc.get("a1_earnings_eda")
+    a1_earnings_conv = sc.get("a1_earnings_conviction_level") or ""
+    # Primary catalyst: prefer a1_primary_catalyst from decision over debate text
+    # (debate.reasons is often cross-contaminated with a different symbol's debate)
+    a1_catalyst = sc.get("a1_primary_catalyst") or struct.get("catalyst") or ""
     conf_str = (f"{float(conf):.0%}") if conf is not None else "?"
     iv_env = _iv_env_label(iv_rank)
     iv_str = f"{iv_rank:.0f}" if iv_rank is not None else "?"
@@ -4088,6 +4167,21 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
         chips_parts.append('<span style="' + chip_sty + '">IV ' + iv_str + ' · ' + iv_env + '</span>')
     if a1_conv:
         chips_parts.append('<span style="' + chip_sty + '">' + str(a1_conv) + '</span>')
+    # Earnings context chip — only when eda is available and within 14 days
+    if a1_eda is not None:
+        try:
+            eda_int = int(a1_eda)
+            eda_color = "var(--bbb-warn)" if eda_int <= 7 else "var(--bbb-fg-muted)"
+            eda_chip_sty = (
+                "font-family:var(--bbb-font-mono);font-size:10px;color:" + eda_color + ";"
+                "padding:2px 6px;background:var(--bbb-surface-2);border-radius:var(--bbb-r-1);white-space:nowrap"
+            )
+            eda_label = f"earnings {eda_int}d"
+            if a1_earnings_conv:
+                eda_label += " · " + str(a1_earnings_conv)
+            chips_parts.append('<span style="' + eda_chip_sty + '">⚑ ' + eda_label + '</span>')
+        except (TypeError, ValueError):
+            pass
     chips_html = " ".join(chips_parts)
 
     # Build per-agent text from structured debate data.
@@ -4218,6 +4312,28 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
             pass
 
     breakeven = sc.get("breakeven")
+    # Compute breakeven from leg fill prices when not in decision file
+    if breakeven is None:
+        _dp = struct.get("debit_paid")
+        if _dp is None:
+            _leg_fills = struct.get("legs", [])
+            if _leg_fills:
+                _total, _ok = 0.0, True
+                for _lg in _leg_fills:
+                    _fp = _lg.get("filled_price")
+                    if _fp is None:
+                        _ok = False
+                        break
+                    _total += float(_fp) if _lg.get("side") == "buy" else -float(_fp)
+                if _ok:
+                    _dp = _total
+        if _dp is not None:
+            _ls = long_strike
+            if _ls is not None:
+                if "call" in strategy:
+                    breakeven = float(_ls) + float(_dp)
+                elif "put" in strategy:
+                    breakeven = float(_ls) - float(_dp)
     payoff_html = _a2_payoff_bar_html(max_loss, max_profit, breakeven)
 
     if matched and max_loss:
@@ -4309,10 +4425,20 @@ def _a2_cinematic_card_html(struct: dict, dec: dict, occ_pnl: dict) -> str:
         + held_chip +
         '<span style="margin-left:auto;display:flex;gap:4px">' + lc_pill + ' ' + verdict_pill + '</span>'
         '</div>'
-        # thesis + chips
+        # thesis + chips: show A1 catalyst as primary entry thesis; debate summary below
         '<div style="padding:8px 20px;border-bottom:1px solid var(--bbb-border)">'
-        '<div style="font-family:var(--bbb-font-sans);font-size:13px;color:var(--bbb-fg);margin-bottom:4px">' + thesis + '</div>'
-        '<div style="display:flex;flex-wrap:wrap;gap:4px">' + chips_html + '</div>'
+        + (
+            '<div style="display:flex;align-items:baseline;gap:6px;margin-bottom:3px">'
+            '<span style="font-family:var(--bbb-font-mono);font-size:9px;letter-spacing:.06em;'
+            'text-transform:uppercase;color:var(--bbb-fg-dim);white-space:nowrap">A1 signal</span>'
+            '<span style="font-family:var(--bbb-font-sans);font-size:13px;color:var(--bbb-fg)">'
+            + (a1_catalyst or "—") + '</span>'
+            '</div>'
+            if a1_catalyst else
+            '<div style="font-family:var(--bbb-font-sans);font-size:13px;color:var(--bbb-fg);margin-bottom:3px">'
+            + thesis + '</div>'
+        )
+        + '<div style="display:flex;flex-wrap:wrap;gap:4px">' + chips_html + '</div>'
         '</div>'
         # body: debate + payoff
         '<div style="display:grid;grid-template-columns:1fr 260px;gap:12px;padding:12px 20px">'
@@ -5012,10 +5138,17 @@ def _a2_structure_eligibility_html() -> str:
     header = (
         '<div class="section-label" style="margin-top:0;margin-bottom:6px">'
         'Structure Eligibility Matrix</div>'
-        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">'
+        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">'
         f'VIX <b style="color:var(--text-primary)">{vix:.1f}</b>'
         f' &mdash; regime: <b style="color:{regime_color}">{vix_regime}</b>'
-        ' &mdash; simplified routing (sans earnings/macro/liquidity gates)</div>'
+        ' &mdash; IV/direction routing only</div>'
+        '<div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;'
+        'padding:5px 8px;background:var(--bg-card-2);border-radius:4px;'
+        'border-left:3px solid var(--accent-amber)">'
+        '&#9888; RULE3 liquidity gate, earnings timing, and macro regime gates apply at execution '
+        'and may block structures shown as eligible above. '
+        'High-IV symbols (e.g. AMAT) may show credit spreads eligible but be blocked by low open interest.'
+        '</div>'
     )
 
     dir_color = {"bullish": "#00e676", "bearish": "#ff5050", "neutral": "#8b949e"}

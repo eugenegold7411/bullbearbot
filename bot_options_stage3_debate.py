@@ -164,6 +164,57 @@ def _build_existing_position_context(
     return "\n".join(lines)
 
 
+# ── Historical alpha context ──────────────────────────────────────────────────
+# Decisions are classified post-hoc by decision_outcomes.classify_alpha into
+# alpha_positive / alpha_negative / alpha_neutral / quality_positive_non_alpha.
+# We surface a per-symbol summary so the debate has the same hindsight the
+# weekly review would. Inject only when n>=_ALPHA_MIN_INJECT; mark "(thin
+# sample)" below _ALPHA_THIN_THRESHOLD so the model can weight accordingly.
+
+_ALPHA_THIN_THRESHOLD = 5  # below this we annotate as thin sample
+
+_ALPHA_OUTCOME_EMOJI = {
+    "alpha_positive": "✅",
+    "alpha_negative": "❌",
+    "alpha_neutral":  "➖",
+}
+
+
+def _format_alpha_summary_for_debate(symbol: str) -> str:
+    """Return a debate-prompt-ready alpha block for `symbol`, or "" if too thin.
+
+    Reads from decision_outcomes.get_alpha_summary which enforces the minimum
+    sample threshold (currently 2) — we trust None as the "skip" signal.
+    Samples below _ALPHA_THIN_THRESHOLD (5) are tagged "(thin sample)".
+
+    Failure-tolerant: any exception returns "" so the debate proceeds without
+    historical context rather than crashing.
+    """
+    try:
+        from decision_outcomes import get_alpha_summary  # noqa: PLC0415
+        summary = get_alpha_summary(symbol)
+    except Exception as exc:
+        log.debug("[OPTS] alpha summary fetch failed for %s: %s", symbol, exc)
+        return ""
+
+    if not summary:
+        return ""
+    n = int(summary.get("n", 0) or 0)
+
+    win_rate = float(summary.get("win_rate", 0.0) or 0.0)
+    avg      = float(summary.get("avg_outcome_pct", 0.0) or 0.0)
+    last     = list(summary.get("last_outcomes") or summary.get("last_n_outcomes") or [])
+    if last and "last_outcomes" not in summary:
+        last = list(reversed(last[-3:]))   # legacy ordering → most-recent-first
+    emojis   = " ".join(_ALPHA_OUTCOME_EMOJI.get(c, "❔") for c in last[:3]) or "—"
+    thin     = " (thin sample)" if n < _ALPHA_THIN_THRESHOLD else ""
+    return (
+        f"HISTORICAL ALPHA — {symbol} (last {n} decisions{thin}):\n"
+        f"  Win rate: {win_rate:.0%} | Avg outcome: {avg:+.1%}\n"
+        f"  Recent: {emojis}"
+    )
+
+
 # ── Prompt system loader ──────────────────────────────────────────────────────
 
 _OPTS_SYSTEM = None
@@ -655,10 +706,39 @@ def run_bounded_debate(
     _candidate_syms = {c.get("symbol", "") for c in (candidate_structures or [])}
     _per_symbol_context: dict[str, str] = {}
     for _sym in _candidate_syms:
-        if _sym:
-            _per_symbol_context[_sym] = _build_existing_position_context(
-                _sym, _all_structures, _alpaca_positions
-            )
+        if not _sym:
+            continue
+        _ctx = _build_existing_position_context(
+            _sym, _all_structures, _alpaca_positions
+        )
+        _alpha_block = _format_alpha_summary_for_debate(_sym)
+        if _alpha_block:
+            _ctx = f"{_ctx}\n\n{_alpha_block}"
+        _per_symbol_context[_sym] = _ctx
+
+    # Position-intel greek context — append per-symbol intel for any drift
+    # state ≠ NORMAL. Reads data/options/position_intel_latest.json (file-based;
+    # decoupled from in-process state). Non-fatal: missing file → no inject.
+    try:
+        import options_position_manager as _opm  # noqa: PLC0415
+        for _sym in list(_per_symbol_context.keys()):
+            _recs = _opm.get_recommendations(symbol=_sym)
+            for _rec in _recs:
+                _drift = (_rec.details or {}).get("drift_state")
+                if (_rec.action or "HOLD") == "HOLD" and _drift in (None, "NORMAL"):
+                    continue
+                _greek_block = "\n".join([
+                    "",
+                    f"POSITION INTELLIGENCE for {_sym}:",
+                    f"  Drift state: {_drift or 'n/a'}",
+                    f"  Recommended action: {_rec.action} ({_rec.urgency})",
+                    f"  Reason: {_rec.reason}",
+                ])
+                _per_symbol_context[_sym] = (
+                    _per_symbol_context.get(_sym, "") + "\n" + _greek_block
+                )
+    except Exception as _pi_exc:
+        log.debug("[OPTS] position_intel greek context inject failed: %s", _pi_exc)
 
     debate_result, prompt_used, raw_response = run_options_debate(
         candidates=candidates,

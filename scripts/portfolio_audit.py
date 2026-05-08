@@ -41,6 +41,13 @@ _AUDIT_LATEST     = _REPORTS_DIR / "portfolio_audit_latest.json"
 _AUDIT_LOG        = _REPORTS_DIR / "portfolio_audit_log.jsonl"
 
 _HAIKU_MODEL = "claude-haiku-4-5-20251001"
+# Haiku-4.5 max output is 8192. Bumped from 4000 because 28+ position audits
+# truncate mid-array when each verdict averages 220-280 output tokens.
+_HAIKU_MAX_TOKENS = 8192
+# Combined position count above which we split into multiple Haiku calls.
+# Each call gets at most _BATCH_SIZE rows so output never approaches max_tokens.
+_BATCH_THRESHOLD = 20
+_BATCH_SIZE      = 15
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -571,17 +578,93 @@ def _try_parse_haiku_json(raw: str) -> tuple[Optional[dict], Optional[str]]:
     return None, last_err
 
 
+def _call_haiku(client, prompt_text: str) -> str:
+    resp = client.messages.create(
+        model=_HAIKU_MODEL,
+        max_tokens=_HAIKU_MAX_TOKENS,
+        system=_AUDIT_SYSTEM,
+        messages=[{"role": "user", "content": prompt_text}],
+    )
+    raw_text = "".join(
+        (block.text if hasattr(block, "text") else str(block))
+        for block in getattr(resp, "content", [])
+    )
+    # Cost spine logging (non-fatal)
+    try:
+        from cost_attribution import log_spine_record  # noqa: PLC0415
+        usage = getattr(resp, "usage", None)
+        log_spine_record({
+            "ts":             datetime.now(timezone.utc).isoformat(),
+            "module_name":    "portfolio_audit",
+            "layer_name":     "portfolio_audit",
+            "model":          _HAIKU_MODEL,
+            "input_tokens":   int(getattr(usage, "input_tokens",  0) or 0),
+            "output_tokens":  int(getattr(usage, "output_tokens", 0) or 0),
+            "ring":           "prod",
+        })
+    except Exception as _cs_exc:
+        log.debug("[AUDIT] cost spine log failed (non-fatal): %s", _cs_exc)
+    return raw_text
+
+
+def _haiku_one_batch(
+    client,
+    rows_a1: list[dict],
+    rows_a2: list[dict],
+    meta: dict,
+) -> list[dict]:
+    """Run one Haiku call for a single batch. Mutates meta with last-call diagnostics."""
+    payload = json.dumps({
+        "a1_positions": rows_a1,
+        "a2_structures": rows_a2,
+    }, default=str)
+    today_str = datetime.now(ET).strftime("%Y-%m-%d")
+    base_prompt = (
+        f"Today's date is {today_str}.\n\n"
+        f"Collected portfolio state (JSON):\n{payload}\n\n{_AUDIT_SCHEMA_HINT}"
+    )
+
+    raw = _call_haiku(client, base_prompt)
+    meta["raw_excerpt"] = raw[:500]
+
+    obj, err = _try_parse_haiku_json(raw)
+    if obj is None:
+        log.warning("[AUDIT] Haiku raw response (first 500): %s", raw[:500])
+        log.warning("[AUDIT] Haiku JSON parse failed: %s — retrying once", err)
+        meta["retried"] = True
+        retry_prompt = (
+            base_prompt
+            + "\n\nYour previous response failed JSON parsing with error: "
+            + str(err)
+            + ". Respond ONLY with valid JSON, no preamble, no markdown."
+        )
+        raw2 = _call_haiku(client, retry_prompt)
+        meta["raw_excerpt"] = raw2[:500]
+        obj, err = _try_parse_haiku_json(raw2)
+        if obj is None:
+            log.warning("[AUDIT] Haiku retry also unparseable (first 500): %s", raw2[:500])
+            meta["parse_error"] = err
+            return []
+
+    return list(obj.get("positions", []))
+
+
 def _synthesize_with_haiku(
     rows_a1: list[dict],
     rows_a2: list[dict],
 ) -> tuple[list[dict], dict]:
-    """One Haiku call that returns per-position verdicts.
+    """Haiku synthesis returning per-position verdicts.
+
+    Single call when combined position count <= _BATCH_THRESHOLD; otherwise
+    splits into chunks of <= _BATCH_SIZE rows so the response never
+    approaches max_tokens. Per-batch failures are logged and skipped — partial
+    results still surface.
 
     Returns (positions, meta). meta carries diagnostic fields:
-        ok: bool — True if a valid JSON object was parsed.
-        raw_excerpt: str — first 500 chars of the *last* raw response.
+        ok: bool — True if at least one batch parsed successfully.
+        raw_excerpt: str — first 500 chars of the last raw response.
         parse_error: Optional[str] — last JSONDecodeError text, if any.
-        retried: bool — True if a retry was issued.
+        retried: bool — True if any batch was retried.
         skipped: Optional[str] — reason if the call never happened
             ("no_sdk" | "no_key" | "exception:<msg>").
 
@@ -608,76 +691,44 @@ def _synthesize_with_haiku(
         meta["skipped"] = "no_key"
         return [], meta
 
-    payload = json.dumps({
-        "a1_positions": rows_a1,
-        "a2_structures": rows_a2,
-    }, default=str)
-
-    today_str = datetime.now(ET).strftime("%Y-%m-%d")
-    base_prompt = (
-        f"Today's date is {today_str}.\n\n"
-        f"Collected portfolio state (JSON):\n{payload}\n\n{_AUDIT_SCHEMA_HINT}"
-    )
-
-    def _call_haiku(client, prompt_text: str) -> str:
-        resp = client.messages.create(
-            model=_HAIKU_MODEL,
-            max_tokens=4000,
-            system=_AUDIT_SYSTEM,
-            messages=[{"role": "user", "content": prompt_text}],
-        )
-        raw_text = "".join(
-            (block.text if hasattr(block, "text") else str(block))
-            for block in getattr(resp, "content", [])
-        )
-        # Cost spine logging (non-fatal)
-        try:
-            from cost_attribution import log_spine_record  # noqa: PLC0415
-            usage = getattr(resp, "usage", None)
-            log_spine_record({
-                "ts":             datetime.now(timezone.utc).isoformat(),
-                "module_name":    "portfolio_audit",
-                "layer_name":     "portfolio_audit",
-                "model":          _HAIKU_MODEL,
-                "input_tokens":   int(getattr(usage, "input_tokens",  0) or 0),
-                "output_tokens":  int(getattr(usage, "output_tokens", 0) or 0),
-                "ring":           "prod",
-            })
-        except Exception as _cs_exc:
-            log.debug("[AUDIT] cost spine log failed (non-fatal): %s", _cs_exc)
-        return raw_text
-
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        raw = _call_haiku(client, base_prompt)
-        meta["raw_excerpt"] = raw[:500]
+        total = len(rows_a1) + len(rows_a2)
 
-        obj, err = _try_parse_haiku_json(raw)
-        if obj is None:
-            log.warning(
-                "[AUDIT] Haiku raw response (first 500): %s", raw[:500],
-            )
-            log.warning("[AUDIT] Haiku JSON parse failed: %s — retrying once", err)
-            meta["retried"] = True
-            retry_prompt = (
-                base_prompt
-                + "\n\nYour previous response failed JSON parsing with error: "
-                + str(err)
-                + ". Respond ONLY with valid JSON, no preamble, no markdown."
-            )
-            raw2 = _call_haiku(client, retry_prompt)
-            meta["raw_excerpt"] = raw2[:500]
-            obj, err = _try_parse_haiku_json(raw2)
-            if obj is None:
+        if total <= _BATCH_THRESHOLD:
+            positions = _haiku_one_batch(client, rows_a1, rows_a2, meta)
+            meta["ok"] = bool(positions)
+            return positions, meta
+
+        # Batched path — preserve account-tag while chunking by combined size.
+        combined = (
+            [(r, "A1") for r in rows_a1]
+            + [(r, "A2") for r in rows_a2]
+        )
+        chunks = [
+            combined[i : i + _BATCH_SIZE]
+            for i in range(0, len(combined), _BATCH_SIZE)
+        ]
+        log.info(
+            "[AUDIT] Haiku batching: %d positions across %d calls",
+            total, len(chunks),
+        )
+
+        all_positions: list[dict] = []
+        for batch_idx, chunk in enumerate(chunks):
+            batch_a1 = [r for r, acct in chunk if acct == "A1"]
+            batch_a2 = [r for r, acct in chunk if acct == "A2"]
+            try:
+                positions = _haiku_one_batch(client, batch_a1, batch_a2, meta)
+                all_positions.extend(positions)
+            except Exception as exc:
                 log.warning(
-                    "[AUDIT] Haiku retry also unparseable (first 500): %s",
-                    raw2[:500],
+                    "[AUDIT] Haiku batch %d/%d failed (non-fatal): %s",
+                    batch_idx + 1, len(chunks), exc,
                 )
-                meta["parse_error"] = err
-                return [], meta
 
-        meta["ok"] = True
-        return list(obj.get("positions", [])), meta
+        meta["ok"] = bool(all_positions)
+        return all_positions, meta
     except Exception as exc:
         log.warning("[AUDIT] Haiku synthesis failed (non-fatal): %s", exc)
         meta["skipped"] = f"exception:{exc}"

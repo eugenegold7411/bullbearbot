@@ -611,6 +611,104 @@ def classify_alpha(record: DecisionOutcomeRecord) -> str:
         return "insufficient_sample"
 
 
+_ALPHA_MIN_SAMPLE = 2
+_ALPHA_ENTRY_ACTIONS = {"buy", "enter_long"}
+
+
+def get_alpha_summary(symbol: str, n: int = 10) -> Optional[dict]:
+    """
+    Aggregate alpha-classified entry outcomes for `symbol` over the most recent
+    `n` classified records. Filters by entry actions (buy / enter_long) so the
+    win rate reflects opening conviction, not exits or rejections.
+
+    Returns None when fewer than _ALPHA_MIN_SAMPLE records exist — callers
+    should not inject thin historical context.
+
+    Returned shape:
+        {
+            "symbol":             str,
+            "n":                  int,
+            "win_rate":           float,        # alpha_positive / n_actual
+            "avg_outcome_pct":    float,        # mean of outcome_pct or return_1d
+            "classifications":   {label: count},
+            "last_outcomes":     [str],         # last 3 classifications, most-recent-first
+            "last_outcome_pcts": [float],       # corresponding outcome pcts
+            "last_n_outcomes":   [str],         # full window, oldest → newest (legacy)
+        }
+
+    Never raises. Returns None on any IO/parse failure.
+    """
+    try:
+        if not OUTCOMES_LOG.exists():
+            return None
+        records: list[dict] = []
+        with open(OUTCOMES_LOG) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("symbol") != symbol:
+                    continue
+                if not rec.get("alpha_classification"):
+                    continue
+                if (rec.get("action") or "").lower() not in _ALPHA_ENTRY_ACTIONS:
+                    continue
+                records.append(rec)
+
+        if len(records) < _ALPHA_MIN_SAMPLE:
+            return None
+
+        records = records[-n:]
+        n_actual = len(records)
+        wins = sum(
+            1 for r in records
+            if r.get("alpha_classification") == "alpha_positive"
+        )
+
+        def _record_outcome(r: dict) -> Optional[float]:
+            o = r.get("outcome_pct")
+            if o is None:
+                o = r.get("return_1d")
+            if o is None:
+                return None
+            try:
+                return float(o)
+            except (TypeError, ValueError):
+                return None
+
+        outcomes: list[float] = [v for v in (_record_outcome(r) for r in records) if v is not None]
+        avg_outcome = sum(outcomes) / len(outcomes) if outcomes else 0.0
+
+        from collections import Counter
+        cls_counts = Counter(
+            r.get("alpha_classification", "") for r in records
+        )
+
+        recent = list(reversed(records[-3:]))
+        return {
+            "symbol":            symbol,
+            "n":                 n_actual,
+            "win_rate":          round(wins / n_actual, 3),
+            "avg_outcome_pct":   round(avg_outcome, 5),
+            "classifications":   dict(cls_counts),
+            "last_outcomes":     [r.get("alpha_classification", "") for r in recent],
+            "last_outcome_pcts": [
+                round(v, 5) if v is not None else 0.0
+                for v in (_record_outcome(r) for r in recent)
+            ],
+            "last_n_outcomes":   [
+                r.get("alpha_classification", "") for r in records
+            ],
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[OUTCOMES] get_alpha_summary failed: %s", exc)
+        return None
+
+
 def update_outcome_record(
     decision_id: str,
     symbol: Optional[str] = None,

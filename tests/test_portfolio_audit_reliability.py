@@ -274,3 +274,50 @@ def test_slot_resets_for_new_day(slot_path):
         loaded = scheduler._load_audit_slots_ran()
 
     assert loaded == set(), "stale-day slots must be discarded"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QW1 / #51 — max_tokens bump and batching
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_max_tokens_set_to_8192():
+    """Single Haiku call uses max_tokens=8192 (Haiku-4.5 max output)."""
+    from scripts import portfolio_audit as pa
+
+    payload = json.dumps({"positions": [{"symbol": "TST", "verdict": "green"}]})
+    fake = _FakeAnthropic([payload])
+    fake_module = mock.MagicMock()
+    fake_module.Anthropic = lambda **kw: fake  # noqa: ARG005
+
+    with mock.patch.dict("sys.modules", {"anthropic": fake_module}), \
+         mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}):
+        positions, meta = pa._synthesize_with_haiku([{"symbol": "TST"}], [])
+
+    assert meta["ok"] is True
+    assert len(fake.messages.calls) == 1
+    assert fake.messages.calls[0]["max_tokens"] == 8192
+
+
+def test_batching_when_over_threshold():
+    """25 combined rows → 2 Haiku calls (chunks of <= 15)."""
+    from scripts import portfolio_audit as pa
+
+    payload = json.dumps({"positions": [{"symbol": "X", "verdict": "green"}]})
+    # We need 2 replies — one per batch. Add a third as buffer.
+    fake = _FakeAnthropic([payload, payload, payload])
+    fake_module = mock.MagicMock()
+    fake_module.Anthropic = lambda **kw: fake  # noqa: ARG005
+
+    rows_a1 = [{"symbol": f"A{i}"} for i in range(15)]
+    rows_a2 = [{"symbol": f"B{i}"} for i in range(10)]
+
+    with mock.patch.dict("sys.modules", {"anthropic": fake_module}), \
+         mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}):
+        positions, meta = pa._synthesize_with_haiku(rows_a1, rows_a2)
+
+    assert meta["ok"] is True
+    assert len(fake.messages.calls) == 2, (
+        "expected 2 batched calls for 25 rows / batch_size=15"
+    )
+    for call in fake.messages.calls:
+        assert call["max_tokens"] == 8192

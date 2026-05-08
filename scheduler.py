@@ -502,6 +502,7 @@ _earnings_stale_check_date:    str = ""   # "YYYY-MM-DD" of last staleness check
 _earnings_intel_ran_date:      str = ""   # "YYYY-MM-DD" of last analyst intel refresh
 _zero_fill_alert_date:         str = ""   # "YYYY-MM-DD" of last zero-fill alert
 _portfolio_audit_slots_ran:    set = set()  # {"YYYY-MM-DD-open","YYYY-MM-DD-close"} fired today
+_pending_protection_sells_run_date: str = ""  # "YYYY-MM-DD" of last 9:30 pending sells pickup
 _last_qualitative_sweep_key:   str = ""   # "YYYY-MM-DD-HH" of last L1 sweep (hourly slot)
 _last_qualitative_news_hash:   str = ""   # news hash at last L1 sweep, for event-driven refresh
 _qualitative_sweep_running:    bool = False  # guard against concurrent sweeps
@@ -972,6 +973,120 @@ def _maybe_run_premarket_jobs(dry_run: bool = False) -> None:
 
     if _warehouse_ok:
         _premarket_ran_date = today
+
+
+_PENDING_PROTECTION_SELLS_PATH = (
+    Path(__file__).parent / "data" / "runtime" / "pending_protection_sells.json"
+)
+
+
+def _maybe_execute_pending_protection_sells(dry_run: bool = False) -> None:
+    """Execute protection sells flagged overnight by exit_manager.
+
+    exit_manager.attempt_repair_or_sell() writes pending_protection_sells.json
+    with market_status="pending_open" when OCO repair fails while the market
+    is closed. This handler picks up those entries at 9:30-9:34 AM ET on
+    weekdays, places a market sell, and updates each entry to
+    market_status="sell_placed".
+
+    Fires once per day. File missing/empty → silent no-op. Per-symbol failures
+    are isolated; the file is rewritten with whatever progress was made.
+    # TODO(DASHBOARD): surface pending_protection_sells status panel
+    """
+    global _pending_protection_sells_run_date
+
+    now_et  = datetime.now(ET)
+    today   = _today()
+    weekday = now_et.weekday()
+    now_min = now_et.hour * 60 + now_et.minute
+
+    if weekday >= 5:
+        return
+    # 9:30-9:34 AM ET window — must run after exit_manager has stopped writing.
+    if not (_MARKET_START <= now_min < _MARKET_START + 5):
+        return
+    if _pending_protection_sells_run_date == today:
+        return
+
+    try:
+        if not _PENDING_PROTECTION_SELLS_PATH.exists():
+            _pending_protection_sells_run_date = today
+            return
+        data = json.loads(_PENDING_PROTECTION_SELLS_PATH.read_text())
+    except Exception as exc:
+        log.error("[SCHEDULER] read pending_protection_sells.json failed: %s", exc)
+        _fire_safety_alert("_maybe_execute_pending_protection_sells_read", exc)
+        return
+
+    pending = [
+        (sym, entry) for sym, entry in (data or {}).items()
+        if isinstance(entry, dict) and entry.get("market_status") == "pending_open"
+    ]
+    if not pending:
+        _pending_protection_sells_run_date = today
+        return
+
+    if dry_run:
+        log.info(
+            "[dry-run] Skipping pending protection sells (%d candidates)",
+            len(pending),
+        )
+        _pending_protection_sells_run_date = today
+        return
+
+    try:
+        from alpaca.trading.enums import OrderSide, TimeInForce  # noqa: PLC0415
+        from alpaca.trading.requests import MarketOrderRequest  # noqa: PLC0415
+        client = bot._get_alpaca()
+    except Exception as exc:
+        log.error(
+            "[SCHEDULER] alpaca client init failed for pending sells: %s", exc,
+        )
+        _fire_safety_alert("_maybe_execute_pending_protection_sells_client", exc)
+        return
+
+    for sym, entry in pending:
+        try:
+            qty = float(entry.get("qty") or 0)
+            if qty <= 0:
+                log.warning(
+                    "[SCHEDULER] %s: pending sell has invalid qty=%g, skipping",
+                    sym, qty,
+                )
+                continue
+            sell_req = MarketOrderRequest(
+                symbol=sym,
+                qty=qty,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+            )
+            sell_ord = client.submit_order(sell_req)
+            order_id = str(getattr(sell_ord, "id", ""))
+            data[sym] = {
+                **entry,
+                "market_status": "sell_placed",
+                "executed_at":   now_et.isoformat(),
+                "order_id":      order_id,
+            }
+            log.warning(
+                "[SCHEDULER] %s: pending protection sell executed at open"
+                " qty=%g order_id=%s",
+                sym, qty, order_id,
+            )
+        except Exception as exc:
+            log.error(
+                "[SCHEDULER] %s: pending protection sell submit failed: %s",
+                sym, exc,
+            )
+            _fire_safety_alert(f"pending_protection_sell_{sym}", exc)
+
+    try:
+        _PENDING_PROTECTION_SELLS_PATH.write_text(json.dumps(data, indent=2))
+    except Exception as exc:
+        log.error("[SCHEDULER] write pending_protection_sells.json failed: %s", exc)
+        _fire_safety_alert("_maybe_execute_pending_protection_sells_write", exc)
+
+    _pending_protection_sells_run_date = today
 
 
 def _maybe_reset_session_watchlist() -> None:
@@ -2006,6 +2121,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_refresh_earnings_calendar_av(dry_run)
         _maybe_refresh_earnings_calendar_av_daily(dry_run)
         _maybe_run_premarket_jobs(dry_run)
+        _maybe_execute_pending_protection_sells(dry_run)
         _maybe_run_earnings_rotation(dry_run)
         _maybe_check_earnings_calendar_staleness(dry_run)
         _maybe_refresh_macro_intelligence(dry_run)

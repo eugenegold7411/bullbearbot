@@ -307,6 +307,9 @@ def _check_a1_churn(now_et: datetime) -> CheckResult:
                     buy_syms.add(sym)
                 elif act in ("sell", "close"):
                     sell_syms.add(sym)
+                elif act == "reallocate":
+                    sell_syms.add(action.get("exit_symbol", ""))
+                    buy_syms.add(action.get("entry_symbol") or action.get("symbol", ""))
         churned = buy_syms & sell_syms
         if churned:
             return CheckResult(name=name, ok=False, severity="CRITICAL",

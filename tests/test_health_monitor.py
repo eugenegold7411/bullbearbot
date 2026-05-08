@@ -244,6 +244,30 @@ class TestA1Churn(unittest.TestCase):
         r = self._run([], now_et=_outside_time())
         self.assertTrue(r.ok)
 
+    def test_reallocate_exit_buy_same_symbol_detected_as_churn(self):
+        """FIX-2: reallocate exit_symbol → sell_syms; if later bought, churn fires."""
+        records = [
+            {"ts": _ts(10), "actions": [
+                {"action": "reallocate", "exit_symbol": "ITA", "entry_symbol": "ASML"},
+            ]},
+            {"ts": _ts(5), "actions": [
+                {"action": "buy", "symbol": "ITA"},
+            ]},
+        ]
+        r = self._run(records)
+        self.assertFalse(r.ok, "reallocate exit of ITA + buy ITA should be churn")
+        self.assertIn("ITA", r.message)
+
+    def test_reallocate_no_churn_different_symbols(self):
+        """FIX-2: reallocate that doesn't reverse itself is not churn."""
+        records = [
+            {"ts": _ts(10), "actions": [
+                {"action": "reallocate", "exit_symbol": "GS", "entry_symbol": "ARM"},
+            ]},
+        ]
+        r = self._run(records)
+        self.assertTrue(r.ok, "single reallocate with no reversal must not flag churn")
+
     def test_path_not_via_data_dir(self):
         """After Fix 1: decisions_path must not be constructed through _DATA_DIR."""
         import inspect

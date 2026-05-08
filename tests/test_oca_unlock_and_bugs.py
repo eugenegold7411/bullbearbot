@@ -376,5 +376,62 @@ class TestQualitativeSweepSymbolCap(unittest.TestCase):
         self.assertEqual(len(captured), 10)
 
 
+# ── FIX-1a: OCO cancel propagation sleep ─────────────────────────────────────
+
+class TestOcaCancelSleepPropagation(unittest.TestCase):
+    """FIX-1a: time.sleep(1.5) must be called after canceling stop orders so
+    Alpaca's held_for_orders clears before the sell is submitted."""
+
+    def setUp(self):
+        import order_executor as oe
+        self._oe = oe
+
+    def _run_with_clean_em_guard(self, symbol, stop_orders, sell_return, sleep_calls):
+        """Run _sell_cancel_stop_and_sell with exit_manager guard cleared for symbol."""
+        import exit_manager as _em
+        alpaca = MagicMock()
+        alpaca.get_orders.return_value = stop_orders
+        alpaca.cancel_order_by_id.return_value = None
+        # Clear any residual stop-placed timestamp that would fire the 60s guard.
+        orig = _em._stops_placed_this_cycle.pop(symbol, None)
+        try:
+            with patch.object(self._oe, "_get_alpaca", return_value=alpaca):
+                with patch.object(self._oe, "_submit_sell", return_value=sell_return):
+                    with patch.object(self._oe, "_replace_stop"):
+                        with patch("order_executor.time.sleep",
+                                   side_effect=lambda s: sleep_calls.append(s)):
+                            self._oe._sell_cancel_stop_and_sell(symbol, 50, [])
+        finally:
+            if orig is not None:
+                _em._stops_placed_this_cycle[symbol] = orig
+
+    def test_sleep_called_when_stops_canceled(self):
+        """When stop orders are present and canceled, time.sleep(1.5) is called."""
+        from alpaca.trading.enums import OrderSide
+
+        stop_order = _make_open_order(
+            "stop-abc", OrderSide.SELL, MagicMock(__str__=lambda s: "stop"), 100.0, 50
+        )
+        sleep_calls: list[float] = []
+        self._run_with_clean_em_guard(
+            "TRIMTEST1", [stop_order], ("sell-id", 100.0, 50, None), sleep_calls
+        )
+        self.assertTrue(
+            any(abs(s - 1.5) < 0.01 for s in sleep_calls),
+            f"Expected time.sleep(1.5) after stop cancel; got sleep_calls={sleep_calls}",
+        )
+
+    def test_sleep_not_called_when_no_stops(self):
+        """When there are no stop orders to cancel, time.sleep(1.5) is NOT called."""
+        sleep_calls: list[float] = []
+        self._run_with_clean_em_guard(
+            "TRIMTEST2", [], ("sell-id", 100.0, 50, None), sleep_calls
+        )
+        self.assertFalse(
+            any(abs(s - 1.5) < 0.01 for s in sleep_calls),
+            f"time.sleep(1.5) must not fire when no stops were canceled; got {sleep_calls}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

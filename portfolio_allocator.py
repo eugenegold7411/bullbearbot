@@ -1274,7 +1274,9 @@ def _run_allocator_shadow_inner(
 
         # 4a. Live TRIM execution
         live_trim_results: dict[str, str] = {}
-        if pa_cfg["enable_live"] and pa_cfg.get("enable_live_trim") and snapshot is not None and account is not None:
+        if (pa_cfg["enable_live"] and pa_cfg.get("enable_live_trim")
+                and market_status == "open"
+                and snapshot is not None and account is not None):
             for act in proposed:
                 if act["action"] != "TRIM":
                     continue

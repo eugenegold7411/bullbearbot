@@ -1002,6 +1002,18 @@ def execute_reallocate(
         exit_order_id = str(exit_order.id)
         log.info("[PI] REALLOCATE exit submitted: %s  order_id=%s",
                  exit_symbol, exit_order_id)
+        # Wait for exit to fill before submitting entry; 15 × 0.5s = 7.5s max.
+        import time as _time  # noqa: PLC0415
+        for _w in range(15):
+            _time.sleep(0.5)
+            try:
+                _o = alpaca_client.get_order_by_id(exit_order_id)
+                if str(getattr(_o, "status", "")).lower().split(".")[-1] in (
+                    "filled", "cancelled", "canceled", "expired"
+                ):
+                    break
+            except Exception:
+                break
     except Exception as exc:
         log.error("[PI] REALLOCATE exit FAILED for %s: %s — entry cancelled", exit_symbol, exc)
         return {

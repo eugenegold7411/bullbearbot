@@ -305,3 +305,81 @@ def test_live_mode_trim_only_no_replace(tmp_path, monkeypatch):
         assert rep["symbol"] not in executed_symbols, (
             f"REPLACE symbol {rep['symbol']} must not be passed to _execute_live_trim"
         )
+
+
+# ── FIX-4 — TRIM blocked when market is not open ─────────────────────────────
+
+def test_trim_blocked_in_premarket(tmp_path, monkeypatch):
+    """FIX-4: live TRIM must NOT execute when market_status != 'open'."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "analytics").mkdir(parents=True)
+    (tmp_path / "data" / "runtime").mkdir(parents=True)
+    (tmp_path / "data" / "reports").mkdir(parents=True)
+
+    import portfolio_allocator as pa
+
+    # AAPL thesis_score=3 → TRIM would fire in open market
+    positions = [_make_position("AAPL", 100, 8_000.0, current_price=80.0)]
+    pi_data   = _make_pi_data(["AAPL"], [
+        {"symbol": "AAPL", "thesis_score": 3, "health": "MONITORING",
+         "recommended_action": "reduce", "override_flag": None, "weakest_factor": ""},
+    ])
+    snapshot     = _make_snapshot()
+    mock_account = MagicMock()
+
+    with patch.object(pa, "_execute_live_trim") as mock_trim_fn:
+        artifact = pa.run_allocator_shadow(
+            pi_data=pi_data,
+            positions=positions,
+            cfg=_cfg(enable_live=True),
+            session_tier="pre_market",
+            equity=10_000.0,
+            snapshot=snapshot,
+            vix=18.0,
+            account=mock_account,
+            market_status="pre_market",  # <-- not "open"
+        )
+
+    assert artifact is not None
+    mock_trim_fn.assert_not_called(), (
+        "_execute_live_trim must not fire when market_status='pre_market'"
+    )
+    assert artifact.get("live_trim_results") == {}, (
+        "live_trim_results must be empty when market is not open"
+    )
+
+
+def test_trim_executes_when_market_open(tmp_path, monkeypatch):
+    """FIX-4 counterpart: TRIM still executes normally when market_status='open'."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "analytics").mkdir(parents=True)
+    (tmp_path / "data" / "runtime").mkdir(parents=True)
+    (tmp_path / "data" / "reports").mkdir(parents=True)
+
+    import portfolio_allocator as pa
+
+    positions = [_make_position("AAPL", 100, 8_000.0, current_price=80.0)]
+    pi_data   = _make_pi_data(["AAPL"], [
+        {"symbol": "AAPL", "thesis_score": 3, "health": "MONITORING",
+         "recommended_action": "reduce", "override_flag": None, "weakest_factor": ""},
+    ])
+    snapshot     = _make_snapshot()
+    mock_account = MagicMock()
+
+    with patch.object(pa, "_execute_live_trim", return_value="ok:5") as mock_trim_fn:
+        artifact = pa.run_allocator_shadow(
+            pi_data=pi_data,
+            positions=positions,
+            cfg=_cfg(enable_live=True),
+            session_tier="market",
+            equity=10_000.0,
+            snapshot=snapshot,
+            vix=18.0,
+            account=mock_account,
+            market_status="open",  # <-- open
+        )
+
+    assert artifact is not None
+    mock_trim_fn.assert_called_once(), (
+        "_execute_live_trim must be called when market_status='open'"
+    )

@@ -1069,6 +1069,12 @@ def _sell_cancel_stop_and_sell(
         except Exception as exc:
             log.warning("[EXECUTOR] %s: cancel stop %s failed: %s", symbol, so.id, exc)
 
+    # Wait for cancellations to clear held_for_orders before submitting the sell.
+    # Alpaca's OCA propagation delay is ~1–3s; 1.5s covers the common case.
+    # TODO: replace with a held_for_orders==0 poll loop for robustness.
+    if stop_orders:
+        time.sleep(1.5)
+
     # Submit the sell
     try:
         oid, fp, fq, ft = _submit_sell({"symbol": symbol, "qty": sell_qty})

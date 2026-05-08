@@ -497,6 +497,7 @@ _econ_calendar_refresh_key:    str = ""   # "YYYY-MM-DD-HHMM" slot key
 _earnings_av_refresh_key:      str = ""   # ISO-week key — weekly AV calendar refresh
 _earnings_av_daily_ran_date:   str = ""   # "YYYY-MM-DD" of last daily AV refresh
 _earnings_rotation_ran_date:   str = ""   # "YYYY-MM-DD" of last rotation run
+_earnings_convictions_scan_date: str = ""  # "YYYY-MM-DD" of last intraday conviction scan
 _earnings_cull_ran_date:       str = ""   # "YYYY-MM-DD" of last 2 AM cull
 _earnings_stale_check_date:    str = ""   # "YYYY-MM-DD" of last staleness check
 _earnings_intel_ran_date:      str = ""   # "YYYY-MM-DD" of last analyst intel refresh
@@ -1433,6 +1434,40 @@ def _maybe_run_earnings_rotation(dry_run: bool = False) -> None:
         log.warning("[ROTATION] daily run failed (non-fatal): %s", exc)
 
 
+def _maybe_scan_earnings_convictions(dry_run: bool = False) -> None:
+    """Refresh earnings_convictions.json once per market day at 9:05–9:15 AM ET.
+
+    Runs after the earnings calendar refresh so conviction data is fresh before
+    the first A1/A2 cycle. Feeds signal scorer and A2 candidate filter.
+    """
+    global _earnings_convictions_scan_date
+    now_et  = datetime.now(ET)
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+    today   = _today()
+
+    if weekday >= 5:
+        return
+    if _earnings_convictions_scan_date == today:
+        return
+    if not (9 * 60 + 5 <= now_min <= 9 * 60 + 15):
+        return
+
+    if dry_run:
+        log.info("[dry-run] Skipping earnings conviction scan")
+        _earnings_convictions_scan_date = today
+        return
+
+    try:
+        from earnings_rotation import scan_earnings_candidates  # noqa: PLC0415
+        results = scan_earnings_candidates()
+        log.info("[EARNINGS_CONV] scan complete: %d candidates", len(results))
+        _earnings_convictions_scan_date = today
+    except Exception as exc:
+        log.error("[EARNINGS_CONV] scan failed (non-fatal): %s", exc)
+        _fire_safety_alert("_maybe_scan_earnings_convictions", exc)
+
+
 def _maybe_cull_post_earnings(dry_run: bool = False) -> None:
     """
     Nightly cull of post-earnings rotation symbols.
@@ -1553,7 +1588,7 @@ def _maybe_run_portfolio_audit(dry_run: bool = False) -> None:
 
     # Two slots: 9:10 AM ET (window 9:10-9:14) and 3:55 PM ET (window 15:55-15:59)
     slot = None
-    if 9 * 60 + 10 <= now_min <= 9 * 60 + 14:
+    if 9 * 60 + 10 <= now_min <= 9 * 60 + 24:
         slot = f"{today}-open"
     elif 15 * 60 + 55 <= now_min <= 15 * 60 + 59:
         slot = f"{today}-close"
@@ -1787,7 +1822,9 @@ def _maybe_generate_weekly_summary() -> None:
     """
     Every Friday at 9 PM ET:
     1. Generate JSON performance summary (memory.generate_weekly_summary)
-    2. Run the 5-agent strategic review (weekly_review.run_review)
+    2. Run the 12-agent board meeting (weekly_review.run_review)
+    Note: CLAUDE.md says 'runs Sundays' — that is stale. Actual gate: weekday==4 (Friday).
+    Sunday 6 AM only generates performance_tracker.generate_weekly_performance_report().
     """
     global _weekly_summary_date
     now_et  = datetime.now(ET)
@@ -1812,7 +1849,7 @@ def _maybe_generate_weekly_summary() -> None:
 
     report_path = None
     try:
-        log.info("Starting 5-agent weekly review...")
+        log.info("Starting 12-agent weekly review board meeting...")
         report_path = weekly_review.run_review()
         log.info("Weekly review complete  report=%s", report_path)
     except Exception:
@@ -2136,6 +2173,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_refresh_reddit_sentiment(dry_run)
         _maybe_refresh_form4_trades(dry_run)
         _maybe_run_portfolio_audit(dry_run)
+        _maybe_scan_earnings_convictions(dry_run)
         _maybe_refresh_crypto_sentiment(dry_run)
         _maybe_refresh_macro_wire(dry_run)
         _maybe_refresh_qualitative_context(dry_run)

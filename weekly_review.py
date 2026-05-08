@@ -934,11 +934,29 @@ _MODEL_HAIKU = "claude-haiku-4-5-20251001"
 
 # ── Agent system prompts 5-11 ─────────────────────────────────────────────────
 
-_SYSTEM_AGENT5 = """You are the Chief Technology Officer of an AI trading bot. You review the performance of the bot's own architecture and code quality each week. Your job is to identify whether the bot's intelligence pipeline is well-calibrated, whether any module is over-engineered or under-performing, and whether the cost/complexity profile of each component is justified by its contribution to trading outcomes. You receive reports from 4 specialists.
+_SYSTEM_AGENT5 = """You are the Chief Technology Officer of an AI trading bot. You review the performance of the bot's own architecture and code quality each week. Your job is to identify whether the bot's intelligence pipeline is well-calibrated, whether any module is over-engineered or under-performing, and whether the cost/complexity profile of each component is justified by its contribution to trading outcomes. You receive reports from 4 specialists and the most recent Strategy Director memo.
 
 Produce a focused technical audit in markdown. Cover: (1) module performance ROI — which components are earning their complexity cost; (2) pipeline bottlenecks — where latency or cost is concentrated; (3) architecture risks — tight couplings, missing fallbacks, fragile dependencies; (4) one concrete recommendation to increase intelligence per dollar spent. Do not recommend the same change two weeks in a row. Be specific: name modules, cite costs, propose exact changes. Keep under 800 words.
 
-IMPROVEMENT PROPOSALS — append a section titled "## Improvement Proposals" listing exactly 3 specific, actionable code changes (not vague directions) that could improve the bot's profitability or reliability. Each proposal must include: (a) the target module/function, (b) the specific change, (c) the expected measurable benefit. Label each P1/P2/P3 by urgency."""
+IMPROVEMENT PROPOSALS — append a section titled "## Improvement Proposals" listing exactly 3 specific, actionable code changes (not vague directions) that could improve the bot's profitability or reliability. Each proposal must include: (a) the target module/function, (b) the specific change, (c) the expected measurable benefit. Label each P1/P2/P3 by urgency.
+
+READINESS SCORE BLOCK — append this exact block as the very last content in your response (after Improvement Proposals, outside any section heading):
+
+READINESS_SCORE: {integer 0-100}
+BLOCKERS: [{comma-separated list of specific active blockers, or "none"}]
+READY_FOR_LIVE: {yes/no}
+CONFIDENCE: {low/medium/high}
+
+Evaluate each gate below using the analyst reports and System Readiness Status you received. Be conservative — score 100 only if every gate passes with evidence:
+- BUG-1 REALLOCATE executing (not silently dropped): confirmed/unconfirmed
+- BUG-2 churn health check not firing false positives: resolved/active
+- Alpha classification data present (>= 10 classified decisions): yes/no
+- A2 no active orphan structures: yes/no
+- A1 generating trades with positive alpha (win rate > 50% on classified decisions): yes/no
+- Signal credibility data populated (signal_source_credibility.json exists): yes/no
+- sev1_clean_days >= 7 (no Sev-1 incidents for 7+ days): yes/no
+- Readiness gate score from validate_config: pass/fail and ratio
+Reference the prior Strategy Director memo findings where relevant."""
 
 _SYSTEM_AGENT6 = """You are the Strategy Director of an AI trading operation. You receive weekly reports from specialist analysts and must synthesize their findings into a definitive strategic direction for the coming week. Be specific and concrete: recommend exact parameter values, not vague directions. Your memo should explain the strategic rationale clearly, then provide a JSON block with the precise parameter adjustments to be applied. Prioritize changes with the strongest evidence base and flag any conflicting recommendations across analysts.
 
@@ -1848,10 +1866,25 @@ def _extract_regime_view(text: str) -> str:
 def _extract_cto_score(cto_output: str) -> float:
     """
     Extract real money readiness score from CTO output.
-    Looks for: '7/10', 'score: 7', 'readiness: 7'.
-    Returns 0.0 if not found.
+
+    Prefers the structured READINESS_SCORE: N block (0-100 scale),
+    normalises to 0-10 for storage in director memo history.
+    Falls back to legacy N/10, score: N, readiness: N patterns.
+    Returns 0.0 if no score is found.
     """
     import re as _re
+
+    # Primary: structured block from the READINESS SCORE BLOCK instruction
+    m = _re.search(r"READINESS_SCORE\s*:\s*(\d+(?:\.\d+)?)", cto_output, _re.IGNORECASE)
+    if m:
+        try:
+            val = float(m.group(1))
+            if 0.0 <= val <= 100.0:
+                return round(val / 10.0, 2)
+        except ValueError:
+            pass
+
+    # Legacy fallback patterns (score on /10 scale)
     for pattern in (
         r"(\d+(?:\.\d+)?)\s*/\s*10",
         r"score[:\s]+(\d+(?:\.\d+)?)",
@@ -1866,6 +1899,43 @@ def _extract_cto_score(cto_output: str) -> float:
             except ValueError:
                 continue
     return 0.0
+
+
+def _extract_readiness_block(cto_output: str) -> dict:
+    """
+    Parse the structured READINESS SCORE BLOCK from Agent 5 output.
+
+    Returns dict with keys: score (0-100 int), blockers (list[str]),
+    ready_for_live (bool), confidence (str).
+    Returns {} if block not found.
+    """
+    import re as _re
+
+    score_m = _re.search(r"READINESS_SCORE\s*:\s*(\d+(?:\.\d+)?)", cto_output, _re.IGNORECASE)
+    if not score_m:
+        return {}
+
+    score = int(float(score_m.group(1)))
+
+    blockers: list[str] = []
+    blk_m = _re.search(r"BLOCKERS\s*:\s*\[([^\]]*)\]", cto_output, _re.IGNORECASE)
+    if blk_m:
+        raw = blk_m.group(1).strip()
+        if raw.lower() not in ("none", ""):
+            blockers = [b.strip() for b in raw.split(",") if b.strip()]
+
+    live_m = _re.search(r"READY_FOR_LIVE\s*:\s*(yes|no)", cto_output, _re.IGNORECASE)
+    ready_for_live = live_m.group(1).lower() == "yes" if live_m else False
+
+    conf_m = _re.search(r"CONFIDENCE\s*:\s*(low|medium|high)", cto_output, _re.IGNORECASE)
+    confidence = conf_m.group(1).lower() if conf_m else "low"
+
+    return {
+        "score":          score,
+        "blockers":       blockers,
+        "ready_for_live": ready_for_live,
+        "confidence":     confidence,
+    }
 
 
 def _apply_recommendation_updates(
@@ -1995,6 +2065,11 @@ Key:
 - win_rates_by_symbol: alpha_positive / (alpha_positive + alpha_negative) per symbol (entry-side only)
 - top_performing_symbols / underperforming_symbols: symbols with n>=3 classified outcomes and WR >=0.6 / <=0.3
 - signal_source_win_rates: per signal-source module {{win_rate, sample_count, score_status}} — basis for module-level signal weight changes
+
+---
+
+### SIGNAL SOURCE CREDIBILITY (formatted for readability)
+{_format_signal_credibility_section(ctx.get('quant_data'))}
 
 ---
 
@@ -2648,6 +2723,109 @@ def _build_quantitative_performance_block() -> dict:
     return out
 
 
+def _format_signal_credibility_section(quant_block: dict | None = None) -> str:
+    """
+    Format signal source win rates and alpha classification data as readable
+    markdown for injection into Agent 5 and Agent 6 prompts.
+
+    Accepts pre-built quant_block dict (from _build_quantitative_performance_block)
+    or builds it on-demand when called with no argument.
+    Returns a non-empty section even when data is absent (explains the gap).
+    Never raises — returns empty string on unexpected error.
+    """
+    try:
+        if quant_block is None:
+            try:
+                quant_block = _build_quantitative_performance_block()
+            except Exception:
+                quant_block = {}
+
+        source_rates    = quant_block.get("signal_source_win_rates", {})
+        total_classified = quant_block.get("total_classified", 0)
+        cls_dist        = quant_block.get("classification_distribution", {})
+        top_syms        = quant_block.get("top_performing_symbols", [])
+        under_syms      = quant_block.get("underperforming_symbols", [])
+
+        lines: list[str] = ["\n### Signal Credibility & Alpha Performance"]
+
+        # ── Alpha classification summary ──────────────────────────────────────
+        if total_classified > 0:
+            positive = cls_dist.get("alpha_positive", 0)
+            negative = cls_dist.get("alpha_negative", 0)
+            neutral  = cls_dist.get("alpha_neutral",  0)
+            decisive = positive + negative
+            wr_str   = f"{positive / decisive:.1%}" if decisive > 0 else "n/a"
+            lines.append(
+                f"**Alpha classifications:** {total_classified} total | "
+                f"{positive} positive / {negative} negative / {neutral} neutral"
+            )
+            if decisive > 0:
+                lines.append(f"**Decisive win rate:** {wr_str} ({decisive} decisive calls)")
+            if top_syms:
+                lines.append(f"**Top-performing symbols (WR ≥ 60%, n ≥ 3):** {', '.join(top_syms[:6])}")
+            if under_syms:
+                lines.append(f"**Underperforming symbols (WR ≤ 30%, n ≥ 3):** {', '.join(under_syms[:6])}")
+        else:
+            lines.append(
+                "_Alpha classifications: none yet — post-close classify_alpha has not "
+                "accumulated enough outcome data. Annotations ([alpha: X% WR]) will be "
+                "absent from Sonnet prompts until >= 2 decisions are classified per symbol._"
+            )
+
+        # ── Signal source win rates ───────────────────────────────────────────
+        if source_rates:
+            active = {
+                k: v for k, v in source_rates.items()
+                if isinstance(v, dict) and v.get("sample_count", 0) >= 3
+            }
+            thin = {
+                k: v for k, v in source_rates.items()
+                if isinstance(v, dict) and 0 < v.get("sample_count", 0) < 3
+            }
+            if active:
+                ranked = sorted(
+                    active.items(),
+                    key=lambda x: x[1].get("win_rate", 0.0),
+                    reverse=True,
+                )
+                lines.append("\n**Signal source win rates (sources with ≥ 3 samples):**")
+                for src, data in ranked:
+                    wr_val  = data.get("win_rate", 0.0)
+                    n       = data.get("sample_count", 0)
+                    status  = data.get("score_status", "provisional")
+                    marker  = "↑" if wr_val >= 0.6 else ("↓" if wr_val <= 0.35 else " ")
+                    lines.append(f"  {marker} {src}: {wr_val:.1%}  (n={n}, {status})")
+                top3  = [s[0] for s in ranked[:3]]
+                bot3  = [s[0] for s in ranked[-3:]]
+                if len(ranked) >= 3:
+                    lines.append(f"**Top 3 sources this week:** {', '.join(top3)}")
+                    lines.append(f"**Bottom 3 sources this week:** {', '.join(bot3)}")
+                lines.append(
+                    "**Weight guidance:** raise weight on sources with WR > 60% and n ≥ 10; "
+                    "reduce/ignore sources with WR < 35% and n ≥ 5."
+                )
+            elif thin:
+                lines.append(
+                    f"_Signal source credibility: data exists for {len(thin)} sources "
+                    "but all are below the 3-sample threshold. No weight changes justified yet._"
+                )
+            else:
+                lines.append(
+                    "_Signal source credibility: data loaded but no sources have samples yet._"
+                )
+        else:
+            lines.append(
+                "_Signal source credibility: signal_source_credibility.json not yet created. "
+                "Populated by bot.py post-close hook after alpha_classification outcomes accumulate._"
+            )
+
+        return "\n".join(lines) + "\n"
+
+    except Exception as _exc:
+        log.warning("[REVIEW] _format_signal_credibility_section failed: %s", _exc)
+        return ""
+
+
 def _get_thesis_packet() -> str:
     """
     Non-fatal wrapper: return the weekly thesis packet markdown string.
@@ -2696,6 +2874,33 @@ def _build_agent5_cto_input(ctx: dict, phase1_outputs: dict) -> str:
         )
     except Exception:
         pass
+
+    # FIX-D: Load most recent Strategy Director memo for context continuity
+    _prior_memo_block = "(no prior Strategy Director memo available)"
+    try:
+        _memo_history_path = Path(__file__).parent / "data" / "reports" / "director_memo_history.json"
+        _memo_history = json.loads(_memo_history_path.read_text())
+        if _memo_history:
+            _latest = _memo_history[-1]
+            _prior_score = _latest.get("real_money_readiness_score", 0.0)
+            _prior_week = _latest.get("week_of", "unknown week")
+            _prior_recs = _latest.get("open_recommendations", [])
+            _prior_recs_text = (
+                "\n".join(f"  - {r}" for r in _prior_recs[:5])
+                if _prior_recs else "  (none recorded)"
+            )
+            _prior_summary = str(_latest.get("memo_summary", "(summary unavailable)"))[:600]
+            _prior_memo_block = (
+                f"Week: {_prior_week}\n"
+                f"Readiness score: {_prior_score}/10\n"
+                f"Open recommendations:\n{_prior_recs_text}\n\n"
+                f"Memo summary:\n{_prior_summary}"
+            )
+    except Exception:
+        pass
+
+    # FIX-C: Format signal credibility section for Agent 5 context
+    _signal_cred_section = _format_signal_credibility_section(ctx.get("quant_data"))
 
     def _snip(key: str, n: int = 800) -> str:
         val = phase1_outputs.get(key, "(unavailable)")
@@ -2760,6 +2965,15 @@ Scheduler: 24/7 loop, 5-min market / 15-min extended / 30-min overnight cycles
 ### Divergence Incident Summary (last 7 days)
 {_get_divergence_summary_section()}
 
+---
+
+### Prior Strategy Director Memo (for context continuity)
+{_prior_memo_block}
+
+---
+
+### Signal Source Credibility & Alpha Classification
+{_signal_cred_section}
 Produce your technical audit in markdown. Be specific: name modules, cite costs, propose exact changes.{_thesis_section}"""
 
 
@@ -3365,6 +3579,11 @@ You have received reports from four specialist analysts. Synthesize their findin
 
 ### RECOMMENDATION RESOLUTION SUMMARY
 {_rec_resolution_section}
+
+---
+
+### SIGNAL SOURCE CREDIBILITY & ALPHA CLASSIFICATION
+{_format_signal_credibility_section(review_context.get('quant_data'))}
 
 ---
 

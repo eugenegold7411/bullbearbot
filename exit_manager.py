@@ -582,9 +582,21 @@ def _refresh_exits_locked(
                 sym, int(pos_qty), _lp_exc,
             )
 
+        # Guard: stop_price missing means the "stop" order is actually a plain
+        # market sell (pending close) with no stop_price.  OCO repair requires a
+        # real stop level — skip silently; divergence.py already classifies this
+        # position as pending-close and will not fire protection_missing.
+        if stop_at is None:
+            log.warning(
+                "[EXIT_MGR] %s: OCO repair skipped — stop_price is None"
+                " (pending market close order has no stop level)",
+                sym,
+            )
+            return False
+
         # Guard: stop at or above current price means stock fell through the stop.
         # Adjust stop down rather than letting Alpaca reject with code 42210000.
-        if stop_at is not None and price > 0 and stop_at >= price:
+        if price > 0 and stop_at >= price:
             adjusted_stop = round(price * 0.97, 2)
             log.warning(
                 "[EXIT_MGR] %s: WARNING — stop $%.2f >= current $%.2f,"

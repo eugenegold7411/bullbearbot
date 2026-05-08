@@ -799,12 +799,46 @@ def detect_protection_divergence(
                     stop_map[sym] = []
                 stop_map[sym].append(o)
 
+        # Build pending-close set: positions whose shares are fully covered by a
+        # pending SELL order (any type/class, e.g. market sell awaiting open).
+        # A position with a pending full close does not need a separate stop —
+        # it is already exiting and should not fire protection_missing.
+        _pending_sell_qty: dict[str, float] = {}
+        for o in open_orders:
+            o_side   = str(getattr(o, "side",   "")).lower().split(".")[-1]
+            o_status = str(getattr(o, "status", "")).lower().split(".")[-1]
+            if o_side == "sell" and o_status not in (
+                "canceled", "filled", "expired", "pending_cancel"
+            ):
+                o_sym = getattr(o, "symbol", "")
+                o_qty = float(getattr(o, "qty", 0) or 0)
+                _pending_sell_qty[o_sym] = _pending_sell_qty.get(o_sym, 0.0) + o_qty
+        _pending_close_syms: set[str] = set()
+        for pos in positions:
+            _sym  = getattr(pos, "symbol", "")
+            _pqty = abs(float(getattr(pos, "qty", 0) or 0))
+            _sqty = _pending_sell_qty.get(_sym, 0.0)
+            if _pqty > 0 and _sqty >= _pqty * 0.95:
+                _pending_close_syms.add(_sym)
+
         for pos in positions:
             sym = pos.symbol
             size_usd = abs(pos.market_value)
             pos_stops = stop_map.get(sym, [])
 
             if not pos_stops:
+                # Position has a pending full-close sell order — it is already
+                # exiting.  Clear any stale miss counters and skip protection check.
+                if sym in _pending_close_syms:
+                    log.info(
+                        "[DIV] %s: no stop but full-qty SELL pending"
+                        " — treating as protected (pending close)",
+                        sym,
+                    )
+                    _fill_seen.pop(sym, None)
+                    _protection_miss_cycles.pop(sym, None)
+                    continue
+
                 # No stop detected. Apply grace window before firing an event so
                 # that freshly-filled positions are not immediately flagged while
                 # Alpaca propagates the bracket stop into GET /orders.
@@ -875,6 +909,11 @@ def detect_protection_divergence(
                 # ever loses its stop in a future cycle we detect it promptly.
                 _fill_seen.pop(sym, None)
                 _protection_miss_cycles.pop(sym, None)
+                log.debug(
+                    "[DIV] stop_map %s: found %d protective order(s) (%s)",
+                    sym, len(pos_stops),
+                    [str(getattr(s, "id", "?")) for s in pos_stops],
+                )
 
                 if len(pos_stops) > 1:
                     # Multiple stops — only flag as duplicate if total stop qty

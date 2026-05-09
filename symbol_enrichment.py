@@ -12,18 +12,18 @@ Usage:
 
 from __future__ import annotations
 
+import html as _html
 import json
 import logging
 import math
 import os
-import html as _html
 import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 from xml.etree import ElementTree as ET
+from zoneinfo import ZoneInfo
 
 import requests
 import yfinance as yf

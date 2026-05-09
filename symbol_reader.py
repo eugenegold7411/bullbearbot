@@ -156,7 +156,7 @@ def show_symbol(symbol: str) -> None:
         print(f"  Rec structure:  {_val(ec.get('recommended_structure'))}")
         print(f"  Phase:          {_val(ec.get('phase'))}")
     elif ai:
-        print(f"  (from analyst_intel — not in active earnings rotation)")
+        print("  (from analyst_intel — not in active earnings rotation)")
         print(f"  Beat rate:      {_val(ai.get('beat_rate'))}  "
               f"({_val(ai.get('beat_quarters'))}/{_val(ai.get('total_quarters'))} qtrs)")
         print(f"  Avg surprise:   {_val(ai.get('avg_eps_surprise'))}%")

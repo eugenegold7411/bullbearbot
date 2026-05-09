@@ -722,6 +722,16 @@ def scan_earnings_candidates(lookforward: int = 14, config: Optional[dict] = Non
         log.warning("[EARNINGS] calendar read failed: %s", exc)
         return []
 
+    # Universe filter: only score symbols tracked by universe_manager.
+    # Fail-open: if universe_manager is unavailable, scanning proceeds unfiltered.
+    tracked_symbols: set[str] = set()
+    try:
+        from universe_manager import get_universe_snapshot  # noqa: PLC0415
+        tracked_symbols = set(get_universe_snapshot()["all_symbols"])
+        log.info("[EARNINGS] universe filter loaded: %d symbols", len(tracked_symbols))
+    except Exception as exc:
+        log.warning("[EARNINGS] universe_manager unavailable — scanning without filter: %s", exc)
+
     today = date.today()
     candidates = []
     active_count = 0
@@ -729,6 +739,8 @@ def scan_earnings_candidates(lookforward: int = 14, config: Optional[dict] = Non
     for entry in cal_data.get("calendar", []):
         sym = (entry.get("symbol") or "").upper()
         if not sym or "/" in sym:
+            continue
+        if tracked_symbols and sym not in tracked_symbols:
             continue
         ed_raw = str(entry.get("earnings_date", ""))[:10]
         try:

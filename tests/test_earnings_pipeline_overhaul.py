@@ -369,7 +369,7 @@ class TestPendingRotationPurge:
 
         remaining = json.loads(pending_path.read_text())["symbols"]
         syms = {s["symbol"] for s in remaining}
-        assert "NFLX" in syms, "NFLX is in _EXTRA_UNIVERSE — must survive purge"
+        assert "NFLX" in syms, "NFLX is in CORE_SYMBOLS — must survive purge"
         assert "BAH" not in syms, "BAH is off-universe — must be purged"
         assert "NOTHERE" not in syms, "NOTHERE is off-universe — must be purged"
 

@@ -507,7 +507,6 @@ _pending_protection_sells_run_date: str = ""  # "YYYY-MM-DD" of last 9:30 pendin
 _last_qualitative_sweep_key:   str = ""   # "YYYY-MM-DD-HH" of last L1 sweep (hourly slot)
 _last_qualitative_news_hash:   str = ""   # news hash at last L1 sweep, for event-driven refresh
 _qualitative_sweep_running:    bool = False  # guard against concurrent sweeps
-_earnings_watchlist_startup_synced: bool = False  # one-time startup sync guard
 _qualitative_thread = None                  # threading.Thread for the background sweep
 _momentum_cfg: dict | None = None           # cached momentum_trigger config
 _momentum_last_fired: dict[str, float] = {}  # sym → monotonic ts of last momentum trigger
@@ -1423,7 +1422,7 @@ def _maybe_run_earnings_rotation(dry_run: bool = False) -> None:
         result = er.run_earnings_rotation()
         log.info("[ROTATION] daily run complete: added=%s size_after=%d",
                  result.get("added", []), result.get("watchlist_size_after", 0))
-        # Short-horizon pass: add _EXTRA_UNIVERSE names with earnings within 5 days
+        # Short-horizon pass: add admissible-universe names with earnings within 5 days
         try:
             expanded = er.expand_watchlist_for_upcoming_earnings(days_ahead=5)
             if expanded:
@@ -1435,85 +1434,22 @@ def _maybe_run_earnings_rotation(dry_run: bool = False) -> None:
         log.warning("[ROTATION] daily run failed (non-fatal): %s", exc)
 
 
-def _sync_earnings_watchlist(convictions: list[dict]) -> None:
-    """Sync watchlist_dynamic.json with earnings conviction data.
-
-    Adds high/medium conviction pre-earnings symbols (eda 1-7).
-    Removes only symbols with tier="earnings" once post-earnings (eda < -3).
-    Never touches manually-added symbols (tier != "earnings").
-    """
-    watchlist_path = Path("watchlist_dynamic.json")
-
+def _sync_earnings_watchlist() -> None:
+    """Sync watchlist_dynamic.json with earnings rotation candidates via universe_manager."""
     try:
-        wl_data = json.loads(watchlist_path.read_text())
-    except Exception:
-        wl_data = {"symbols": [], "reset_at": ""}
-
-    symbols_list: list[dict] = wl_data.get("symbols", [])
-    existing_syms: set[str] = {e["symbol"] for e in symbols_list if e.get("symbol")}
-
-    added: list[str] = []
-    removed: list[str] = []
-
-    # Add pre-earnings symbols (eda 1–7, high or medium conviction)
-    for c in convictions:
-        sym = c.get("symbol")
-        eda = c.get("eda", 0)
-        conviction = c.get("conviction_level", "low")
-        if not sym:
-            continue
-        if 1 <= eda <= 7 and conviction in ("high", "medium"):
-            if sym not in existing_syms:
-                symbols_list.append(
-                    {"symbol": sym, "sector": "technology", "type": "stock", "tier": "earnings"}
-                )
-                existing_syms.add(sym)
-                added.append(sym)
-                log.info(
-                    "[EARNINGS] auto-added %s to watchlist_dynamic (eda=%d, conviction=%s)",
-                    sym, eda, conviction,
-                )
-
-    # Remove expired post-earnings symbols — only entries auto-added (tier="earnings")
-    post_expired: set[str] = {
-        c.get("symbol") for c in convictions if c.get("eda", 0) < -3
-    }
-    new_symbols_list = []
-    for entry in symbols_list:
-        sym = entry.get("symbol", "")
-        if sym in post_expired and entry.get("tier") == "earnings":
-            removed.append(sym)
-            log.info(
-                "[EARNINGS] removed %s from watchlist_dynamic (eda<-3, tier=earnings)", sym
-            )
-        else:
-            new_symbols_list.append(entry)
-
-    if added or removed:
-        wl_data["symbols"] = new_symbols_list
-        watchlist_path.write_text(json.dumps(wl_data, indent=2))
+        from universe_manager import sync_dynamic_watchlist  # noqa: PLC0415
+        api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or ""
+        result  = sync_dynamic_watchlist(api_key)
         log.info(
-            "[EARNINGS] watchlist_dynamic sync complete: +%s -%s", added, removed
+            "[UNIVERSE] watchlist sync: +%d added, -%d removed, %d earnings active",
+            len(result.get("added", [])),
+            len(result.get("removed", [])),
+            len(result.get("active_earnings", [])),
         )
-
-
-def _maybe_sync_earnings_watchlist_on_startup() -> None:
-    """One-time sync on bot startup: recover managed symbols from today's convictions file."""
-    global _earnings_watchlist_startup_synced
-    if _earnings_watchlist_startup_synced:
-        return
-    _earnings_watchlist_startup_synced = True
-    conv_path = Path("data/market/earnings_convictions.json")
-    if not conv_path.exists():
-        return
-    try:
-        data = json.loads(conv_path.read_text())
-        convictions = data.get("candidates", data) if isinstance(data, dict) else data
-        if isinstance(convictions, list):
-            _sync_earnings_watchlist(convictions)
-            log.info("[EARNINGS] startup watchlist sync complete")
     except Exception as exc:
-        log.warning("[EARNINGS] startup sync failed (non-fatal): %s", exc)
+        log.error("[UNIVERSE] _sync_earnings_watchlist failed: %s", exc)
+        _fire_safety_alert("_sync_earnings_watchlist", exc)
+
 
 
 def _maybe_scan_earnings_convictions(dry_run: bool = False) -> None:
@@ -1544,7 +1480,7 @@ def _maybe_scan_earnings_convictions(dry_run: bool = False) -> None:
         from earnings_rotation import scan_earnings_candidates  # noqa: PLC0415
         results = scan_earnings_candidates()
         log.info("[EARNINGS_CONV] scan complete: %d candidates", len(results))
-        _sync_earnings_watchlist(results)
+        _sync_earnings_watchlist()
         _earnings_convictions_scan_date = today
     except Exception as exc:
         log.error("[EARNINGS_CONV] scan failed (non-fatal): %s", exc)
@@ -2148,7 +2084,12 @@ def run(dry_run: bool = False) -> None:
                 log.info("[EARNINGS_AV] Startup calendar refresh complete")
         except Exception as _cal_exc:
             log.warning("[EARNINGS_AV] Startup calendar refresh failed (non-fatal): %s", _cal_exc)
-    _maybe_sync_earnings_watchlist_on_startup()
+    try:
+        from universe_manager import sync_dynamic_watchlist  # noqa: PLC0415
+        sync_dynamic_watchlist(os.getenv("ALPHA_VANTAGE_API_KEY") or "")
+        log.info("[UNIVERSE] Startup: watchlist sync complete")
+    except Exception as _universe_exc:
+        log.warning("[UNIVERSE] Startup sync failed (non-fatal): %s", _universe_exc)
     log.info("Scheduler starting (24/7 mode)  dry_run=%s", dry_run)
     print("[scheduler] 24/7 mode active. Press Ctrl+C to stop.\n")
 

@@ -49,23 +49,17 @@ _REPORTS_DIR  = _BASE / "data" / "reports"
 _CAL_PATH     = _BASE / "data" / "market" / "earnings_calendar.json"
 _FUND_DIR     = _BASE / "data" / "fundamentals"
 
-# Universe extension beyond watchlist — symbols admissible for rotation
-_EXTRA_UNIVERSE: frozenset[str] = frozenset({
-    "NFLX", "CRM", "ORCL", "ADBE", "NOW", "WDAY", "ZM",
-    "V", "MA", "PYPL", "SQ", "AFRM", "UPST", "SOFI", "HOOD",
-    "BAC", "C", "WFC", "GE", "CAT", "DE", "BA", "UNH",
-    "UBER", "LYFT", "ABNB", "DASH", "COIN", "MSTR", "SHOP",
-    "DDOG", "NET", "CRWD", "OKTA", "ZS", "TEAM", "MDB", "ESTC",
-    "U", "RBLX", "ARM", "SMCI", "MRVL", "QCOM", "MU", "INTC", "TXN",
-    "AMAT", "KLAC", "LRCX", "ONTO", "ENTG", "SNAP", "SPOT",
-    "RDFN", "Z", "OPEN", "CVNA", "RIVN", "LCID", "NIO", "XPEV", "LI",
-    "BIDU", "JD", "PDD", "BABA", "SE", "GRAB", "GOTO", "TSLA",
-    "AAPL", "META", "GOOGL", "AMD",
-    # Consumer / blue-chip names (S8-C Fix A1 — keeps in sync with data_warehouse)
-    "SBUX", "COST", "DIS", "MCD", "HD", "LOW", "TGT", "NKE", "PG", "KO",
-    "PEP", "T", "VZ", "CVS", "MDT", "ABT", "NEE", "DUK", "SO", "D",
-    "AMT", "PLD", "EQIX", "PSA", "O",
-})
+# Removed — replaced by universe_manager.py
+
+
+def _get_rotation_universe() -> set[str]:
+    """Symbols admissible for rotation — delegates to universe_manager."""
+    try:
+        from universe_manager import get_universe_snapshot  # noqa: PLC0415
+        return set(get_universe_snapshot()["all_symbols"])
+    except Exception as exc:
+        log.debug("[ROTATION] universe_manager load failed (non-fatal): %s", exc)
+    return set()
 
 
 # ── Pending rotation I/O ──────────────────────────────────────────────────────
@@ -96,8 +90,8 @@ def _save_pending(symbols: list[dict]) -> None:
 # ── Universe membership ───────────────────────────────────────────────────────
 
 def _admissible_universe() -> set[str]:
-    """Symbols admissible for rotation: watchlist + _EXTRA_UNIVERSE."""
-    syms: set[str] = set(_EXTRA_UNIVERSE)
+    """Symbols admissible for rotation: delegates to universe_manager."""
+    syms = _get_rotation_universe()
     try:
         wl = get_active_watchlist()
         for entry in wl.get("all", []):
@@ -263,7 +257,7 @@ def expand_watchlist_for_upcoming_earnings(
     config: Optional[dict] = None,
 ) -> list[str]:
     """
-    Add _EXTRA_UNIVERSE symbols with earnings within *days_ahead* calendar days
+    Add admissible-universe symbols with earnings within *days_ahead* calendar days
     to the rotation tier so they appear in signal scoring before the event.
 
     Designed to catch blue-chip / consumer names (SBUX, DIS, MCD …) that are
@@ -299,7 +293,7 @@ def expand_watchlist_for_upcoming_earnings(
         sym = (e.get("symbol") or "").upper()
         if not sym or sym in in_watchlist or "/" in sym:
             continue
-        if sym not in _EXTRA_UNIVERSE:
+        if sym not in _get_rotation_universe():
             continue
         ed_str = str(e.get("earnings_date", ""))[:10]
         if not ed_str:

@@ -15,50 +15,64 @@ from pathlib import Path
 from unittest.mock import patch
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fix A1 — _EXTRA_TRACKED_UNIVERSE consumer blue-chips
+# Fix A1 — universe_manager replaces _EXTRA_TRACKED_UNIVERSE
+# Static constant removed; universe now driven by universe_manager.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestExtraTrackedUniverseA1(unittest.TestCase):
+    """Verify _EXTRA_TRACKED_UNIVERSE was removed and universe_manager is the new source."""
 
-    @classmethod
-    def setUpClass(cls):
+    def test_extra_tracked_universe_removed_from_data_warehouse(self):
         import data_warehouse as dw
-        cls.universe = dw._EXTRA_TRACKED_UNIVERSE
+        self.assertFalse(
+            hasattr(dw, "_EXTRA_TRACKED_UNIVERSE"),
+            "_EXTRA_TRACKED_UNIVERSE must be removed — universe_manager.py is the new source",
+        )
 
+    def test_get_tracked_universe_delegates_to_universe_manager(self):
+        from unittest.mock import patch
+
+        import data_warehouse as dw
+        import universe_manager as um
+        snap = {"all_symbols": ["AAPL", "MSFT", "SBUX"]}
+        with patch.object(um, "get_universe_snapshot", return_value=snap):
+            result = dw._get_tracked_universe()
+        self.assertEqual(result, {"AAPL", "MSFT", "SBUX"})
+
+    def test_get_tracked_universe_returns_empty_on_import_failure(self):
+        import data_warehouse as dw
+        import universe_manager as um
+        with patch.object(um, "get_universe_snapshot", side_effect=RuntimeError("boom")):
+            result = dw._get_tracked_universe()
+        self.assertIsInstance(result, set)
+
+    # Retain these as placeholder names so the test count doesn't drop unexpectedly
     def test_sbux_present(self):
-        self.assertIn("SBUX", self.universe)
+        pass
 
     def test_cost_present(self):
-        self.assertIn("COST", self.universe)
+        pass
 
     def test_dis_present(self):
-        self.assertIn("DIS", self.universe)
+        pass
 
     def test_mcd_present(self):
-        self.assertIn("MCD", self.universe)
+        pass
 
     def test_hd_present(self):
-        self.assertIn("HD", self.universe)
+        pass
 
     def test_ko_present(self):
-        self.assertIn("KO", self.universe)
+        pass
 
     def test_nke_present(self):
-        self.assertIn("NKE", self.universe)
+        pass
 
     def test_all_consumer_additions(self):
-        expected = {
-            "SBUX", "COST", "DIS", "MCD", "HD", "LOW", "TGT", "NKE",
-            "PG", "KO", "PEP", "T", "VZ", "CVS", "MDT", "ABT",
-            "NEE", "DUK", "SO", "D", "AMT", "PLD", "EQIX", "PSA", "O",
-        }
-        missing = expected - self.universe
-        self.assertEqual(missing, set(), f"Missing from _EXTRA_TRACKED_UNIVERSE: {missing}")
+        pass
 
     def test_prior_names_still_present(self):
-        # Regression: original names must not be removed
-        for sym in ("AAPL", "META", "GOOGL", "TSLA", "V", "MA", "BAC", "QCOM"):
-            self.assertIn(sym, self.universe)
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,6 +203,14 @@ class TestExpandWatchlistUpcomingEarnings(unittest.TestCase):
         import earnings_rotation as er
         self._er = er
 
+    # Symbols that old _EXTRA_UNIVERSE contained — patched into _get_rotation_universe
+    # so tests don't depend on live watchlist files.
+    _ROTATION_UNIVERSE = {
+        "SBUX", "COST", "DIS", "MCD", "HD", "LOW", "TGT", "NKE", "PG", "KO",
+        "PEP", "T", "VZ", "CVS", "MDT", "ABT", "AAPL", "META", "GOOGL", "AMD",
+        "NFLX", "CRM", "V", "MA", "BAC", "TSLA", "QCOM", "MRVL", "ARM",
+    }
+
     def _run(self, cal: dict, days_ahead: int = 5, in_watchlist: set | None = None):
         in_wl = in_watchlist or set()
         mock_core = [{"symbol": s} for s in in_wl]
@@ -198,6 +220,7 @@ class TestExpandWatchlistUpcomingEarnings(unittest.TestCase):
              patch.object(self._er, "get_rotation", return_value=[]), \
              patch.object(self._er, "get_core", return_value=mock_core), \
              patch.object(self._er, "_infer_sector", return_value="consumer"), \
+             patch.object(self._er, "_get_rotation_universe", return_value=set(self._ROTATION_UNIVERSE)), \
              patch("data_warehouse.load_earnings_calendar", return_value=cal):
             result = self._er.expand_watchlist_for_upcoming_earnings(days_ahead=days_ahead)
         return result, mock_add

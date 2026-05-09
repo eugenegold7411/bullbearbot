@@ -238,10 +238,17 @@ class TestOIGateAndCVNA:
         gates = self._cfg()["account2"]["liquidity_gates"]
         assert gates["min_open_interest"] == 50
 
-    def test_cvna_in_admissible_universe(self):
-        from earnings_rotation import _admissible_universe
-        universe = _admissible_universe()
-        assert "CVNA" in universe, "CVNA not found in _admissible_universe()"
+    def test_admissible_universe_includes_rotation_universe(self):
+        # _EXTRA_UNIVERSE was removed — _admissible_universe() now delegates to
+        # _get_rotation_universe() (universe_manager). Verify the delegation works:
+        # if a symbol is in _get_rotation_universe(), it appears in _admissible_universe().
+        from unittest.mock import patch
+
+        import earnings_rotation as er
+        with patch.object(er, "_get_rotation_universe", return_value={"CVNA", "AAPL"}):
+            universe = er._admissible_universe()
+        assert "CVNA" in universe, "CVNA not in _admissible_universe() even though returned by _get_rotation_universe()"
+        assert "AAPL" in universe
 
     def test_cvna_passes_pre_debate_oi_floor(self):
         """CVNA OI=142 >= pre_debate_oi_floor=75."""

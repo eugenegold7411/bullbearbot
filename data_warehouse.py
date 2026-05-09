@@ -512,48 +512,20 @@ def refresh_earnings_calendar() -> None:
 
 
 
-_EXTRA_TRACKED_UNIVERSE: frozenset[str] = frozenset({
-    # Names not in core watchlist but still tracked for rotation/A2 universe
-    "AAPL", "META", "GOOGL", "AMD", "NFLX", "CRM", "ORCL", "ADBE", "NOW",
-    "WDAY", "ZM", "V", "MA", "PYPL", "SQ", "AFRM", "UPST", "SOFI", "HOOD",
-    "BAC", "C", "WFC", "GE", "CAT", "DE", "BA", "UNH", "UBER", "LYFT",
-    "ABNB", "DASH", "COIN", "MSTR", "SHOP", "DDOG", "NET", "CRWD", "OKTA",
-    "ZS", "TEAM", "MDB", "ESTC", "U", "RBLX", "ARM", "SMCI", "MRVL", "QCOM",
-    "MU", "INTC", "TXN", "AMAT", "KLAC", "LRCX", "ONTO", "ENTG", "SNAP",
-    "SPOT", "RDFN", "Z", "OPEN", "CVNA", "RIVN", "LCID", "NIO", "XPEV",
-    "LI", "BIDU", "JD", "PDD", "BABA", "SE", "GRAB", "GOTO", "TSLA",
-    # Consumer / blue-chip names (S8-C Fix A1 — covers SBUX-class misses)
-    "SBUX", "COST", "DIS", "MCD", "HD", "LOW", "TGT", "NKE", "PG", "KO",
-    "PEP", "T", "VZ", "CVS", "MDT", "ABT", "NEE", "DUK", "SO", "D",
-    "AMT", "PLD", "EQIX", "PSA", "O",
-})
+# Removed — replaced by universe_manager.py
 
 
 def _get_tracked_universe() -> set[str]:
     """
     Return the symbol set we filter the AV calendar against.
-    Union of: watchlist (core + rotation) + A2 universe + extras.
+    Delegates to universe_manager for the full dynamic + core universe.
     """
-    syms: set[str] = set()
     try:
-        wl = wm.get_active_watchlist()
-        for s in wl.get("stocks", []) + wl.get("etfs", []):
-            if isinstance(s, str) and "/" not in s:
-                syms.add(s.upper())
+        from universe_manager import get_universe_snapshot  # noqa: PLC0415
+        return set(get_universe_snapshot()["all_symbols"])
     except Exception as exc:
-        log.debug("[EARNINGS_AV] watchlist load failed (non-fatal): %s", exc)
-
-    # A2 options universe (whatever has IV history)
-    try:
-        from options_universe_manager import get_universe  # noqa: PLC0415
-        u = get_universe()
-        for k in (u.get("symbols") or {}):
-            syms.add(k.upper())
-    except Exception:
-        pass
-
-    syms |= _EXTRA_TRACKED_UNIVERSE
-    return syms
+        log.debug("[EARNINGS_AV] universe_manager load failed (non-fatal): %s", exc)
+    return set()
 
 
 def refresh_earnings_calendar_av() -> dict:

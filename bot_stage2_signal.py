@@ -1861,19 +1861,19 @@ def _test_full_run() -> None:
     import logging as _logging  # noqa: PLC0415
     _logging.basicConfig(level=_logging.WARNING)
 
-    # Load watchlist
+    # Load universe
     try:
         import sys as _sys  # noqa: PLC0415
         _sys.path.insert(0, str(_BASE))
-        import watchlist_manager as _wm  # noqa: PLC0415
-        wl = _wm.get_active_watchlist()
-        all_symbols = [s["symbol"] for s in wl.get("all", []) if s.get("symbol")]
+        from universe_manager import get_universe_snapshot  # noqa: PLC0415
+        snapshot = get_universe_snapshot()
+        all_symbols = snapshot["all_symbols"]
     except Exception as exc:
-        print(f"watchlist_manager unavailable ({exc}), using fallback list")
+        print(f"universe_manager unavailable ({exc}), using fallback list")
         all_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL",
-                       "AMAT", "CSCO", "NVDA", "AMD", "INTC", "QCOM", "AVGO"]
+                       "AMAT", "CSCO", "AMD", "INTC", "QCOM", "AVGO"]
 
-    print(f"\nFull-run test: {len(all_symbols)} watchlist symbols")
+    print(f"\nFull-run test: {len(all_symbols)} universe symbols")
     print("=" * 68)
 
     news_canonical = news_fallback = news_empty = 0

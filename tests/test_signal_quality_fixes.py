@@ -144,7 +144,6 @@ class TestBarStalenessWatermark:
             "signals": [], "conflicts": [], "data_stale": True, "bar_age_minutes": 95,
         }
         with patch.object(sig, "_get_macro_wire_hits_for_symbol", return_value=[]), \
-             patch.object(sig, "_load_cached_symbol_news", return_value=[]), \
              patch.object(sig, "_load_symbol_risk_factors", return_value={}):
             block = sig._format_l2_for_l3("AAPL", l2, None, 200.0)
         assert "DATA_STALE" in block, f"Expected DATA_STALE in L3 block:\n{block}"
@@ -168,7 +167,6 @@ class TestSymbolRiskFactors:
             }
         }
         with patch.object(sig, "_get_macro_wire_hits_for_symbol", return_value=[]), \
-             patch.object(sig, "_load_cached_symbol_news", return_value=[]), \
              patch.object(sig, "_load_symbol_risk_factors", return_value=risk_data):
             block = sig._format_l2_for_l3("QCOM", l2, None, 185.0)
         assert "SYMBOL_RISK" in block, f"Expected SYMBOL_RISK in L3 block:\n{block}"
@@ -182,7 +180,6 @@ class TestSymbolRiskFactors:
             "signals": [], "conflicts": [], "data_stale": False, "bar_age_minutes": None,
         }
         with patch.object(sig, "_get_macro_wire_hits_for_symbol", return_value=[]), \
-             patch.object(sig, "_load_cached_symbol_news", return_value=[]), \
              patch.object(sig, "_load_symbol_risk_factors", return_value={}):
             block = sig._format_l2_for_l3("SPY", l2, None, 570.0)
         assert "SYMBOL_RISK" not in block, f"SYMBOL_RISK should not appear for SPY:\n{block}"

@@ -345,97 +345,6 @@ def _get_macro_wire_hits_for_symbol(sym: str) -> list[str]:
         return []
 
 
-def _load_cached_symbol_news(sym: str) -> list[str]:
-    """Return ≤3 recent headlines. Canonical file is primary source; legacy news
-    cache files (data/news/) are the fallback. Non-fatal — returns [] on all errors.
-    """
-    # Primary: canonical file news_yahoo (Phase 3.2 migration)
-    try:
-        cp = _SYMBOLS_DIR / f"{sym}.json"
-        if cp.exists():
-            canonical = json.loads(cp.read_text())
-            ny = canonical.get("news_yahoo") or []
-            canonical_headlines = [
-                (a.get("headline") or "").strip()[:80]
-                for a in ny
-                if (a.get("headline") or "").strip()
-            ][:3]
-            if canonical_headlines:
-                log.debug("[NEWS] %s: canonical (%d articles available)", sym, len(ny))
-                return canonical_headlines
-    except Exception:
-        pass
-
-    # Fallback: legacy per-symbol news cache files
-    news_dir = _BASE / "data" / "news"
-    headlines: list[str] = []
-    for suffix in ("_yahoo_news.json", "_finnhub_news.json"):
-        try:
-            path = news_dir / f"{sym}{suffix}"
-            if not path.exists():
-                continue
-            data = json.loads(path.read_text())
-            for a in (data.get("articles") or []):
-                h = (a.get("headline") or "").strip()
-                if h and h not in headlines:
-                    headlines.append(h[:80])
-                    if len(headlines) >= 3:
-                        log.debug("[NEWS] %s: fallback cache", sym)
-                        return headlines
-        except Exception:
-            pass
-    if not headlines:
-        log.debug("[NEWS] %s: no news (canonical empty, no cache files)", sym)
-    return headlines
-
-
-def _load_canonical_analyst_context(sym: str) -> str:
-    """Return compact analyst + beat-history string for L3 prompt injection.
-
-    Reads canonical analyst_targets + beat_history. Returns "" if canonical
-    file is missing or has no analyst data. Non-fatal.
-    """
-    try:
-        cp = _SYMBOLS_DIR / f"{sym}.json"
-        if not cp.exists():
-            return ""
-        canonical = json.loads(cp.read_text())
-        at = canonical.get("analyst_targets") or {}
-        bh = canonical.get("beat_history") or []
-        if not at and not bh:
-            return ""
-
-        parts: list[str] = []
-
-        rec = str(at.get("recommendation_key") or "").lower()
-        if rec:
-            parts.append(f"rec={rec}")
-        cnt = at.get("analyst_count")
-        if cnt:
-            parts.append(f"n={cnt}")
-        upside = at.get("upside_pct")
-        if upside is not None:
-            parts.append(f"upside={upside:+.1f}%")
-
-        consecutive = 0
-        for q in bh[:4]:
-            if float(q.get("surprise_pct", 0) or 0) > 0:
-                consecutive += 1
-            else:
-                break
-        if consecutive >= 2:
-            parts.append(f"beat_streak={consecutive}q")
-
-        if len(bh) >= 2:
-            avg_surp = sum(
-                float(q.get("surprise_pct", 0) or 0) for q in bh[:4]
-            ) / min(len(bh), 4)
-            parts.append(f"avg_eps_surprise={avg_surp:+.1f}%")
-
-        return " ".join(parts) if parts else ""
-    except Exception:
-        return ""
-
 
 def _format_l2_for_l3(sym: str, l2: dict, qual_entry: Optional[dict],
                       l2_price: Optional[float]) -> str:
@@ -475,16 +384,6 @@ def _format_l2_for_l3(sym: str, l2: dict, qual_entry: Optional[dict],
     wire_hits = _get_macro_wire_hits_for_symbol(sym)
     if wire_hits:
         lines.append("  MACRO_WIRE: " + " | ".join(wire_hits))
-
-    # Inject per-symbol news headlines — canonical primary, cache fallback (Phase 3.2)
-    sym_news = _load_cached_symbol_news(sym)
-    if sym_news:
-        lines.append("  SYMBOL_NEWS: " + " | ".join(sym_news))
-
-    # Inject analyst consensus from canonical file (Phase 3.2 migration)
-    analyst_ctx = _load_canonical_analyst_context(sym)
-    if analyst_ctx:
-        lines.append("  ANALYST_CONTEXT: " + analyst_ctx)
 
     # Inject symbol structural risk factors (China revenue, export control risk)
     _risk = _load_symbol_risk_factors().get(sym)
@@ -1419,8 +1318,6 @@ def score_signals(
         log.debug("[SIGNALS] scoring %d/%d symbols: %s",
                   len(scored), len(watchlist_symbols), scored)
 
-        insider_lines = [l.strip() for l in (md.get("insider_section", "") or "").splitlines()
-                         if any(s in l for s in scored)][:10]
         orb_str = "(none)"
         try:
             orb_path = _BASE / "data" / "scanner" / "orb_candidates.json"
@@ -1455,13 +1352,11 @@ def score_signals(
             batch = list(islice(_it, _LEGACY_BATCH_SIZE))
             if not batch:
                 break
-            b_insider = [l for l in insider_lines if any(s in l for s in batch)]
             b_reddit  = [l for l in reddit_lines  if any(s in l for s in batch)]
             b_pwl     = [l for l in pwl_lines     if any(l.startswith(s) for s in batch)]
             batch_content = (
                 f"Symbols to score: {', '.join(batch)}\n\n"
                 f"{regime_line}\n\n"
-                f"INSIDER/CONGRESSIONAL:\n{chr(10).join(b_insider) or '(none)'}\n\n"
                 f"ORB CANDIDATES:\n{orb_str}\n\n"
                 f"REDDIT:\n{chr(10).join(b_reddit) or '(none)'}\n\n"
                 f"MORNING BRIEF picks:\n{chr(10).join(morning_lines) or '(none)'}\n\n"
@@ -1576,287 +1471,12 @@ def format_signal_scores(scores: dict) -> str:
     return "\n".join(lines) if lines else "  (no signals scored)"
 
 
-# =============================================================================
-# Canonical-file migration test harness  (--test-migration only, never hot-path)
-# =============================================================================
-
-_SYMBOLS_DIR      = _BASE / "data" / "symbols"
-_EARNINGS_INTEL_DIR = _BASE / "data" / "earnings_intel"
-
-
-def _load_canonical_data(symbol: str) -> Optional[dict]:
-    """Load data/symbols/{SYM}.json. Returns None if missing or unreadable."""
-    try:
-        p = _SYMBOLS_DIR / f"{symbol}.json"
-        return json.loads(p.read_text()) if p.exists() else None
-    except Exception as exc:
-        log.debug("[CANONICAL] load failed for %s: %s", symbol, exc)
-        return None
-
-
-def _score_analyst_from_canonical(canonical: dict) -> tuple:
-    """Score analyst consensus from canonical analyst_targets + beat_history.
-    Returns (score_delta: float, signals: list[str]).
-    """
-    score = 0.0
-    signals: list = []
-
-    at = canonical.get("analyst_targets") or {}
-    bh = canonical.get("beat_history") or []
-
-    rec = str(at.get("recommendation_key") or "").lower()
-    if rec == "strong_buy":
-        score += 5
-        signals.append("analyst_strong_buy")
-    elif rec == "buy":
-        score += 3
-        signals.append("analyst_buy")
-
-    upside = at.get("upside_pct")
-    if upside is not None:
-        if upside >= 20:
-            score += 5
-            signals.append(f"analyst_upside_{upside:.0f}pct")
-        elif upside >= 10:
-            score += 3
-            signals.append(f"analyst_upside_{upside:.0f}pct")
-        elif upside < -10:
-            score -= 3
-            signals.append("analyst_downside")
-
-    consecutive = 0
-    for q in bh[:4]:
-        if float(q.get("surprise_pct", 0) or 0) > 0:
-            consecutive += 1
-        else:
-            break
-    if consecutive >= 4:
-        score += 6
-        signals.append("beat_streak_4q")
-    elif consecutive >= 3:
-        score += 4
-        signals.append("beat_streak_3q")
-    elif consecutive >= 2:
-        score += 2
-        signals.append("beat_streak_2q")
-
-    if len(bh) >= 4:
-        avg_surp = sum(float(q.get("surprise_pct", 0) or 0) for q in bh[:4]) / 4
-        if avg_surp >= 10:
-            score += 3
-            signals.append(f"high_eps_surprise_{avg_surp:.0f}pct")
-
-    return score, signals
-
-
-def _score_insider_from_canonical(canonical: dict) -> tuple:
-    """Score insider + congressional activity from canonical file.
-    Returns (score_delta: float, signals: list[str]).
-    """
-    score = 0.0
-    signals: list = []
-
-    it = canonical.get("insider_trades_30d") or []
-    ct = canonical.get("congress_trades_30d") or []
-
-    purchases = [t for t in it if str(t.get("transaction_code", "")).upper() == "P"]
-    if purchases:
-        score += 5
-        signals.append(f"insider_purchase_30d_x{len(purchases)}")
-
-    congress_buys = [
-        t for t in ct
-        if str(t.get("transaction_type", "")).lower() in ("purchase", "buy")
-    ]
-    if congress_buys:
-        score += 5
-        signals.append(f"congress_buy_30d_x{len(congress_buys)}")
-
-    return score, signals
-
-
-def _score_news_from_canonical(canonical: dict) -> tuple:
-    """Extract news headlines from canonical file.
-    Returns (score_delta: float, signals: list[str], headlines: list[str]).
-    News content is scored by L3 Haiku — this only confirms availability.
-    """
-    ny = canonical.get("news_yahoo") or []
-    na = canonical.get("news_alpaca") or []
-    total = len(ny) + len(na)
-    signals: list = [f"news_available_{total}"] if total > 0 else ["no_news_in_canonical"]
-    headlines = [
-        (a.get("headline") or "").strip()[:80]
-        for a in ny[:3]
-        if (a.get("headline") or "").strip()
-    ]
-    return 0.0, signals, headlines
-
-
-def _score_symbol_from_canonical(symbol: str) -> dict:
-    """Score symbol using only canonical file data. No API calls, no live md dict.
-
-    Parallel implementation to the fragmented-source path. Used by
-    _test_canonical_migration() to verify canonical data quality.
-    """
-    canonical = _load_canonical_data(symbol)
-    if not canonical:
-        return {
-            "symbol": symbol,
-            "canonical_found": False,
-            "signal_strength": 0.0,
-            "signals": ["no_canonical_file"],
-            "headlines_sample": [],
-        }
-
-    analyst_score, analyst_sigs           = _score_analyst_from_canonical(canonical)
-    insider_score, insider_sigs           = _score_insider_from_canonical(canonical)
-    _news_score, news_sigs, headlines     = _score_news_from_canonical(canonical)
-
-    return {
-        "symbol":          symbol,
-        "canonical_found": True,
-        "last_enriched":   canonical.get("last_enriched"),
-        "signal_strength": round(analyst_score + insider_score, 1),
-        "signals":         analyst_sigs + insider_sigs + news_sigs,
-        "headlines_sample": headlines[:2],
-        "breakdown": {
-            "analyst": round(analyst_score, 1),
-            "insider": round(insider_score, 1),
-        },
-    }
-
-
-def _score_symbol_old_method(symbol: str) -> dict:
-    """Score symbol using current fragmented disk sources (no API calls).
-
-    Reads: data/earnings_intel/{SYM}_analyst_intel.json,
-           data/news/{SYM}_yahoo_news.json,
-           data/news/{SYM}_finnhub_news.json.
-    Mirrors the non-technical context signals L3 currently receives.
-    """
-    score = 0.0
-    signals: list = []
-
-    p = _EARNINGS_INTEL_DIR / f"{symbol}_analyst_intel.json"
-    if p.exists():
-        try:
-            ei = json.loads(p.read_text())
-            beat_q   = int(ei.get("beat_quarters") or 0)
-            upside   = ei.get("price_target_upside_pct")
-            bullish  = ei.get("bullish_pct")
-
-            if beat_q >= 4:
-                score += 4
-                signals.append(f"beat_streak_{beat_q}q_old")
-            elif beat_q >= 2:
-                score += 2
-                signals.append(f"beat_streak_{beat_q}q_old")
-
-            if upside is not None and upside >= 10:
-                score += 3
-                signals.append(f"analyst_upside_{upside:.0f}pct_old")
-            elif upside is not None and upside < -10:
-                score -= 2
-                signals.append("analyst_downside_old")
-
-            if bullish and bullish >= 80:
-                score += 2
-                signals.append(f"analyst_bullish_{bullish:.0f}pct_old")
-        except Exception:
-            signals.append("earnings_intel_parse_error")
-    else:
-        signals.append("no_earnings_intel_file")
-
-    news_dir = _BASE / "data" / "news"
-    headlines: list = []
-    article_count = 0
-    for suffix in ("_yahoo_news.json", "_finnhub_news.json"):
-        np = news_dir / f"{symbol}{suffix}"
-        if np.exists():
-            try:
-                data = json.loads(np.read_text())
-                arts = data.get("articles", [])
-                article_count += len(arts)
-                for a in arts[:2]:
-                    h = (a.get("headline") or "").strip()[:80]
-                    if h and h not in headlines:
-                        headlines.append(h)
-            except Exception:
-                pass
-
-    if article_count > 0:
-        signals.append(f"news_cached_{article_count}_articles")
-    else:
-        signals.append("no_news_cache")
-
-    return {
-        "symbol":          symbol,
-        "signal_strength": round(score, 1),
-        "signals":         signals,
-        "headlines_sample": headlines[:2],
-    }
-
-
-def _test_canonical_migration(symbols: list) -> None:
-    """Compare old fragmented vs new canonical context signals for each symbol.
-
-    No API calls. Reads disk only. Does not modify any files.
-    Technical L2 signals (MA/RSI/MACD/volume) are excluded — those require
-    live market data and would be identical under both approaches.
-    """
-    print("\n" + "=" * 68)
-    print("CANONICAL MIGRATION TEST — Context Signal Comparison")
-    print("(technical L2 signals excluded — they depend on live market data)")
-    print("=" * 68)
-
-    for symbol in symbols:
-        old = _score_symbol_old_method(symbol)
-        new = _score_symbol_from_canonical(symbol)
-
-        diff = new.get("signal_strength", 0) - old.get("signal_strength", 0)
-
-        print(f"\n{symbol}:")
-        print(f"  OLD  strength={old['signal_strength']:+.1f}  signals={old['signals']}")
-        print(f"  NEW  strength={new['signal_strength']:+.1f}  signals={new['signals']}")
-        print(f"  DIFF = {diff:+.1f} points")
-
-        if old.get("headlines_sample"):
-            print(f"  OLD headline[0]: {old['headlines_sample'][0][:70]}")
-        if new.get("headlines_sample"):
-            print(f"  NEW headline[0]: {new['headlines_sample'][0][:70]}")
-
-        if new.get("last_enriched"):
-            print(f"  Canonical last_enriched: {new['last_enriched']}")
-
-        if new.get("breakdown"):
-            bd = new["breakdown"]
-            print(f"  NEW breakdown: analyst={bd['analyst']:+.1f}  insider={bd['insider']:+.1f}")
-
-        notes = []
-        if "no_earnings_intel_file" in old.get("signals", []) and new.get("canonical_found"):
-            notes.append("canonical FILLS GAP (no old earnings_intel file)")
-        if "no_news_cache" in old.get("signals", []) and new.get("canonical_found"):
-            notes.append("canonical FILLS news gap")
-        if notes:
-            print("  NOTES: " + "; ".join(notes))
-
-    print("\n" + "=" * 68)
-    print("SUMMARY")
-    print("  - Canonical is superset: 8-quarter beat history vs 4 in earnings_intel.")
-    print("  - analyst_targets richer: high/low/median/rec breakdown vs summary only.")
-    print("  - news_yahoo in canonical == data/news/{SYM}_yahoo_news.json (same feed).")
-    print("  - Canonical fills gaps for symbols with no earnings_intel/ file.")
-    print("  - insider/congress: canonical=30d lookback; L2 live=48h API call.")
-    print("  - Score diffs reflect richer scoring logic, not data quality issues.")
-    print("=" * 68 + "\n")
-
 
 def _test_full_run() -> None:
-    """Verify canonical migration across full watchlist. No API calls. Disk reads only.
+    """Verify L3 prompt format across universe symbols. No API calls. Disk reads only.
 
-    Tests _load_cached_symbol_news and _load_canonical_analyst_context for every
-    symbol in the watchlist, reports canonical vs fallback coverage, and shows
-    sample _format_l2_for_l3 blocks for five symbols.
+    Builds sample _format_l2_for_l3 blocks (technical context only) and reports
+    any symbols that raise exceptions.
     """
     import logging as _logging  # noqa: PLC0415
     _logging.basicConfig(level=_logging.WARNING)
@@ -1876,76 +1496,28 @@ def _test_full_run() -> None:
     print(f"\nFull-run test: {len(all_symbols)} universe symbols")
     print("=" * 68)
 
-    news_canonical = news_fallback = news_empty = 0
-    analyst_canonical = analyst_missing = 0
     errors: list[str] = []
-
     fake_l2 = {
         "score": 55.0, "direction": "bullish", "conviction": "medium",
         "signals": ["uptrend_stack", "rsi_bullish"], "conflicts": [],
         "orb_candidate": False, "pattern_watchlist": False,
         "earnings_days_away": None, "price": 100.0, "data_stale": False,
     }
-
     sample_blocks: list[tuple[str, str]] = []
 
     for sym in all_symbols:
         try:
-            # Test news loading — determine source by checking canonical file directly
-            cp = _SYMBOLS_DIR / f"{sym}.json"
-            canonical_has_news = False
-            if cp.exists():
-                try:
-                    _c = json.loads(cp.read_text())
-                    _ny = _c.get("news_yahoo") or []
-                    canonical_has_news = any(
-                        (a.get("headline") or "").strip() for a in _ny
-                    )
-                except Exception:
-                    pass
-            news = _load_cached_symbol_news(sym)
-            if news:
-                if canonical_has_news:
-                    news_canonical += 1
-                else:
-                    news_fallback += 1
-            else:
-                news_empty += 1
-
-            # Test analyst context
-            analyst_ctx = _load_canonical_analyst_context(sym)
-            if analyst_ctx:
-                analyst_canonical += 1
-            else:
-                analyst_missing += 1
-
-            # Collect sample blocks (first 5)
             if len(sample_blocks) < 5:
                 block = _format_l2_for_l3(sym, fake_l2, None, 100.0)
                 sample_blocks.append((sym, block))
-
-            # Validate no exceptions and no impossible scores
             score = fake_l2["score"]
             if not (0 <= score <= 100):
                 errors.append(f"{sym}: invalid score {score}")
-
         except Exception as exc:
             errors.append(f"{sym}: exception — {exc}")
 
-    # Stats
     total = len(all_symbols)
-    print(f"\nNEWS COVERAGE ({total} symbols):")
-    print(f"  canonical  : {news_canonical:3d}  ({100*news_canonical/max(total,1):.0f}%)")
-    print(f"  fallback   : {news_fallback:3d}  ({100*news_fallback/max(total,1):.0f}%)")
-    print(f"  empty      : {news_empty:3d}  ({100*news_empty/max(total,1):.0f}%)")
-
-    print(f"\nANALYST CONTEXT ({total} symbols):")
-    print(f"  canonical  : {analyst_canonical:3d}  ({100*analyst_canonical/max(total,1):.0f}%)")
-    print(f"  missing    : {analyst_missing:3d}  ({100*analyst_missing/max(total,1):.0f}%)")
-
-    canonical_pct = 100 * news_canonical / max(total, 1)
-    status = "PASS" if canonical_pct >= 75 and not errors else "FAIL"
-    print(f"\nCANONICAL USAGE: {canonical_pct:.0f}%  [{status}]")
+    status = "PASS" if not errors else "FAIL"
 
     if errors:
         print(f"\nERRORS ({len(errors)}):")
@@ -1960,24 +1532,13 @@ def _test_full_run() -> None:
         print(f"\n--- {sym} ---")
         print(block)
 
-    print("\n" + "=" * 68)
-    print(f"RESULT: {status}")
-    if status == "PASS":
-        print("  Migration verified. Canonical usage target (>80%) met.")
-    else:
-        print("  Review errors above before deploying.")
+    print(f"\n{total} symbols checked  [{status}]")
     print()
 
 
 if __name__ == "__main__":
     import sys
-    if "--test-migration" in sys.argv:
-        idx = sys.argv.index("--test-migration")
-        extra_syms = sys.argv[idx + 1:]
-        symbols = extra_syms if extra_syms else ["CSCO", "NVDA", "AMAT"]
-        _test_canonical_migration(symbols)
-    elif "--test-full-run" in sys.argv:
+    if "--test-full-run" in sys.argv:
         _test_full_run()
     else:
-        print("Usage: python3 bot_stage2_signal.py --test-migration [SYM ...]")
-        print("       python3 bot_stage2_signal.py --test-full-run")
+        print("Usage: python3 bot_stage2_signal.py --test-full-run")

@@ -207,6 +207,7 @@ def _yf_fundamentals(symbol: str) -> dict:
         info = yf.Ticker(symbol).info or {}
         mc = info.get("marketCap")
         return {
+            "longName":          info.get("longName", ""),
             "sector":            info.get("sector"),
             "industry":          info.get("industry"),
             "market_cap":        int(mc) if mc else None,
@@ -574,6 +575,7 @@ def enrich_symbol(symbol: str, av_delay: bool = False) -> bool:
               f"(sector={fund_yf.get('sector')})")
     else:
         print(f"  {symbol}: WARNING — yfinance fundamentals empty (ETF or no sector)")
+    out["company_name"] = fund_yf.pop("longName", "")
     out["fundamentals_yf"] = fund_yf
 
     # ── Alpha Vantage OVERVIEW ──

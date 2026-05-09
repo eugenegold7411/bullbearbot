@@ -8,6 +8,11 @@ Tests:
   d) execution_fallback=True AND risk_executed > risk_authorized → CRITICAL, no order
   e) Audit trail fields populated correctly on clean winner execution
   f) Single_call selected by debate → single_call executes → no mismatch
+  g) Alias: debate="debit_call_spread", exec=call_debit_spread → True (FIX-1/2)
+  h) Alias: debate="long_call", exec=single_call → True (FIX-1/2)
+  i) Alias: debate="debit_put_spread", exec=put_debit_spread → True (FIX-1/2)
+  j) Alias: debate="call_debit_spread" (enum value), exec=call_debit_spread → True
+  k) Alias still catches real mismatches: debate="debit_call_spread", exec=single_call → False
 """
 
 from __future__ import annotations
@@ -18,7 +23,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import bot_options_stage4_execution as _exe
-from bot_options_stage4_execution import _validate_execution_matches_debate
+from bot_options_stage4_execution import (
+    _normalize_strategy_name,
+    _validate_execution_matches_debate,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -139,7 +147,6 @@ def test_spread_short_leg_fail_aborts_no_order():
 
 def test_validate_returns_false_on_mismatch():
     """debate=debit_call_spread but structure.strategy=single_call → False + CRITICAL."""
-    from bot_options_stage2_structures import _STRATEGY_FROM_STRUCTURE as smap
     winner = _make_candidate("w", "V", "debit_call_spread")
     structure = _make_structure("single_call")
 
@@ -149,7 +156,7 @@ def test_validate_returns_false_on_mismatch():
             "send_whatsapp_direct.side_effect": whatsapp_msgs.append,
         }),
     }):
-        result = _validate_execution_matches_debate(winner, structure, smap)
+        result = _validate_execution_matches_debate(winner, structure, _exe._get_strategy_map())
 
     assert result is False
     assert len(whatsapp_msgs) == 1
@@ -160,14 +167,13 @@ def test_validate_returns_false_on_mismatch():
 
 def test_validate_returns_true_on_match():
     """debate=debit_call_spread and structure.strategy=call_debit_spread → True."""
-    from bot_options_stage2_structures import _STRATEGY_FROM_STRUCTURE as smap
     winner = _make_candidate("w", "V", "debit_call_spread")
     structure = _make_structure("call_debit_spread")
 
     with patch.dict(sys.modules, {
         "notifications": MagicMock(),
     }):
-        result = _validate_execution_matches_debate(winner, structure, smap)
+        result = _validate_execution_matches_debate(winner, structure, _exe._get_strategy_map())
 
     assert result is True
 
@@ -331,3 +337,72 @@ def test_single_call_approved_by_debate_no_mismatch():
     assert s.execution_fallback is False
     assert s.risk_authorized == pytest.approx(2000.0)
     assert s.risk_executed   == pytest.approx(2000.0)
+
+
+# ── Tests g–k: alias normalization (_normalize_strategy_name + _validate) ────
+
+def _smap():
+    return _exe._get_strategy_map()
+
+
+def test_alias_debit_call_spread_matches_call_debit_spread():
+    """g) debate='debit_call_spread', exec=call_debit_spread → True (FIX-1/2)."""
+    winner    = _make_candidate("w", "V", "debit_call_spread")
+    structure = _make_structure("call_debit_spread")
+    with patch.dict(sys.modules, {"notifications": MagicMock()}):
+        assert _validate_execution_matches_debate(winner, structure, _smap()) is True
+
+
+def test_alias_long_call_matches_single_call():
+    """h) debate='long_call', exec=single_call → True (FIX-1/2)."""
+    winner    = _make_candidate("w", "SPY", "long_call")
+    structure = _make_structure("single_call")
+    with patch.dict(sys.modules, {"notifications": MagicMock()}):
+        assert _validate_execution_matches_debate(winner, structure, _smap()) is True
+
+
+def test_alias_debit_put_spread_matches_put_debit_spread():
+    """i) debate='debit_put_spread', exec=put_debit_spread → True (FIX-1/2)."""
+    winner    = _make_candidate("w", "SPY", "debit_put_spread")
+    structure = _make_structure("put_debit_spread")
+    with patch.dict(sys.modules, {"notifications": MagicMock()}):
+        assert _validate_execution_matches_debate(winner, structure, _smap()) is True
+
+
+def test_alias_enum_value_in_debate_matches():
+    """j) debate='call_debit_spread' (enum value format), exec=call_debit_spread → True."""
+    winner    = _make_candidate("w", "V", "call_debit_spread")
+    structure = _make_structure("call_debit_spread")
+    with patch.dict(sys.modules, {"notifications": MagicMock()}):
+        assert _validate_execution_matches_debate(winner, structure, _smap()) is True
+
+
+def test_alias_still_catches_real_mismatch():
+    """k) debate='debit_call_spread', exec=single_call → False (real mismatch still blocked)."""
+    winner    = _make_candidate("w", "V", "debit_call_spread")
+    structure = _make_structure("single_call")
+    msgs = []
+    with patch.dict(sys.modules, {"notifications": MagicMock(
+        **{"send_whatsapp_direct.side_effect": msgs.append}
+    )}):
+        result = _validate_execution_matches_debate(winner, structure, _smap())
+    assert result is False
+    assert len(msgs) == 1
+
+
+def test_normalize_debate_names():
+    """_normalize_strategy_name maps debate names to canonical enum values."""
+    assert _normalize_strategy_name("debit_call_spread")  == "call_debit_spread"
+    assert _normalize_strategy_name("debit_put_spread")   == "put_debit_spread"
+    assert _normalize_strategy_name("long_call")          == "single_call"
+    assert _normalize_strategy_name("long_put")           == "single_put"
+    assert _normalize_strategy_name("credit_call_spread") == "call_credit_spread"
+    assert _normalize_strategy_name("credit_put_spread")  == "put_credit_spread"
+
+
+def test_normalize_passthrough_for_enum_values():
+    """_normalize_strategy_name passes through enum values unchanged."""
+    assert _normalize_strategy_name("call_debit_spread")  == "call_debit_spread"
+    assert _normalize_strategy_name("single_call")        == "single_call"
+    assert _normalize_strategy_name("iron_condor")        == "iron_condor"
+    assert _normalize_strategy_name("straddle")           == "straddle"

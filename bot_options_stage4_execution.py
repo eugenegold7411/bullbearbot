@@ -86,9 +86,30 @@ _validate_a2_trades_log()
 
 from bot_options_stage2_structures import _STRATEGY_FROM_STRUCTURE
 
+_STRATEGY_ALIASES: dict[str, str] = {
+    # debate output name  : OptionStrategy enum value
+    "long_call":           "single_call",
+    "long_put":            "single_put",
+    "debit_call_spread":   "call_debit_spread",
+    "debit_put_spread":    "put_debit_spread",
+    "credit_call_spread":  "call_credit_spread",
+    "credit_put_spread":   "put_credit_spread",
+}
+
+log.debug("[EXEC] Strategy aliases loaded: %s", list(_STRATEGY_ALIASES.keys()))
+
+
+def _normalize_strategy_name(name: str) -> str:
+    """Resolve debate strategy names to canonical OptionStrategy enum values."""
+    return _STRATEGY_ALIASES.get(name, name)
+
 
 def _get_strategy_map() -> dict:
-    return _STRATEGY_FROM_STRUCTURE
+    from schemas import OptionStrategy as _OS  # noqa: PLC0415
+    _base = dict(_STRATEGY_FROM_STRUCTURE)
+    for _enum in _OS:
+        _base.setdefault(_enum.value, _enum)
+    return _base
 
 
 # ── Debate snapshot builder ───────────────────────────────────────────────────
@@ -248,12 +269,21 @@ def _validate_execution_matches_debate(
     """
     Confirm the structure being executed matches what the debate selected.
     Returns False and fires CRITICAL log + WhatsApp if strategies differ.
+    Normalizes debate strategy names to canonical enum values before comparing,
+    so "debit_call_spread" and "call_debit_spread" are treated as equivalent.
     """
-    expected_enum = strategy_map.get(selected_candidate.get("structure_type", ""))
+    raw_type   = selected_candidate.get("structure_type", "")
+    normalized = _normalize_strategy_name(raw_type)
+    expected_enum = strategy_map.get(normalized)
     if expected_enum is None:
+        log.warning(
+            "[EXEC] _validate: unknown strategy type '%s' (normalized='%s') "
+            "— skipping mismatch check",
+            raw_type, normalized,
+        )
         return True
     if structure_to_execute.strategy != expected_enum:
-        _debate_strat = selected_candidate.get("structure_type", "unknown")
+        _debate_strat = raw_type or "unknown"
         _exec_strat = (
             structure_to_execute.strategy.value
             if hasattr(structure_to_execute.strategy, "value")
@@ -457,7 +487,7 @@ def submit_selected_candidate(
                     log.info("[OPTS] Build fallback attempt %d/%d: %s  %s",
                              _attempt, _MAX_BUILD_ATTEMPTS, sym, _cand_type)
                     # FIX-A: abort if fallback strategy differs from debate winner
-                    if _cand_type != _winner_type:
+                    if _normalize_strategy_name(_cand_type) != _normalize_strategy_name(_winner_type):
                         _risk_auth = _winner.get("max_loss", 0.0)
                         _risk_fall = _cand.get("max_loss", 0.0)
                         log.critical(

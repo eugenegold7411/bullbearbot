@@ -640,9 +640,9 @@ def _load_context() -> str:
 
     # Congressional + insider activity (last 48h)
     try:
-        import watchlist_manager as wm
-        wl = wm.get_active_watchlist()
-        all_syms = [s["symbol"] for s in wl["all"]]
+        from universe_manager import get_universe_snapshot  # noqa: PLC0415
+        snapshot = get_universe_snapshot()
+        all_syms = [s for s in snapshot["all_symbols"] if "/" not in s]
         cong, form4 = _load_insider_from_canonical(all_syms, days_back=2)
         if cong or form4:
             parts.append("\n=== INSIDER ACTIVITY (last 48h) ===")
@@ -1244,9 +1244,9 @@ def _load_intelligence_context(brief_type: str) -> str:
 
     # Insider / congressional activity
     try:
-        import watchlist_manager as wm  # noqa: PLC0415
-        wl = wm.get_active_watchlist()
-        all_syms = [s["symbol"] for s in wl["all"]]
+        from universe_manager import get_universe_snapshot  # noqa: PLC0415
+        snapshot = get_universe_snapshot()
+        all_syms = [s for s in snapshot["all_symbols"] if "/" not in s]
         cong, form4 = _load_insider_from_canonical(all_syms, days_back=5)
         if cong or form4:
             parts.append("\n=== INSIDER ACTIVITY (last 5 days) ===")

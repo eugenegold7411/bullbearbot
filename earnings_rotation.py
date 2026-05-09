@@ -574,16 +574,26 @@ def assemble_earnings_conviction(
     IV analysis, conviction_score, a1_signal, a2_structure, and recommended_structure.
     Non-fatal — missing data files return a conviction with None fields rather than crashing.
     """
-    # Load analyst intel (cache file, no network)
-    intel: dict = {}
-    intel_path = _INTEL_DIR / f"{symbol}_analyst_intel.json"
-    if intel_path.exists():
-        try:
-            intel = json.loads(intel_path.read_text())
-        except Exception as exc:
-            log.debug("[EARNINGS] %s analyst_intel read failed: %s", symbol, exc)
+    # Data loading: canonical file (data/symbols/{SYM}.json) is primary.
+    # Old earnings_intel/ files remain as fallback for symbols not yet enriched.
+    canonical = _load_canonical_data(symbol)
+    if canonical:
+        intel = _extract_analyst_data_from_canonical(canonical)
+        canonical_iv_rank: Optional[float] = (canonical.get("iv") or {}).get("rank")
+        log.info("[EARNINGS] %s: using canonical file", symbol)
+    else:
+        intel = {}
+        intel_path = _INTEL_DIR / f"{symbol}_analyst_intel.json"
+        if intel_path.exists():
+            try:
+                intel = json.loads(intel_path.read_text())
+            except Exception as exc:
+                log.debug("[EARNINGS] %s analyst_intel read failed: %s", symbol, exc)
+        canonical_iv_rank = None
+        log.warning("[EARNINGS] %s: canonical file missing — falling back to old sources", symbol)
 
-    # Load IV history
+    # IV history: trajectory only; canonical stores current rank directly,
+    # iv_history entries have no iv_rank field so the old path always gave None.
     iv_history: list = []
     iv_path = _IV_HIST_DIR / f"{symbol}_iv_history.json"
     if iv_path.exists():
@@ -611,7 +621,9 @@ def assemble_earnings_conviction(
     pt_upside_pct = intel.get("price_target_upside_pct")
     price_target_upside: Optional[float] = round(pt_upside_pct / 100.0, 3) if pt_upside_pct is not None else None
 
-    iv_trajectory, iv_rank = _ec_iv_trajectory(iv_history)
+    iv_trajectory, iv_rank_from_hist = _ec_iv_trajectory(iv_history)
+    # Canonical iv_rank is accurate; iv_history entries lack iv_rank field
+    iv_rank = canonical_iv_rank if canonical_iv_rank is not None else iv_rank_from_hist
     vol_conv = _ec_vol_conviction(iv_trajectory, iv_rank)
 
     # Crowded consensus: overwhelmingly bullish + expensive IV
@@ -749,3 +761,198 @@ def scan_earnings_candidates(lookforward: int = 14, config: Optional[dict] = Non
         len(candidates), active_count, active_syms[:5],
     )
     return candidates
+
+
+# ── Phase 3.1: Canonical migration — parallel test functions ─────────────────
+# These functions mirror the conviction assembly logic but read from
+# data/symbols/{SYM}.json instead of data/earnings_intel/ fragmented files.
+# DO NOT call from production until _test_canonical_migration confirms parity.
+
+def _load_canonical_data(symbol: str) -> Optional[dict]:
+    """Load symbol data from canonical file. Returns None if missing."""
+    path = _BASE / "data" / "symbols" / f"{symbol}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception as exc:
+        log.debug("[CANONICAL] %s: read failed: %s", symbol, exc)
+        return None
+
+
+def _extract_analyst_data_from_canonical(canonical: dict) -> dict:
+    """
+    Extract analyst intel fields from canonical file.
+
+    PRIMARY: use the pre-computed analyst_intel section if present (same
+    schema as old data/earnings_intel/{SYM}_analyst_intel.json files).
+
+    FALLBACK: derive from analyst_targets + beat_history when analyst_intel
+    is absent (e.g. symbols enriched before the analyst_intel section was added).
+
+    Returns dict with keys: bullish_pct, rec_mean, beat_quarters,
+    total_quarters, avg_surprise_pct, price_target_upside_pct.
+    """
+    # PRIMARY — analyst_intel section already in the old schema
+    existing = canonical.get("analyst_intel")
+    if existing and isinstance(existing, dict):
+        return existing
+
+    # FALLBACK — derive from analyst_targets + beat_history
+    result: dict = {}
+
+    targets = canonical.get("analyst_targets") or {}
+    if targets:
+        strong_buy  = targets.get("strong_buy", 0) or 0
+        buy         = targets.get("buy", 0) or 0
+        hold        = targets.get("hold", 0) or 0
+        sell        = targets.get("sell", 0) or 0
+        strong_sell = targets.get("strong_sell", 0) or 0
+        total = strong_buy + buy + hold + sell + strong_sell
+
+        result["bullish_pct"] = round((strong_buy + buy) / total * 100, 2) if total > 0 else 0.0
+        result["rec_mean"]    = targets.get("recommendation_mean", 3.0)
+        result["price_target_upside_pct"] = targets.get("upside_pct")
+
+    beats = canonical.get("beat_history") or []
+    if beats:
+        beat_count = sum(1 for b in beats if (b.get("surprise_pct") or 0) > 0)
+        surprises  = [b.get("surprise_pct") or 0 for b in beats]
+        result["beat_quarters"]   = beat_count
+        result["total_quarters"]  = len(beats)
+        result["avg_surprise_pct"] = round(sum(surprises) / len(surprises), 3) if surprises else 0.0
+    else:
+        result["beat_quarters"]   = 0
+        result["total_quarters"]  = 0
+        result["avg_surprise_pct"] = 0.0
+
+    return result
+
+
+def _compute_conviction_from_canonical(
+    symbol: str, eda: int, timing: str, config: Optional[dict] = None
+) -> Optional[dict]:
+    """
+    Compute earnings conviction from canonical file (data/symbols/{SYM}.json).
+
+    Parallel implementation of assemble_earnings_conviction().
+    Key difference: uses canonical iv.rank (fresh, accurate) instead of
+    iv_history entries (which store raw iv, not iv_rank — so the old path
+    always resolved iv_rank to None via _ec_iv_trajectory).
+
+    Returns same schema as assemble_earnings_conviction(), or None if no
+    canonical file exists for the symbol.
+    """
+    canonical = _load_canonical_data(symbol)
+    if not canonical:
+        log.warning("[CANONICAL] %s: no canonical file — conviction unavailable", symbol)
+        return None
+
+    intel = _extract_analyst_data_from_canonical(canonical)
+
+    # IV rank: canonical stores current rank directly; iv_history has no iv_rank field
+    canonical_iv_rank = (canonical.get("iv") or {}).get("rank")
+
+    # IV trajectory: reuse existing iv_history file for trajectory direction
+    iv_history: list = []
+    iv_path = _IV_HIST_DIR / f"{symbol}_iv_history.json"
+    if iv_path.exists():
+        try:
+            raw = json.loads(iv_path.read_text())
+            iv_history = raw if isinstance(raw, list) else raw.get("history", [])
+        except Exception as exc:
+            log.debug("[CANONICAL] %s iv_history read failed: %s", symbol, exc)
+
+    iv_trajectory, _ = _ec_iv_trajectory(iv_history)  # ignores iv_rank from history
+    vol_conv = _ec_vol_conviction(iv_trajectory, canonical_iv_rank)
+
+    # Phase
+    if eda > 7:
+        phase = "watch"
+    elif eda >= 3:
+        phase = "active"
+    else:
+        phase = "transition"
+
+    direction, confidence = _ec_derive_direction(intel)
+    consensus = _ec_consensus_label(intel)
+
+    beat_q  = intel.get("beat_quarters")
+    total_q = intel.get("total_quarters")
+    beat_rate: Optional[float] = round(beat_q / total_q, 3) if (beat_q is not None and total_q) else None
+
+    pt_upside_pct = intel.get("price_target_upside_pct")
+    price_target_upside: Optional[float] = round(pt_upside_pct / 100.0, 3) if pt_upside_pct is not None else None
+
+    bullish_pct_val = intel.get("bullish_pct") or 0.0
+    crowded = bool(bullish_pct_val >= 90 and canonical_iv_rank is not None and canonical_iv_rank > 60)
+
+    base = {
+        "symbol":               symbol,
+        "eda":                  eda,
+        "timing":               timing,
+        "phase":                phase,
+        "direction":            direction,
+        "direction_confidence": round(confidence, 3),
+        "beat_rate":            beat_rate,
+        "avg_eps_surprise":     intel.get("avg_surprise_pct"),
+        "analyst_consensus":    consensus,
+        "price_target_upside":  price_target_upside,
+        "iv_rank":              canonical_iv_rank,
+        "iv_trajectory":        iv_trajectory,
+        "vol_conviction":       vol_conv,
+        "crowded_consensus_flag": crowded,
+    }
+
+    if phase == "watch":
+        return {
+            **base,
+            "recommended_structure": None,
+            "conviction_score":      0.0,
+            "conviction_level":      "skip",
+            "a1_signal":             None,
+            "a2_structure":          None,
+            "notes":                 f"Watch phase — eda={eda}, data gathering only",
+        }
+
+    structure, a1_signal, a2_structure = _ec_conviction_matrix(direction, vol_conv, confidence)
+
+    if crowded:
+        a1_signal = None
+        notes = f"Crowded consensus (bullish_pct={bullish_pct_val:.0f}%, IV elevated) — downgraded"
+    else:
+        notes = f"eda={eda}, {direction} ({confidence:.0%} confidence), IV={iv_trajectory}"
+
+    if beat_rate is not None and beat_rate == 0.0 and direction == "bullish":
+        confidence = confidence * 0.6
+        notes += " | beat_rate=0 suppresses confidence"
+
+    score_parts = [confidence]
+    if beat_rate is not None:
+        score_parts.append(beat_rate)
+    if bullish_pct_val:
+        score_parts.append(bullish_pct_val / 100.0)
+    conviction_score = sum(score_parts) / len(score_parts)
+    if crowded:
+        conviction_score *= 0.6
+
+    conviction_score = round(conviction_score, 3)
+
+    if conviction_score >= 0.75:
+        conviction_level = "high"
+    elif conviction_score >= 0.55:
+        conviction_level = "medium"
+    elif conviction_score >= 0.35:
+        conviction_level = "low"
+    else:
+        conviction_level = "skip"
+
+    return {
+        **base,
+        "recommended_structure": structure,
+        "conviction_score":      conviction_score,
+        "conviction_level":      conviction_level,
+        "a1_signal":             a1_signal,
+        "a2_structure":          a2_structure,
+        "notes":                 notes,
+    }

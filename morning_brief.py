@@ -303,8 +303,14 @@ def _get_held_symbols() -> set[str]:
 
 
 def _load_analyst_intel(sym: str):
-    """Load cached analyst intel for sym. Returns None if not cached or on failure."""
+    """Load analyst intel: canonical primary, earnings_intel_fetcher fallback."""
     try:
+        canon_path = _BASE_DIR / "data" / "symbols" / f"{sym}.json"
+        if canon_path.exists():
+            d = json.loads(canon_path.read_text())
+            intel = d.get("analyst_intel")
+            if intel:
+                return intel
         import earnings_intel_fetcher as eif  # noqa: PLC0415
         return eif.load_analyst_intel_cached(sym)
     except Exception:
@@ -635,14 +641,9 @@ def _load_context() -> str:
     # Congressional + insider activity (last 48h)
     try:
         import watchlist_manager as wm
-        from insider_intelligence import (
-            fetch_congressional_trades,
-            fetch_form4_insider_trades,
-        )
         wl = wm.get_active_watchlist()
         all_syms = [s["symbol"] for s in wl["all"]]
-        cong  = [t for t in fetch_congressional_trades(all_syms, days_back=2)]
-        form4 = [t for t in fetch_form4_insider_trades(all_syms, days_back=2)]
+        cong, form4 = _load_insider_from_canonical(all_syms, days_back=2)
         if cong or form4:
             parts.append("\n=== INSIDER ACTIVITY (last 48h) ===")
             for t in cong[:3]:
@@ -996,13 +997,20 @@ def _load_signal_scores_for_brief() -> list[dict]:
 
 
 def _load_iv_ranks_for_brief(symbols: list) -> dict:
-    """Load most recent IV rank for symbols from iv_history files. Non-fatal."""
+    """Load IV rank from canonical files; falls back to iv_history. Non-fatal."""
     ranks: dict = {}
+    symbols_dir = _BASE_DIR / "data" / "symbols"
     iv_dir = _BASE_DIR / "data" / "options" / "iv_history"
-    if not iv_dir.exists():
-        return ranks
     for sym in symbols:
         try:
+            canon_path = symbols_dir / f"{sym}.json"
+            if canon_path.exists():
+                d = json.loads(canon_path.read_text())
+                iv = d.get("iv") or {}
+                rank = iv.get("rank")
+                if rank is not None:
+                    ranks[sym] = float(rank)
+                    continue
             path = iv_dir / f"{sym}_iv_history.json"
             if not path.exists():
                 continue
@@ -1015,6 +1023,33 @@ def _load_iv_ranks_for_brief(symbols: list) -> dict:
         except Exception:
             pass
     return ranks
+
+
+def _load_insider_from_canonical(symbols: list, days_back: int) -> tuple[list, list]:
+    """Load insider/congress trades from canonical files. Returns (cong, form4).
+    Injects ticker into each trade dict. Non-fatal.
+    """
+    from datetime import date as _date  # noqa: PLC0415
+    from datetime import timedelta as _td
+    cutoff = (_date.today() - _td(days=days_back)).isoformat()
+    symbols_dir = _BASE_DIR / "data" / "symbols"
+    cong: list[dict] = []
+    form4: list[dict] = []
+    for sym in symbols:
+        try:
+            p = symbols_dir / f"{sym}.json"
+            if not p.exists():
+                continue
+            d = json.loads(p.read_text())
+            for t in (d.get("congress_trades_30d") or []):
+                if str(t.get("date", "")) >= cutoff:
+                    cong.append({**t, "ticker": sym, "filing_date": t.get("date", "?")})
+            for t in (d.get("insider_trades_30d") or []):
+                if str(t.get("date", "")) >= cutoff:
+                    form4.append({**t, "ticker": sym, "filing_date": t.get("date", "?")})
+        except Exception:
+            pass
+    return cong, form4
 
 
 def _load_intelligence_context(brief_type: str) -> str:
@@ -1210,14 +1245,9 @@ def _load_intelligence_context(brief_type: str) -> str:
     # Insider / congressional activity
     try:
         import watchlist_manager as wm  # noqa: PLC0415
-        from insider_intelligence import (  # noqa: PLC0415
-            fetch_congressional_trades,
-            fetch_form4_insider_trades,
-        )
         wl = wm.get_active_watchlist()
         all_syms = [s["symbol"] for s in wl["all"]]
-        cong  = list(fetch_congressional_trades(all_syms, days_back=5))
-        form4 = list(fetch_form4_insider_trades(all_syms, days_back=5))
+        cong, form4 = _load_insider_from_canonical(all_syms, days_back=5)
         if cong or form4:
             parts.append("\n=== INSIDER ACTIVITY (last 5 days) ===")
             for t in cong[:5]:

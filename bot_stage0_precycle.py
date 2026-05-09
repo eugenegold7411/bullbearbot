@@ -186,12 +186,10 @@ def run_precycle(
     log.info("Account  equity=$%s  cash=$%s  exposure=%.1f%%  positions=%d",
              f"{equity:,.0f}", f"{cash:,.0f}", exposure, len(positions))
 
-    # Log any unexpected short positions prominently so the operator can see them.
     _short_positions = [p for p in positions if float(p.qty) < 0]
     for _sp in _short_positions:
-        log.warning(
-            "[SHORT_POS] Unexpected short position detected: %s qty=%.0f "
-            "market_value=$%.0f — manual intervention required to cover",
+        log.info(
+            "[SHORT_POS] Short position active: %s qty=%.0f market_value=$%.0f",
             _sp.symbol, float(_sp.qty), abs(float(_sp.market_value)),
         )
 

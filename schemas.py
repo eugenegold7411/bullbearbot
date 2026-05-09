@@ -618,8 +618,8 @@ class BrokerSnapshot:
 
     @property
     def exposure_dollars(self) -> float:
-        """Total market value of all open positions."""
-        return sum(p.market_value for p in self.positions)
+        """Total market exposure of all open positions (absolute value)."""
+        return sum(abs(p.market_value) for p in self.positions)
 
     @property
     def long_exposure_dollars(self) -> float:

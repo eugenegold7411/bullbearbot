@@ -498,6 +498,7 @@ _earnings_av_refresh_key:      str = ""   # ISO-week key — weekly AV calendar 
 _earnings_av_daily_ran_date:   str = ""   # "YYYY-MM-DD" of last daily AV refresh
 _earnings_rotation_ran_date:   str = ""   # "YYYY-MM-DD" of last rotation run
 _earnings_convictions_scan_date: str = ""  # "YYYY-MM-DD" of last intraday conviction scan
+_conviction_scorer_ran_date:   str = ""   # "YYYY-MM-DD" of last conviction_scorer run
 _earnings_cull_ran_date:       str = ""   # "YYYY-MM-DD" of last 2 AM cull
 _earnings_stale_check_date:    str = ""   # "YYYY-MM-DD" of last staleness check
 _earnings_intel_ran_date:      str = ""   # "YYYY-MM-DD" of last analyst intel refresh
@@ -1487,6 +1488,45 @@ def _maybe_scan_earnings_convictions(dry_run: bool = False) -> None:
         _fire_safety_alert("_maybe_scan_earnings_convictions", exc)
 
 
+def _maybe_run_conviction_scorer(dry_run: bool = False) -> None:
+    """Score all universe symbols once daily at 9:05–9:20 AM ET on weekdays.
+
+    Runs after _maybe_scan_earnings_convictions so earnings data is warm.
+    Writes data/convictions/YYYY-MM-DD_scores.json consumed by A1 and A2.
+    """
+    global _conviction_scorer_ran_date
+    now_et  = datetime.now(ET)
+    now_min = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+    today   = _today()
+
+    if weekday >= 5:
+        return
+    if _conviction_scorer_ran_date == today:
+        return
+    if not (9 * 60 + 5 <= now_min <= 9 * 60 + 20):
+        return
+
+    if dry_run:
+        log.info("[dry-run] Skipping conviction scorer")
+        _conviction_scorer_ran_date = today
+        return
+
+    try:
+        from conviction_scorer import run_conviction_scoring  # noqa: PLC0415
+        result = run_conviction_scoring()
+        _conv_dir = Path(__file__).parent / "data" / "convictions"
+        _conv_dir.mkdir(parents=True, exist_ok=True)
+        out_path = _conv_dir / f"{today}_scores.json"
+        out_path.write_text(json.dumps(result, indent=2))
+        log.info("[CONVICTION] Scored %d symbols → %s",
+                 len(result.get("candidates", [])), out_path.name)
+        _conviction_scorer_ran_date = today
+    except Exception as exc:
+        log.error("[CONVICTION] conviction scorer failed (non-fatal): %s", exc)
+        _fire_safety_alert("_maybe_run_conviction_scorer", exc)
+
+
 def _maybe_cull_post_earnings(dry_run: bool = False) -> None:
     """
     Nightly cull of post-earnings rotation symbols.
@@ -2199,6 +2239,7 @@ def run(dry_run: bool = False) -> None:
         _maybe_refresh_form4_trades(dry_run)
         _maybe_run_portfolio_audit(dry_run)
         _maybe_scan_earnings_convictions(dry_run)
+        _maybe_run_conviction_scorer(dry_run)
         _maybe_refresh_crypto_sentiment(dry_run)
         _maybe_refresh_macro_wire(dry_run)
         _maybe_refresh_qualitative_context(dry_run)

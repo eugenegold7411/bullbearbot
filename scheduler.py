@@ -1358,6 +1358,12 @@ def _maybe_refresh_earnings_calendar_av_daily(dry_run: bool = False) -> None:
         return
 
     try:
+        from universe_manager import sync_dynamic_watchlist  # noqa: PLC0415
+        sync_dynamic_watchlist(os.getenv("ALPHA_VANTAGE_API_KEY") or "")
+        log.info("[EARNINGS_AV] Daily refresh: universe sync complete")
+    except Exception as _usync_exc:
+        log.warning("[EARNINGS_AV] Daily refresh: universe sync failed (non-fatal): %s", _usync_exc)
+    try:
         import data_warehouse as dw  # noqa: PLC0415
         result = dw.refresh_earnings_calendar_av()
         if result:
@@ -2111,6 +2117,12 @@ def run(dry_run: bool = False) -> None:
         log.info("[HEALTH] Startup health check complete")
     except Exception as _hm_exc:
         log.warning("[HEALTH] Startup health check failed (non-fatal): %s", _hm_exc)
+    try:
+        from universe_manager import sync_dynamic_watchlist  # noqa: PLC0415
+        sync_dynamic_watchlist(os.getenv("ALPHA_VANTAGE_API_KEY") or "")
+        log.info("[UNIVERSE] Startup: watchlist sync complete")
+    except Exception as _universe_exc:
+        log.warning("[UNIVERSE] Startup sync failed (non-fatal): %s", _universe_exc)
     if not dry_run:
         try:
             import data_warehouse as _dw_startup  # noqa: PLC0415
@@ -2124,12 +2136,6 @@ def run(dry_run: bool = False) -> None:
                 log.info("[EARNINGS_AV] Startup calendar refresh complete")
         except Exception as _cal_exc:
             log.warning("[EARNINGS_AV] Startup calendar refresh failed (non-fatal): %s", _cal_exc)
-    try:
-        from universe_manager import sync_dynamic_watchlist  # noqa: PLC0415
-        sync_dynamic_watchlist(os.getenv("ALPHA_VANTAGE_API_KEY") or "")
-        log.info("[UNIVERSE] Startup: watchlist sync complete")
-    except Exception as _universe_exc:
-        log.warning("[UNIVERSE] Startup sync failed (non-fatal): %s", _universe_exc)
     log.info("Scheduler starting (24/7 mode)  dry_run=%s", dry_run)
     print("[scheduler] 24/7 mode active. Press Ctrl+C to stop.\n")
 

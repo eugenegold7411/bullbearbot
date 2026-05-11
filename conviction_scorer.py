@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-conviction_scorer.py — Component-based earnings conviction scoring.
+conviction_scorer.py — Component-based conviction scoring for all universe symbols.
 
 Reads canonical symbol files, scores 4 components (0-100 or null each),
 writes daily conviction JSON for A1/A2 consumption.
+
+Scores ALL symbols in universe_manager. EDA (earnings days away) is included
+as informational metadata only — consumers filter by eda range themselves.
 
 Components:
   analyst_momentum  — recommendation consensus + price target upside
@@ -403,13 +406,13 @@ def score_news_catalyst(canonical: dict, symbol: str) -> Optional[float]:
 
 # ── Symbol scorer ─────────────────────────────────────────────────────────────
 
-def score_symbol(symbol: str, eda: int) -> Optional[dict]:
+def score_symbol(symbol: str, eda: Optional[int]) -> Optional[dict]:
     """
     Score all 4 components for one symbol.
 
     Args:
         symbol: Ticker (e.g. "NVDA").
-        eda:    Earnings days away (positive = future, 0 = today).
+        eda:    Earnings days away, or None if no upcoming earnings date known.
 
     Returns dict with symbol, eda, components dict; or None if no canonical file.
     """
@@ -424,7 +427,8 @@ def score_symbol(symbol: str, eda: int) -> Optional[dict]:
         log.error("%s: canonical read failed: %s", symbol, exc)
         return None
 
-    log.info("%s (eda=%d): scoring...", symbol, eda)
+    eda_str = str(eda) if eda is not None else "none"
+    log.info("%s (eda=%s): scoring...", symbol, eda_str)
 
     components = {
         "analyst_momentum": score_analyst_momentum(canonical),
@@ -433,23 +437,18 @@ def score_symbol(symbol: str, eda: int) -> Optional[dict]:
         "news_catalyst":    score_news_catalyst(canonical, symbol),
     }
 
-    non_null = [v for v in components.values() if v is not None]
-    composite = round(sum(non_null) / len(non_null), 1) if non_null else None
-
     log.info(
-        "%s: analyst=%.0f beat=%.0f insider=%s news=%s composite=%s",
+        "%s: analyst=%s beat=%s insider=%s news=%s",
         symbol,
-        components["analyst_momentum"] or 0,
-        components["beat_consistency"] or 0,
-        f"{components['insider_activity']:.0f}" if components["insider_activity"] is not None else "null",
-        f"{components['news_catalyst']:.1f}" if components["news_catalyst"] is not None else "null",
-        f"{composite:.1f}" if composite is not None else "null",
+        f"{components['analyst_momentum']:.0f}" if components["analyst_momentum"] is not None else "null",
+        f"{components['beat_consistency']:.0f}"  if components["beat_consistency"]  is not None else "null",
+        f"{components['insider_activity']:.0f}"  if components["insider_activity"]  is not None else "null",
+        f"{components['news_catalyst']:.1f}"     if components["news_catalyst"]     is not None else "null",
     )
 
     return {
         "symbol":     symbol,
         "eda":        eda,
-        "composite":  composite,
         "components": components,
         "scored_at":  datetime.now(timezone.utc).isoformat(),
     }
@@ -460,66 +459,64 @@ def score_symbol(symbol: str, eda: int) -> Optional[dict]:
 def run_conviction_scoring(
     target_date: Optional[date] = None,
     symbols_override: Optional[list[str]] = None,
-    lookforward: int = 14,
 ) -> dict:
     """
-    Score all earnings candidates in the upcoming window.
+    Score all symbols in the universe. EDA is metadata only — no filtering.
 
     Args:
         target_date:      Date to use as "today" (default: today).
-        symbols_override: If provided, score these symbols at eda=0 regardless
-                          of the earnings calendar (useful for testing / manual runs).
-        lookforward:      Max DTE window to include (default 14 days).
+        symbols_override: If provided, score only these symbols (testing / manual runs).
 
-    Returns dict with generated_at and candidates list.
+    Returns dict with generated_at and candidates list sorted by composite descending.
+    Consumers filter by eda, composite threshold, or other criteria themselves.
     """
     today = target_date or date.today()
     candidates: list[dict] = []
 
     if symbols_override:
         for sym in symbols_override:
-            result = score_symbol(sym.upper(), eda=0)
+            result = score_symbol(sym.upper(), eda=None)
             if result:
                 candidates.append(result)
     else:
-        # Load earnings calendar
+        # Load universe — this is the source of truth for what to score.
+        universe: list[str] = []
+        try:
+            from universe_manager import get_universe_snapshot  # noqa: PLC0415
+            universe = list(get_universe_snapshot()["all_symbols"])
+            log.info("Scoring %d universe symbols", len(universe))
+        except Exception as exc:
+            log.error("universe_manager unavailable — cannot score: %s", exc)
+            return {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "scored_date":  today.isoformat(),
+                "candidates":   [],
+            }
+
+        # Build EDA lookup from earnings calendar (informational metadata only).
+        eda_lookup: dict[str, int] = {}
         try:
             from data_warehouse import load_earnings_calendar  # noqa: PLC0415
             cal_raw = load_earnings_calendar()
             entries = cal_raw.get("calendar", []) if isinstance(cal_raw, dict) else []
+            for entry in entries:
+                sym = (entry.get("symbol") or "").upper()
+                if not sym or "/" in sym:
+                    continue
+                ed_raw = str(entry.get("earnings_date", ""))[:10]
+                try:
+                    eda_lookup[sym] = (date.fromisoformat(ed_raw) - today).days
+                except ValueError:
+                    pass
         except Exception as exc:
-            log.error("load_earnings_calendar failed: %s", exc)
-            entries = []
+            log.warning("load_earnings_calendar failed — eda will be null for all: %s", exc)
 
-        # Universe filter
-        tracked: set[str] = set()
-        try:
-            from universe_manager import get_universe_snapshot  # noqa: PLC0415
-            tracked = set(get_universe_snapshot()["all_symbols"])
-            log.info("Universe filter: %d symbols", len(tracked))
-        except Exception as exc:
-            log.warning("universe_manager unavailable — no filter: %s", exc)
-
-        for entry in entries:
-            sym = (entry.get("symbol") or "").upper()
-            if not sym or "/" in sym:
-                continue
-            if tracked and sym not in tracked:
-                continue
-            ed_raw = str(entry.get("earnings_date", ""))[:10]
-            try:
-                ed  = date.fromisoformat(ed_raw)
-                eda = (ed - today).days
-            except ValueError:
-                continue
-            if not (0 <= eda <= lookforward):
-                continue
-            result = score_symbol(sym, eda)
+        for sym in universe:
+            result = score_symbol(sym, eda=eda_lookup.get(sym))
             if result:
                 candidates.append(result)
 
-    candidates.sort(key=lambda c: c.get("composite") or 0, reverse=True)
-    log.info("Scored %d candidates", len(candidates))
+    log.info("Scored %d symbols", len(candidates))
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),

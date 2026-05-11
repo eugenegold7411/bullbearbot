@@ -595,17 +595,18 @@ def run_candidate_stage(
         except Exception as _fce:
             log.debug("[OPTS] fresh_catalyst_override failed (non-fatal): %s", _fce)
 
-    # Earnings conviction injection — add active-phase pre-event candidates to A2 universe.
-    # Reads earnings_convictions.json (written by earnings_rotation.scan_earnings_candidates).
-    # Injects symbols with active phase + medium/high conviction + a2_structure set.
+    # Earnings conviction injection — add pre-event candidates to A2 universe.
+    # Reads today's conviction scorer output (data/convictions/YYYY-MM-DD_scores.json).
+    # Admits symbols with eda 1-7 and 2+ strong components (score > 60).
     # Gate: a2_router.earnings_conviction_injection_enabled (default true).
     _ec_inject_enabled = config.get("a2_router", {}).get("earnings_conviction_injection_enabled", True)
     if _ec_inject_enabled:
         try:
-            _ec_path = _BASE / "data" / "market" / "earnings_convictions.json"
+            _ec_today = date.today().isoformat()
+            _ec_path = _BASE / "data" / "convictions" / f"{_ec_today}_scores.json"
             if _ec_path.exists():
                 _ec_data = json.loads(_ec_path.read_text())
-                _ec_list = _ec_data if isinstance(_ec_data, list) else _ec_data.get("candidates", [])
+                _ec_list = _ec_data.get("candidates", [])
                 _ec_scored_set = {s for s, _ in scored_symbols}
                 _ec_injected: list = []
                 for _ec in _ec_list:
@@ -614,33 +615,37 @@ def run_candidate_stage(
                     _ec_sym = (_ec.get("symbol") or "").upper()
                     if not _ec_sym:
                         continue
-                    if _ec.get("phase") not in ("active", "transition"):
+                    _ec_eda = _ec.get("eda")
+                    if _ec_eda is None or not (1 <= _ec_eda <= 7):
                         continue
-                    if _ec.get("conviction_level") not in ("high", "medium"):
-                        continue
-                    if _ec.get("a2_structure") is None:
+                    _ec_comp = _ec.get("components", {})
+                    _ec_strong = sum(
+                        1 for v in _ec_comp.values() if v is not None and v > 60
+                    )
+                    if _ec_strong < 2:
                         continue
                     if _ec_sym in _ec_scored_set:
                         continue
+                    _ec_conviction = "high" if _ec_strong >= 3 else "medium"
+                    _ec_top = max(
+                        (v for v in _ec_comp.values() if v is not None), default=50.0
+                    )
                     _ec_sig = {
-                        "conviction": _ec.get("conviction_level", "medium"),
-                        "score": round(_ec.get("conviction_score", 0.5) * 100),
-                        "direction": _ec.get("direction", "neutral"),
+                        "conviction": _ec_conviction,
+                        "score": round(_ec_top),
+                        "direction": "neutral",
                         "catalyst_type": "earnings_pre_event",
-                        "primary_catalyst": (
-                            f"earnings in {_ec.get('eda')}d ({_ec.get('timing', '?')})"
-                        ),
+                        "primary_catalyst": f"earnings in {_ec_eda}d",
                         "price": signal_scores.get(_ec_sym, {}).get("price", 1.0),
                         "tier": "earnings",
-                        "earnings_conviction": _ec,
+                        "conviction_components": _ec_comp,
                     }
                     scored_symbols = scored_symbols + [(_ec_sym, _ec_sig)]
                     _ec_scored_set.add(_ec_sym)
                     _ec_injected.append(_ec_sym)
                     log.info(
-                        "[OPTS] earnings_conviction_inject: %s eda=%s %s structure=%s",
-                        _ec_sym, _ec.get("eda"), _ec.get("conviction_level"),
-                        _ec.get("a2_structure"),
+                        "[OPTS] conviction_inject: %s eda=%s %s (strong=%d)",
+                        _ec_sym, _ec_eda, _ec_conviction, _ec_strong,
                     )
         except Exception as _ece:
             log.debug("[OPTS] earnings conviction injection failed (non-fatal): %s", _ece)

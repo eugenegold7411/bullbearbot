@@ -231,20 +231,25 @@ def _load_strategy_config() -> str:
 def _earnings_opportunities_section() -> str:
     """
     Build a pre-event earnings opportunities block for A1's prompt.
-    Reads earnings_convictions.json and surfaces active-phase symbols with
-    high/medium conviction so Sonnet can proactively consider pre-earnings entries.
-    Returns '' if no active-phase candidates or file missing. Non-fatal.
+    Reads today's conviction scorer output (data/convictions/YYYY-MM-DD_scores.json)
+    and surfaces symbols with eda 1-7 and 2+ strong components (score > 60).
+    Returns '' if no qualifying candidates or file missing. Non-fatal.
     """
     try:
-        conv_path = Path(__file__).parent / "data" / "market" / "earnings_convictions.json"
+        today = datetime.today().strftime("%Y-%m-%d")
+        conv_path = Path(__file__).parent / "data" / "convictions" / f"{today}_scores.json"
         if not conv_path.exists():
             return ""
         data = json.loads(conv_path.read_text())
-        candidates = data if isinstance(data, list) else data.get("candidates", [])
+        candidates = data.get("candidates", [])
         active = [
             c for c in candidates
-            if c.get("phase") in ("active", "transition")
-            and c.get("conviction_level") in ("high", "medium")
+            if c.get("eda") is not None
+            and 1 <= c["eda"] <= 7
+            and sum(
+                1 for v in c.get("components", {}).values()
+                if v is not None and v > 60
+            ) >= 2
         ]
         if not active:
             return ""
@@ -252,28 +257,16 @@ def _earnings_opportunities_section() -> str:
         for c in active[:6]:
             sym = c.get("symbol", "?")
             eda = c.get("eda", "?")
-            timing = c.get("timing", "unknown")
-            direction = c.get("direction", "neutral")
-            level = c.get("conviction_level", "?")
-            beat_rate = c.get("beat_rate")
-            consensus = c.get("analyst_consensus") or "?"
-            iv_traj = c.get("iv_trajectory", "unknown")
-            structure = c.get("recommended_structure") or "none"
-            a1 = c.get("a1_signal") or "none"
-            notes = c.get("notes", "")
-
-            beat_str = f"{beat_rate:.0%}" if beat_rate is not None else "?"
+            comp = c.get("components", {})
+            analyst = comp.get("analyst_momentum")
+            beat = comp.get("beat_consistency")
+            insider = comp.get("insider_activity")
+            news = comp.get("news_catalyst")
+            _f = lambda v: f"{v:.0f}" if v is not None else "?"
             lines.append(
-                f"  {sym} eda={eda} {timing} | {direction} conviction={level}"
+                f"  {sym} eda={eda}: analyst={_f(analyst)} | beat={_f(beat)}"
+                f" | insider={_f(insider)} | news={_f(news)}"
             )
-            lines.append(
-                f"    Beat rate: {beat_str} | Consensus: {consensus} | IV: {iv_traj}"
-            )
-            lines.append(
-                f"    Recommended: {structure} | A1 signal: {a1}"
-            )
-            if notes:
-                lines.append(f"    {notes}")
         return "\n".join(lines)
     except Exception as exc:
         log.debug("[DECISION] earnings opportunities section failed: %s", exc)

@@ -239,6 +239,7 @@ def _earnings_opportunities_section() -> str:
         today = datetime.today().strftime("%Y-%m-%d")
         conv_path = Path(__file__).parent / "data" / "convictions" / f"{today}_scores.json"
         if not conv_path.exists():
+            log.debug("[DECISION] conviction_section: no file at %s", conv_path.name)
             return ""
         data = json.loads(conv_path.read_text())
         candidates = data.get("candidates", [])
@@ -251,6 +252,10 @@ def _earnings_opportunities_section() -> str:
                 if v is not None and v > 60
             ) >= 2
         ]
+        log.info(
+            "[DECISION] conviction_section: %d candidates in file, %d qualify (eda 1-7, 2+ strong)",
+            len(candidates), len(active),
+        )
         if not active:
             return ""
         lines = ["=== EARNINGS OPPORTUNITIES (pre-event) ==="]

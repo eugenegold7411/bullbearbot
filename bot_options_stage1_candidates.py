@@ -607,6 +607,10 @@ def run_candidate_stage(
             if _ec_path.exists():
                 _ec_data = json.loads(_ec_path.read_text())
                 _ec_list = _ec_data.get("candidates", [])
+                log.info(
+                    "[OPTS] conviction_file: %s (%d candidates)",
+                    _ec_path.name, len(_ec_list),
+                )
                 _ec_scored_set = {s for s, _ in scored_symbols}
                 _ec_injected: list = []
                 for _ec in _ec_list:
@@ -647,6 +651,10 @@ def run_candidate_stage(
                         "[OPTS] conviction_inject: %s eda=%s %s (strong=%d)",
                         _ec_sym, _ec_eda, _ec_conviction, _ec_strong,
                     )
+                log.info(
+                    "[OPTS] conviction_inject: %d injected from %d candidates",
+                    len(_ec_injected), len(_ec_list),
+                )
         except Exception as _ece:
             log.debug("[OPTS] earnings conviction injection failed (non-fatal): %s", _ece)
 

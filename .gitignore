@@ -101,3 +101,8 @@ watchlist_rotation.json
 !data/status/system_status_snapshot.json
 strategy_config.json
 tools/
+
+# Root-level ad-hoc test scripts (not part of test suite)
+test_oco_repair_*.py
+test_structure_upgrade.py
+test_vix_unification.py

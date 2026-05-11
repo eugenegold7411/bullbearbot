@@ -379,42 +379,30 @@ def _write_convictions(path: Path, candidates: list) -> None:
 
 def test_earnings_section_in_a1_prompt(tmp_path):
     """Active conviction exists → EARNINGS OPPORTUNITIES section in A1 prompt."""
-    conv_path = tmp_path / "data" / "market" / "earnings_convictions.json"
-    candidates = [{
-        "symbol": "DIS", "eda": 5, "timing": "unknown", "phase": "active",
-        "direction": "bullish", "direction_confidence": 0.80, "conviction_level": "high",
-        "beat_rate": 1.0, "analyst_consensus": "buy", "iv_trajectory": "flat",
-        "recommended_structure": "debit_call_spread", "a1_signal": "enter_long",
-        "crowded_consensus_flag": False, "notes": "test", "conviction_score": 0.80,
-    }]
-    _write_convictions(conv_path, candidates)
+    from datetime import date as _date
 
-    with patch("bot_stage3_decision.Path") as mock_path:
-        mock_path.return_value.__truediv__ = lambda s, x: conv_path.parent / x
-        # Direct patch of the path resolution
-        pass
-
-    # Patch inside function using string path
-    with patch("bot_stage3_decision.Path.__new__") as _:
-        pass
-
-    # Use direct file path patch
-    conv_resolved = tmp_path / "data" / "market" / "earnings_convictions.json"
-
-    with patch("builtins.open", side_effect=lambda p, *a, **k: open(conv_resolved, *a, **k) if "earnings_convictions" in str(p) else open(p, *a, **k)):
-        pass
-
-    # Use a real file at the expected location
     import bot_stage3_decision as bsd
-    real_conv_path = Path(bsd.__file__).parent / "data" / "market" / "earnings_convictions.json"
+
+    today = _date.today().isoformat()
+    real_conv_path = Path(bsd.__file__).parent / "data" / "convictions" / f"{today}_scores.json"
     real_conv_path.parent.mkdir(parents=True, exist_ok=True)
     original_content = real_conv_path.read_text() if real_conv_path.exists() else None
+    candidates = [{
+        "symbol": "DIS",
+        "eda": 5,
+        "components": {
+            "analyst_momentum": 88.0,
+            "beat_consistency": 82.0,
+            "insider_activity": 71.0,
+            "news_catalyst": 45.0,
+        },
+    }]
     try:
         real_conv_path.write_text(json.dumps({"generated_at": "2026-05-07T08:00:00Z", "candidates": candidates}))
         section = bsd._earnings_opportunities_section()
         assert "EARNINGS OPPORTUNITIES" in section
         assert "DIS" in section
-        assert "enter_long" in section
+        assert "analyst=" in section
     finally:
         if original_content is not None:
             real_conv_path.write_text(original_content)
@@ -446,26 +434,32 @@ def test_earnings_section_empty_when_no_active(tmp_path):
 
 def test_earnings_section_format_correct(tmp_path):
     """Known data → correct format in section output."""
+    from datetime import date as _date
+
     import bot_stage3_decision as bsd
 
-    real_conv_path = Path(bsd.__file__).parent / "data" / "market" / "earnings_convictions.json"
+    today = _date.today().isoformat()
+    real_conv_path = Path(bsd.__file__).parent / "data" / "convictions" / f"{today}_scores.json"
     real_conv_path.parent.mkdir(parents=True, exist_ok=True)
     original_content = real_conv_path.read_text() if real_conv_path.exists() else None
     try:
         candidates = [{
-            "symbol": "AMAT", "eda": 6, "timing": "post-market", "phase": "active",
-            "direction": "bullish", "direction_confidence": 0.85, "conviction_level": "high",
-            "beat_rate": 1.0, "analyst_consensus": "buy", "iv_trajectory": "flat",
-            "recommended_structure": "debit_call_spread", "a1_signal": "enter_long",
-            "crowded_consensus_flag": False, "notes": "eda=6 test", "conviction_score": 0.82,
+            "symbol": "AMAT",
+            "eda": 6,
+            "components": {
+                "analyst_momentum": 90.0,
+                "beat_consistency": 85.0,
+                "insider_activity": None,
+                "news_catalyst": 65.0,
+            },
         }]
         real_conv_path.write_text(json.dumps({"generated_at": "2026-05-07T08:00:00Z", "candidates": candidates}))
         section = bsd._earnings_opportunities_section()
         assert "AMAT" in section
         assert "eda=6" in section
-        assert "post-market" in section
-        assert "debit_call_spread" in section
-        assert "buy" in section
+        assert "analyst=90" in section
+        assert "beat=85" in section
+        assert "insider=?" in section
     finally:
         if original_content is not None:
             real_conv_path.write_text(original_content)

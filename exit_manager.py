@@ -388,6 +388,7 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
             "stop_order_id":     stop_oid,
             "stop_order_status": stop_order_status,
             "target_order_id":   target_oid,
+            "any_sell_order_id": any_sell_oid,
             "status":            status,
         }
 
@@ -533,8 +534,11 @@ def _refresh_exits_locked(
     stop_price     = ei.get("stop_price")
     ei_status      = ei.get("status", "unknown")
     is_tp_only     = ei_status == "tp_only"
-    is_unprotected = ei_status in ("unprotected", "unknown") or is_tp_only
-    is_tp_missing  = ei_status == "partial"   # stop live, TP voided (BUG-009b)
+    # "partial" with a real stop_price → stop healthy, TP voided (BUG-009b repair path)
+    # "partial" with stop_price=None  → unclassified sell only; no real stop exists (BUG-016)
+    is_tp_missing    = ei_status == "partial" and stop_price is not None
+    _partial_no_stop = ei_status == "partial" and stop_price is None
+    is_unprotected   = ei_status in ("unprotected", "unknown") or is_tp_only or _partial_no_stop
     stale_threshold = em_cfg["refresh_if_stop_stale_pct"]
     # For longs: stale when stop is far below current price.
     # For shorts: stale when buy-stop is far above current price.
@@ -581,18 +585,6 @@ def _refresh_exits_locked(
                 "[EXIT_MGR] %s: live pos fetch failed, using cached qty=%d: %s",
                 sym, int(pos_qty), _lp_exc,
             )
-
-        # Guard: stop_price missing means the "stop" order is actually a plain
-        # market sell (pending close) with no stop_price.  OCO repair requires a
-        # real stop level — skip silently; divergence.py already classifies this
-        # position as pending-close and will not fire protection_missing.
-        if stop_at is None:
-            log.warning(
-                "[EXIT_MGR] %s: OCO repair skipped — stop_price is None"
-                " (pending market close order has no stop level)",
-                sym,
-            )
-            return False
 
         # Guard: stop at or above current price means stock fell through the stop.
         # Adjust stop down rather than letting Alpaca reject with code 42210000.
@@ -660,10 +652,29 @@ def _refresh_exits_locked(
 
     reason = (
         "TP_ONLY (take-profit visible, stop missing — BUG-009)" if is_tp_only
+        else "UNPROTECTED (orphan sell, no real stop — BUG-016)" if _partial_no_stop
         else "UNPROTECTED" if ei_status in ("unprotected", "unknown")
         else f"stale stop ${stop_price:.2f} ({(price-stop_price)/price:.1%} below current)"
     )
     log.info("[EXIT_MGR] %s: refreshing exits — %s", sym, reason)
+
+    # BUG-016: cancel orphan sell (any_sell_oid with no stop_price) before OCO
+    # placement so it does not hold shares and trigger Alpaca 40310000.
+    if _partial_no_stop:
+        _orphan_oid = ei.get("any_sell_order_id")
+        if _orphan_oid:
+            try:
+                alpaca_client.cancel_order_by_id(_orphan_oid)
+                log.info(
+                    "[EXIT_MGR] %s: cancelled orphan sell %s (no stop_price) before OCO",
+                    sym, _orphan_oid,
+                )
+                time.sleep(1)
+            except Exception as _ce:
+                log.warning(
+                    "[EXIT_MGR] %s: cancel orphan sell %s failed: %s — OCO may hit 40310000",
+                    sym, _orphan_oid, _ce,
+                )
 
     # BUG-009: for tp_only positions, cancel the take-profit order first so Alpaca
     # releases the held-share lock (error 40310000) before we place the stop.

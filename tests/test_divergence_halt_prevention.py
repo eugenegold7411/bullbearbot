@@ -154,8 +154,9 @@ class TestStopMapNormalPaths(_Base):
 
 class TestExitManagerOcoRepairStopNone(unittest.TestCase):
 
-    def test_returns_false_without_crash_when_stop_none(self):
-        """refresh_exits_for_position must return False, not raise TypeError, when stop_price=None."""
+    def test_partial_no_stop_triggers_fresh_oco(self):
+        """status=partial with stop_price=None (BUG-016: orphan sell, no real stop)
+        must attempt OCO repair — cancel orphan, place fresh OCO — not silently return False."""
         import exit_manager as em
 
         pos = MagicMock()
@@ -167,24 +168,75 @@ class TestExitManagerOcoRepairStopNone(unittest.TestCase):
         live_pos.current_price = "29.50"
         live_pos.qty = "188"
 
+        oco_order = MagicMock()
+        oco_order.id = "oco-new-001"
+
         alpaca = MagicMock()
         alpaca.get_open_position.return_value = live_pos
+        alpaca.cancel_order_by_id.return_value = None
+        alpaca.submit_order.return_value = oco_order
 
-        strategy_config: dict = {}  # _em_config uses _DEFAULT_CFG fallbacks
+        strategy_config: dict = {}
 
         exit_info = {
-            "status": "partial",     # is_tp_missing = True
-            "stop_price": None,      # stop_at will be None → crashes without the fix
-            "stop_order_id": "close-ord-001",
+            "status":            "partial",
+            "stop_price":        None,           # no real stop — BUG-016
+            "stop_order_id":     None,
+            "any_sell_order_id": "orphan-001",   # orphan sell to cancel first
         }
 
-        with patch.object(em, "generate_exit_plan", return_value={"take_profit": 35.0}):
+        with patch.object(em, "generate_exit_plan",
+                          return_value={"stop_loss": 27.0, "take_profit": 35.0}):
             result = em.refresh_exits_for_position(
                 pos, alpaca, strategy_config,
                 conviction="medium", exit_info=exit_info,
             )
 
-        self.assertFalse(result)
+        self.assertTrue(result)
+        alpaca.cancel_order_by_id.assert_called_once_with("orphan-001")
+        alpaca.submit_order.assert_called_once()
+
+    def test_partial_with_real_stop_still_uses_009b_path(self):
+        """status=partial with a real stop_price must still use the BUG-009b OCO upgrade
+        path (regression guard — BUG-016 change must not affect this case)."""
+        import exit_manager as em
+
+        pos = MagicMock()
+        pos.symbol = "AAPL"
+        pos.qty = "50"
+        pos.current_price = "200.00"
+
+        live_pos = MagicMock()
+        live_pos.current_price = "200.00"
+        live_pos.qty = "50"
+
+        oco_order = MagicMock()
+        oco_order.id = "oco-009b-001"
+
+        alpaca = MagicMock()
+        alpaca.get_open_position.return_value = live_pos
+        alpaca.cancel_order_by_id.return_value = None
+        alpaca.submit_order.return_value = oco_order
+
+        strategy_config: dict = {}
+
+        exit_info = {
+            "status":        "partial",
+            "stop_price":    185.0,          # real stop — BUG-009b path
+            "stop_order_id": "stop-ord-001",
+        }
+
+        with patch.object(em, "generate_exit_plan",
+                          return_value={"stop_loss": 185.0, "take_profit": 220.0}):
+            result = em.refresh_exits_for_position(
+                pos, alpaca, strategy_config,
+                conviction="medium", exit_info=exit_info,
+            )
+
+        self.assertTrue(result)
+        # BUG-009b path: cancels the existing stop then submits OCO
+        alpaca.cancel_order_by_id.assert_called_once_with("stop-ord-001")
+        alpaca.submit_order.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -1073,7 +1073,7 @@ def should_close_structure(
                 elapsed_dte  = (date.today() - opened_date).days
                 if total_dte > 0:
                     elapsed_pct = elapsed_dte / total_dte
-                    threshold   = 0.40 if structure.strategy in _SINGLE_LEG_STRATEGIES else 0.50
+                    threshold   = 0.25 if structure.strategy in _SINGLE_LEG_STRATEGIES else 0.40
                     if elapsed_pct >= threshold:
                         return True, f"time_stop: elapsed {elapsed_pct:.0%} of DTE"
             except (ValueError, TypeError):

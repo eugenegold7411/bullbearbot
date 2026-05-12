@@ -1051,6 +1051,41 @@ def close_check_loop(alpaca_client) -> None:
             _current_prices = _fetch_close_check_prices(open_structs)
             _latest_debate_result = _load_latest_debate_selected_candidate()
 
+            # Friday EOD forced close: single_call/single_put held over the weekend
+            # decay through theta and gap through stops without triggering exit logic
+            # (prices return {} on weekends). Force close by 3:30 PM ET on Fridays.
+            _NAKED_STRATEGIES = frozenset({"single_call", "single_put"})
+            _is_friday_eod = (
+                _now_utc.weekday() == 4          # Friday
+                and _now_utc.hour == 15
+                and _now_utc.minute >= 30
+            )
+            if _is_friday_eod:
+                for _fri_struct in list(open_structs):
+                    _strat_val = getattr(_fri_struct.strategy, "value", str(_fri_struct.strategy))
+                    if _strat_val in _NAKED_STRATEGIES:
+                        log.warning(
+                            "[CLOSE_CHECK] Friday EOD forced close: %s (%s) strategy=%s",
+                            _fri_struct.underlying, _fri_struct.structure_id, _strat_val,
+                        )
+                        _fri_closed = options_executor.close_structure(
+                            _fri_struct, alpaca_client,
+                            reason="friday_eod_forced_close", method="limit",
+                            current_prices=_current_prices,
+                        )
+                        options_state.save_structure(_fri_closed)
+                        _write_a2_trade({
+                            "event_type":    "close_submitted",
+                            "structure_id":  _fri_closed.structure_id,
+                            "symbol":        _fri_closed.underlying,
+                            "strategy":      _strat_val,
+                            "close_reason":  "friday_eod_forced_close",
+                            "lifecycle":     str(getattr(_fri_closed.lifecycle, "value", _fri_closed.lifecycle)),
+                            "pnl_unrealized": getattr(_fri_closed, "pnl_unrealized", None),
+                            "closed_at":     getattr(_fri_closed, "closed_at", None),
+                        })
+                        open_structs = [s for s in open_structs if s.structure_id != _fri_struct.structure_id]
+
             for struct in list(open_structs):
                 # Fix 3: position-gone guard (skip structures opened < 10 min ago).
                 if _alpaca_syms is not None:

@@ -138,6 +138,19 @@ _PROFIT_CLOSE_REASONS = frozenset({
     "iv_expansion_take_profit",
 })
 
+_LOSS_CLOSE_REASONS = frozenset({
+    "stop_loss_hit",
+    "max_loss_exit",
+    "time_stop",
+    "friday_eod_forced_close",
+    "theta_burn_underwater",
+    "loss_cut_near_expiry",
+    "time_stop_loss_near_expiry",
+    "conviction_degradation",
+    "manual_emergency_close",
+    "position_not_in_alpaca",
+})
+
 
 def _is_recent_profit_close(symbol: str, cooldown_minutes: float) -> bool:
     """Returns True if a profit-exit close on `symbol` occurred within cooldown_minutes."""
@@ -169,6 +182,39 @@ def _is_recent_profit_close(symbol: str, cooldown_minutes: float) -> bool:
                 continue
     except Exception as _exc:
         log.debug("[OPTS] profit_cooldown check failed (non-fatal): %s", _exc)
+    return False
+
+
+def _is_recent_loss_close(symbol: str, cooldown_minutes: float) -> bool:
+    """Returns True if a loss-exit close on `symbol` occurred within cooldown_minutes."""
+    try:
+        import options_state  # noqa: PLC0415
+        now = datetime.now(ET)
+        for s in options_state.load_structures():
+            if s.underlying != symbol:
+                continue
+            lc = s.lifecycle.value if hasattr(s.lifecycle, "value") else str(s.lifecycle)
+            if lc != "closed":
+                continue
+            if s.close_reason_code not in _LOSS_CLOSE_REASONS:
+                continue
+            if not s.closed_at:
+                continue
+            try:
+                closed_dt = datetime.fromisoformat(s.closed_at)
+                if closed_dt.tzinfo is None:
+                    closed_dt = closed_dt.replace(tzinfo=ET)
+                elapsed = (now - closed_dt).total_seconds() / 60
+                if elapsed < cooldown_minutes:
+                    log.info(
+                        "[OPTS] %s: recent loss close %.0fm ago (reason=%s cooldown=%.0fm)",
+                        symbol, elapsed, s.close_reason_code, cooldown_minutes,
+                    )
+                    return True
+            except (ValueError, TypeError):
+                continue
+    except Exception as _exc:
+        log.debug("[OPTS] loss_cooldown check failed (non-fatal): %s", _exc)
     return False
 
 
@@ -524,12 +570,12 @@ def submit_selected_candidate(
                     except Exception as _dge:
                         log.debug("[DIV] A2 mode gate failed (non-fatal): %s", _dge)
 
-                # Fix C: profit-close cooldown — block re-entry after rapid profit-take
-                _profit_cooldown = float(_a2_cfg.get("profit_close_cooldown_minutes", 0))
-                if _profit_cooldown > 0 and _is_recent_profit_close(sym, _profit_cooldown):
+                # Loss-close cooldown — block re-entry after a loss exit
+                _loss_cooldown = float(_a2_cfg.get("loss_close_cooldown_minutes", 0))
+                if _loss_cooldown > 0 and _is_recent_loss_close(sym, _loss_cooldown):
                     log.warning(
-                        "[OPTS] %s: skipping — within %.0fm profit-close cooldown",
-                        sym, _profit_cooldown,
+                        "[OPTS] %s: skipping — within %.0fm loss-close cooldown",
+                        sym, _loss_cooldown,
                     )
                     continue
 

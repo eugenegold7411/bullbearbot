@@ -1049,10 +1049,39 @@ def _maybe_execute_pending_protection_sells(dry_run: bool = False) -> None:
 
     for sym, entry in pending:
         try:
-            qty = float(entry.get("qty") or 0)
+            # Fetch live position qty — the qty written at flagging time can be stale
+            # by market open if partial fills or other orders changed the position.
+            try:
+                _live_pos = client.get_open_position(sym)
+                qty = abs(float(getattr(_live_pos, "qty", 0) or 0))
+                if qty <= 0:
+                    log.warning(
+                        "[SCHEDULER] %s: position gone by market open — skipping"
+                        " pending protection sell",
+                        sym,
+                    )
+                    data[sym] = {
+                        **entry,
+                        "market_status": "sell_skipped_position_gone",
+                        "executed_at":   now_et.isoformat(),
+                    }
+                    continue
+                _flagged = float(entry.get("qty") or 0)
+                if qty != _flagged:
+                    log.warning(
+                        "[SCHEDULER] %s: live qty=%g differs from flagged qty=%g"
+                        " — using live",
+                        sym, qty, _flagged,
+                    )
+            except Exception as _pos_exc:
+                qty = float(entry.get("qty") or 0)
+                log.warning(
+                    "[SCHEDULER] %s: live pos fetch failed, using flagged qty=%g: %s",
+                    sym, qty, _pos_exc,
+                )
             if qty <= 0:
                 log.warning(
-                    "[SCHEDULER] %s: pending sell has invalid qty=%g, skipping",
+                    "[SCHEDULER] %s: pending sell qty=%g invalid, skipping",
                     sym, qty,
                 )
                 continue
@@ -2175,17 +2204,17 @@ def run(dry_run: bool = False) -> None:
                     except Exception as _orb_upd_exc:
                         log.debug("ORB candidate update failed (non-fatal): %s", _orb_upd_exc)
 
-                # Account 2 — options bot, triggered immediately after A1 signal
-                # scoring via post_signal_hook. Eliminates the 200-600s gap where
-                # A2 sat idle waiting for A1's Sonnet + execution to finish.
+                # Account 2 — runs independently after A1 cycle completes (or when
+                # A1 is halted). A2 uses a separate Alpaca account with independent
+                # risk management and must not be blocked by A1 operating mode.
                 _a2_gate = (
                     session in ("market", "pre_open")
                     and _is_claude_trading_window(cfg=_load_strategy_config_safe())
                 )
 
-                def _a2_post_signal() -> None:
+                def _run_a2_cycle() -> None:
                     if not _is_claude_trading_window(cfg=_load_strategy_config_safe()):
-                        log.info("[A2] trading window closed at signal handoff — skipping")
+                        log.info("[A2] trading window closed — skipping")
                         return
                     try:
                         import bot_options as _bot_opts  # noqa: PLC0415
@@ -2202,8 +2231,10 @@ def run(dry_run: bool = False) -> None:
                     session_instruments=SESSION_INSTRUMENTS[instr_session],
                     next_cycle_time=next_str,
                     trigger_reason=trigger_reason,
-                    post_signal_hook=_a2_post_signal if _a2_gate else None,
                 )
+
+                if _a2_gate:
+                    _run_a2_cycle()
 
             except KeyboardInterrupt:
                 raise

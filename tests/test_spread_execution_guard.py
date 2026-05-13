@@ -18,6 +18,7 @@ Tests:
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -406,3 +407,39 @@ def test_normalize_passthrough_for_enum_values():
     assert _normalize_strategy_name("single_call")        == "single_call"
     assert _normalize_strategy_name("iron_condor")        == "iron_condor"
     assert _normalize_strategy_name("straddle")           == "straddle"
+
+
+# ── Loss cooldown (strategy-scoped) ──────────────────────────────────────────
+
+def _make_closed_loss_structure(symbol: str, strategy_value: str, minutes_ago: float):
+    """Return a mock OptionsStructure representing a recently closed loss trade."""
+    from schemas import OptionStrategy, StructureLifecycle  # noqa: PLC0415
+    s = MagicMock()
+    s.underlying = symbol
+    s.lifecycle = StructureLifecycle.CLOSED
+    s.close_reason_code = "stop_loss_hit"
+    s.strategy = OptionStrategy(strategy_value)
+    s.closed_at = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+    return s
+
+
+def test_loss_cooldown_same_strategy_blocked():
+    """put_credit_spread loss → put_credit_spread re-entry IS blocked within cooldown."""
+    from bot_options_stage4_execution import _is_recent_loss_close
+    struct = _make_closed_loss_structure("NVDA", "put_credit_spread", minutes_ago=30)
+    mock_options_state = MagicMock()
+    mock_options_state.load_structures.return_value = [struct]
+    with patch.dict(sys.modules, {"options_state": mock_options_state}):
+        result = _is_recent_loss_close("NVDA", cooldown_minutes=120, strategy_type="put_credit_spread")
+    assert result is True, "Same strategy should be blocked within cooldown"
+
+
+def test_loss_cooldown_different_strategy_allowed():
+    """put_credit_spread loss → call_debit_spread re-entry is NOT blocked (different strategy)."""
+    from bot_options_stage4_execution import _is_recent_loss_close
+    struct = _make_closed_loss_structure("NVDA", "put_credit_spread", minutes_ago=30)
+    mock_options_state = MagicMock()
+    mock_options_state.load_structures.return_value = [struct]
+    with patch.dict(sys.modules, {"options_state": mock_options_state}):
+        result = _is_recent_loss_close("NVDA", cooldown_minutes=120, strategy_type="call_debit_spread")
+    assert result is False, "Different strategy on same symbol should not be blocked"

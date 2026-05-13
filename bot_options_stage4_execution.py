@@ -185,8 +185,11 @@ def _is_recent_profit_close(symbol: str, cooldown_minutes: float) -> bool:
     return False
 
 
-def _is_recent_loss_close(symbol: str, cooldown_minutes: float) -> bool:
-    """Returns True if a loss-exit close on `symbol` occurred within cooldown_minutes."""
+def _is_recent_loss_close(
+    symbol: str, cooldown_minutes: float, strategy_type: str | None = None
+) -> bool:
+    """Returns True if a loss-exit close on `symbol` (same strategy_type when given)
+    occurred within cooldown_minutes. Different strategy = separate cooldown bucket."""
     try:
         import options_state  # noqa: PLC0415
         now = datetime.now(ET)
@@ -198,6 +201,10 @@ def _is_recent_loss_close(symbol: str, cooldown_minutes: float) -> bool:
                 continue
             if s.close_reason_code not in _LOSS_CLOSE_REASONS:
                 continue
+            if strategy_type is not None:
+                s_strat = s.strategy.value if hasattr(s.strategy, "value") else str(s.strategy)
+                if s_strat != strategy_type:
+                    continue
             if not s.closed_at:
                 continue
             try:
@@ -207,8 +214,9 @@ def _is_recent_loss_close(symbol: str, cooldown_minutes: float) -> bool:
                 elapsed = (now - closed_dt).total_seconds() / 60
                 if elapsed < cooldown_minutes:
                     log.info(
-                        "[OPTS] %s: recent loss close %.0fm ago (reason=%s cooldown=%.0fm)",
-                        symbol, elapsed, s.close_reason_code, cooldown_minutes,
+                        "[OPTS] %s/%s: recent loss close %.0fm ago (reason=%s cooldown=%.0fm)",
+                        symbol, strategy_type or "any", elapsed,
+                        s.close_reason_code, cooldown_minutes,
                     )
                     return True
             except (ValueError, TypeError):
@@ -570,12 +578,12 @@ def submit_selected_candidate(
                     except Exception as _dge:
                         log.debug("[DIV] A2 mode gate failed (non-fatal): %s", _dge)
 
-                # Loss-close cooldown — block re-entry after a loss exit
+                # Loss-close cooldown — block re-entry after a loss exit (same strategy only)
                 _loss_cooldown = float(_a2_cfg.get("loss_close_cooldown_minutes", 0))
-                if _loss_cooldown > 0 and _is_recent_loss_close(sym, _loss_cooldown):
+                if _loss_cooldown > 0 and _is_recent_loss_close(sym, _loss_cooldown, _cand_type):
                     log.warning(
-                        "[OPTS] %s: skipping — within %.0fm loss-close cooldown",
-                        sym, _loss_cooldown,
+                        "[OPTS] %s/%s: skipping — within %.0fm loss-close cooldown",
+                        sym, _cand_type, _loss_cooldown,
                     )
                     continue
 

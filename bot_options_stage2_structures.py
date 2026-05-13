@@ -506,17 +506,31 @@ def _route_strategy(
                 )
                 return []
             # fresh_catalyst_override=True: fall through to RULE_POST_EARNINGS
-        else:  # 1 <= eda <= 7: pre-event — buy premium to capture move
-            if effective_dir == "bullish":
-                _pre_structs = ["long_call", "debit_call_spread"]
-            elif effective_dir == "bearish":
-                _pre_structs = ["long_put", "debit_put_spread"]
-            else:  # neutral — binary event, symmetric vol play
-                _pre_structs = ["straddle", "strangle"]
-            log.info(
-                "[EARNINGS] %s pre-event eda=%d → premium buying structure",
-                sym, eda,
-            )
+        else:  # 1 <= eda <= 7: pre-event
+            _pre_earn_iv_min = float(rcfg.get("pre_earnings_iv_rank_min", 85))
+            if pack.iv_rank >= _pre_earn_iv_min:
+                # High IV: sell the crush — credit structures with expiry past event
+                if effective_dir == "bullish":
+                    _pre_structs = ["credit_put_spread"]
+                elif effective_dir == "bearish":
+                    _pre_structs = ["credit_call_spread"]
+                else:
+                    _pre_structs = ["iron_condor"]
+                log.info(
+                    "[EARNINGS] %s pre-event eda=%d iv_rank=%.1f >= %.1f → credit structure (pre-event crush)",
+                    sym, eda, pack.iv_rank, _pre_earn_iv_min,
+                )
+            else:
+                if effective_dir == "bullish":
+                    _pre_structs = ["long_call", "debit_call_spread"]
+                elif effective_dir == "bearish":
+                    _pre_structs = ["long_put", "debit_put_spread"]
+                else:
+                    _pre_structs = ["straddle", "strangle"]
+                log.info(
+                    "[EARNINGS] %s pre-event eda=%d → premium buying structure",
+                    sym, eda,
+                )
             return _route_guarded(_pre_structs, effective_dir, sym, "RULE_PRE_EVENT",
                                   options_regime, _caution_debit_blocked, pack.iv_rank)
 

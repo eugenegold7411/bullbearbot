@@ -275,8 +275,8 @@ class TestRuleEarningsHighIV:
         })
         result = _route_strategy(pack, cfg)
         # eda=5 < dte_min=7 -> RULE_EARNINGS_HIGH_IV misses
-        # FIX-C: eda=5 in 1..7 -> RULE_PRE_EVENT fires -> premium buying
-        assert "long_call" in result or "debit_call_spread" in result
+        # RULE_PRE_EVENT fires; iv_rank=87 >= pre_earnings_iv_rank_min=85 -> credit routing
+        assert result == ["credit_put_spread"]
 
     def test_enabled_does_not_fire_below_iv_min(self):  # PE-16
         pack = MockPack(earnings_days_away=10, iv_rank=80.0, iv_environment="expensive")
@@ -421,12 +421,12 @@ class TestEarningsHighIVEnabled:
 
     def test_ehi04_eda_at_blackout_boundary_routes_via_rule2_credit(self):
         """EHI-04: eda=2, EHI window is dte_min=7 so EHI misses.
-        FIX-C: eda=2 in 1..7 → RULE_PRE_EVENT → premium buying structs."""
+        RULE_PRE_EVENT fires; iv_rank=95 >= pre_earnings_iv_rank_min=85 → credit routing."""
         pack = MockPack(earnings_days_away=2, iv_rank=95.0,
                         iv_environment="very_expensive", a1_direction="bullish")
         result = _route_strategy(pack, self._cfg_enabled())
-        # EHI window=7..14 misses (eda=2 < 7); FIX-C RULE_PRE_EVENT fires
-        assert result == ["long_call", "debit_call_spread"]
+        # EHI window=7..14 misses (eda=2 < 7); RULE_PRE_EVENT fires with high IV → credit
+        assert result == ["credit_put_spread"]
 
     def test_ehi05_below_iv_floor_does_not_fire(self):
         """EHI-05: iv_rank=80 < 85 → EHI misses; another rule fires."""

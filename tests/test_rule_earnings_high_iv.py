@@ -182,7 +182,7 @@ class TestRuleRespectsEarningsBlackout:
     """EHI-03: rule respects earnings_dte_blackout — eda inside blackout is not intercepted."""
 
     def test_eda_below_dte_min_not_intercepted(self):
-        """eda=5 < pre_earn_dte_min=7 → EHI does not fire; FIX-C RULE_PRE_EVENT intercepts."""
+        """eda=5 < pre_earn_dte_min=7 → EHI does not fire; RULE_PRE_EVENT intercepts; iv>=85 → credit."""
         pack = MockPack(
             earnings_days_away=5,
             iv_rank=92.0,
@@ -192,8 +192,8 @@ class TestRuleRespectsEarningsBlackout:
         # EHI window starts at dte_min=7; eda=5 misses EHI
         cfg = _cfg({"pre_earnings_dte_min": 7, "pre_earnings_dte_max": 14})
         result = _route_strategy(pack, cfg)
-        # FIX-C: eda=5 in 1..7 → RULE_PRE_EVENT → premium buying
-        assert "long_call" in result or "debit_call_spread" in result
+        # RULE_PRE_EVENT fires: iv_rank=92 >= pre_earnings_iv_rank_min=85 → credit routing
+        assert result == ["credit_put_spread"]
 
     def test_eda_above_dte_max_not_intercepted(self):
         """eda=20 > pre_earn_dte_max=14 → RULE_EARNINGS_HIGH_IV does not fire."""

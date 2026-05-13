@@ -212,8 +212,8 @@ class TestRouteStrategy(unittest.TestCase):
 
     def test_rule5_cheap_bullish(self):
         allowed = self._route(iv_environment="cheap", a1_direction="bullish")
-        self.assertIn("long_call", allowed)
         self.assertIn("debit_call_spread", allowed)
+        self.assertNotIn("long_call", allowed)  # NEW-3: long_call removed from bullish RULE5
 
     def test_rule5_very_cheap_bearish(self):
         allowed = self._route(iv_environment="very_cheap", a1_direction="bearish")

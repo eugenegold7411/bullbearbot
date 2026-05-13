@@ -298,11 +298,12 @@ class TestRuleIron:
                                "a1_direction": "neutral"})
         assert result == ["iron_butterfly", "iron_condor"]
 
-    def test_IC14_fires_bullish_iv85_routes_short_put(self):
-        """iv_rank=85, expensive env, bullish direction → ['short_put'] (RULE_IRON neutral-only; bullish falls to RULE_SHORT_PUT)."""
+    def test_IC14_fires_bullish_iv85_routes_iron(self):
+        """iv_rank=85 >= 75, expensive env, bullish → BIAS-4: RULE_IRON fires with neutral guard → iron structures."""
         result = self._route({"iv_rank": 85.0, "iv_environment": "expensive",
                                "a1_direction": "bullish"})
-        assert result == ["short_put"]
+        assert "iron_condor" in result or "iron_butterfly" in result, \
+            f"Expected iron structures for bullish iv_rank=85 (BIAS-4), got {result}"
 
     def test_IC15_does_not_fire_iv_rank_too_low(self):
         """iv_rank=40 < 50 floor → RULE_IRON skipped (new threshold is 50)."""
@@ -312,12 +313,12 @@ class TestRuleIron:
         assert "iron_butterfly" not in result
 
     def test_IC16_fires_earnings_eda1_with_zero_blackout(self):
-        """eda=1 → FIX-C RULE_PRE_EVENT fires first; neutral → straddle/strangle."""
+        """eda=1 → RULE_PRE_EVENT fires first; neutral + iv_rank=80>=60 → BIAS-5: iron_condor."""
         result = self._route({"iv_rank": 80.0, "iv_environment": "expensive",
                                "a1_direction": "neutral", "earnings_days_away": 1})
-        # FIX-C intercepts eda=1 before RULE_IRON; neutral pre_event → straddle/strangle
-        assert "straddle" in result or "strangle" in result, \
-            f"Expected RULE_PRE_EVENT straddle/strangle for eda=1 neutral, got {result}"
+        # BIAS-5: neutral pre-event with iv_rank=80 >= 60 → iron_condor (not straddle)
+        assert "iron_condor" in result, \
+            f"Expected RULE_PRE_EVENT iron_condor for eda=1 neutral iv=80>=60 (BIAS-5), got {result}"
 
     def test_IC17_does_not_fire_bearish_below_85(self):
         """iv_rank=72, bearish direction → RULE_IRON requires neutral for iv_rank < 85."""

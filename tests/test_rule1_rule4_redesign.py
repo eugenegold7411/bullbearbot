@@ -171,20 +171,20 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                          f"Expected RULE_PRE_EVENT credit routing for eda=1 iv=89>=85, got {result}")
 
     def test_R1_03_eda1_premarket_low_iv_bullish_debit(self):
-        """R1-03: eda=1 iv_rank=30 bullish -> RULE_PRE_EVENT -> premium buying structs."""
+        """R1-03: eda=1 iv_rank=30 bullish -> RULE_PRE_EVENT -> debit_call_spread (NEW-3: long_call removed)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=30,
                           iv_environment="cheap", a1_direction="bullish")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, ["long_call", "debit_call_spread"],
-                         f"Expected RULE_PRE_EVENT [long_call, debit_call_spread] for eda=1 iv=30, got {result}")
+        self.assertEqual(result, ["debit_call_spread"],
+                         f"Expected RULE_PRE_EVENT [debit_call_spread] for eda=1 iv=30, got {result}")
 
     def test_R1_04_eda1_premarket_middle_iv_routes(self):
-        """R1-04: eda=1 iv_rank=55 bullish -> RULE_PRE_EVENT -> premium buying structs."""
+        """R1-04: eda=1 iv_rank=55 bullish -> RULE_PRE_EVENT -> debit_call_spread (NEW-3: long_call removed)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=1, iv_rank=55,
                           iv_environment="neutral", a1_direction="bullish")
         result = _route(pack, timing="pre_market")
-        self.assertEqual(result, ["long_call", "debit_call_spread"],
-                         f"Expected RULE_PRE_EVENT [long_call, debit_call_spread] for eda=1 iv=55, got {result}")
+        self.assertEqual(result, ["debit_call_spread"],
+                         f"Expected RULE_PRE_EVENT [debit_call_spread] for eda=1 iv=55, got {result}")
 
     def test_R1_04b_eda1_premarket_neutral_direction_credit(self):
         """R1-04b: eda=1 neutral iv_rank=95 -> RULE_PRE_EVENT iv_rank>=85 -> iron_condor."""
@@ -203,12 +203,12 @@ class TestRule1SmartEarningsRouter(unittest.TestCase):
                          f"Expected RULE_PRE_EVENT credit routing for eda=2 iv=88>=85, got {result}")
 
     def test_R1_06_eda2_low_iv_bullish_debit(self):
-        """R1-06: eda=2 iv_rank=25 bullish -> RULE_PRE_EVENT fires (eda in 1..7)."""
+        """R1-06: eda=2 iv_rank=25 bullish -> RULE_PRE_EVENT fires; debit_call_spread (NEW-3: long_call removed)."""
         pack = _make_pack(symbol="XOM", earnings_days_away=2, iv_rank=25,
                           iv_environment="cheap", a1_direction="bullish")
         result = _route_no_cal(pack)
-        self.assertEqual(result, ["long_call", "debit_call_spread"],
-                         f"Expected RULE_PRE_EVENT [long_call, debit_call_spread] for eda=2 iv=25, got {result}")
+        self.assertEqual(result, ["debit_call_spread"],
+                         f"Expected RULE_PRE_EVENT [debit_call_spread] for eda=2 iv=25, got {result}")
 
     def test_R1_07_eda2_neutral_direction_straddle(self):
         """R1-07: eda=2 direction=neutral -> RULE_PRE_EVENT fires (straddle/strangle symmetric play)."""

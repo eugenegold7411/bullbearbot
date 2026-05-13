@@ -183,10 +183,15 @@ class TestFixCTimingRouter(unittest.TestCase):
             return _route(pack, config_overrides={"fresh_catalyst_override": override})
 
     def test_f_post_event_eda_neg1_override_false_suppressed(self):
-        """f) eda=-1, fresh_catalyst_override=False → returns [] (suppressed)."""
+        """f) eda=-1, fresh_catalyst_override=False → BIAS-2: suppression removed; RULE_POST_EARNINGS fires."""
         result = self._route_post_event(eda=-1, override=False)
-        self.assertEqual(result, [],
-                         f"Expected [] for post_event eda=-1 override=False, got {result}")
+        self.assertNotEqual(result, [],
+                            f"Expected RULE_POST_EARNINGS for eda=-1 (BIAS-2 removed suppression), got {result}")
+        # iv_rank=80 >= post_earnings_iv_rank_min=75 → credit spread
+        self.assertTrue(
+            any(s in result for s in ("credit_put_spread", "credit_call_spread")),
+            f"Expected credit spread from RULE_POST_EARNINGS, got {result}",
+        )
 
     def test_g_post_event_eda_neg1_override_true_fires(self):
         """g) eda=-1, fresh_catalyst_override=True → RULE_POST_EARNINGS fires."""

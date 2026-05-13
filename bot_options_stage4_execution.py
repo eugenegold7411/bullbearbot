@@ -849,8 +849,24 @@ def _update_fill_prices(structures: list, trading_client) -> bool:
             if leg.order_id and leg.filled_price is None:
                 try:
                     order = trading_client.get_order_by_id(leg.order_id)
-                    fap = getattr(order, "filled_avg_price", None)
-                    fqty = getattr(order, "filled_qty", None)
+                    # For mleg orders, order.filled_avg_price is the NET spread
+                    # price, not an individual leg price. Match this leg's OCC
+                    # symbol against order.legs[] to get the per-leg fill instead.
+                    order_legs = getattr(order, "legs", None) or []
+                    matched = next(
+                        (ol for ol in order_legs
+                         if str(getattr(ol, "symbol", "")) == leg.occ_symbol),
+                        None,
+                    )
+                    if matched is not None:
+                        fap  = getattr(matched, "filled_avg_price", None) \
+                               or getattr(order, "filled_avg_price", None)
+                        fqty = getattr(matched, "filled_qty", None) \
+                               or getattr(order, "filled_qty", None)
+                    else:
+                        # Single-leg order — parent filled_avg_price is correct.
+                        fap  = getattr(order, "filled_avg_price", None)
+                        fqty = getattr(order, "filled_qty", None)
                     if fap is not None:
                         leg.filled_price = float(fap)
                         if fqty is not None:
@@ -868,6 +884,38 @@ def _update_fill_prices(structures: list, trading_client) -> bool:
                 updated_any = True
             except Exception as _se:
                 log.debug("[FILL] save_structure failed for %s: %s", s.structure_id, _se)
+            # Fill quality check: if net debit fill > pre-entry mid × 1.15, fire
+            # a CRITICAL alert. Catches debit_fill_aggression overshoot at entry.
+            # TODO(DASHBOARD) surface fill quality violations in safety panel
+            try:
+                _mids = {lg.occ_symbol: lg.mid for lg in s.legs if lg.mid is not None}
+                _net_mid = sum(
+                    (1.0 if lg.side == "buy" else -1.0) * _mids[lg.occ_symbol]
+                    for lg in s.legs if lg.occ_symbol in _mids
+                )
+                _net_fill = sum(
+                    (1.0 if lg.side == "buy" else -1.0) * (lg.filled_price or 0.0)
+                    for lg in s.legs
+                )
+                if _net_mid > 0 and _net_fill > _net_mid * 1.15:
+                    _overpay_pct = (_net_fill / _net_mid - 1) * 100
+                    log.critical(
+                        "[FILL_QUALITY] %s %s: net fill $%.2f vs mid $%.2f "
+                        "(+%.0f%% above mid) — check debit_fill_aggression",
+                        s.underlying, getattr(s.strategy, "value", s.strategy),
+                        _net_fill, _net_mid, _overpay_pct,
+                    )
+                    try:
+                        from notifications import send_whatsapp_direct  # noqa: PLC0415
+                        send_whatsapp_direct(
+                            f"FILL QUALITY ALERT: {s.underlying} debit "
+                            f"${_net_fill:.2f} vs mid ${_net_mid:.2f} "
+                            f"(+{_overpay_pct:.0f}% above mid)"
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
     return updated_any
 
 
@@ -1140,6 +1188,16 @@ def close_check_loop(alpaca_client) -> None:
                         })
                         open_structs = [s for s in open_structs if s.structure_id != _fri_struct.structure_id]
 
+            _PROFIT_TARGET_REASONS = frozenset({
+                "profit_target_pct_hit",
+                "profit_target_50_near_expiry",
+                "target_profit_hit",
+                "iv_expansion_take_profit",
+                "profit_lock_retrace",
+                "cost_basis_profit_target",
+            })
+            _MIN_PROFIT_HOLD_MIN = 15  # minutes before any profit-target exit is allowed
+
             for struct in list(open_structs):
                 # Fix 3: position-gone guard (skip structures opened < 10 min ago).
                 if _alpaca_syms is not None:
@@ -1196,6 +1254,30 @@ def close_check_loop(alpaca_client) -> None:
                     struct, current_prices=_current_prices, config=_strategy_cfg,
                     current_time=None,
                 )
+                # Minimum hold guard: phantom PnL from corrupted fill-price
+                # storage can immediately fire profit targets right after entry.
+                # Block all profit-target exits for the first _MIN_PROFIT_HOLD_MIN
+                # minutes — stop-loss, DTE, and time-stops are never suppressed.
+                if should_close and any(
+                    close_reason.startswith(pr) for pr in _PROFIT_TARGET_REASONS
+                ):
+                    try:
+                        _hold_age_min = (
+                            _now_utc
+                            - datetime.fromisoformat(
+                                struct.opened_at.replace("Z", "+00:00")
+                            ).astimezone(ET)
+                        ).total_seconds() / 60
+                    except Exception:
+                        _hold_age_min = 9999.0
+                    if _hold_age_min < _MIN_PROFIT_HOLD_MIN:
+                        log.info(
+                            "[CLOSE_CHECK] %s: profit-target '%s' suppressed "
+                            "— hold guard (age=%.1f min < %d min)",
+                            struct.underlying, close_reason,
+                            _hold_age_min, _MIN_PROFIT_HOLD_MIN,
+                        )
+                        should_close = False
                 if should_close:
                     # Check for roll opportunity before plain close
                     should_roll, roll_reason = options_executor.should_roll_structure(

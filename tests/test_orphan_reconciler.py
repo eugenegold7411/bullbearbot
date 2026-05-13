@@ -280,5 +280,111 @@ class TestVolTapeSlots(unittest.TestCase):
         self.assertEqual(tape, "Only risk")
 
 
+# ── NEW-5: _infer_strategy_from_legs ─────────────────────────────────────────
+
+class TestInferStrategyFromLegs(unittest.TestCase):
+    """Strategy inference for orphan structures — replaces SINGLE_CALL default."""
+
+    def _make_leg(self, option_type: str, side: str, strike: float):
+        from schemas import OptionsLeg
+        return OptionsLeg(
+            occ_symbol=f"TST260101{'C' if option_type == 'call' else 'P'}{int(strike*1000):08d}",
+            underlying="TST",
+            side=side,
+            qty=1,
+            option_type=option_type,
+            strike=strike,
+            expiration="2026-01-01",
+            filled_price=1.0,
+        )
+
+    def _infer(self, legs):
+        from bot_options_stage0_preflight import _infer_strategy_from_legs
+        return _infer_strategy_from_legs(legs)
+
+    def test_si01_empty_legs_defaults_to_single_call(self):
+        from schemas import OptionStrategy
+        assert self._infer([]) == OptionStrategy.SINGLE_CALL
+
+    def test_si02_single_buy_call_is_single_call(self):
+        from schemas import OptionStrategy
+        legs = [self._make_leg("call", "buy", 150.0)]
+        assert self._infer(legs) == OptionStrategy.SINGLE_CALL
+
+    def test_si03_single_buy_put_is_single_put(self):
+        from schemas import OptionStrategy
+        legs = [self._make_leg("put", "buy", 150.0)]
+        assert self._infer(legs) == OptionStrategy.SINGLE_PUT
+
+    def test_si04_single_sell_put_is_short_put(self):
+        from schemas import OptionStrategy
+        legs = [self._make_leg("put", "sell", 150.0)]
+        assert self._infer(legs) == OptionStrategy.SHORT_PUT
+
+    def test_si05_tsla_credit_call_spread(self):
+        """2 call legs: buy_strike(310) > sell_strike(300) → CALL_CREDIT_SPREAD (bear call)."""
+        from schemas import OptionStrategy
+        legs = [
+            self._make_leg("call", "buy",  310.0),  # buy higher strike
+            self._make_leg("call", "sell", 300.0),  # sell lower strike
+        ]
+        assert self._infer(legs) == OptionStrategy.CALL_CREDIT_SPREAD
+
+    def test_si06_call_debit_spread(self):
+        """2 call legs: buy_strike(300) < sell_strike(310) → CALL_DEBIT_SPREAD (bull call)."""
+        from schemas import OptionStrategy
+        legs = [
+            self._make_leg("call", "buy",  300.0),
+            self._make_leg("call", "sell", 310.0),
+        ]
+        assert self._infer(legs) == OptionStrategy.CALL_DEBIT_SPREAD
+
+    def test_si07_put_credit_spread(self):
+        """2 put legs: sell_strike(300) > buy_strike(290) → PUT_CREDIT_SPREAD (bull put)."""
+        from schemas import OptionStrategy
+        legs = [
+            self._make_leg("put", "sell", 300.0),
+            self._make_leg("put", "buy",  290.0),
+        ]
+        assert self._infer(legs) == OptionStrategy.PUT_CREDIT_SPREAD
+
+    def test_si08_put_debit_spread(self):
+        """2 put legs: buy_strike(300) > sell_strike(290) → PUT_DEBIT_SPREAD (bear put)."""
+        from schemas import OptionStrategy
+        legs = [
+            self._make_leg("put", "buy",  300.0),
+            self._make_leg("put", "sell", 290.0),
+        ]
+        assert self._infer(legs) == OptionStrategy.PUT_DEBIT_SPREAD
+
+    def test_si09_mixed_call_put_two_legs_is_straddle(self):
+        from schemas import OptionStrategy
+        legs = [
+            self._make_leg("call", "buy", 150.0),
+            self._make_leg("put",  "buy", 150.0),
+        ]
+        assert self._infer(legs) == OptionStrategy.STRADDLE
+
+    def test_si10_four_legs_is_iron_condor(self):
+        from schemas import OptionStrategy
+        legs = [
+            self._make_leg("call", "buy",  160.0),
+            self._make_leg("call", "sell", 155.0),
+            self._make_leg("put",  "sell", 145.0),
+            self._make_leg("put",  "buy",  140.0),
+        ]
+        assert self._infer(legs) == OptionStrategy.IRON_CONDOR
+
+    def test_si11_three_legs_defaults_to_single_call(self):
+        """3-leg ambiguous pattern defaults to SINGLE_CALL."""
+        from schemas import OptionStrategy
+        legs = [
+            self._make_leg("call", "buy",  150.0),
+            self._make_leg("call", "sell", 155.0),
+            self._make_leg("put",  "buy",  145.0),
+        ]
+        assert self._infer(legs) == OptionStrategy.SINGLE_CALL
+
+
 if __name__ == "__main__":
     unittest.main()

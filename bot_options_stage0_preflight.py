@@ -230,6 +230,7 @@ def _cancel_and_clear_unfilled_orders(
     all_structs = _os.load_structures()
     cancelled = 0
     cancelled_underlyings: set[str] = set()
+    _first_pass_ids: set[str] = set()  # track IDs processed in first pass
 
     for s in all_structs:
         try:
@@ -283,6 +284,7 @@ def _cancel_and_clear_unfilled_orders(
             )
             _os.save_structure(s)
             cancelled_underlyings.add(s.underlying)
+            _first_pass_ids.add(s.structure_id)
             cancelled += 1
         except Exception as _e:
             log.debug("[PREFLIGHT] _cancel_and_clear_unfilled_orders skip (non-fatal): %s", _e)
@@ -292,7 +294,93 @@ def _cancel_and_clear_unfilled_orders(
             "[PREFLIGHT] Cancelled %d unfilled order(s) — symbols re-enter candidate pool",
             cancelled,
         )
+
+    # Second pass — cancel stale orders on terminal structures.
+    # Entry orders can survive as "open" in Alpaca when a prior cancel call
+    # failed silently or a structure was forcibly closed. cancel_order_by_id
+    # is idempotent — returns an error (caught below) if already done.
+    _TERMINAL = frozenset({
+        StructureLifecycle.CLOSED,
+        StructureLifecycle.CANCELLED,
+        StructureLifecycle.REJECTED,
+        StructureLifecycle.EXPIRED,
+    })
+    stale_cancelled = 0
+    for s in all_structs:
+        try:
+            if s.lifecycle not in _TERMINAL or not s.order_ids:
+                continue
+            if s.structure_id in _first_pass_ids:
+                continue  # just cancelled by first pass — order already handled
+            for order_id in s.order_ids:
+                try:
+                    alpaca_client.cancel_order_by_id(order_id)
+                    log.debug(
+                        "[PREFLIGHT] Cancelled stale order %s on terminal %s (%s)",
+                        order_id[:8], s.underlying, s.lifecycle.value,
+                    )
+                    stale_cancelled += 1
+                except Exception as _ce:
+                    log.debug(
+                        "[PREFLIGHT] Stale cancel %s (already done, non-fatal): %s",
+                        order_id[:8], _ce,
+                    )
+        except Exception as _e:
+            log.debug("[PREFLIGHT] stale-order cleanup skip (non-fatal): %s", _e)
+    if stale_cancelled:
+        log.info(
+            "[PREFLIGHT] Cleaned %d stale order(s) from terminal structures",
+            stale_cancelled,
+        )
+
     return cancelled, frozenset(cancelled_underlyings)
+
+
+def _infer_strategy_from_legs(legs: list):
+    """
+    Infer the most likely OptionStrategy from a list of OptionsLeg objects.
+
+    Uses leg count, option_type, and side to distinguish spreads from singles.
+    Defaults to SINGLE_CALL when the pattern is ambiguous (e.g. 3+ mixed legs).
+
+    Call/put spread credit vs debit is determined by strike ordering:
+      credit call spread: buy_strike > sell_strike (bear call — net credit)
+      debit  call spread: buy_strike < sell_strike (bull call — net debit)
+      credit put  spread: sell_strike > buy_strike (bull put  — net credit)
+      debit  put  spread: sell_strike < buy_strike (bear put  — net debit)
+    """
+    from schemas import OptionStrategy  # noqa: PLC0415
+
+    n = len(legs)
+    if n == 0:
+        return OptionStrategy.SINGLE_CALL
+    if n == 1:
+        leg = legs[0]
+        if leg.option_type == "put":
+            return OptionStrategy.SINGLE_PUT if leg.side == "buy" else OptionStrategy.SHORT_PUT
+        return OptionStrategy.SINGLE_CALL
+    if n == 2:
+        types = {leg.option_type for leg in legs}
+        buys  = [leg for leg in legs if leg.side == "buy"]
+        sells = [leg for leg in legs if leg.side == "sell"]
+        if buys and sells:
+            if types == {"call"}:
+                return (
+                    OptionStrategy.CALL_CREDIT_SPREAD
+                    if buys[0].strike > sells[0].strike
+                    else OptionStrategy.CALL_DEBIT_SPREAD
+                )
+            if types == {"put"}:
+                return (
+                    OptionStrategy.PUT_CREDIT_SPREAD
+                    if sells[0].strike > buys[0].strike
+                    else OptionStrategy.PUT_DEBIT_SPREAD
+                )
+        if types == {"call", "put"}:
+            return OptionStrategy.STRADDLE
+    if n == 4:
+        return OptionStrategy.IRON_CONDOR
+    return OptionStrategy.SINGLE_CALL
 
 
 def _reconcile_orphan_positions(
@@ -316,7 +404,6 @@ def _reconcile_orphan_positions(
     from schemas import (  # noqa: PLC0415
         OptionsLeg,
         OptionsStructure,
-        OptionStrategy,
         StructureLifecycle,
         Tier,
     )
@@ -385,7 +472,7 @@ def _reconcile_orphan_positions(
                     f"orphan_{_under}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
                 ),
                 underlying=_under,
-                strategy=OptionStrategy.SINGLE_CALL,
+                strategy=_infer_strategy_from_legs(_legs),
                 lifecycle=StructureLifecycle.ORPHAN_TRACKED,
                 legs=_legs,
                 contracts=max(

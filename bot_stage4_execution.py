@@ -14,6 +14,9 @@ from log_setup import get_logger, log_trade
 
 log = get_logger(__name__)
 
+# Module-level root so universe_guard's watchlist reads are patchable in tests.
+_WATCHLIST_ROOT = Path(__file__).parent
+
 # ── Per-cycle committed symbols deduplication ─────────────────────────────────
 # Cleared at the start of each A1 cycle by bot.py → clear_cycle_committed().
 # Used to prevent the same symbol from being traded more than once per cycle
@@ -218,3 +221,66 @@ def fundamental_check(buy_candidates: list[dict], md: dict) -> dict:
     except Exception as exc:
         log.warning("[FUNDAMENTAL] Check failed: %s — failing open", exc)
         return {}
+
+
+def universe_guard(buy_candidates: list[dict], positions: list) -> set[str]:
+    """
+    Block Stage 3 buy entries for symbols not in the watchlist/universe.
+
+    Only checks NEW entries — symbols already held are exempt (previously
+    validated when first added). Reads watchlist_core.json and
+    watchlist_dynamic.json directly (no get_tradeable_universe dependency)
+    so this works against any HEAD. Fails open on any load error.
+
+    Returns the set of suppressed symbols.
+    """
+    held: set[str] = {getattr(p, "symbol", "") for p in (positions or [])}
+    blocked: set[str] = set()
+
+    universe: set[str] = set()
+    _any_loaded = False
+    try:
+        for _wl_path in (
+            _WATCHLIST_ROOT / "watchlist_core.json",
+            _WATCHLIST_ROOT / "watchlist_dynamic.json",
+        ):
+            try:
+                _data = json.loads(_wl_path.read_text())
+                for _val in _data.values():
+                    if isinstance(_val, list):
+                        universe.update(str(s).upper() for s in _val)
+                    elif isinstance(_val, dict):
+                        universe.update(str(s).upper() for s in _val)
+                    elif isinstance(_val, str):
+                        universe.add(_val.upper())
+                _any_loaded = True
+            except Exception:
+                pass
+    except Exception as _exc:
+        log.warning("[UNIVERSE_GUARD] Watchlist load failed — failing open: %s", _exc)
+        return blocked
+    if not _any_loaded:
+        log.warning("[UNIVERSE_GUARD] No watchlist files readable — failing open")
+        return blocked
+
+    for a in buy_candidates:
+        sym = (a.get("symbol") or "").upper()
+        if not sym or sym in held:
+            continue
+        if sym not in universe:
+            log.warning(
+                "[UNIVERSE_GUARD] %s: not in any watchlist — Stage 3 buy suppressed. "
+                "Add to watchlist_core.json or watchlist_dynamic.json to allow entry.",
+                sym,
+            )
+            try:
+                from notifications import send_whatsapp_direct  # noqa: PLC0415
+                send_whatsapp_direct(
+                    f"[UNIVERSE_GUARD] Stage 3 buy blocked: {sym}. "
+                    "Add to watchlist to allow entry.",
+                )
+            except Exception:
+                pass
+            blocked.add(sym)
+
+    return blocked

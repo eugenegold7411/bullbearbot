@@ -266,3 +266,95 @@ class TestPendingUnderlyingsGuard:
 
         assert "QCOM" in pending        # SUBMITTED → blocked
         assert "GLD" not in pending     # FULLY_FILLED → allowed
+
+
+# ── Suite UC-stale: second pass — stale orders on terminal structures ─────────
+
+class TestCancelStaleTerminalOrders:
+    """UC-09 / UC-10 / UC-11 — second pass over CLOSED/CANCELLED/REJECTED/EXPIRED."""
+
+    def _run(self, all_structs, config=None):
+        from bot_options_stage0_preflight import _cancel_and_clear_unfilled_orders
+
+        alpaca = MagicMock()
+        alpaca.get_order_by_id = MagicMock(return_value=_fake_order(0))
+        alpaca.cancel_order_by_id = MagicMock()
+
+        cfg = config or {"account2": {"auto_cancel_unfilled_orders": True}}
+
+        with (
+            patch("options_state.load_structures", return_value=all_structs),
+            patch("options_state.save_structure"),
+        ):
+            _cancel_and_clear_unfilled_orders(alpaca, cfg)
+
+        return alpaca.cancel_order_by_id
+
+    def _make_terminal(self, lifecycle_str: str, order_ids: list, underlying: str = "TSLA"):
+        from schemas import OptionsStructure, OptionStrategy, StructureLifecycle, Tier
+        lc_map = {
+            "closed":    StructureLifecycle.CLOSED,
+            "cancelled": StructureLifecycle.CANCELLED,
+            "rejected":  StructureLifecycle.REJECTED,
+            "expired":   StructureLifecycle.EXPIRED,
+        }
+        s = OptionsStructure(
+            structure_id=f"{lifecycle_str}_{underlying}",
+            underlying=underlying,
+            strategy=OptionStrategy.SINGLE_CALL,
+            lifecycle=lc_map[lifecycle_str],
+            legs=[],
+            contracts=1,
+            max_cost_usd=100.0,
+            opened_at="2026-04-30T10:00:00+00:00",
+            catalyst="test",
+            tier=Tier.CORE,
+        )
+        s.order_ids = list(order_ids)
+        return s
+
+    def test_uc09_closed_structure_stale_order_cancelled(self):
+        """CLOSED structure with order_id → cancel_order_by_id called."""
+        s = self._make_terminal("closed", ["closed-order-abc123"])
+        cancel_mock = self._run([s])
+        cancel_mock.assert_called_once_with("closed-order-abc123")
+
+    def test_uc10_cancelled_structure_stale_order_cancelled(self):
+        """CANCELLED structure with residual order_id → cancel called."""
+        s = self._make_terminal("cancelled", ["stale-cancel-xyz"])
+        cancel_mock = self._run([s])
+        cancel_mock.assert_called_once_with("stale-cancel-xyz")
+
+    def test_uc11_terminal_no_order_ids_skipped(self):
+        """CLOSED structure with empty order_ids → cancel never called."""
+        s = self._make_terminal("closed", [])
+        cancel_mock = self._run([s])
+        cancel_mock.assert_not_called()
+
+    def test_uc12_cancel_failure_is_nonfatal(self):
+        """cancel_order_by_id raises on stale order → non-fatal, second structure still processed."""
+        from bot_options_stage0_preflight import _cancel_and_clear_unfilled_orders
+
+        s1 = self._make_terminal("closed",   ["fail-order-1"], underlying="NVDA")
+        s2 = self._make_terminal("rejected", ["clean-order-2"], underlying="AAPL")
+
+        alpaca = MagicMock()
+        alpaca.get_order_by_id = MagicMock(return_value=_fake_order(0))
+        cancel_calls: list = []
+
+        def _cancel(oid):
+            cancel_calls.append(oid)
+            if oid == "fail-order-1":
+                raise Exception("already cancelled")
+
+        alpaca.cancel_order_by_id = _cancel
+        cfg = {"account2": {"auto_cancel_unfilled_orders": True}}
+
+        with (
+            patch("options_state.load_structures", return_value=[s1, s2]),
+            patch("options_state.save_structure"),
+        ):
+            _cancel_and_clear_unfilled_orders(alpaca, cfg)  # must not raise
+
+        assert "fail-order-1"  in cancel_calls
+        assert "clean-order-2" in cancel_calls

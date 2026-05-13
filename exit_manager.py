@@ -355,7 +355,7 @@ def get_active_exits(positions: list, alpaca_client=None) -> dict[str, dict]:
                 # OCO limit-sell guarantees a stop leg exists in the same OCA group.
                 # Stop may not be individually visible yet (Alpaca indexing lag) — treat
                 # as protected so repairs don't fire and cancel the valid OCO order.
-                log.info(
+                log.debug(
                     "[EXIT_MGR] %s: OCO order %s — stop leg not yet individually visible"
                     ", treating as protected",
                     sym, target_oid,

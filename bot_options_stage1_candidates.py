@@ -30,6 +30,9 @@ log = get_logger(__name__)
 
 _BASE = Path(__file__).parent
 _MORNING_BRIEF_SONNET_PATH = _BASE / "data" / "market" / "morning_brief_sonnet.json"
+_REJECTION_LOG_PATH        = _BASE / "data" / "account2" / "rejection_log.jsonl"
+_REJECTION_FORCE_THRESHOLD = 3     # consecutive rejections before credit override fires
+_REJECTION_LOOKBACK_HOURS  = 24.0  # rolling window to count rejections
 
 
 # ── A1 signal loading ─────────────────────────────────────────────────────────
@@ -510,6 +513,52 @@ def build_candidate_set(
     )
 
 
+# ── Rejection log reader ─────────────────────────────────────────────────────
+
+def _get_forced_credit_symbols(
+    threshold: int = _REJECTION_FORCE_THRESHOLD,
+    hours: float = _REJECTION_LOOKBACK_HOURS,
+) -> frozenset:
+    """
+    Return symbols that have threshold+ 'high_iv_debit_rejected' entries in
+    the rejection log within the last `hours`.  These symbols should be routed
+    to credit structures instead of debit on the next routing cycle.
+    Non-fatal — returns empty frozenset on any error.
+    """
+    try:
+        if not _REJECTION_LOG_PATH.exists():
+            return frozenset()
+        from datetime import datetime, timezone  # noqa: PLC0415
+        cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
+        counts: dict[str, int] = {}
+        with _REJECTION_LOG_PATH.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                if entry.get("rejection_code") != "high_iv_debit_rejected":
+                    continue
+                ts_raw = entry.get("ts", "")
+                if ts_raw:
+                    try:
+                        ts_dt = datetime.fromisoformat(ts_raw)
+                        if ts_dt.timestamp() < cutoff:
+                            continue
+                    except Exception:
+                        pass
+                sym = (entry.get("symbol") or "").upper()
+                if sym:
+                    counts[sym] = counts.get(sym, 0) + 1
+        return frozenset(sym for sym, n in counts.items() if n >= threshold)
+    except Exception as exc:
+        log.debug("[OPTS] _get_forced_credit_symbols failed (non-fatal): %s", exc)
+        return frozenset()
+
+
 # ── Main stage function ───────────────────────────────────────────────────────
 
 def run_candidate_stage(
@@ -552,6 +601,15 @@ def run_candidate_stage(
     )
 
     options_regime = options_data.get_options_regime(vix)
+
+    # Rejection log override — symbols with 3+ high_iv_debit rejections in 24h
+    # are routed to credit structures before the deterministic router runs.
+    _forced_credit_syms = _get_forced_credit_symbols()
+    if _forced_credit_syms:
+        log.info(
+            "[OPTS] rejection_log: credit routing forced on %d symbol(s): %s",
+            len(_forced_credit_syms), sorted(_forced_credit_syms),
+        )
 
     candidate_sets: list = []
     proposals: list      = []
@@ -643,6 +701,10 @@ def run_candidate_stage(
                         "price": signal_scores.get(_ec_sym, {}).get("price", 1.0),
                         "tier": "earnings",
                         "conviction_components": _ec_comp,
+                        "earnings_conviction": {
+                            "eda": _ec_eda,
+                            "conviction_level": _ec_conviction,
+                        },
                     }
                     scored_symbols = scored_symbols + [(_ec_sym, _ec_sig)]
                     _ec_scored_set.add(_ec_sym)
@@ -784,6 +846,23 @@ def run_candidate_stage(
                                            config=config, buying_power=buying_power)
                 candidate_sets.append(cset)
                 continue
+            # Rejection log override: if this symbol has had 3+ high_iv_debit_rejected
+            # rejections in the last 24h, replace debit with credit structures so the
+            # next Stage 3 call isn't wasted repeating the same IV-mismatch rejection.
+            if sym.upper() in _forced_credit_syms:
+                _fc_dir = _compute_effective_direction(pack, config)
+                if _fc_dir == "bullish":
+                    _fc_allowed = ["credit_put_spread"]
+                elif _fc_dir == "bearish":
+                    _fc_allowed = ["credit_call_spread"]
+                else:
+                    _fc_allowed = ["credit_put_spread", "credit_call_spread"]
+                if set(_fc_allowed) != set(allowed):
+                    log.info(
+                        "[OPTS] %s: rejection_log credit override (%d+ entries) %s → %s",
+                        sym, _REJECTION_FORCE_THRESHOLD, allowed, _fc_allowed,
+                    )
+                    allowed = _fc_allowed
             allowed_by_sym[sym] = allowed
 
             # Build A2CandidateSet (includes routing + veto results via Stage 2)
@@ -812,6 +891,7 @@ def run_candidate_stage(
                 _c["a1_earnings_conviction_level"] = (
                     _ec_data.get("conviction_level") if _ec_data else None
                 )
+                _c["conviction_components"]      = sig_data.get("conviction_components")
 
         # Build StructureProposal (for debate + legacy path)
         proposal = options_intelligence.select_options_strategy(

@@ -248,7 +248,47 @@ def _load_opts_system() -> str:
 
 # ── Cost tracking ─────────────────────────────────────────────────────────────
 
-_COST_LOG = Path(__file__).parent / "data" / "account2" / "costs" / "cost_log.jsonl"
+_COST_LOG      = Path(__file__).parent / "data" / "account2" / "costs" / "cost_log.jsonl"
+_REJECTION_LOG = Path(__file__).parent / "data" / "account2" / "rejection_log.jsonl"
+
+# Keywords that indicate "bought premium in high-IV environment" rejection pattern
+_REJECTION_IV_KEYWORDS: frozenset[str] = frozenset({
+    "high iv", "iv rank", "buying premium", "wrong premium", "long vega",
+    "debit structure", "very expensive iv", "iv hierarchy", "premium buying",
+    "selling premium", "net long vega", "iv environment",
+})
+
+
+def _classify_debate_rejection(reasons: str) -> Optional[str]:
+    """Return 'high_iv_debit_rejected' if reasons describe an IV/premium mismatch, else None."""
+    r = reasons.lower()
+    if any(kw in r for kw in _REJECTION_IV_KEYWORDS):
+        return "high_iv_debit_rejected"
+    return None
+
+
+def _write_rejection_log_entry(
+    symbol: str,
+    rejection_code: str,
+    iv_rank: Optional[float],
+    structures: list[str],
+    reason_snippet: str,
+) -> None:
+    """Append one rejection entry to rejection_log.jsonl. Non-fatal."""
+    try:
+        entry = {
+            "ts":             datetime.now(ET).isoformat(),
+            "symbol":         symbol,
+            "rejection_code": rejection_code,
+            "iv_rank":        iv_rank,
+            "structures":     structures,
+            "reason_snippet": reason_snippet[:200],
+        }
+        _REJECTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _REJECTION_LOG.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as exc:
+        log.debug("[OPTS] _write_rejection_log_entry failed: %s", exc)
 
 
 def _log_claude_cost(resp, call_type: str = "unknown"):
@@ -420,6 +460,17 @@ def run_options_debate(
                 )
             else:
                 mandate_line = ""
+            _conv_comps = c.get("conviction_components")
+            if _conv_comps:
+                _fvc = lambda v: f"{v:.0f}" if v is not None else "?"  # noqa: E731
+                _conviction_line = (
+                    f"\n Conviction: analyst={_fvc(_conv_comps.get('analyst_momentum'))}"
+                    f" | beat={_fvc(_conv_comps.get('beat_consistency'))}"
+                    f" | insider={_fvc(_conv_comps.get('insider_activity'))}"
+                    f" | news={_fvc(_conv_comps.get('news_catalyst'))}"
+                )
+            else:
+                _conviction_line = ""
             _pos_ctx = (per_symbol_context or {}).get(
                 sym, f"No existing positions on {sym}."
             )
@@ -430,7 +481,7 @@ def run_options_debate(
                 f"Max gain: {gain_str} | Breakeven: {beven:.2f}\n"
                 f" Delta: {delta_s} | Theta: {theta_s} | Vega: {vega_s} | "
                 f"EV: {ev_s} | DTE: {dte} | OI: {oi_s} | P(profit): {prob_s}"
-                f"{earnings_line}{a1_line}{mandate_line}]"
+                f"{earnings_line}{a1_line}{mandate_line}{_conviction_line}]"
             )
             allowed_actions_parts.append(f"prefer {cid}")
         allowed_actions_parts.append("reject_all")
@@ -794,6 +845,25 @@ def run_bounded_debate(
             no_trade_reason = "debate_rejected_all"
         elif _conf < _conf_floor:
             no_trade_reason = "debate_low_confidence"
+
+    # Write rejection log for systematic IV-mismatch rejections so Stage 1 can
+    # override routing on the next cycle instead of spending another Claude call.
+    if no_trade_reason in ("debate_rejected_all", "debate_low_confidence") and candidate_structures:
+        _reasons_text = (debate_result.get("reasons") or "")
+        _rej_code = _classify_debate_rejection(_reasons_text)
+        if _rej_code:
+            _sym_structs: dict[str, list[str]] = {}
+            for _c in candidate_structures:
+                _s = _c.get("symbol", "")
+                if _s:
+                    _sym_structs.setdefault(_s, []).append(_c.get("structure_type", "?"))
+            for _sym, _structs in _sym_structs.items():
+                _iv = (iv_summaries.get(_sym) or {}).get("iv_rank")
+                _write_rejection_log_entry(_sym, _rej_code, _iv, _structs, _reasons_text)
+                log.info(
+                    "[OPTS] rejection_log: %s → %s (iv_rank=%s structs=%s)",
+                    _sym, _rej_code, _iv, _structs,
+                )
 
     # Find selected candidate dict
     selected_candidate: Optional[dict] = None

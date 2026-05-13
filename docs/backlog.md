@@ -1,15 +1,13 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-07 (15 commits across 4 parallel sessions)
+Last updated: 2026-05-13 (S2 routing bias fixes)
 
 ---
 
 ## IN PROGRESS
 
-| Session | Task |
-|---------|------|
-| 4 | Vector memory & learning loop diagnosis |
+_(none)_
 
 ---
 
@@ -17,7 +15,7 @@ Last updated: 2026-05-07 (15 commits across 4 parallel sessions)
 
 | Task | Notes |
 |------|-------|
-| Vector memory & learning loop fixes | Waiting for Session 4 diagnosis |
+| Vector memory & learning loop fixes | Waiting for diagnosis session |
 
 ---
 
@@ -92,7 +90,16 @@ RESOLVED in today's sprint:
 
 ---
 
-## COMPLETED TODAY (2026-05-07)
+## COMPLETED TODAY (2026-05-13)
+
+| Commit  | What |
+|---------|------|
+| a3347bd | feat(S2-routing): NEW-3 remove long_call from all routing; BIAS-2 remove post-event suppression; BIAS-4 iron condor for directional iv>=75; BIAS-5 iron condor for neutral pre-event iv>=60 |
+| ec66c8e | fix(S2-routing-tests): update test assertions for NEW-3, BIAS-2, BIAS-4, BIAS-5 regressions (R1-03/04/06, IC14, IC16, test_f, replay harness, fixtures) |
+
+---
+
+## COMPLETED (2026-05-07)
 
 | Commit  | What |
 |---------|------|

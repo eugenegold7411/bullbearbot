@@ -488,51 +488,43 @@ def _route_strategy(
             )
             return []
 
-    # EARNINGS TIMING ROUTER ── pre_event / event_day / post_event gates.
-    # Fires before RULE_POST_EARNINGS to own the -3..+7 day window explicitly.
-    # fresh_catalyst_override (a2_router.fresh_catalyst_override, default False):
-    #   False → post_event (-1..-3) suppresses new entry (credit structures deferred)
-    #   True  → post_event falls through to RULE_POST_EARNINGS credit path
-    _fc_override = bool(rcfg.get("fresh_catalyst_override", False))
-    if eda is not None and -3 <= eda <= 7:
-        if eda == 0:
-            log.info("[EARNINGS] %s event_day (eda=0) — skipping new entry", sym)
-            return []
-        if -3 <= eda <= -1:
-            if not _fc_override:
-                log.info(
-                    "[EARNINGS] %s post-event eda=%d — fresh_catalyst_override=OFF, skipping",
-                    sym, eda,
-                )
-                return []
-            # fresh_catalyst_override=True: fall through to RULE_POST_EARNINGS
-        else:  # 1 <= eda <= 7: pre-event
-            _pre_earn_iv_min = float(rcfg.get("pre_earnings_iv_rank_min", 85))
-            if pack.iv_rank >= _pre_earn_iv_min:
-                # High IV: sell the crush — credit structures with expiry past event
-                if effective_dir == "bullish":
-                    _pre_structs = ["credit_put_spread"]
-                elif effective_dir == "bearish":
-                    _pre_structs = ["credit_call_spread"]
-                else:
-                    _pre_structs = ["iron_condor"]
-                log.info(
-                    "[EARNINGS] %s pre-event eda=%d iv_rank=%.1f >= %.1f → credit structure (pre-event crush)",
-                    sym, eda, pack.iv_rank, _pre_earn_iv_min,
-                )
+    # EARNINGS TIMING ROUTER — event_day and pre-event gates.
+    # Post-event (eda=-1..-3) falls through directly to RULE_POST_EARNINGS.
+    if eda is not None and eda == 0:
+        log.info("[EARNINGS] %s event_day (eda=0) — skipping new entry", sym)
+        return []
+
+    if eda is not None and 1 <= eda <= 7:  # pre-event
+        _pre_earn_iv_min = float(rcfg.get("pre_earnings_iv_rank_min", 85))
+        if pack.iv_rank >= _pre_earn_iv_min:
+            # High IV: sell the crush — credit structures with expiry past event
+            if effective_dir == "bullish":
+                _pre_structs = ["credit_put_spread"]
+            elif effective_dir == "bearish":
+                _pre_structs = ["credit_call_spread"]
             else:
-                if effective_dir == "bullish":
-                    _pre_structs = ["long_call", "debit_call_spread"]
-                elif effective_dir == "bearish":
-                    _pre_structs = ["long_put", "debit_put_spread"]
+                _pre_structs = ["iron_condor"]
+            log.info(
+                "[EARNINGS] %s pre-event eda=%d iv_rank=%.1f >= %.1f → credit structure (pre-event crush)",
+                sym, eda, pack.iv_rank, _pre_earn_iv_min,
+            )
+        else:
+            if effective_dir == "bullish":
+                _pre_structs = ["debit_call_spread"]
+            elif effective_dir == "bearish":
+                _pre_structs = ["long_put", "debit_put_spread"]
+            else:
+                # BIAS-5: neutral pre-event — iron condor when IV already elevated
+                if pack.iv_rank >= 60:
+                    _pre_structs = ["iron_condor"]
                 else:
                     _pre_structs = ["straddle", "strangle"]
-                log.info(
-                    "[EARNINGS] %s pre-event eda=%d → premium buying structure",
-                    sym, eda,
-                )
-            return _route_guarded(_pre_structs, effective_dir, sym, "RULE_PRE_EVENT",
-                                  options_regime, _caution_debit_blocked, pack.iv_rank)
+            log.info(
+                "[EARNINGS] %s pre-event eda=%d → premium buying structure",
+                sym, eda,
+            )
+        return _route_guarded(_pre_structs, effective_dir, sym, "RULE_PRE_EVENT",
+                              options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE_POST_EARNINGS: sell IV premium after earnings print when IV still elevated.
     # eda < 0 means earnings already happened (abs(eda) = days since print).
@@ -667,17 +659,19 @@ def _route_strategy(
         _a1_conv = float(getattr(pack, "a1_conviction", None) or 0.0)
         if _a1_conv == 0.0:  # fall back to signal score when dedicated field absent
             _a1_conv = float(getattr(pack, "a1_signal_score", 0) or 0) / 100.0
-        _is_neutral_or_low_conv = (effective_dir == "neutral")
-        if _is_neutral_or_low_conv:
+        _is_neutral_or_high_iv = (effective_dir == "neutral" or pack.iv_rank >= 75)
+        if _is_neutral_or_high_iv:
             _iron = ["iron_butterfly", "iron_condor"] if pack.iv_rank >= 85 else ["iron_condor"]
+            _iron_guard_dir = "neutral"   # IV overrides direction; iron structures bypass directional guard
         else:
             _iron = None
+            _iron_guard_dir = effective_dir
         if _iron is not None:
             log.debug(
                 "[OPTS] _route_strategy %s: RULE_IRON iv_rank=%.1f dir=%s conv=%.2f -> %s",
                 sym, pack.iv_rank, effective_dir, _a1_conv, _iron,
             )
-            return _route_guarded(_iron, effective_dir, sym, "RULE_IRON",
+            return _route_guarded(_iron, _iron_guard_dir, sym, "RULE_IRON",
                                   options_regime, _caution_debit_blocked, pack.iv_rank)
 
     # RULE_SHORT_PUT: sell OTM put when IV is elevated and direction is bullish/neutral.
@@ -701,11 +695,11 @@ def _route_strategy(
     # RULE5: cheap IV + directional signal (direction-aware)
     if pack.iv_environment in ("very_cheap", "cheap") and effective_dir != "neutral":
         if effective_dir == "bullish":
-            allowed = ["long_call", "debit_call_spread"]
+            allowed = ["debit_call_spread"]
         elif effective_dir == "bearish":
             allowed = ["long_put", "debit_put_spread"]
         else:
-            allowed = ["long_call", "long_put", "debit_call_spread", "debit_put_spread"]
+            allowed = ["long_put", "debit_call_spread", "debit_put_spread"]
         log.debug("[OPTS] _route_strategy %s: RULE5 iv_env=%s dir=%s -> %s",
                   sym, pack.iv_environment, effective_dir, allowed)
         return _route_guarded(allowed, effective_dir, sym, "RULE5",
@@ -763,8 +757,6 @@ def _infer_router_rule_fired(pack, allowed: list[str], config: dict | None = Non
     if not allowed:
         if eda is not None and eda == 0:
             return "RULE_EVENT_DAY"
-        if eda is not None and -3 <= eda <= -1:
-            return "RULE_POST_EVENT_SUPPRESS"
         if (pre_earn_enabled
                 and eda is not None
                 and pre_earn_dte_min <= eda <= pre_earn_dte_max

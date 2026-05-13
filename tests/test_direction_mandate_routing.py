@@ -251,16 +251,14 @@ class TestNeutralOnlyStructures:
         )
 
     @pytest.mark.parametrize("direction", ["bullish", "bearish"])
-    def test_dm23_iron_condor_never_for_high_conviction_directional(self, direction):
-        """DM-23: High-conviction directional + iv_rank=80 → iron_condor never proposed."""
+    def test_dm23_iron_condor_for_directional_high_iv(self, direction):
+        """DM-23: Directional + iv_rank=80 + expensive → iron_condor IS proposed (BIAS-4).
+        IV overrides direction when rank >= 75; neutral guard allows iron structure through."""
         result = _route_strategy(
             _pack(80.0, "expensive", direction, score=75.0)
         )
-        assert "iron_condor" not in result, (
-            f"High-conviction {direction} should not produce iron_condor, got {result}"
-        )
-        assert "iron_butterfly" not in result, (
-            f"High-conviction {direction} should not produce iron_butterfly, got {result}"
+        assert "iron_condor" in result, (
+            f"{direction} + iv_rank=80 should produce iron_condor (BIAS-4), got {result}"
         )
 
     @pytest.mark.parametrize("direction", ["bullish", "bearish"])

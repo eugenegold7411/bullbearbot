@@ -85,10 +85,10 @@ def _route(pack, config=None):
 class TestRule5DirectionAware(unittest.TestCase):
 
     def test_BR01_rule5_bullish_call_side_only(self):
-        """BR-01: RULE5 bullish → call-side structures only."""
+        """BR-01: RULE5 bullish → debit_call_spread only (long_call killed NEW-3)."""
         pack = _make_pack(iv_environment="cheap", iv_rank=20.0, a1_direction="bullish")
         result = _route(pack)
-        self.assertEqual(sorted(result), sorted(["long_call", "debit_call_spread"]))
+        self.assertEqual(result, ["debit_call_spread"])
 
     def test_BR01_rule5_bullish_no_put_structures(self):
         """BR-01: RULE5 bullish must not include put-side structures."""
@@ -118,10 +118,10 @@ class TestRule5DirectionAware(unittest.TestCase):
         self.assertEqual(result, [])
 
     def test_BR01_very_cheap_bullish_call_side_only(self):
-        """BR-01 variant: very_cheap IV + bullish also filtered to call side."""
+        """BR-01 variant: very_cheap IV + bullish → debit_call_spread only (NEW-3)."""
         pack = _make_pack(iv_environment="very_cheap", iv_rank=5.0, a1_direction="bullish")
         result = _route(pack)
-        self.assertEqual(sorted(result), sorted(["long_call", "debit_call_spread"]))
+        self.assertEqual(result, ["debit_call_spread"])
 
     def test_BR02_very_cheap_bearish_put_side_only(self):
         """BR-02 variant: very_cheap IV + bearish also filtered to put side."""
@@ -253,11 +253,11 @@ class TestBR08Regressions(unittest.TestCase):
         self.assertEqual(result, ["debit_put_spread"])
 
     def test_rule5_bullish_traces_tsm(self):
-        """TSM cheap IV + bullish → call-side only."""
+        """TSM cheap IV + bullish → debit_call_spread only (NEW-3)."""
         pack = _make_pack(iv_environment="very_cheap", iv_rank=4.0, a1_direction="bullish",
                           symbol="TSM")
         result = _route(pack)
-        self.assertEqual(sorted(result), sorted(["long_call", "debit_call_spread"]))
+        self.assertEqual(result, ["debit_call_spread"])
 
     def test_rule5_neutral_traces_spy(self):
         """SPY cheap IV + neutral → RULE8 (no trade; outer guard blocks neutral from RULE5)."""

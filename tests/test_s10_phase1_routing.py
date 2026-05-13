@@ -319,14 +319,14 @@ class TestInferRouterRuleFired:
         assert result == "RULE8"
 
     def test_infers_rule8_when_eda_negative_low_iv(self):
-        # eda=-1 with empty allowed -> FIX-C suppressed post_event -> RULE_POST_EVENT_SUPPRESS
+        # eda=-1 no longer suppressed (BIAS-2); empty allowed falls to RULE8
         pack = MockPack(earnings_days_away=-1, iv_rank=40.0, iv_environment="neutral")
         result = _infer_router_rule_fired(pack, [], _cfg())
-        assert result == "RULE_POST_EVENT_SUPPRESS"
+        assert result == "RULE8"
 
     def test_infers_rule5_for_cheap_iv(self):
         pack = MockPack(iv_environment="cheap", a1_direction="bullish")
-        result = _infer_router_rule_fired(pack, ["long_call", "debit_call_spread"], _cfg())
+        result = _infer_router_rule_fired(pack, ["debit_call_spread"], _cfg())
         assert result == "RULE5"
 
     def test_infers_rule6_for_neutral_iv(self):
@@ -438,15 +438,14 @@ class TestEarningsHighIVEnabled:
     def test_ehi06_flag_false_disables_rule(self):
         """EHI-06: pre_earnings_credit_spread_enabled=False skips EHI; subsequent rules fire.
 
-        iv_rank=87, iv_env=expensive, bullish, high-conviction (score=60 → conv=0.60 == threshold).
-        RULE_IRON requires conviction < 0.60 (strict <) so it does NOT fire for bullish at boundary.
-        RULE_SHORT_PUT fires: iv_rank=87>=50, bullish, env not cheap → short_put.
+        iv_rank=87, iv_env=expensive, bullish, eda=10.
+        EHI misses (flag=False). RULE_IRON fires (iv_rank=87 >= 75, BIAS-4) →
+        iron_butterfly + iron_condor with neutral guard override.
         """
         cfg = self._cfg_enabled({"pre_earnings_credit_spread_enabled": False})
         pack = MockPack(earnings_days_away=10, iv_rank=87.0,
                         iv_environment="expensive", a1_direction="bullish")
         result = _route_strategy(pack, cfg)
         assert result != ["credit_put_spread"]  # EHI did NOT fire
-        # RULE_IRON does NOT fire for high-conviction bullish (conviction==threshold, not <).
-        # RULE_SHORT_PUT fires → short_put is the correct bullish elevated-IV structure.
-        assert "short_put" in result
+        # RULE_IRON fires for directional when iv_rank >= 75 (BIAS-4).
+        assert "iron_condor" in result or "iron_butterfly" in result

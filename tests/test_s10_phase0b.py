@@ -181,7 +181,7 @@ class TestEarningsExemptSymbols(unittest.TestCase):
             cal_mock.exists.return_value = True
             cal_mock.read_text.return_value = cal_data
             result = _load_earnings_days_away("AAPL")
-        self.assertEqual(result, 5)
+        self.assertEqual(result, 4)  # AMC convention: provider stores next trading day, so subtract 1
 
     def test_non_exempt_equity_not_in_calendar_returns_none(self):
         """Non-exempt equity absent from calendar (e.g. TSM) → None."""

@@ -283,7 +283,7 @@ def submit_structure(
         )
         return structure
 
-    is_single = strategy in (OptionStrategy.SINGLE_CALL, OptionStrategy.SINGLE_PUT)
+    is_single = strategy in (OptionStrategy.SINGLE_CALL, OptionStrategy.SINGLE_PUT, OptionStrategy.SHORT_PUT)
 
     if is_single:
         return _submit_single_leg(structure, trading_client, config)

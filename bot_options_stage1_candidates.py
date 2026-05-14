@@ -301,6 +301,15 @@ def _load_earnings_days_away(symbol: str) -> Optional[int]:
                 continue
             try:
                 days = (date.fromisoformat(str(raw)[:10]) - today).days
+                # Adjust for reporting-time convention:
+                # AMC (post-market): data provider stores next trading day as the date,
+                # so raw eda is 1 too high — eda=0 on calendar date = IV crush day (eda=-1).
+                # BMO (pre-market): announcement is done before market open on calendar
+                # date — eda=0 = announcement already known at open (eda=-1).
+                # Unknown timing: no adjustment (safe default, preserves existing behavior).
+                _t = str(entry.get("timing", "")).lower()
+                if any(k in _t for k in ("post", "amc", "after", "pre", "bmo")):
+                    days -= 1
                 if days >= 0:
                     min_future = days if min_future is None else min(min_future, days)
                 else:

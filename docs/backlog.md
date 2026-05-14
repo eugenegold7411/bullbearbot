@@ -1,7 +1,7 @@
 ---
 # BullBearBot — Development Backlog
 
-Last updated: 2026-05-13 (S2 routing bias fixes)
+Last updated: 2026-05-14 (adaptive debit pricing + REPLACE scoring fix)
 
 ---
 
@@ -90,7 +90,14 @@ RESOLVED in today's sprint:
 
 ---
 
-## COMPLETED TODAY (2026-05-13)
+## COMPLETED TODAY (2026-05-14)
+
+| Commit  | What |
+|---------|------|
+| 0b0d176 | fix(allocator): use signal_score_live for REPLACE incumbent comparison — was comparing thesis_score_normalized (heuristic ×10) against signal_score (L2+L3 composite), causing REPLACE to fire on wrong metric or never fire |
+| 5e3272f | fix(executor): adaptive debit spread pricing with cost ratio cap — replaces fixed 0.7 aggression with spread-width buckets (tight <$0.30→0.5×, medium→0.7×, wide >$0.60→0.8×); adds 50% strike-width cost ratio veto to block overpriced structures |
+
+## COMPLETED (2026-05-13)
 
 | Commit  | What |
 |---------|------|

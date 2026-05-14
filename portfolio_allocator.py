@@ -131,6 +131,7 @@ _PA_DEFAULTS: dict = {
     "replace_cancel_poll_seconds":     3.0,     # max time to wait for cancellations to clear before issuing close
     "max_position_pct_equity":         0.15,    # equity-based single-name cap for SIZE TRIM trigger (position/equity > this fires trim)
     "add_min_score":                   65.0,    # normalized (0-100) thesis_score threshold for ADD gate (65 = 6.5/10 raw)
+    "minimum_adjustment_pct":          0.25,    # min add qty as fraction of current position (0.25 = 25%)
 }
 
 
@@ -940,31 +941,6 @@ def _execute_live_add(
     if account is None:
         return f"account not provided for live ADD of {symbol}"
 
-    # Watchlist guard — only ADD symbols that appear on a known watchlist tier.
-    # First checks the module-level cached map; falls back to a fresh disk read
-    # to handle new additions without requiring a service restart.
-    _sym_upper = (symbol or "").upper()
-    if _sym_upper and _sym_upper not in _SYMBOL_TIER_MAP:
-        # Fresh read fallback (handles recently-added symbols)
-        _fresh_map = _build_watchlist_tier_map()
-        if _sym_upper not in _fresh_map:
-            _warn_msg = (
-                f"[ALLOC] {symbol}: not in any watchlist — ADD suppressed. "
-                f"Add to watchlist_core.json or watchlist_dynamic.json to allow entry."
-            )
-            log.warning(_warn_msg)
-            try:
-                from notifications import send_whatsapp_direct  # noqa: PLC0415
-                send_whatsapp_direct(
-                    f"[ALLOC] Unknown symbol blocked: {symbol}. "
-                    f"Add to watchlist to allow ADD."
-                )
-            except Exception:
-                pass
-            return f"suppressed: {symbol} not in any watchlist"
-        # Symbol found on fresh read — update cache and continue
-        _SYMBOL_TIER_MAP[_sym_upper] = _fresh_map[_sym_upper]
-
     price: Optional[float] = None
     for pos in positions:
         try:
@@ -1007,6 +983,28 @@ def _execute_live_add(
 
     if isinstance(result, str):
         return result
+
+    # Minimum adjustment threshold — skip adds smaller than min_adj_pct of current holding.
+    _min_adj_pct = float(_get_pa_config(cfg).get("minimum_adjustment_pct", 0.25))
+    if _min_adj_pct > 0:
+        _cur_qty: float = 0.0
+        for _p in positions:
+            try:
+                if _p.symbol == symbol and float(_p.qty) > 0:
+                    _cur_qty = float(_p.qty)
+                    break
+            except Exception:
+                pass
+        if _cur_qty > 0 and result.qty / _cur_qty < _min_adj_pct:
+            log.info(
+                "[ALLOC] ADD %s skipped — qty %d is %.0f%% of current %.0f (min %.0f%%)",
+                symbol, result.qty, result.qty / _cur_qty * 100,
+                _cur_qty, _min_adj_pct * 100,
+            )
+            return (
+                f"skipped: add too small ({result.qty}/{int(_cur_qty)} = "
+                f"{result.qty / _cur_qty:.0%} < {_min_adj_pct:.0%} min)"
+            )
 
     exec_positions = snapshot.positions if snapshot is not None else positions
     try:

@@ -43,7 +43,7 @@ from bot_stage3_decision import (
     build_user_prompt,
     is_claude_trading_window,
 )
-from bot_stage4_execution import debate_trade, fundamental_check, universe_guard
+from bot_stage4_execution import debate_trade, fundamental_check
 from log_setup import get_logger, log_trade
 from portfolio_allocator import format_allocator_section as _format_allocator_section
 from schemas import (
@@ -797,19 +797,6 @@ def run_cycle(
                        or a.get("action") != "buy"]
             log.info("[DEBATE] %d action(s) vetoed, %d remaining",
                      len(vetoed_syms), len(actions))
-
-    # Universe guard — suppress Stage 3 buys for symbols outside any watchlist tier.
-    # Runs after debate so we only check candidates that survived veto.
-    # New entries only — held positions are exempt (validated when first added).
-    if actions and regime != "halt":
-        _remaining_buys = [a for a in actions if a.get("action") == "buy"]
-        _universe_blocked = universe_guard(_remaining_buys, state.positions)
-        if _universe_blocked:
-            actions = [a for a in actions if not (
-                a.get("action") == "buy" and a.get("symbol") in _universe_blocked
-            )]
-            log.info("[UNIVERSE_GUARD] %d buy(s) suppressed (out-of-universe): %s",
-                     len(_universe_blocked), sorted(_universe_blocked))
 
     # Stage 4 — execute
     if actions and regime != "halt" and state.allow_live_orders:

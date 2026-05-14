@@ -406,6 +406,65 @@ _CREDIT_STRATEGIES: frozenset[OptionStrategy] = frozenset({
 _CREDIT_FILL_FACTOR = 0.90
 
 
+def _compute_adaptive_debit_limit(
+    structure: "OptionsStructure",
+    a2_cfg:    dict,
+) -> "tuple[Optional[float], str]":
+    """
+    Adaptive limit price for debit spreads based on actual bid-ask spread width.
+
+    Aggression scales with combined bid-ask friction across all legs:
+      < $0.30 combined → 0.5× (tight market, mid is sufficient to fill)
+      $0.30–$0.60      → 0.7× (medium)
+      > $0.60          → 0.8× (wide spread, must cross more to get filled)
+
+    Enforces max_debit_cost_ratio cap (config key, default 0.50):
+      limit / strike_width must stay ≤ cap.
+      Vetoes if net_mid itself exceeds cap — structure overpriced at any limit.
+
+    Returns (limit, log_msg). Returns (None, log_msg) to signal REJECTED.
+    """
+    net_mid = _compute_net_mid(structure)
+    if net_mid is None:
+        return None, "no mid price available"
+
+    net_ask = _compute_net_ask(structure)
+    if net_ask is None or net_ask <= net_mid:
+        return net_mid, f"no ask data — using mid ${net_mid:.2f}"
+
+    combined_spread = net_ask - net_mid
+
+    if combined_spread < 0.30:
+        aggression = 0.5
+    elif combined_spread < 0.60:
+        aggression = 0.7
+    else:
+        aggression = 0.8
+
+    proposed = net_mid + aggression * combined_spread
+
+    long_k  = structure.long_strike
+    short_k = structure.short_strike
+    if isinstance(long_k, (int, float)) and isinstance(short_k, (int, float)) and long_k != short_k:
+        width     = abs(short_k - long_k)
+        max_ratio = float(a2_cfg.get("max_debit_cost_ratio", 0.50))
+        cap       = max_ratio * width
+        mid_ratio = net_mid / width
+
+        if mid_ratio > max_ratio:
+            return None, (
+                f"cost_ratio veto: mid=${net_mid:.2f}/{width:.0f} = {mid_ratio:.0%} "
+                f"> {max_ratio:.0%} cap"
+            )
+        if proposed > cap:
+            proposed = cap
+
+    return proposed, (
+        f"mid=${net_mid:.2f} combined_spread=${combined_spread:.2f} "
+        f"agg={aggression:.1f}x limit=${proposed:.2f}"
+    )
+
+
 def _submit_spread_mleg(
     structure:      OptionsStructure,
     trading_client,
@@ -462,18 +521,13 @@ def _submit_spread_mleg(
         # the absolute credit we demand, making our limit more competitive.
         adjusted = net_mid * _CREDIT_FILL_FACTOR
     else:
-        # For debit structures: move limit toward ask to improve fill probability.
-        # debit_fill_aggression=0.0 → mid (unchanged); 1.0 → net_ask (pay ask/receive bid).
+        # For debit structures: adaptive pricing based on actual bid-ask spread width.
+        # Replaces fixed debit_fill_aggression with spread-aware aggression + 50% cost cap.
         a2_cfg = (config or {}).get("account2", config or {})
-        aggression = float(a2_cfg.get("debit_fill_aggression", 0.0))
-        if aggression > 0:
-            net_ask = _compute_net_ask(structure)
-            if net_ask is not None and net_ask > net_mid:
-                adjusted = net_mid + aggression * (net_ask - net_mid)
-            else:
-                adjusted = net_mid
-        else:
-            adjusted = net_mid
+        adjusted, _price_log = _compute_adaptive_debit_limit(structure, a2_cfg)
+        log.info("[EXECUTOR] %s debit pricing: %s", structure.underlying, _price_log)
+        if adjusted is None:
+            return _set_lifecycle(structure, StructureLifecycle.REJECTED, _price_log)
 
     # Round to $0.05 tick, then enforce 2dp. Preserve debit/credit sign.
     abs_rounded = round(round(abs(adjusted) / 0.05) * 0.05, 2)

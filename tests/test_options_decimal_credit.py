@@ -406,13 +406,14 @@ class TestCreditSpreadBehaviour(unittest.TestCase):
             f"limit_price={limit_price!r} is larger than mid credit {abs_mid}"
         )
 
-    def test_cs02_debit_spread_limit_moves_to_ask_with_aggression(self):
-        """CS-02 complement: Debit spread limit moves toward net_ask when debit_fill_aggression=1.0."""
+    def test_cs02_debit_spread_limit_adaptive_tight_spread(self):
+        """CS-02: Adaptive pricing uses 0.5x aggression for tight spreads (combined < $0.30)."""
         # long buy: mid=5.20 (bid=5.10, ask=5.30)
         # short sell: mid=2.50 (bid=2.40, ask=2.60)
         # net_mid = 5.20 - 2.50 = 2.70
         # net_ask = long_ask - short_bid = 5.30 - 2.40 = 2.90
-        # aggression=1.0: adjusted = 2.70 + 1.0*(2.90-2.70) = 2.90 → rounds to 2.90
+        # combined_spread = 0.20 (< 0.30 tight bucket) → aggression=0.5
+        # limit = 2.70 + 0.5 * 0.20 = 2.80
         struct = _make_structure(
             legs=[
                 _make_leg("buy",  5.10, 5.30, "NVDA260522P00205000"),
@@ -420,15 +421,15 @@ class TestCreditSpreadBehaviour(unittest.TestCase):
             ],
             strategy_value="put_debit_spread",
         )
-        config = {"account2": {"debit_fill_aggression": 1.0}}
-        limit_price, _ = _captured_limit_price(struct, config)
+        limit_price, _ = _captured_limit_price(struct, {})
         self.assertIsNotNone(limit_price)
         self.assertGreater(limit_price, 0, "Debit spread limit_price must be positive")
-        self.assertAlmostEqual(limit_price, 2.90, delta=0.05)
+        self.assertAlmostEqual(limit_price, 2.80, delta=0.05)
 
-    def test_cs02_debit_spread_limit_stays_at_mid_with_zero_aggression(self):
-        """CS-02 backward compat: Debit spread limit is at mid when debit_fill_aggression=0."""
-        # Same legs as above — with aggression=0, limit stays at net_mid=2.70
+    def test_cs02_debit_spread_adaptive_ignores_legacy_config(self):
+        """CS-02: Adaptive pricing ignores debit_fill_aggression config — result is spread-driven."""
+        # Verify that passing debit_fill_aggression=0.0 or 1.0 produces the same adaptive result.
+        # combined_spread=0.20 → tight bucket → limit=2.80 regardless of legacy key.
         struct = _make_structure(
             legs=[
                 _make_leg("buy",  5.10, 5.30, "NVDA260522P00205000"),
@@ -436,11 +437,11 @@ class TestCreditSpreadBehaviour(unittest.TestCase):
             ],
             strategy_value="put_debit_spread",
         )
-        config = {"account2": {"debit_fill_aggression": 0.0}}
-        limit_price, _ = _captured_limit_price(struct, config)
-        self.assertIsNotNone(limit_price)
-        self.assertGreater(limit_price, 0, "Debit spread limit_price must be positive")
-        self.assertAlmostEqual(limit_price, 2.70, delta=0.05)
+        lp_zero, _ = _captured_limit_price(struct, {"account2": {"debit_fill_aggression": 0.0}})
+        lp_one,  _ = _captured_limit_price(struct, {"account2": {"debit_fill_aggression": 1.0}})
+        self.assertIsNotNone(lp_zero)
+        self.assertIsNotNone(lp_one)
+        self.assertAlmostEqual(lp_zero, lp_one, delta=0.01, msg="Legacy config should not affect adaptive result")
 
     def test_cs03_credit_below_min_is_rejected(self):
         """CS-03: Credit spread with net credit < min_credit_usd is not submitted."""

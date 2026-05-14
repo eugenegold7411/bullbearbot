@@ -231,6 +231,7 @@ def _enrich_incumbents_with_signal_data(incumbents: list[dict]) -> None:
                 info.get("primary_catalyst") or info.get("catalyst") or ""
             )[:120]
             inc["signal_signals"] = [str(s) for s in (info.get("signals") or [])[:3]]
+            inc["signal_score_live"] = float(info.get("score", 0) or 0)
     except Exception as exc:
         log.debug("[ALLOC] incumbent signal enrich failed (non-fatal): %s", exc)
 
@@ -656,12 +657,16 @@ def _decide_actions(
 
     # ── REPLACE: weakest incumbent ↔ strongest candidate ─────────────────────
     if incumbents and candidates:
-        weakest   = incumbents[0]   # sorted ascending by thesis_score
         strongest = candidates[0]   # sorted descending by signal_score
+        # Pick incumbent with lowest signal_score_live so both sides use the same metric
+        weakest = min(
+            incumbents,
+            key=lambda x: x.get("signal_score_live") or x["thesis_score_normalized"],
+        )
 
         weak_sym  = weakest["symbol"]
         cand_sym  = strongest["symbol"]
-        weak_norm = weakest["thesis_score_normalized"]
+        weak_norm = weakest.get("signal_score_live") or weakest["thesis_score_normalized"]
         cand_scr  = float(strongest["signal_score"])
         gap       = cand_scr - weak_norm
 

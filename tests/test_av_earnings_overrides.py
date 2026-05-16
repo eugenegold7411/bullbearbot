@@ -189,7 +189,7 @@ class TestAV03PltrEda(unittest.TestCase):
     """_load_earnings_days_away returns correct positive int for PLTR."""
 
     def test_pltr_eda_positive(self):
-        """PLTR 2026-05-04, today 2026-04-30 → eda = 4."""
+        """PLTR 2026-05-04, today 2026-04-30, timing=post-market → eda = 3 (AMC -1 adj)."""
         tmpdir, _, _ = _make_tmp_tree(
             cal_entries=[
                 {"symbol": "PLTR", "earnings_date": "2026-05-04", "timing": "post-market"},
@@ -201,7 +201,7 @@ class TestAV03PltrEda(unittest.TestCase):
             mock_date.today.return_value = date(2026, 4, 30)
             mock_date.fromisoformat.side_effect = date.fromisoformat
             result = _call_load_eda(m, "PLTR", tmpdir)
-        self.assertEqual(result, 4)
+        self.assertEqual(result, 3)
 
     def test_pltr_eda_not_affected_by_unrelated_overrides(self):
         """Override for TSM must not disturb PLTR eda."""
@@ -216,7 +216,7 @@ class TestAV03PltrEda(unittest.TestCase):
             mock_date.today.return_value = date(2026, 4, 30)
             mock_date.fromisoformat.side_effect = date.fromisoformat
             result = _call_load_eda(m, "PLTR", tmpdir)
-        self.assertEqual(result, 4)
+        self.assertEqual(result, 3)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -279,7 +279,7 @@ class TestAV05OverrideWins(unittest.TestCase):
             mock_date.today.return_value = date(2026, 4, 30)
             mock_date.fromisoformat.side_effect = date.fromisoformat
             result = _call_load_eda(m, "PLTR", tmpdir)
-        self.assertEqual(result, 4, "Override date 2026-05-04 → eda=4 wins over stale 2026-05-01")
+        self.assertEqual(result, 3, "Override date 2026-05-04 → eda=3 wins over stale 2026-05-01 (post-market -1 adj)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -303,7 +303,7 @@ class TestAV06MissingOverridesNonFatal(unittest.TestCase):
             mock_date.fromisoformat.side_effect = date.fromisoformat
             pltr_result = _call_load_eda(m, "PLTR", tmpdir)
             tsm_result  = _call_load_eda(m, "TSM",  tmpdir)
-        self.assertEqual(pltr_result, 4)
+        self.assertEqual(pltr_result, 3)
         self.assertIsNone(tsm_result)
 
     def test_corrupt_overrides_file_degrades_gracefully(self):
@@ -322,7 +322,7 @@ class TestAV06MissingOverridesNonFatal(unittest.TestCase):
             mock_date.today.return_value = date(2026, 4, 30)
             mock_date.fromisoformat.side_effect = date.fromisoformat
             result = _call_load_eda(m, "PLTR", tmpdir)
-        self.assertEqual(result, 4)
+        self.assertEqual(result, 3)
 
 
 

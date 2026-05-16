@@ -2108,7 +2108,8 @@ class TestReconciliationOptionsStructures(unittest.TestCase):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _make_structure(self, sid="s001", lifecycle=None, legs=None, expiration="2027-12-19"):
+    def _make_structure(self, sid="s001", lifecycle=None, legs=None, expiration="2027-12-19",
+                        opened_at="2026-04-14T00:00:00+00:00"):
         if lifecycle is None:
             lifecycle = self.StructureLifecycle.FULLY_FILLED
         return self.OptionsStructure(
@@ -2122,7 +2123,7 @@ class TestReconciliationOptionsStructures(unittest.TestCase):
             iv_rank=30.0,
             catalyst="test",
             lifecycle=lifecycle,
-            opened_at="2026-04-14T00:00:00+00:00",
+            opened_at=opened_at,
             expiration=expiration,
         )
 
@@ -2920,6 +2921,7 @@ class TestSuite15OptionsExecutorAndIntelligence(unittest.TestCase):
         strategy=None,
         lifecycle=None,
         expiration=None,
+        opened_at=None,
     ):
         """Minimal OptionsStructure for executor tests."""
         from datetime import date, timedelta
@@ -2936,6 +2938,8 @@ class TestSuite15OptionsExecutorAndIntelligence(unittest.TestCase):
             lifecycle = StructureLifecycle.FULLY_FILLED
         if expiration is None:
             expiration = (date.today() + timedelta(days=30)).isoformat()
+        if opened_at is None:
+            opened_at = "2026-04-15T10:00:00+00:00"
         return OptionsStructure(
             structure_id  = "test-struct-001",
             underlying    = "GLD",
@@ -2944,7 +2948,7 @@ class TestSuite15OptionsExecutorAndIntelligence(unittest.TestCase):
             legs          = [],
             contracts     = 1,
             max_cost_usd  = 500.0,
-            opened_at     = "2026-04-15T10:00:00+00:00",
+            opened_at     = opened_at,
             catalyst      = "test catalyst",
             tier          = Tier.CORE,
             expiration    = expiration,
@@ -3016,7 +3020,11 @@ class TestSuite15OptionsExecutorAndIntelligence(unittest.TestCase):
         from options_executor import should_close_structure
 
         far_expiry = (date.today() + timedelta(days=30)).isoformat()
-        struct = self._make_structure(expiration=far_expiry)
+        # Use today as opened_at so elapsed_pct = 0 — prevents time_stop from firing.
+        struct = self._make_structure(
+            expiration=far_expiry,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+        )
 
         should_close, reason = should_close_structure(
             struct, current_prices={}, config={},

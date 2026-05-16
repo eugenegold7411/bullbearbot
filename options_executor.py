@@ -1097,6 +1097,19 @@ def should_close_structure(
     pnl         = structure.pnl_unrealized
     targets     = _resolve_close_targets(structure, config)
 
+    # ── Min-hold guard: suppress volatility-driven exits on brand-new structures ──
+    _min_hold_min = float(config.get("account2", {}).get("tiered_exit_min_hold_minutes", 0))
+    _in_hold_period = False
+    if _min_hold_min > 0 and structure.opened_at:
+        try:
+            _opened_dt = datetime.fromisoformat(structure.opened_at)
+            if _opened_dt.tzinfo is None:
+                _opened_dt = _opened_dt.replace(tzinfo=timezone.utc)
+            _held_min = (datetime.now(timezone.utc) - _opened_dt).total_seconds() / 60.0
+            _in_hold_period = _held_min < _min_hold_min
+        except (ValueError, TypeError):
+            pass
+
     # ── LAYER 3: TIME EXITS (highest priority) ──
     # L3a: DTE ≤ 2 (existing rule, preserved as expiry_approaching)
     if dte is not None and dte <= 2:
@@ -1199,7 +1212,8 @@ def should_close_structure(
     # ── LAYER 2c: THETA-BURN UNDERWATER ──
     # If theta is consuming more than $50/day AND position is ≥ 20% underwater
     # of max_loss, the daily decay alone outweighs reasonable recovery odds.
-    if (structure.theta is not None and pnl is not None and max_loss):
+    # Suppressed within tiered_exit_min_hold_minutes to prevent churn on new structures.
+    if (not _in_hold_period and structure.theta is not None and pnl is not None and max_loss):
         _daily_theta_cost = abs(float(structure.theta)) * 100 * structure.contracts
         if _daily_theta_cost > 50.0 and pnl <= -(max_loss * 0.20):
             return True, "theta_burn_underwater"

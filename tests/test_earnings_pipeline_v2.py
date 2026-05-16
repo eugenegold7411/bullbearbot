@@ -360,10 +360,13 @@ def test_scan_sorted_by_conviction(tmp_path):
 
     output_path = tmp_path / "data" / "market" / "earnings_convictions.json"
 
+    _universe = {"all_symbols": ["LOW_CONV", "HIGH_CONV"], "core_symbols": [],
+                 "dynamic_earnings": [], "dynamic_manual": [], "date": ""}
     with patch("earnings_rotation._CAL_PATH", cal_path), \
          patch("earnings_rotation._INTEL_DIR", intel_dir), \
          patch("earnings_rotation._IV_HIST_DIR", iv_dir), \
-         patch("earnings_rotation._CONVICTIONS_PATH", output_path):
+         patch("earnings_rotation._CONVICTIONS_PATH", output_path), \
+         patch("universe_manager.get_universe_snapshot", return_value=_universe):
         results = scan_earnings_candidates(lookforward=14)
 
     assert results[0]["conviction_score"] >= results[-1]["conviction_score"]

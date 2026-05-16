@@ -13,6 +13,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import bot_options_stage4_execution as _exe
+from schemas import OptionStrategy as _OptionStrategy
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -56,10 +57,9 @@ def _build_mock_structure(symbol: str):
     s.underlying = symbol
     s.debate     = None
     s.delta = s.theta = s.vega = None
-    s.strategy       = MagicMock()
-    s.strategy.value = "call_debit_spread"
-    s.legs           = []
-    s.order_ids      = []
+    s.strategy   = _OptionStrategy.CALL_DEBIT_SPREAD
+    s.legs       = []
+    s.order_ids  = []
     return s
 
 

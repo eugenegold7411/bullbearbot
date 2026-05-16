@@ -44,7 +44,9 @@ class TestExtraTrackedUniverseA1(unittest.TestCase):
         import universe_manager as um
         with patch.object(um, "get_universe_snapshot", side_effect=RuntimeError("boom")):
             result = dw._get_tracked_universe()
-        self.assertIsInstance(result, set)
+        # _get_tracked_universe returns None on failure so callers can abort
+        # and preserve the existing calendar rather than overwriting with empty.
+        self.assertIsNone(result)
 
     # Retain these as placeholder names so the test count doesn't drop unexpectedly
     def test_sbux_present(self):

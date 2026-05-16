@@ -524,8 +524,8 @@ def _get_tracked_universe() -> set[str]:
         from universe_manager import get_universe_snapshot  # noqa: PLC0415
         return set(get_universe_snapshot()["all_symbols"])
     except Exception as exc:
-        log.debug("[EARNINGS_AV] universe_manager load failed (non-fatal): %s", exc)
-    return set()
+        log.warning("[EARNINGS_AV] universe_manager load failed — calendar refresh will abort: %s", exc)
+    return None  # signals failure; caller will abort to preserve existing calendar
 
 
 def refresh_earnings_calendar_av() -> dict:
@@ -567,13 +567,20 @@ def refresh_earnings_calendar_av() -> dict:
             sym = (row.get("symbol") or "").strip().upper()
             if not sym:
                 continue
+            # Require a parseable reportDate — rejects AV's error-CSV rows
+            # (e.g. "E,r,r,o,r, ,M" which AV returns for invalid/rate-limited keys)
+            raw_date = (row.get("reportDate") or "").strip()
+            try:
+                datetime.fromisoformat(raw_date[:10])
+            except Exception:
+                continue
             rows.append(row)
     except Exception as exc:
         log.error("[EARNINGS_AV] CSV parse failed: %s", exc)
         return {}
 
     if not rows:
-        log.warning("[EARNINGS_AV] CSV had 0 rows — leaving existing file in place")
+        log.warning("[EARNINGS_AV] CSV had 0 valid rows — leaving existing file in place")
         return {}
 
     # ── Filter to tracked universe + force-add core invariants ────────────────
@@ -587,6 +594,20 @@ def refresh_earnings_calendar_av() -> dict:
                     core_stocks.add(sym)
     except Exception:
         pass
+
+    # Fix 2A: abort if universe is unavailable — preserve the existing calendar
+    if tracked is None:
+        log.warning(
+            "[EARNINGS_AV] Aborting calendar refresh — universe load failed. "
+            "Existing calendar preserved."
+        )
+        return {}
+    if not tracked and not core_stocks:
+        log.warning(
+            "[EARNINGS_AV] Aborting calendar refresh — both tracked universe and "
+            "core_stocks are empty. Existing calendar preserved."
+        )
+        return {}
 
     today = datetime.now().date()
 

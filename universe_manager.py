@@ -74,8 +74,13 @@ def _get_market_cap(symbol: str) -> float | None:
         return None
 
 
-def _fetch_av_raw(api_key: str) -> list[dict]:
-    """Fetch fresh AV earnings calendar. Returns raw list of future entries."""
+def _fetch_av_raw(api_key: str) -> list[dict] | None:
+    """Fetch fresh AV earnings calendar.
+
+    Returns:
+      list[dict]  — success (may be empty if no future entries)
+      None        — AV error: HTTP failure, rate-limit JSON, or error-CSV response
+    """
     url = _AV_URL.format(api_key=api_key)
     try:
         resp = requests.get(url, timeout=30)
@@ -83,7 +88,7 @@ def _fetch_av_raw(api_key: str) -> list[dict]:
         body = resp.text or ""
     except Exception as exc:
         log.error("[UNIVERSE] AV fetch failed: %s", exc)
-        return []
+        return None
 
     if body.lstrip().startswith("{"):
         try:
@@ -92,18 +97,22 @@ def _fetch_av_raw(api_key: str) -> list[dict]:
         except Exception:
             note = body[:200]
         log.error("[UNIVERSE] AV returned JSON (rate limit / bad key?): %s", note)
-        return []
+        return None
 
     today   = date.today()
     results: list[dict] = []
+    rows_seen     = 0
+    date_parse_ok = 0
     try:
         for row in csv.DictReader(io.StringIO(body)):
+            rows_seen += 1
             sym      = (row.get("symbol") or "").strip().upper()
             raw_date = (row.get("reportDate") or "").strip()
             if not sym or not raw_date:
                 continue
             try:
                 ed = date.fromisoformat(raw_date[:10])
+                date_parse_ok += 1
             except ValueError:
                 continue
             if ed < today:
@@ -118,7 +127,17 @@ def _fetch_av_raw(api_key: str) -> list[dict]:
             results.append({"symbol": sym, "earnings_date": ed, "timing": timing})
     except Exception as exc:
         log.error("[UNIVERSE] AV CSV parse failed: %s", exc)
-        return []
+        return None
+
+    # AV encodes errors as a CSV row (e.g. "E,r,r,o,r, ,M") — detect by
+    # checking whether the body had rows but none had a parseable reportDate.
+    if rows_seen > 0 and date_parse_ok == 0:
+        log.error(
+            "[UNIVERSE] AV CSV had %d rows with no parseable dates — "
+            "treating as error response (key invalid or rate-limited)",
+            rows_seen,
+        )
+        return None
 
     return results
 
@@ -128,19 +147,20 @@ def _fetch_av_raw(api_key: str) -> list[dict]:
 def fetch_earnings_rotation_candidates(
     api_key: str,
     sim_date: date | None = None,
-) -> list[dict]:
+) -> list[dict] | None:
     """
     Pulls fresh AV earnings calendar, filters to US-listed $100B+ symbols
     with earnings within the next ROTATION_ENTRY_DTE days.
 
-    Returns list of dicts (sorted by dte ascending):
-    {symbol, earnings_date, dte, timing, market_cap_b}
-
-    sim_date defaults to today. Used for backtesting.
+    Returns:
+      list[dict]  — success, sorted by dte ascending (may be empty)
+      None        — AV fetch failed (propagated from _fetch_av_raw)
     """
     today = sim_date or date.today()
 
     raw = _fetch_av_raw(api_key)
+    if raw is None:
+        return None
     if not raw:
         return []
 
@@ -234,6 +254,18 @@ def sync_dynamic_watchlist(
 
     # Fetch rotation candidates
     candidates = fetch_earnings_rotation_candidates(api_key, sim_date=today)
+
+    # AV fetch failed — leave existing watchlist completely intact
+    if candidates is None:
+        log.warning("[UNIVERSE] AV fetch failed — preserving existing watchlist unchanged")
+        return {
+            "date":             today.isoformat(),
+            "added":            [],
+            "removed":          [],
+            "active_earnings":  [],
+            "manually_managed": [],
+            "total_dynamic":    len(symbols_list),
+        }
 
     # Add new candidates
     added: list[dict] = []

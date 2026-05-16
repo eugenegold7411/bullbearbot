@@ -536,7 +536,9 @@ def _refresh_exits_locked(
     is_tp_only     = ei_status == "tp_only"
     # "partial" with a real stop_price → stop healthy, TP voided (BUG-009b repair path)
     # "partial" with stop_price=None  → unclassified sell only; no real stop exists (BUG-016)
-    is_tp_missing    = ei_status == "partial" and stop_price is not None
+    # Shorts are always "partial" (get_active_exits does not track TP for shorts) — exclude them
+    # so a healthy short-with-stop does not falsely trigger the TP-missing repair loop.
+    is_tp_missing    = ei_status == "partial" and stop_price is not None and not is_short
     _partial_no_stop = ei_status == "partial" and stop_price is None
     is_unprotected   = ei_status in ("unprotected", "unknown") or is_tp_only or _partial_no_stop
     stale_threshold = em_cfg["refresh_if_stop_stale_pct"]
@@ -700,6 +702,7 @@ def _refresh_exits_locked(
             alpaca_client.cancel_order_by_id(ei["stop_order_id"])
             log.info("[EXIT_MGR] %s: cancelled stale stop order %s",
                      sym, ei["stop_order_id"])
+            time.sleep(2)  # OCA share-lock release — Alpaca needs ~2s after cancel
         except Exception as exc:
             log.debug("[EXIT_MGR] %s: cancel stale stop failed: %s", sym, exc)
 

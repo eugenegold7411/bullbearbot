@@ -408,6 +408,7 @@ def _call_l3_batch(user_content: str) -> dict:
     resp = _get_claude().messages.create(
         model=MODEL_FAST,
         max_tokens=8192,
+        temperature=0,
         system=[{
             "type": "text",
             "text": _L3_SYSTEM,
@@ -448,7 +449,7 @@ def _call_l3_batch(user_content: str) -> dict:
             "all symbols, return fewer rather than truncating."
         )
         retry = _get_claude().messages.create(
-            model=MODEL_FAST, max_tokens=8192,
+            model=MODEL_FAST, max_tokens=8192, temperature=0,
             system=[{"type": "text", "text": _retry_sys,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}],
@@ -628,6 +629,7 @@ def _call_merged_l3_scratchpad(user_content: str) -> dict:
     resp = _get_claude().messages.create(
         model=MODEL_FAST,
         max_tokens=8192,
+        temperature=0,
         system=[{
             "type": "text",
             "text": _MERGED_SYSTEM,
@@ -669,7 +671,7 @@ def _call_merged_l3_scratchpad(user_content: str) -> dict:
             "and scratchpad sections. Never truncate mid-object."
         )
         retry = _get_claude().messages.create(
-            model=MODEL_FAST, max_tokens=8192,
+            model=MODEL_FAST, max_tokens=8192, temperature=0,
             system=[{"type": "text", "text": _retry_sys,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}],
@@ -1214,7 +1216,7 @@ _SIGNAL_SYS = (
 def _call_single_batch(user_content: str) -> dict:
     """Legacy single-Haiku-call batch scorer. Preserved for fallback."""
     resp = _get_claude().messages.create(
-        model=MODEL_FAST, max_tokens=8192,
+        model=MODEL_FAST, max_tokens=8192, temperature=0,
         system=[{
             "type": "text",
             "text": _SIGNAL_SYS,
@@ -1250,7 +1252,7 @@ def _call_single_batch(user_content: str) -> dict:
         log.debug("[SIGNALS] JSON truncated, retrying API call with completeness hint")
         _retry_sys = _SIGNAL_SYS + "\nReturn ONLY valid complete JSON. If you cannot fit all symbols, return fewer rather than truncating."
         _retry_resp = _get_claude().messages.create(
-            model=MODEL_FAST, max_tokens=8192,
+            model=MODEL_FAST, max_tokens=8192, temperature=0,
             system=[{"type": "text", "text": _retry_sys,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}],

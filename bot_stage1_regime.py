@@ -186,7 +186,7 @@ def classify_regime(md: dict, calendar: dict) -> dict:
             f"SECTOR ROTATION (top+bottom 3):\n{sec_str}"
         )
         resp = _get_claude().messages.create(
-            model=MODEL_FAST, max_tokens=600,
+            model=MODEL_FAST, max_tokens=600, temperature=0,
             system=[{"type": "text", "text": _REGIME_SYS,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}],

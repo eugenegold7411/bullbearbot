@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
+from requests.adapters import HTTPAdapter
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -351,6 +352,16 @@ document.addEventListener('visibilitychange',function(){
 _cache: dict = {}
 
 
+class _AlpacaTimeoutAdapter(HTTPAdapter):
+    """Force a 15-second hard timeout on every Alpaca SDK request.
+    The SDK uses a bare requests.Session with no timeout, which hangs indefinitely
+    when Alpaca is slow (e.g. high-volume market close period)."""
+
+    def send(self, *args, **kwargs):
+        kwargs.setdefault("timeout", 15)
+        return super().send(*args, **kwargs)
+
+
 def _cached(key: str, ttl: int = 60, cache_on=bool):
     """Cache decorator. Skips storing when cache_on(result) is falsy (prevents caching error
     sentinels like empty dicts from blanking the UI for the full TTL period)."""
@@ -405,6 +416,7 @@ def _alpaca_a1():
         from alpaca.trading.enums import OrderSide, OrderStatus, QueryOrderStatus
         from alpaca.trading.requests import GetOrdersRequest
         c = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
+        c._session.mount('https://', _AlpacaTimeoutAdapter())
         acc = c.get_account()
         pos = c.get_all_positions()
         orders = []
@@ -441,6 +453,7 @@ def _alpaca_a2():
         from alpaca.trading.enums import QueryOrderStatus
         from alpaca.trading.requests import GetOrdersRequest
         c = TradingClient(ALPACA_KEY_OPT, ALPACA_SECRET_OPT, paper=True)
+        c._session.mount('https://', _AlpacaTimeoutAdapter())
         acc = c.get_account()
         pos = c.get_all_positions()
         recent_orders = []

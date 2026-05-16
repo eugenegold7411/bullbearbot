@@ -879,6 +879,15 @@ def _update_fill_prices(structures: list, trading_client) -> bool:
                 except Exception as _exc:
                     log.debug("[FILL] fetch failed for order_id=%s: %s", leg.order_id, _exc)
         if structure_updated:
+            # Backfill debit_paid once all leg fills are available.
+            if s.debit_paid is None:
+                _dp = s.net_debit_per_contract()
+                if _dp is not None:
+                    s.debit_paid = _dp
+                    log.info(
+                        "[FILL] %s: debit_paid backfilled=%.4f from leg fills",
+                        s.underlying, _dp,
+                    )
             try:
                 options_state.save_structure(s)
                 updated_any = True

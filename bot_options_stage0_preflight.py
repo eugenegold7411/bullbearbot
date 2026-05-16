@@ -312,7 +312,15 @@ def _cancel_and_clear_unfilled_orders(
                 continue
             if s.structure_id in _first_pass_ids:
                 continue  # just cancelled by first pass — order already handled
+            _close_ids = frozenset(getattr(s, "close_order_ids", []) or [])
             for order_id in s.order_ids:
+                if order_id in _close_ids:
+                    log.debug(
+                        "[PREFLIGHT] Skipping close order %s on terminal %s — "
+                        "pending close, do not cancel",
+                        order_id[:8], s.underlying,
+                    )
+                    continue
                 try:
                     alpaca_client.cancel_order_by_id(order_id)
                     log.debug(

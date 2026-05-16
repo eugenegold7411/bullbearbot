@@ -319,9 +319,7 @@ def log_a2_structure_outcome(structure) -> None:
             except Exception:
                 pass
 
-        entry_price = structure.debit_paid
-        if entry_price is None:
-            entry_price = structure.net_debit_per_contract()
+        entry_price = structure.net_debit_per_contract()
 
         realized = structure.realized_pnl
         exit_price = None

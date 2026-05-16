@@ -783,7 +783,7 @@ def close_structure(
     if _is_spread:
         try:
             order_id = _close_spread_mleg(structure, trading_client)
-            structure.order_ids.append(order_id)
+            structure.close_order_ids.append(order_id)
             structure.add_audit(f"mleg close submitted: order_id={order_id}")
             log.info("[EXECUTOR] %s mleg close submitted: reason=%s order=%s",
                      structure.underlying, reason, order_id)
@@ -851,7 +851,7 @@ def close_structure(
 
             order = trading_client.submit_order(req)
             order_id = str(order.id)
-            structure.order_ids.append(order_id)
+            structure.close_order_ids.append(order_id)
             structure.add_audit(f"close leg {occ_sym} submitted: order_id={order_id}")
             log.info("[EXECUTOR] close leg %s %s order=%s", occ_sym, method, order_id)
 
@@ -862,7 +862,7 @@ def close_structure(
                 try:
                     order = trading_client.submit_order(req)
                     order_id = str(order.id)
-                    structure.order_ids.append(order_id)
+                    structure.close_order_ids.append(order_id)
                     structure.add_audit(
                         f"close leg {occ_sym} submitted after bracket cancel: order_id={order_id}"
                     )

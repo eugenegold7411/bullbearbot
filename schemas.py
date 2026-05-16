@@ -696,7 +696,8 @@ class OptionsStructure:
     catalyst:     str
     tier:         Tier
     iv_rank:      Optional[float]   = None
-    order_ids:    list[str]         = field(default_factory=list)
+    order_ids:       list[str]       = field(default_factory=list)
+    close_order_ids: list[str]      = field(default_factory=list)
     closed_at:    Optional[str]     = None
     realized_pnl:   Optional[float]  = None
     notes:          str              = ""
@@ -873,6 +874,7 @@ class OptionsStructure:
             tier=tier,
             iv_rank=_maybe_float(d.get("iv_rank")),
             order_ids=list(d.get("order_ids", [])),
+            close_order_ids=list(d.get("close_order_ids", [])),
             closed_at=d.get("closed_at"),
             realized_pnl=_maybe_float(d.get("realized_pnl")),
             notes=d.get("notes", ""),

@@ -392,6 +392,12 @@ def select_strikes(
     # Sort by strike ascending
     opts_sorted = sorted(opts, key=lambda o: float(o["strike"]))
 
+    # Pre-filter to quoted, liquid strikes before selection.
+    # Falls back to full chain if fewer than 3 liquid strikes survive (thin market).
+    _liq = _pre_filter_liquid(opts_sorted, config)
+    if len(_liq) >= 3:
+        opts_sorted = _liq
+
     if strategy in (OptionStrategy.SINGLE_CALL, OptionStrategy.SINGLE_PUT):
         long_leg = _pick_atm_leg(opts_sorted, spot, min_delta)
         if long_leg is None:
@@ -490,6 +496,15 @@ def _pick_otm_put_leg(
     return max(otm_opts, key=lambda o: float(o["strike"]))
 
 
+def _min_spread_width(spot: float) -> float:
+    """Price-proportional minimum spread width to keep cost_ratio under 50% cap."""
+    if spot > 800:
+        return 20.0
+    if spot > 400:
+        return 10.0
+    return 5.0
+
+
 def _select_debit_spread_strikes(
     opts: list[dict],
     spot: float,
@@ -497,7 +512,10 @@ def _select_debit_spread_strikes(
     min_delta: float,
 ) -> Optional[dict]:
     """
-    Debit spread: long = ATM, short = next OTM strike.
+    Debit spread: long = ATM, short = widest OTM strike satisfying both:
+      1. width >= min_spread_width(spot)
+      2. CR_ask = (long_ask - short_bid) / width <= 0.50  (fillable at ask)
+    Falls back to narrowest qualifying width if no CR_ask candidate found.
     For calls: long lower strike, short higher strike.
     For puts:  long higher strike, short lower strike.
     """
@@ -505,20 +523,45 @@ def _select_debit_spread_strikes(
     if atm_leg is None:
         return None
     atm_strike = float(atm_leg["strike"])
+    min_width  = _min_spread_width(spot)
+    long_ask   = float(atm_leg.get("ask") or atm_leg.get("mid") or 0)
 
     if option_type == "call":
-        # Short leg is the next strike above ATM
-        otm_candidates = [o for o in opts if float(o["strike"]) > atm_strike]
+        otm_candidates = sorted(
+            [o for o in opts if float(o["strike"]) > atm_strike],
+            key=lambda o: float(o["strike"]),
+        )
         if not otm_candidates:
             return None
-        otm_leg = min(otm_candidates, key=lambda o: float(o["strike"]))
+        wide = [o for o in otm_candidates if float(o["strike"]) - atm_strike >= min_width]
+        if wide and long_ask > 0:
+            cr_ok = [
+                o for o in wide
+                if (w := float(o["strike"]) - atm_strike) > 0
+                and (long_ask - float(o.get("bid") or 0)) / w <= 0.50
+            ]
+            otm_leg = cr_ok[-1] if cr_ok else wide[0]
+        else:
+            otm_leg = wide[0] if wide else otm_candidates[-1]
         long_leg, short_leg = atm_leg, otm_leg
     else:
-        # Put debit spread: long higher strike ATM, short lower strike OTM
-        otm_candidates = [o for o in opts if float(o["strike"]) < atm_strike]
+        otm_candidates = sorted(
+            [o for o in opts if float(o["strike"]) < atm_strike],
+            key=lambda o: float(o["strike"]),
+            reverse=True,
+        )
         if not otm_candidates:
             return None
-        otm_leg = max(otm_candidates, key=lambda o: float(o["strike"]))
+        wide = [o for o in otm_candidates if atm_strike - float(o["strike"]) >= min_width]
+        if wide and long_ask > 0:
+            cr_ok = [
+                o for o in wide
+                if (w := atm_strike - float(o["strike"])) > 0
+                and (long_ask - float(o.get("bid") or 0)) / w <= 0.50
+            ]
+            otm_leg = cr_ok[-1] if cr_ok else wide[0]
+        else:
+            otm_leg = wide[0] if wide else otm_candidates[-1]
         long_leg, short_leg = atm_leg, otm_leg
 
     return {
@@ -832,8 +875,29 @@ def _select_iron_butterfly_strikes(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# validate_liquidity
+# _pre_filter_liquid / validate_liquidity
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _pre_filter_liquid(opts: list[dict], config: dict) -> list[dict]:
+    """
+    Pre-filter chain legs to those with a live bid and minimum OI/volume.
+    Runs before strike selection so illiquid strikes are never picked in the first place.
+    Falls back to the full chain (caller's responsibility) if fewer than 3 survive.
+    """
+    liq_cfg = config.get("liquidity_gates") or config.get("liquidity") or {}
+    min_oi  = int(liq_cfg.get("min_open_interest", _DEFAULT_MIN_OPEN_INTEREST))
+    min_vol = int(liq_cfg.get("min_volume",         _DEFAULT_MIN_VOLUME))
+    out = []
+    for o in opts:
+        if float(o.get("bid") or 0) <= 0:
+            continue
+        if int(o.get("openInterest") or 0) < min_oi:
+            continue
+        if int(o.get("volume") or 0) < min_vol:
+            continue
+        out.append(o)
+    return out
+
 
 def validate_liquidity(strikes_data: dict, config: dict) -> tuple[bool, str]:
     """

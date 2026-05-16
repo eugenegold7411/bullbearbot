@@ -1569,7 +1569,10 @@ def execute_all(
                 try:
                     # Cross-cycle deduplication guard
                     try:
-                        from bot_stage4_execution import is_committed, mark_committed  # noqa: PLC0415
+                        from bot_stage4_execution import (  # noqa: PLC0415
+                            is_committed,
+                            mark_committed,
+                        )
                         _exit_s  = (action.get("exit_symbol") or action.get("symbol") or "").upper()
                         _entry_s = (action.get("entry_symbol") or action.get("symbol") or "").upper()
                         if _exit_s and is_committed(_exit_s):

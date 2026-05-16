@@ -19,7 +19,6 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _make_structure(
@@ -155,7 +154,7 @@ def test_l1f_does_not_fire_when_peak_below_minimum():
     )
 
     assert not (close and reason.startswith("peak_retrace_lock")), (
-        f"L1f must not fire when peak=$400 < 50% of buy_cost=$1000"
+        "L1f must not fire when peak=$400 < 50% of buy_cost=$1000"
     )
 
 

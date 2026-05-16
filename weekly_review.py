@@ -3583,7 +3583,7 @@ You have received reports from four specialist analysts. Synthesize their findin
 ---
 
 ### SIGNAL SOURCE CREDIBILITY & ALPHA CLASSIFICATION
-{_format_signal_credibility_section(review_context.get('quant_data'))}
+{_format_signal_credibility_section()}
 
 ---
 

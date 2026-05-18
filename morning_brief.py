@@ -62,7 +62,7 @@ high_conviction_bearish: same schema as longs, up to 8 items ordered by score de
 
 current_positions: {"a1_equity": [{"symbol": str, "shares": int, "entry": float, "current": float, "unrealized_pct": float, "unrealized_usd": float, "stop": float, "trail_tier": str, "binary_event_flag": bool, "binary_event_note": str}], "a2_options": [{"symbol": str, "strategy": str, "contracts": int, "fill_price": float, "current_value": float, "pnl_pct": float, "dte": int, "breakeven": float, "target": float, "stop": float, "pct_of_max_gain": float}]}
 
-watch_list: [{"symbol": str, "score": int, "direction": str, "entry_trigger": "max 50 chars"}] — up to 8 items
+watch_list: [{"symbol": str, "score": int, "direction": str, "thesis_type": "catalyst|momentum|mean_reversion", "entry_trigger": "max 80 chars — see HARD RULE 5"}] — up to 8 items
 
 earnings_pipeline: [{"symbol": str, "timing": "today_premarket|today_postmarket|tomorrow_premarket|tomorrow_postmarket|this_week", "iv_rank": float or null, "beat_history": "max 30 chars", "held_by_a1": bool, "a1_notes": "max 40 chars", "a2_rule": "max 20 chars", "a2_notes": "max 40 chars"}] — up to 6 items
 
@@ -79,6 +79,14 @@ HARD RULES:
 2. a2_strategy_note: iv_rank<15 RULE1_BUY single_leg; 15-35 RULE2_DEBIT debit_spread; 35-65 RULE3_NEUTRAL mixed; 65-80 RULE4_CREDIT credit_spread; >80 RULE5_AVOID; NA if no iv data
 3. risk_reward must be calculated
 4. latest_updates is always empty [] unless brief_type is intraday_update
+5. entry_trigger MUST match thesis_type:
+   catalyst (stock NOT yet moved): write "Enter at $X --- [catalyst] not yet priced, target $Y"
+   catalyst (post-gap already occurred): write "Post-gap hold above $X --- catalyst priced, watching for continuation"
+   momentum (no fresh catalyst, pure chart): write "Break above $X on volume --- [technical pattern]"
+   mean_reversion (oversold dip): write "Enter below $X --- [indicator] oversold, target $Y"
+   NEVER write a breakout/confirmation trigger for a catalyst thesis. If the thesis is an upgrade,
+   earnings catalyst, insider buy, or news event that has NOT yet moved the stock, write an
+   immediate-entry trigger at current price --- NOT "above $X" confirmation.
 
 OUTPUT COMPLETENESS RULES:
 - All 11 top-level keys must be present even if empty (use [] or {} as appropriate).
@@ -2012,6 +2020,15 @@ def build_conviction_reconciliation(
     long_rows.sort(key=lambda x: x[0], reverse=True)
     bear_rows.sort(key=lambda x: x[0], reverse=True)
 
+    # WATCH TRIGGERS: entry_trigger+thesis_type from watch_list
+    watch_trigger_lines: list[str] = []
+    for _witem in (full_brief.get("watch_list") or [])[:8]:
+        _wsym = _witem.get("symbol", "")
+        _wtt  = _witem.get("thesis_type", "?")
+        _wet  = (_witem.get("entry_trigger") or "")[:70]
+        if _wsym and _wet:
+            watch_trigger_lines.append(f"  {_wsym:<8} [{_wtt}] {_wet}")
+
     lines: list[str] = [
         f"CONVICTION TABLE [reconciled {now_str}]",
         "━" * 50,
@@ -2022,12 +2039,15 @@ def build_conviction_reconciliation(
         lines.append(row)
     for _, row in bear_rows[:10]:
         lines.append(row)
+    if watch_trigger_lines:
+        lines.append("WATCH TRIGGERS (from morning brief):")
+        lines.extend(watch_trigger_lines)
     if len(lines) == 2:
         lines.append("  (no conviction data available)")
 
     result = "\n".join(lines)
-    if len(result) > 2400:
-        result = result[:2400].rsplit("\n", 1)[0] + "\n[truncated — token limit]"
+    if len(result) > 3200:
+        result = result[:3200].rsplit("\n", 1)[0] + "\n[truncated — token limit]"
     return result
 
 

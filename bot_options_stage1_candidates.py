@@ -693,7 +693,8 @@ def run_candidate_stage(
                     _ec_strong = sum(
                         1 for v in _ec_comp.values() if v is not None and v > 60
                     )
-                    if _ec_strong < 2:
+                    _ec_strong_required = 1 if _ec_eda == 1 else 2
+                    if _ec_strong < _ec_strong_required:
                         continue
                     if _ec_sym in _ec_scored_set:
                         continue

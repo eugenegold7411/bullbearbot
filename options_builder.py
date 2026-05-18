@@ -512,9 +512,10 @@ def _select_debit_spread_strikes(
     min_delta: float,
 ) -> Optional[dict]:
     """
-    Debit spread: long = ATM, short = widest OTM strike satisfying both:
+    Debit spread: long = ATM, short = narrowest OTM strike satisfying both:
       1. width >= min_spread_width(spot)
-      2. CR_ask = (long_ask - short_bid) / width <= 0.50  (fillable at ask)
+      2. short_bid > 0.05 AND short_ask/mid > 0.05  (real market on short leg)
+      3. CR_ask = (long_ask - short_bid) / width <= 0.50  (fillable at ask)
     Falls back to narrowest qualifying width if no CR_ask candidate found.
     For calls: long lower strike, short higher strike.
     For puts:  long higher strike, short lower strike.
@@ -538,9 +539,11 @@ def _select_debit_spread_strikes(
             cr_ok = [
                 o for o in wide
                 if (w := float(o["strike"]) - atm_strike) > 0
+                and float(o.get("bid") or 0) > 0.05
+                and float(o.get("ask") or o.get("mid") or 0) > 0.05
                 and (long_ask - float(o.get("bid") or 0)) / w <= 0.50
             ]
-            otm_leg = cr_ok[-1] if cr_ok else wide[0]
+            otm_leg = cr_ok[0] if cr_ok else wide[0]
         else:
             otm_leg = wide[0] if wide else otm_candidates[-1]
         long_leg, short_leg = atm_leg, otm_leg
@@ -557,9 +560,11 @@ def _select_debit_spread_strikes(
             cr_ok = [
                 o for o in wide
                 if (w := atm_strike - float(o["strike"])) > 0
+                and float(o.get("bid") or 0) > 0.05
+                and float(o.get("ask") or o.get("mid") or 0) > 0.05
                 and (long_ask - float(o.get("bid") or 0)) / w <= 0.50
             ]
-            otm_leg = cr_ok[-1] if cr_ok else wide[0]
+            otm_leg = cr_ok[0] if cr_ok else wide[0]
         else:
             otm_leg = wide[0] if wide else otm_candidates[-1]
         long_leg, short_leg = atm_leg, otm_leg

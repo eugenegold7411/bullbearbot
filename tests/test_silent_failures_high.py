@@ -479,7 +479,9 @@ class TestSF15CloseStructure(unittest.TestCase):
             result = options_executor.close_structure(
                 structure, mock_client, reason="eod_close", method="market"
             )
-        assert result.lifecycle == StructureLifecycle.CLOSED
+        # After close orders submitted, lifecycle is CLOSING (not CLOSED).
+        # _sync_closing_lifecycles promotes to CLOSED once Alpaca confirms the fill.
+        assert result.lifecycle == StructureLifecycle.CLOSING
 
 
 # ===========================================================================

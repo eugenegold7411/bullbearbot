@@ -231,12 +231,13 @@ def _is_recent_loss_close(
 def _is_duplicate_submission(symbol: str, legs: list) -> bool:
     """
     Returns True if a structure for the same underlying with any matching leg
-    OCC symbol already exists in submitted, partially_filled, or fully_filled state.
-    Prevents duplicate submissions like the XLE double-submit from 2026-04-23.
+    OCC symbol already exists in submitted, partially_filled, fully_filled, or
+    closing state. Prevents duplicate submissions and re-entry while a close is
+    pending Alpaca confirmation.
     """
     try:
         import options_state  # noqa: PLC0415
-        _ACTIVE = {"submitted", "partially_filled", "fully_filled"}
+        _ACTIVE = {"submitted", "partially_filled", "fully_filled", "closing"}
         new_occs = {
             leg.occ_symbol
             for leg in legs
@@ -1013,6 +1014,88 @@ def _sync_submitted_lifecycles(structures: list, trading_client) -> None:
             log.debug("[FILL] _sync_submitted_lifecycles %s: %s", s.structure_id, exc)
 
 
+def _sync_closing_lifecycles(structures: list, trading_client) -> None:
+    """
+    For every CLOSING structure, query Alpaca for its close order status and
+    promote or revert the lifecycle accordingly. Non-fatal. Saves each mutated
+    structure.
+
+    Transitions:
+      close order filled                                   → CLOSED
+      close order cancelled / expired / rejected           → FULLY_FILLED
+        (close failed — position still live, retry on next cycle)
+      close order still pending (new/accepted/pending_new) → no change (stays CLOSING)
+
+    This runs at the TOP of close_check_loop(), before orphan detection in
+    preflight, so CLOSING structures keep their OCC symbols in _tracked_occs
+    for the full cycle in which the close order is pending.
+    """
+    import options_state  # noqa: PLC0415
+    from schemas import StructureLifecycle  # noqa: PLC0415
+
+    _FILL_STATUSES   = {"filled"}
+    _REVERT_STATUSES = {"cancelled", "expired", "done_for_day", "stopped", "suspended", "rejected"}
+
+    for s in structures:
+        lc = s.lifecycle.value if hasattr(s.lifecycle, "value") else str(s.lifecycle)
+        if lc != "closing":
+            continue
+        if not s.close_order_ids:
+            continue
+        close_order_id = s.close_order_ids[-1]
+        try:
+            order = trading_client.get_order_by_id(close_order_id)
+            raw_status = str(order.status).lower()
+            status = raw_status.split(".")[-1]
+
+            if status in _FILL_STATUSES:
+                s.add_audit(
+                    f"close order {close_order_id} filled — lifecycle → closed"
+                )
+                s.lifecycle = StructureLifecycle.CLOSED
+                log.info(
+                    "[CLOSE_SYNC] %s (%s): close order %s filled → closed",
+                    s.underlying, s.structure_id, close_order_id,
+                )
+                _write_a2_trade({
+                    "event_type":    "close_submitted",
+                    "structure_id":  s.structure_id,
+                    "symbol":        s.underlying,
+                    "strategy":      str(getattr(s.strategy, "value", s.strategy)),
+                    "close_reason":  s.close_reason_code,
+                    "lifecycle":     "closed",
+                    "pnl_unrealized": s.realized_pnl,
+                    "closed_at":     s.closed_at,
+                    "account":       "a2",
+                })
+            elif status in _REVERT_STATUSES:
+                s.add_audit(
+                    f"close order {close_order_id} status={status} — reverting to fully_filled"
+                )
+                s.lifecycle = StructureLifecycle.FULLY_FILLED
+                s.close_attempt_count = getattr(s, "close_attempt_count", 0) + 1
+                log.warning(
+                    "[CLOSE_SYNC] %s (%s): close order %s → %s — reverting to fully_filled"
+                    " (attempt %d)",
+                    s.underlying, s.structure_id, close_order_id, status,
+                    s.close_attempt_count,
+                )
+            else:
+                log.debug(
+                    "[CLOSE_SYNC] %s (%s): close order %s status=%s — still pending",
+                    s.underlying, s.structure_id, close_order_id, status,
+                )
+                continue  # still pending — leave as CLOSING
+
+            try:
+                options_state.save_structure(s)
+            except Exception as _se:
+                log.debug("[CLOSE_SYNC] save_structure failed for %s: %s", s.structure_id, _se)
+
+        except Exception as exc:
+            log.debug("[CLOSE_SYNC] _sync_closing_lifecycles %s: %s", s.structure_id, exc)
+
+
 # ── Close-check loop ──────────────────────────────────────────────────────────
 
 def _fetch_close_check_prices(open_structs: list) -> dict:
@@ -1147,6 +1230,7 @@ def close_check_loop(alpaca_client) -> None:
         # Backfill fill prices for any submitted/filled structures missing them.
         _all_structs = options_state.load_structures()
         _sync_submitted_lifecycles(_all_structs, alpaca_client)
+        _sync_closing_lifecycles(_all_structs, alpaca_client)
         _update_fill_prices(_all_structs, alpaca_client)
 
         # Include MANUAL_REVIEW_REQUIRED structures that have filled legs.

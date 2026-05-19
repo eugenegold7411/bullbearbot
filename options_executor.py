@@ -790,7 +790,7 @@ def close_structure(
             structure.realized_pnl = _compute_realized_pnl_estimate(structure, current_prices)
             structure.closed_at = datetime.now(timezone.utc).isoformat()
             structure = _set_lifecycle(
-                structure, StructureLifecycle.CLOSED, f"mleg close submitted: {reason}"
+                structure, StructureLifecycle.CLOSING, f"mleg close submitted: {reason}"
             )
             _log_structure_event(structure, "close", reason)
             return structure
@@ -886,7 +886,7 @@ def close_structure(
         structure.closed_at = datetime.now(timezone.utc).isoformat()
         close_label = "market" if method == "market" else "limit"
         structure = _set_lifecycle(
-            structure, StructureLifecycle.CLOSED,
+            structure, StructureLifecycle.CLOSING,
             f"{close_label} close submitted: {reason}",
         )
     else:

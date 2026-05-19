@@ -193,6 +193,8 @@ def run_options_cycle(session_tier: str = "market", next_cycle_time: str = "?") 
         save_legacy_decision({"reasoning": "no_candidates_after_filter", "regime": regime,
                               "actions": [], "observation_mode": obs_mode})
         _persist_early_exit(session_tier, t_start, "no_candidates_after_veto")
+        from bot_options_stage4_execution import close_check_loop  # noqa: PLC0415
+        close_check_loop(_get_alpaca())
         return
 
     from bot_options_stage3_debate import run_bounded_debate  # noqa: PLC0415

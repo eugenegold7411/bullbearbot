@@ -134,13 +134,15 @@ class TestCloseFailedLifecycle(unittest.TestCase):
             )
 
         from schemas import StructureLifecycle
+        # After close order submission, lifecycle is CLOSING (not CLOSED).
+        # _sync_closing_lifecycles promotes to CLOSED once Alpaca confirms the fill.
         self.assertEqual(
-            result.lifecycle, StructureLifecycle.CLOSED,
-            f"Expected CLOSED after successful close, got {result.lifecycle}",
+            result.lifecycle, StructureLifecycle.CLOSING,
+            f"Expected CLOSING after close order submitted, got {result.lifecycle}",
         )
         self.assertIsNotNone(
             result.closed_at,
-            "closed_at must be set when close succeeds",
+            "closed_at must be set when close order is submitted",
         )
 
     def test_failed_close_leaves_lifecycle_unchanged(self):

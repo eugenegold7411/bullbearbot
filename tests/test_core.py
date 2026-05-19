@@ -2673,6 +2673,7 @@ class TestSuite14OptionsBuilder(unittest.TestCase):
         from schemas import StructureLifecycle
         expected = {
             "proposed", "submitted", "partially_filled", "fully_filled",
+            "closing",                 # close order submitted; awaiting Alpaca fill confirmation
             "closed", "rejected", "expired", "cancelled",
             "orphan_tracked",          # added in orphan reconciler (S25)
             "manual_review_required",  # close exceeded max attempts; human action needed

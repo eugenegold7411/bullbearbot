@@ -219,6 +219,7 @@ class StructureLifecycle(str, Enum):
     SUBMITTED        = "submitted"         # order(s) sent to broker
     PARTIALLY_FILLED = "partially_filled"  # some legs filled
     FULLY_FILLED     = "fully_filled"      # all legs filled, structure live
+    CLOSING          = "closing"           # close order submitted, awaiting Alpaca fill confirmation
     CLOSED           = "closed"            # fully closed (all legs exited)
     REJECTED         = "rejected"          # broker rejected one or more legs
     EXPIRED          = "expired"           # option expired without exercise

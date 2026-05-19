@@ -255,9 +255,10 @@ class TestBracketCanceledBeforeClose:
         client.cancel_order_by_id.assert_called_once_with(uuid.UUID(holding_order_id))
         # submit_order was called twice (first fail + retry)
         assert client.submit_order.call_count == 2
-        # Structure ends up closed (retry succeeded)
+        # Structure ends up CLOSING (close order submitted; Alpaca fill not yet confirmed).
+        # _sync_closing_lifecycles will promote to CLOSED once the fill arrives.
         from schemas import StructureLifecycle
-        assert result.lifecycle == StructureLifecycle.CLOSED
+        assert result.lifecycle == StructureLifecycle.CLOSING
 
 
 # ── Test 6: manual_review_required stops retry ───────────────────────────────

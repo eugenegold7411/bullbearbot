@@ -1054,6 +1054,13 @@ def run_a2_preflight(
             # Closed/cancelled/rejected/expired structures held positions that
             # are no longer monitored — treat those positions as orphans so the
             # reconciler can create orphan_tracked structures and retry closing.
+            # NOTE: "closing" is intentionally excluded from _INACTIVE_LC.
+            # A CLOSING structure has a pending close order in Alpaca but the
+            # fill hasn't been confirmed yet. Its OCC symbols must remain in
+            # _tracked_occs so orphan reconciliation does not re-detect the
+            # still-live Alpaca position as untracked. _sync_closing_lifecycles
+            # (called in close_check_loop) promotes CLOSING → CLOSED once the
+            # close order fills, at which point the position is truly gone.
             _INACTIVE_LC = frozenset({"closed", "cancelled", "rejected", "expired"})
             _tracked_occs = {
                 leg.occ_symbol

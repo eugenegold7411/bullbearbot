@@ -441,13 +441,14 @@ class WiringTests(unittest.TestCase):
         self.assertIn("get_recommendations", stage3_src)
         self.assertIn("POSITION INTELLIGENCE for", stage3_src)
 
-    def test_close_check_loop_acts_on_immediate_close(self):
-        """
-        Stage 4 short-circuit: when act_on_immediate_close=true and intel has
-        an urgency=immediate + action=CLOSE recommendation for a structure,
-        close_check_loop submits a close.
-        """
-        # Default config: act_on_immediate_close=False
+    def test_close_check_loop_acts_on_pi_close(self):
+        #
+        # close_check_loop acts on any ACTION_CLOSE from position_intel without
+        # requiring the act_on_immediate_close gate or urgency=immediate filter.
+        # The old operator gate must NOT appear in stage4 -- its presence was the bug.
+        #
+        # is_immediate_close_action_enabled still works as a function but is
+        # no longer called from close_check_loop.
         self.assertFalse(opm.is_immediate_close_action_enabled({}))
         self.assertFalse(
             opm.is_immediate_close_action_enabled(
@@ -460,15 +461,17 @@ class WiringTests(unittest.TestCase):
             )
         )
 
-        # Wiring source — stage 4 reads the helper and gates execution on it.
         stage4_src = (
             Path(__file__).resolve().parent.parent
             / "bot_options_stage4_execution.py"
         ).read_text()
-        self.assertIn("is_immediate_close_action_enabled", stage4_src)
-        self.assertIn("position intel immediate close", stage4_src)
+        # Gate and urgency filter are removed -- their absence IS the fix.
+        self.assertNotIn("is_immediate_close_action_enabled", stage4_src)
+        self.assertNotIn("urgency != \"immediate\"", stage4_src)
+        # New automated path: any ACTION_CLOSE from get_recommendations is acted on.
+        self.assertIn("get_recommendations", stage4_src)
+        self.assertIn("position intel close", stage4_src)
         self.assertIn("ACTION_CLOSE", stage4_src)
-
 
 # ─── 23-24: structure-upgrade migration ───────────────────────────────────────
 

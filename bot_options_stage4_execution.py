@@ -1149,6 +1149,21 @@ def close_check_loop(alpaca_client) -> None:
         _sync_submitted_lifecycles(_all_structs, alpaca_client)
         _update_fill_prices(_all_structs, alpaca_client)
 
+        # Include MANUAL_REVIEW_REQUIRED structures that have filled legs.
+        # These positions are live in Alpaca; close failed max times but the
+        # position still exists and needs to be monitored and closed.
+        _mrr_structs = [
+            s for s in _all_structs
+            if s.lifecycle == StructureLifecycle.MANUAL_REVIEW_REQUIRED
+            and any(leg.filled_price is not None for leg in s.legs)
+        ]
+        if _mrr_structs:
+            log.info(
+                "[CLOSE_CHECK] %d manual_review_required structure(s) with fills added to monitoring: %s",
+                len(_mrr_structs), [s.structure_id[:8] for s in _mrr_structs],
+            )
+            open_structs = list(open_structs) + _mrr_structs
+
         # Fix 3: detect positions gone from Alpaca (manually closed / expired).
         # Fetch all A2 positions once and check each open struct's OCC symbols.
         _alpaca_syms: set[str] | None = None
@@ -1317,47 +1332,47 @@ def close_check_loop(alpaca_client) -> None:
                             "closed_at":     getattr(_closed, "closed_at", None),
                         })
                 else:
-                    # Position-intel immediate-close short-circuit. Reads
-                    # data/options/position_intel_latest.json (file-based) and
-                    # acts only when act_on_immediate_close=true (defaults to
-                    # false — operator flips on via SSH after intel JSON
-                    # validation).
+                    # Position-intel close: act on CLOSE recommendations written
+                    # by run() earlier this cycle. Handles VEGA_COLLAPSE,
+                    # DELTA_ITM, SHORT_LEG_ITM and other PI-detected signals.
+                    # Bug: previously gated behind an operator flag
+                    # (default False) + urgency==immediate filter — both
+                    # conditions silently dropped every PI CLOSE recommendation.
+                    # Fix: act on any ACTION_CLOSE / ACTION_CLOSE_SHORT_LEG.
                     _intel_acted = False
                     try:
                         import options_position_manager as _opm  # noqa: PLC0415
-                        if _opm.is_immediate_close_action_enabled(_strategy_cfg):
-                            _recs = _opm.get_recommendations(symbol=struct.underlying)
-                            for _rec in _recs:
-                                if _rec.structure_id != struct.structure_id:
-                                    continue
-                                if _rec.urgency != "immediate":
-                                    continue
-                                if _rec.action not in (
-                                    _opm.ACTION_CLOSE, _opm.ACTION_CLOSE_SHORT_LEG,
-                                ):
-                                    continue
-                                _close_reason = f"position_intel:{_rec.action.lower()}:{_rec.reason[:60]}"
-                                log.info(
-                                    "[CLOSE_CHECK] %s (%s): position intel immediate close — %s",
-                                    struct.underlying, struct.structure_id, _rec.reason,
-                                )
-                                _closed = options_executor.close_structure(
-                                    struct, alpaca_client, reason=_close_reason,
-                                    method="limit", current_prices=_current_prices,
-                                )
-                                options_state.save_structure(_closed)
-                                _write_a2_trade({
-                                    "event_type":    "close_submitted",
-                                    "structure_id":  _closed.structure_id,
-                                    "symbol":        _closed.underlying,
-                                    "strategy":      str(getattr(_closed.strategy, "value", _closed.strategy)),
-                                    "close_reason":  _close_reason,
-                                    "lifecycle":     str(getattr(_closed.lifecycle, "value", _closed.lifecycle)),
-                                    "pnl_unrealized": getattr(_closed, "pnl_unrealized", None),
-                                    "closed_at":     getattr(_closed, "closed_at", None),
-                                })
-                                _intel_acted = True
-                                break
+                        _recs = _opm.get_recommendations(symbol=struct.underlying)
+                        for _rec in _recs:
+                            if _rec.structure_id != struct.structure_id:
+                                continue
+                            if _rec.action not in (
+                                _opm.ACTION_CLOSE, _opm.ACTION_CLOSE_SHORT_LEG,
+                            ):
+                                continue
+                            _close_reason = f"position_intel:{_rec.action.lower()}:{_rec.reason[:60]}"
+                            log.info(
+                                "[CLOSE_CHECK] %s (%s): position intel close [%s] \u2014 %s",
+                                struct.underlying, struct.structure_id,
+                                _rec.urgency, _rec.reason,
+                            )
+                            _closed = options_executor.close_structure(
+                                struct, alpaca_client, reason=_close_reason,
+                                method="limit", current_prices=_current_prices,
+                            )
+                            options_state.save_structure(_closed)
+                            _write_a2_trade({
+                                "event_type":    "close_submitted",
+                                "structure_id":  _closed.structure_id,
+                                "symbol":        _closed.underlying,
+                                "strategy":      str(getattr(_closed.strategy, "value", _closed.strategy)),
+                                "close_reason":  _close_reason,
+                                "lifecycle":     str(getattr(_closed.lifecycle, "value", _closed.lifecycle)),
+                                "pnl_unrealized": getattr(_closed, "pnl_unrealized", None),
+                                "closed_at":     getattr(_closed, "closed_at", None),
+                            })
+                            _intel_acted = True
+                            break
                     except Exception as _pi_exc:
                         log.debug("[CLOSE_CHECK] position_intel act-check failed: %s", _pi_exc)
 

@@ -1087,11 +1087,15 @@ def _load_intelligence_context(brief_type: str) -> str:
             score = s.get("score", 0)
             direction = s.get("direction", "?")
             cat = str(s.get("catalyst", ""))[:70]
-            parts.append(f"  {sym}: score={score} dir={direction} catalyst={cat}")
+            _price = s.get("price")
+            _price_str = f" price=${_price:.2f}" if _price else ""
+            parts.append(f"  {sym}: score={score} dir={direction}{_price_str} catalyst={cat}")
         if bearish:
             parts.append("  [BEARISH SIGNALS]")
             for s in bearish[:10]:
-                parts.append(f"  {s.get('symbol','?')}: score={s.get('score',0)} dir={s.get('direction','?')}")
+                _price = s.get("price")
+                _price_str = f" price=${_price:.2f}" if _price else ""
+                parts.append(f"  {s.get('symbol','?')}: score={s.get('score',0)} dir={s.get('direction','?')}{_price_str}")
 
         # IV ranks for top signals
         top_syms = [s.get("symbol", "") for s in bullish[:20] + bearish[:10] if s.get("symbol")]

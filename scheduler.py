@@ -1234,7 +1234,7 @@ def _maybe_run_intelligence_brief(dry_run: bool = False) -> None:
     # Determine which slot applies now
     # Slot windows (each slot fires within a 3-minute window)
     slots: list[tuple[int, int, str]] = [
-        (4 * 60,      4 * 60 + 15,  "premarket"),       # 4:00–4:15 AM
+        (4 * 60,      4 * 60 + 45,  "premarket"),       # 4:00–4:45 AM
         (9 * 60 + 25, 9 * 60 + 35,  "market_open"),     # 9:25–9:35 AM
         (10 * 60 + 30, 10 * 60 + 40, "intraday_update"), # 10:30–10:40 AM
         (11 * 60 + 30, 11 * 60 + 40, "intraday_update"), # 11:30–11:40 AM

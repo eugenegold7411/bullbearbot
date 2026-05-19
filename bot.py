@@ -271,10 +271,13 @@ def run_cycle(
             _ss_with_ts["scored_at_et"] = _now_et.strftime("%Y-%m-%d %H:%M ET")
             _ss_path = Path(__file__).parent / "data" / "market" / "signal_scores.json"
             _ss_path.parent.mkdir(parents=True, exist_ok=True)
-            _ss_path.write_text(json.dumps(_ss_with_ts))
-            signal_scores_obj = _ss_with_ts  # keep in-memory copy consistent
-            log.debug("[SIGNALS] wrote %d scores to signal_scores.json",
-                      len(signal_scores_obj.get("scored_symbols", {})))
+            if not _ss_with_ts.get("scored_symbols"):
+                log.warning("[SIGNALS] scored_symbols empty — skipping write, preserving previous file")
+            else:
+                _ss_path.write_text(json.dumps(_ss_with_ts))
+                signal_scores_obj = _ss_with_ts  # keep in-memory copy consistent
+                log.debug("[SIGNALS] wrote %d scores to signal_scores.json",
+                          len(signal_scores_obj.get("scored_symbols", {})))
         except Exception as _ss_exc:
             log.warning("[SIGNALS] could not write signal_scores.json (non-fatal): %s", _ss_exc)
 

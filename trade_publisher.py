@@ -744,26 +744,34 @@ Rules:
                 )
                 return None
 
-            # Position is confirmed gone — look for the closing fill
-            try:
-                from alpaca.trading.enums import QueryOrderStatus  # noqa: PLC0415
-                from alpaca.trading.requests import GetOrdersRequest  # noqa: PLC0415
-                orders = alpaca_client.get_orders(
-                    GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=20)
-                )
-                for o in (orders if isinstance(orders, list) else []):
-                    if getattr(o, "symbol", "") != symbol:
-                        continue
-                    if "sell" not in str(getattr(o, "side", "")).lower():
-                        continue
-                    fill_price = float(getattr(o, "avg_fill_price", 0) or 0)
-                    filled_qty = float(getattr(o, "filled_qty", 0) or 0)
-                    if fill_price > 0 and filled_qty > 0:
-                        return {"fill_price": fill_price, "filled_qty": filled_qty}
-            except Exception as _fill_exc:
-                log.debug("[PUBLISHER] %s: fill lookup failed: %s", symbol, _fill_exc)
+            # Position is confirmed gone — look for the closing fill.
+            # Retry up to 3 times (1 s apart) to handle the timing gap between
+            # an OCO/stop fill and Alpaca's closed-order propagation.
+            # Side filter removed: position is confirmed gone, any closed fill
+            # for this symbol is the closing order (covers both sell and buy-to-cover).
+            from alpaca.trading.enums import QueryOrderStatus  # noqa: PLC0415
+            from alpaca.trading.requests import GetOrdersRequest  # noqa: PLC0415
+            for _attempt in range(3):
+                try:
+                    orders = alpaca_client.get_orders(
+                        GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=20)
+                    )
+                    for o in (orders if isinstance(orders, list) else []):
+                        if getattr(o, "symbol", "") != symbol:
+                            continue
+                        fill_price = float(getattr(o, "filled_avg_price", 0) or 0)
+                        filled_qty = float(getattr(o, "filled_qty", 0) or 0)
+                        if fill_price > 0 and filled_qty > 0:
+                            return {"fill_price": fill_price, "filled_qty": filled_qty}
+                except Exception as _fill_exc:
+                    log.debug("[PUBLISHER] %s: fill lookup failed: %s", symbol, _fill_exc)
+                    break
+                if _attempt < 2:
+                    log.debug("[PUBLISHER] %s: fill not yet in closed orders — retrying (%d/3)",
+                              symbol, _attempt + 2)
+                    time.sleep(1.0)
 
-            # Position gone but no fill found — safe to publish without P&L precision
+            # Position gone but fill not found after 3 attempts — publish without P&L precision
             return {"fill_price": 0.0, "filled_qty": 0.0}
 
         except Exception as exc:
@@ -875,7 +883,7 @@ Rules:
 
         Requires alpaca_client to:
           1. Verify position is gone from Alpaca (confirmed close).
-          2. Fetch actual avg_fill_price from the closing order.
+          2. Fetch actual filled_avg_price from the closing order.
           3. Calculate real P&L = (fill_price - entry_price) * filled_qty.
 
         If verification fails the tweet is suppressed.
@@ -883,6 +891,13 @@ Rules:
         """
         if not self.enabled:
             return None
+        _now = time.time()
+        _last = self._recent_exit_publishes.get(symbol, 0.0)
+        if _now - _last < self._EXIT_DEDUP_SECS:
+            log.debug("[PUBLISHER] %s: skipping duplicate exit publish (%.0fs ago)",
+                      symbol, _now - _last)
+            return None
+        self._recent_exit_publishes[symbol] = _now
         try:
             # Verify position is gone and get real fill data
             confirmed_fill_price = exit_price
@@ -1270,6 +1285,9 @@ Rules:
 
     _trade_alert_cache: dict[str, float] = {}
     _TRADE_ALERT_DEDUP_SECS: float = 30 * 60
+
+    _recent_exit_publishes: dict[str, float] = {}
+    _EXIT_DEDUP_SECS: float = 60.0
 
     _TRADE_EMOJI: dict[str, str] = {
         "buy":  "🟢",
